@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -41,6 +41,9 @@ def _parse_period_to_start(period: str, *, today: date) -> date | None:
 
 def _default_fetcher(symbol: str, start: date | None, end: date | None) -> pd.DataFrame:
     ticker = yf.Ticker(symbol)
+    if start is None and end is None:
+        return ticker.history(period="max", interval="1d", auto_adjust=False)
+
     kwargs = {"interval": "1d", "auto_adjust": False}
     if start is not None:
         kwargs["start"] = start.isoformat()
@@ -99,17 +102,17 @@ class CandleStore:
         merged = cached
 
         # Backfill earlier history if required.
-        if desired_start is not None:
-            if merged.empty:
-                backfill_end = None
-                fetched = self.fetcher(symbol, desired_start, backfill_end)
-                merged = _normalize_history(fetched)
+        if merged.empty:
+            if desired_start is None:
+                merged = _normalize_history(self.fetcher(symbol, None, None))
             else:
-                first_cached = merged.index.min().date()
-                if desired_start < first_cached:
-                    fetched = self.fetcher(symbol, desired_start, first_cached)
-                    fetched = _normalize_history(fetched)
-                    merged = pd.concat([fetched, merged]).sort_index()
+                merged = _normalize_history(self.fetcher(symbol, desired_start, None))
+        elif desired_start is not None:
+            first_cached = merged.index.min().date()
+            if desired_start < first_cached:
+                fetched = self.fetcher(symbol, desired_start, first_cached)
+                fetched = _normalize_history(fetched)
+                merged = pd.concat([fetched, merged]).sort_index()
 
         # Refresh the recent tail (captures late revisions / newly available data).
         if not merged.empty and self.backfill_days > 0:
@@ -138,4 +141,3 @@ def last_close(history: pd.DataFrame) -> float | None:
     if val.empty:
         return None
     return float(val.iloc[-1])
-
