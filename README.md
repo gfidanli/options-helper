@@ -27,5 +27,10 @@ python3 -m options_helper init portfolio.json
 ## Portfolio format
 See `PRD.md` for the full MVP spec and an example JSON structure.
 
+## Candle cache (technical analysis)
+`analyze` maintains a local daily OHLCV cache per symbol and resamples it for 3‑day and weekly indicators.
+
+- Design/usage: `docs/CANDLE_CACHE.md`
+
 ## Disclaimer
 This tool is for informational/educational use only and is not financial advice.

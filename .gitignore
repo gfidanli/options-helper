@@ -46,4 +46,4 @@ yarn-error.log*
 
 # options-helper local state
 portfolio.json
-data/
+/data/

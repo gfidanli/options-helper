@@ -11,6 +11,7 @@ from rich.console import Console
 from options_helper.analysis.advice import Advice, PositionMetrics, advise
 from options_helper.analysis.greeks import black_scholes_greeks
 from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, sma
+from options_helper.data.candles import CandleStore, last_close
 from options_helper.data.yf_client import DataFetchError, YFinanceClient, contract_row_by_strike
 from options_helper.models import OptionType, Portfolio, Position, RiskProfile
 from options_helper.reporting import render_positions, render_summary
@@ -76,11 +77,10 @@ def _position_metrics(
     position: Position,
     *,
     risk_profile: RiskProfile,
-    period: str = "6mo",
-    interval: str = "1d",
+    underlying_history: pd.DataFrame,
+    underlying_last_price: float | None,
 ) -> PositionMetrics:
     today = date.today()
-    underlying = client.get_underlying(position.symbol, period=period, interval=interval)
     chain = client.get_options_chain(position.symbol, position.expiry)
     df = chain.calls if position.option_type == "call" else chain.puts
     row = contract_row_by_strike(df, position.strike)
@@ -100,7 +100,7 @@ def _position_metrics(
     dte = (position.expiry - today).days
     dte_val = dte if dte >= 0 else 0
 
-    underlying_price = underlying.last_price
+    underlying_price = underlying_last_price
     moneyness = None
     if underlying_price is not None:
         moneyness = underlying_price / position.strike
@@ -112,10 +112,10 @@ def _position_metrics(
 
     close_series: pd.Series | None = None
     volume_series: pd.Series | None = None
-    if not underlying.history.empty and "Close" in underlying.history.columns:
-        close_series = underlying.history["Close"].dropna()
-    if not underlying.history.empty and "Volume" in underlying.history.columns:
-        volume_series = underlying.history["Volume"].dropna()
+    if not underlying_history.empty and "Close" in underlying_history.columns:
+        close_series = underlying_history["Close"].dropna()
+    if not underlying_history.empty and "Volume" in underlying_history.columns:
+        volume_series = underlying_history["Volume"].dropna()
 
     sma20 = sma(close_series, 20) if close_series is not None else None
     sma50 = sma(close_series, 50) if close_series is not None else None
@@ -326,8 +326,16 @@ def analyze(
     portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
     period: str = typer.Option("2y", "--period", help="Underlying history period (yfinance)."),
     interval: str = typer.Option("1d", "--interval", help="Underlying history interval (yfinance)."),
+    cache_dir: Path = typer.Option(
+        Path("data/candles"),
+        "--cache-dir",
+        help="Directory for locally cached daily candles.",
+    ),
 ) -> None:
     """Fetch data and print metrics + rule-based advice."""
+    if interval != "1d":
+        raise typer.BadParameter("Only --interval 1d is supported for now (cache uses daily candles).")
+
     portfolio = load_portfolio(portfolio_path)
     console = Console()
     render_summary(console, portfolio)
@@ -337,12 +345,31 @@ def analyze(
         raise typer.Exit(0)
 
     client = YFinanceClient()
+    candle_store = CandleStore(cache_dir)
+
+    history_by_symbol: dict[str, pd.DataFrame] = {}
+    last_price_by_symbol: dict[str, float | None] = {}
+    for sym in sorted({p.symbol for p in portfolio.positions}):
+        try:
+            history = candle_store.get_daily_history(sym, period=period)
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[red]Candle cache error:[/red] {sym}: {exc}")
+            history = pd.DataFrame()
+        history_by_symbol[sym] = history
+        last_price_by_symbol[sym] = last_close(history)
+
     metrics_list: list[PositionMetrics] = []
     advice_by_id: dict[str, Advice] = {}
 
     for p in portfolio.positions:
         try:
-            metrics = _position_metrics(client, p, risk_profile=portfolio.risk_profile, period=period, interval=interval)
+            metrics = _position_metrics(
+                client,
+                p,
+                risk_profile=portfolio.risk_profile,
+                underlying_history=history_by_symbol.get(p.symbol, pd.DataFrame()),
+                underlying_last_price=last_price_by_symbol.get(p.symbol),
+            )
             metrics_list.append(metrics)
             advice_by_id[p.id] = advise(metrics, portfolio)
         except DataFetchError as exc:
