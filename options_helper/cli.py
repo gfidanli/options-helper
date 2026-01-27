@@ -9,6 +9,7 @@ import typer
 from rich.console import Console
 
 from options_helper.analysis.advice import Advice, PositionMetrics, advise
+from options_helper.analysis.performance import compute_daily_performance_quote
 from options_helper.analysis.greeks import black_scholes_greeks
 from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, sma
 from options_helper.data.candles import CandleStore, last_close
@@ -215,6 +216,87 @@ def _position_metrics(
         delta=delta,
         theta_per_day=theta_per_day,
     )
+
+
+@app.command("daily")
+def daily_performance(
+    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
+) -> None:
+    """Show best-effort daily P&L for the portfolio (based on options chain change fields)."""
+    portfolio = load_portfolio(portfolio_path)
+    console = Console()
+    render_summary(console, portfolio)
+
+    if not portfolio.positions:
+        console.print("No positions.")
+        raise typer.Exit(0)
+
+    client = YFinanceClient()
+
+    from rich.table import Table
+
+    table = Table(title="Daily Performance (best-effort)")
+    table.add_column("ID")
+    table.add_column("Symbol")
+    table.add_column("Expiry")
+    table.add_column("Strike", justify="right")
+    table.add_column("Ct", justify="right")
+    table.add_column("Last", justify="right")
+    table.add_column("Chg", justify="right")
+    table.add_column("%Chg", justify="right")
+    table.add_column("Daily PnL $", justify="right")
+
+    total_daily_pnl = 0.0
+    total_prev_value = float(portfolio.cash)
+
+    for p in portfolio.positions:
+        try:
+            chain = client.get_options_chain(p.symbol, p.expiry)
+            df = chain.calls if p.option_type == "call" else chain.puts
+            row = contract_row_by_strike(df, p.strike)
+
+            last = change = pct = None
+            if row is not None:
+                last = _extract_float(row, "lastPrice")
+                change = _extract_float(row, "change")
+                pct = _extract_float(row, "percentChange")
+
+            q = compute_daily_performance_quote(
+                last_price=last,
+                change=change,
+                percent_change_raw=pct,
+                contracts=p.contracts,
+            )
+
+            if q.daily_pnl is not None:
+                total_daily_pnl += q.daily_pnl
+            if q.prev_close_price is not None:
+                total_prev_value += q.prev_close_price * 100.0 * p.contracts
+            elif q.last_price is not None:
+                total_prev_value += q.last_price * 100.0 * p.contracts
+
+            table.add_row(
+                p.id,
+                p.symbol,
+                p.expiry.isoformat(),
+                f"{p.strike:g}",
+                str(p.contracts),
+                "-" if q.last_price is None else f"${q.last_price:.2f}",
+                "-" if q.change is None else f"{q.change:+.2f}",
+                "-" if q.percent_change is None else f"{q.percent_change:+.1f}%",
+                "-" if q.daily_pnl is None else f"{q.daily_pnl:+.2f}",
+                style="green" if q.daily_pnl and q.daily_pnl > 0 else "red" if q.daily_pnl and q.daily_pnl < 0 else None,
+            )
+        except DataFetchError as exc:
+            console.print(f"[red]Data error:[/red] {exc}")
+
+    console.print(table)
+
+    denom = total_prev_value if total_prev_value > 0 else None
+    total_pct = (total_daily_pnl / denom) if denom else None
+    total_str = f"{total_daily_pnl:+.2f}"
+    pct_str = "-" if total_pct is None else f"{total_pct:+.2%}"
+    console.print(f"\nTotal daily PnL: ${total_str} ({pct_str})")
 
 
 @app.command()
