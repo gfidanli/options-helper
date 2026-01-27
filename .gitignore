@@ -1,0 +1,46 @@
+# OS and editor
+.DS_Store
+.Spotlight-V100
+.Trashes
+*.swp
+*.swo
+*.orig
+.idea/
+.vscode/
+
+# Node / JS
+node_modules/
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+.turbo/
+.parcel-cache/
+.next/
+dist/
+build/
+coverage/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+.tox/
+.eggs/
+*.egg-info/
+
+# Env and secrets
+.env
+.env.*
+.env.local
+.python-version
+
+# Logs and misc
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
