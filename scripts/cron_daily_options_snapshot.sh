@@ -17,9 +17,14 @@ fi
 cd "${REPO_DIR}"
 
 echo "[$(date)] Running daily options snapshot..."
+"${VENV_BIN}/options-helper" refresh-candles "${PORTFOLIO}" \
+  --watchlists-path "${REPO_DIR}/data/watchlists.json" \
+  --candle-cache-dir "${REPO_DIR}/data/candles" \
+  --period 5y \
+  >> "${LOG_DIR}/options_snapshot.log" 2>&1
+
 "${VENV_BIN}/options-helper" snapshot-options "${PORTFOLIO}" \
   --cache-dir "${REPO_DIR}/data/options_snapshots" \
   --candle-cache-dir "${REPO_DIR}/data/candles" \
   --window-pct 0.30 \
   >> "${LOG_DIR}/options_snapshot.log" 2>&1
-
