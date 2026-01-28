@@ -1,0 +1,397 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date
+from enum import Enum
+
+import pandas as pd
+
+from options_helper.analysis.greeks import black_scholes_greeks
+from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, stoch_rsi
+from options_helper.models import OptionType, RiskProfile
+
+
+class Direction(str, Enum):
+    BULLISH = "bullish"
+    BEARISH = "bearish"
+    NEUTRAL = "neutral"
+
+
+@dataclass(frozen=True)
+class UnderlyingSetup:
+    symbol: str
+    spot: float | None
+    direction: Direction
+    reasons: list[str]
+    daily_rsi: float | None
+    daily_stoch_rsi: float | None
+    weekly_rsi: float | None
+    weekly_breakout: bool | None
+
+
+@dataclass(frozen=True)
+class OptionCandidate:
+    symbol: str
+    option_type: OptionType
+    expiry: date
+    dte: int
+    strike: float
+    mark: float | None
+    bid: float | None
+    ask: float | None
+    last: float | None
+    iv: float | None
+    delta: float | None
+    open_interest: int | None
+    volume: int | None
+    rationale: list[str]
+
+
+@dataclass(frozen=True)
+class SpreadCandidate:
+    symbol: str
+    expiry: date
+    dte: int
+    option_type: OptionType
+    long_leg: OptionCandidate
+    short_leg: OptionCandidate
+    debit: float | None
+    rationale: list[str]
+
+
+def _mark_price(*, bid: float | None, ask: float | None, last: float | None) -> float | None:
+    if bid is not None and ask is not None and bid > 0 and ask > 0:
+        return (bid + ask) / 2.0
+    if last is not None and last > 0:
+        return last
+    if ask is not None and ask > 0:
+        return ask
+    if bid is not None and bid > 0:
+        return bid
+    return None
+
+
+def _as_float(val) -> float | None:
+    try:
+        if val is None or (isinstance(val, float) and pd.isna(val)) or pd.isna(val):
+            return None
+        return float(val)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _as_int(val) -> int | None:
+    try:
+        if val is None or (isinstance(val, float) and pd.isna(val)) or pd.isna(val):
+            return None
+        return int(val)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def choose_expiry(
+    expiry_strs: list[str],
+    *,
+    min_dte: int,
+    max_dte: int,
+    target_dte: int,
+    today: date | None = None,
+) -> date | None:
+    today = today or date.today()
+    candidates: list[tuple[int, date]] = []
+    for s in expiry_strs:
+        try:
+            exp = date.fromisoformat(s)
+        except ValueError:
+            continue
+        dte = (exp - today).days
+        if min_dte <= dte <= max_dte:
+            candidates.append((dte, exp))
+    if not candidates:
+        return None
+    # Choose expiry closest to target DTE
+    _, best = min(candidates, key=lambda t: abs(t[0] - target_dte))
+    return best
+
+
+def analyze_underlying(
+    symbol: str,
+    *,
+    history: pd.DataFrame,
+    risk_profile: RiskProfile,
+) -> UnderlyingSetup:
+    reasons: list[str] = []
+
+    if history.empty or "Close" not in history.columns:
+        return UnderlyingSetup(
+            symbol=symbol.upper(),
+            spot=None,
+            direction=Direction.NEUTRAL,
+            reasons=["No candle history available."],
+            daily_rsi=None,
+            daily_stoch_rsi=None,
+            weekly_rsi=None,
+            weekly_breakout=None,
+        )
+
+    close = history["Close"].dropna()
+    if close.empty:
+        return UnderlyingSetup(
+            symbol=symbol.upper(),
+            spot=None,
+            direction=Direction.NEUTRAL,
+            reasons=["No close prices available."],
+            daily_rsi=None,
+            daily_stoch_rsi=None,
+            weekly_rsi=None,
+            weekly_breakout=None,
+        )
+
+    spot = float(close.iloc[-1])
+
+    ema20_d = ema(close, 20)
+    ema50_d = ema(close, 50)
+    rsi_d = rsi(close, 14)
+    stoch_rsi_d = stoch_rsi(close)
+
+    close_w = close.resample("W-FRI").last().dropna()
+    ema20_w = ema(close_w, 20) if not close_w.empty else None
+    ema50_w = ema(close_w, 50) if not close_w.empty else None
+    rsi_w = rsi(close_w, 14) if not close_w.empty else None
+
+    lookback = risk_profile.breakout_lookback_weeks
+    breakout_w = breakout_up(close_w, lookback) if not close_w.empty else None
+
+    bullish_weekly = False
+    bearish_weekly = False
+    if ema20_w is not None and ema50_w is not None and spot is not None:
+        bullish_weekly = (spot > ema50_w) and (ema20_w >= ema50_w)
+        bearish_weekly = (spot < ema50_w) and (ema20_w <= ema50_w)
+
+    if bullish_weekly:
+        reasons.append("Weekly trend bullish (price above EMA50; EMA20 ≥ EMA50).")
+    elif bearish_weekly:
+        reasons.append("Weekly trend bearish (price below EMA50; EMA20 ≤ EMA50).")
+    else:
+        reasons.append("Weekly trend neutral/mixed.")
+
+    if breakout_w is True:
+        reasons.append(f"Weekly breakout: close exceeded prior {lookback}-week high.")
+
+    if rsi_w is not None:
+        if rsi_w >= 55:
+            reasons.append(f"Weekly RSI strong ({rsi_w:.0f} ≥ 55).")
+        elif rsi_w <= 45:
+            reasons.append(f"Weekly RSI weak ({rsi_w:.0f} ≤ 45).")
+        else:
+            reasons.append(f"Weekly RSI neutral ({rsi_w:.0f}).")
+
+    if stoch_rsi_d is not None:
+        # User-friendly banding
+        if 40 <= stoch_rsi_d <= 60:
+            reasons.append(f"Daily StochRSI near mid-range ({stoch_rsi_d:.0f}), room for momentum expansion.")
+        elif stoch_rsi_d > 80:
+            reasons.append(f"Daily StochRSI elevated ({stoch_rsi_d:.0f}), momentum already extended.")
+        elif stoch_rsi_d < 20:
+            reasons.append(f"Daily StochRSI depressed ({stoch_rsi_d:.0f}), potential reset/bounce zone.")
+        else:
+            reasons.append(f"Daily StochRSI {stoch_rsi_d:.0f}.")
+
+    if rsi_d is not None:
+        if rsi_d >= 55:
+            reasons.append(f"Daily RSI supportive ({rsi_d:.0f} ≥ 55).")
+        elif rsi_d <= 45:
+            reasons.append(f"Daily RSI weak ({rsi_d:.0f} ≤ 45).")
+        else:
+            reasons.append(f"Daily RSI neutral ({rsi_d:.0f}).")
+
+    # Direction decision (simple, LEAPS-oriented)
+    direction = Direction.NEUTRAL
+    if bullish_weekly and (breakout_w is True or (rsi_w is not None and rsi_w >= 55)):
+        direction = Direction.BULLISH
+    elif bearish_weekly and (breakout_down(close_w, lookback) is True or (rsi_w is not None and rsi_w <= 45)):
+        direction = Direction.BEARISH
+
+    return UnderlyingSetup(
+        symbol=symbol.upper(),
+        spot=spot,
+        direction=direction,
+        reasons=reasons,
+        daily_rsi=rsi_d,
+        daily_stoch_rsi=stoch_rsi_d,
+        weekly_rsi=rsi_w,
+        weekly_breakout=breakout_w,
+    )
+
+
+def _filter_strike_window(df: pd.DataFrame, *, spot: float, window_pct: float) -> pd.DataFrame:
+    if df.empty or "strike" not in df.columns:
+        return df
+    strike_min = spot * (1.0 - window_pct)
+    strike_max = spot * (1.0 + window_pct)
+    return df[(df["strike"] >= strike_min) & (df["strike"] <= strike_max)]
+
+
+def select_option_candidate(
+    df: pd.DataFrame,
+    *,
+    symbol: str,
+    option_type: OptionType,
+    expiry: date,
+    spot: float,
+    target_delta: float,
+    window_pct: float,
+    min_open_interest: int,
+    min_volume: int,
+) -> OptionCandidate | None:
+    if df is None or df.empty:
+        return None
+
+    df = df.copy()
+    df = _filter_strike_window(df, spot=spot, window_pct=window_pct)
+    if df.empty:
+        return None
+
+    # Normalize fields
+    df["bid_f"] = df.get("bid").map(_as_float) if "bid" in df.columns else None
+    df["ask_f"] = df.get("ask").map(_as_float) if "ask" in df.columns else None
+    df["last_f"] = df.get("lastPrice").map(_as_float) if "lastPrice" in df.columns else None
+    df["iv_f"] = df.get("impliedVolatility").map(_as_float) if "impliedVolatility" in df.columns else None
+    df["oi_i"] = df.get("openInterest").map(_as_int) if "openInterest" in df.columns else None
+    df["vol_i"] = df.get("volume").map(_as_int) if "volume" in df.columns else None
+
+    today = date.today()
+    dte = max((expiry - today).days, 0)
+    t_years = dte / 365.0 if dte > 0 else None
+
+    def _row_mark(row) -> float | None:
+        return _mark_price(bid=row["bid_f"], ask=row["ask_f"], last=row["last_f"])
+
+    df["mark"] = df.apply(_row_mark, axis=1)
+
+    # Compute delta (best-effort)
+    deltas: list[float | None] = []
+    for _, row in df.iterrows():
+        sigma = row["iv_f"]
+        strike = _as_float(row.get("strike"))
+        if sigma is None or strike is None or t_years is None or t_years <= 0:
+            deltas.append(None)
+            continue
+        g = black_scholes_greeks(option_type=option_type, s=spot, k=strike, t_years=t_years, sigma=sigma)
+        deltas.append(g.delta if g else None)
+    df["delta"] = deltas
+
+    # Prefer liquid strikes, but fall back if needed.
+    liquid = df
+    if "oi_i" in df.columns and "vol_i" in df.columns:
+        liquid = df[(df["oi_i"].fillna(0) >= min_open_interest) | (df["vol_i"].fillna(0) >= min_volume)]
+        if liquid.empty:
+            liquid = df
+
+    # Choose by delta if available, otherwise by moneyness.
+    if liquid["delta"].notna().any():
+        liquid = liquid[liquid["delta"].notna()]
+        pick = liquid.iloc[(liquid["delta"] - target_delta).abs().argsort()].iloc[0]
+    else:
+        # Fallback: closest strike to spot (ATM)
+        pick = liquid.iloc[(liquid["strike"].astype(float) - spot).abs().argsort()].iloc[0]
+
+    strike = float(pick["strike"])
+    bid = pick["bid_f"]
+    ask = pick["ask_f"]
+    last = pick["last_f"]
+    mark = pick["mark"]
+    iv = pick["iv_f"]
+    oi = pick["oi_i"]
+    vol = pick["vol_i"]
+    delta = pick["delta"] if pick["delta"] is not None and not pd.isna(pick["delta"]) else None
+
+    rationale = [
+        f"Selected strike nearest target delta {target_delta:.2f} (best-effort BS delta)." if delta is not None else "Selected nearest ATM strike (delta unavailable)."
+    ]
+    if oi is not None or vol is not None:
+        rationale.append(f"Liquidity (OI={oi if oi is not None else 'n/a'}, Vol={vol if vol is not None else 'n/a'}).")
+
+    return OptionCandidate(
+        symbol=symbol.upper(),
+        option_type=option_type,
+        expiry=expiry,
+        dte=dte,
+        strike=strike,
+        mark=mark,
+        bid=bid,
+        ask=ask,
+        last=last,
+        iv=iv,
+        delta=delta,
+        open_interest=oi,
+        volume=vol,
+        rationale=rationale,
+    )
+
+
+def build_call_debit_spread(
+    calls_df: pd.DataFrame,
+    *,
+    symbol: str,
+    expiry: date,
+    spot: float,
+    window_pct: float,
+    min_open_interest: int,
+    min_volume: int,
+    long_delta: float = 0.40,
+    short_delta: float = 0.25,
+) -> SpreadCandidate | None:
+    long_leg = select_option_candidate(
+        calls_df,
+        symbol=symbol,
+        option_type="call",
+        expiry=expiry,
+        spot=spot,
+        target_delta=long_delta,
+        window_pct=window_pct,
+        min_open_interest=min_open_interest,
+        min_volume=min_volume,
+    )
+    if long_leg is None:
+        return None
+
+    # Choose a higher strike for the short leg (cap upside, reduce premium).
+    higher = calls_df[calls_df["strike"].astype(float) > long_leg.strike]
+    if higher.empty:
+        return None
+
+    short_leg = select_option_candidate(
+        higher,
+        symbol=symbol,
+        option_type="call",
+        expiry=expiry,
+        spot=spot,
+        target_delta=short_delta,
+        window_pct=window_pct,
+        min_open_interest=min_open_interest,
+        min_volume=min_volume,
+    )
+    if short_leg is None:
+        return None
+
+    debit = None
+    if long_leg.mark is not None and short_leg.mark is not None:
+        debit = long_leg.mark - short_leg.mark
+
+    rationale = [
+        "Call debit spread reduces premium paid vs outright long call.",
+        "Short leg caps upside; suitable when you have a near-term target or want defined risk/reward.",
+    ]
+
+    return SpreadCandidate(
+        symbol=symbol.upper(),
+        expiry=expiry,
+        dte=long_leg.dte,
+        option_type="call",
+        long_leg=long_leg,
+        short_leg=short_leg,
+        debit=debit,
+        rationale=rationale,
+    )
+

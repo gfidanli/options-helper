@@ -11,6 +11,13 @@ from rich.console import Console
 from options_helper.analysis.advice import Advice, PositionMetrics, advise
 from options_helper.analysis.flow import compute_flow, summarize_flow
 from options_helper.analysis.performance import compute_daily_performance_quote
+from options_helper.analysis.research import (
+    Direction,
+    analyze_underlying,
+    build_call_debit_spread,
+    choose_expiry,
+    select_option_candidate,
+)
 from options_helper.analysis.greeks import black_scholes_greeks
 from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, sma
 from options_helper.data.candles import CandleStore, last_close
@@ -19,8 +26,11 @@ from options_helper.data.yf_client import DataFetchError, YFinanceClient, contra
 from options_helper.models import OptionType, Portfolio, Position, RiskProfile
 from options_helper.reporting import render_positions, render_summary
 from options_helper.storage import load_portfolio, save_portfolio, write_template
+from options_helper.watchlists import Watchlists, build_default_watchlists, load_watchlists, save_watchlists
 
 app = typer.Typer(add_completion=False)
+watchlists_app = typer.Typer(help="Manage symbol watchlists.")
+app.add_typer(watchlists_app, name="watchlists")
 
 
 def _parse_date(value: str) -> date:
@@ -496,6 +506,212 @@ def flow_report(
 
 
 @app.command()
+def research(
+    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON (risk profile + candle cache config)."),
+    symbol: str | None = typer.Option(None, "--symbol", help="Run research for a single symbol."),
+    watchlists_path: Path = typer.Option(
+        Path("data/watchlists.json"),
+        "--watchlists-path",
+        help="Path to watchlists JSON store.",
+    ),
+    watchlist: str = typer.Option(
+        "watchlist",
+        "--watchlist",
+        help="Watchlist name to research (ignored when --symbol is provided).",
+    ),
+    candle_cache_dir: Path = typer.Option(
+        Path("data/candles"),
+        "--candle-cache-dir",
+        help="Directory for cached daily candles.",
+    ),
+    period: str = typer.Option(
+        "5y",
+        "--period",
+        help="Daily candle period to ensure cached for research (yfinance period format).",
+    ),
+    window_pct: float = typer.Option(
+        0.30,
+        "--window-pct",
+        min=0.0,
+        max=2.0,
+        help="Strike window around spot for option selection (e.g. 0.30 = +/-30%).",
+    ),
+    short_min_dte: int = typer.Option(30, "--short-min-dte"),
+    short_max_dte: int = typer.Option(90, "--short-max-dte"),
+    long_min_dte: int = typer.Option(365, "--long-min-dte"),
+    long_max_dte: int = typer.Option(1500, "--long-max-dte"),
+) -> None:
+    """Recommend short-dated (30-90d) and long-dated (LEAPS) contracts based on technicals."""
+    portfolio = load_portfolio(portfolio_path)
+    rp = portfolio.risk_profile
+
+    if symbol:
+        symbols = [symbol.strip().upper()]
+    else:
+        wl = load_watchlists(watchlists_path)
+        symbols = wl.get(watchlist)
+        if not symbols:
+            raise typer.BadParameter(f"Watchlist '{watchlist}' is empty or missing in {watchlists_path}")
+
+    candle_store = CandleStore(candle_cache_dir)
+    client = YFinanceClient()
+    console = Console()
+
+    from rich.table import Table
+
+    for sym in symbols:
+        history = candle_store.get_daily_history(sym, period=period)
+        setup = analyze_underlying(sym, history=history, risk_profile=rp)
+
+        console.print(f"\n[bold]{sym}[/bold] — setup: {setup.direction.value}")
+        for r in setup.reasons:
+            console.print(f"  - {r}")
+
+        if setup.spot is None:
+            console.print("  - No spot price; skipping option selection.")
+            continue
+
+        expiry_strs = list(client.ticker(sym).options or [])
+        if not expiry_strs:
+            console.print("  - No listed option expirations found.")
+            continue
+
+        short_exp = choose_expiry(
+            expiry_strs, min_dte=short_min_dte, max_dte=short_max_dte, target_dte=60
+        )
+        long_exp = choose_expiry(
+            expiry_strs, min_dte=long_min_dte, max_dte=long_max_dte, target_dte=540
+        )
+        if long_exp is None:
+            # Fallback: pick the farthest expiry that still qualifies as "long".
+            parsed = []
+            for s in expiry_strs:
+                try:
+                    exp = date.fromisoformat(s)
+                except ValueError:
+                    continue
+                dte = (exp - date.today()).days
+                parsed.append((dte, exp))
+            parsed = [t for t in parsed if t[0] >= long_min_dte]
+            if parsed:
+                _, long_exp = max(parsed, key=lambda t: t[0])
+
+        if setup.direction == Direction.NEUTRAL:
+            console.print("  - No strong directional setup; skipping contract recommendations.")
+            continue
+
+        opt_type: OptionType = "call" if setup.direction == Direction.BULLISH else "put"
+        min_oi = rp.min_open_interest
+        min_vol = rp.min_volume
+
+        table = Table(title=f"{sym} option ideas (best-effort)")
+        table.add_column("Horizon")
+        table.add_column("Expiry")
+        table.add_column("DTE", justify="right")
+        table.add_column("Type")
+        table.add_column("Strike", justify="right")
+        table.add_column("Mark", justify="right")
+        table.add_column("Δ", justify="right")
+        table.add_column("IV", justify="right")
+        table.add_column("OI", justify="right")
+        table.add_column("Vol", justify="right")
+        table.add_column("Why")
+
+        if short_exp is not None:
+            chain = client.get_options_chain(sym, short_exp)
+            df = chain.calls if opt_type == "call" else chain.puts
+            target_delta = 0.40 if opt_type == "call" else -0.40
+            short_pick = select_option_candidate(
+                df,
+                symbol=sym,
+                option_type=opt_type,
+                expiry=short_exp,
+                spot=setup.spot,
+                target_delta=target_delta,
+                window_pct=window_pct,
+                min_open_interest=min_oi,
+                min_volume=min_vol,
+            )
+            if short_pick is not None:
+                why = "; ".join(short_pick.rationale[:2])
+                table.add_row(
+                    "30–90d",
+                    short_pick.expiry.isoformat(),
+                    str(short_pick.dte),
+                    short_pick.option_type,
+                    f"{short_pick.strike:g}",
+                    "-" if short_pick.mark is None else f"${short_pick.mark:.2f}",
+                    "-" if short_pick.delta is None else f"{short_pick.delta:+.2f}",
+                    "-" if short_pick.iv is None else f"{short_pick.iv:.1%}",
+                    "-" if short_pick.open_interest is None else str(short_pick.open_interest),
+                    "-" if short_pick.volume is None else str(short_pick.volume),
+                    why,
+                )
+
+                if opt_type == "call":
+                    spread = build_call_debit_spread(
+                        chain.calls,
+                        symbol=sym,
+                        expiry=short_exp,
+                        spot=setup.spot,
+                        window_pct=window_pct,
+                        min_open_interest=min_oi,
+                        min_volume=min_vol,
+                    )
+                    if spread and spread.debit is not None:
+                        table.add_row(
+                            "30–90d",
+                            spread.expiry.isoformat(),
+                            str(spread.dte),
+                            "call",
+                            f"{spread.long_leg.strike:g}/{spread.short_leg.strike:g}",
+                            f"${spread.debit:.2f}",
+                            "-",
+                            "-",
+                            "-",
+                            "-",
+                            "Call debit spread (lower cost; capped upside).",
+                        )
+        else:
+            console.print(f"  - No expiries found in {short_min_dte}-{short_max_dte} DTE range.")
+
+        if long_exp is not None:
+            chain = client.get_options_chain(sym, long_exp)
+            df = chain.calls if opt_type == "call" else chain.puts
+            target_delta = 0.70 if opt_type == "call" else -0.70
+            long_pick = select_option_candidate(
+                df,
+                symbol=sym,
+                option_type=opt_type,
+                expiry=long_exp,
+                spot=setup.spot,
+                target_delta=target_delta,
+                window_pct=window_pct,
+                min_open_interest=min_oi,
+                min_volume=min_vol,
+            )
+            if long_pick is not None:
+                why = "; ".join(long_pick.rationale[:2] + ["Longer DTE reduces theta pressure."])
+                table.add_row(
+                    "LEAPS",
+                    long_pick.expiry.isoformat(),
+                    str(long_pick.dte),
+                    long_pick.option_type,
+                    f"{long_pick.strike:g}",
+                    "-" if long_pick.mark is None else f"${long_pick.mark:.2f}",
+                    "-" if long_pick.delta is None else f"{long_pick.delta:+.2f}",
+                    "-" if long_pick.iv is None else f"{long_pick.iv:.1%}",
+                    "-" if long_pick.open_interest is None else str(long_pick.open_interest),
+                    "-" if long_pick.volume is None else str(long_pick.volume),
+                    why,
+                )
+        else:
+            console.print(f"  - No expiries found in {long_min_dte}-{long_max_dte} DTE range.")
+
+        console.print(table)
+
+
+@app.command()
 def init(
     portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
     force: bool = typer.Option(False, "--force", help="Overwrite if file exists."),
@@ -540,6 +756,141 @@ def list_positions(
             f"${p.cost_basis:.2f}",
         )
     console.print(table)
+
+
+@watchlists_app.command("init")
+def watchlists_init(
+    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON (used to build 'positions')."),
+    watchlists_path: Path = typer.Option(
+        Path("data/watchlists.json"),
+        "--path",
+        help="Path to watchlists JSON store.",
+    ),
+    force: bool = typer.Option(False, "--force", help="Overwrite existing watchlists file."),
+) -> None:
+    """Create a starter watchlists store with 'positions' and 'watchlist'."""
+    if watchlists_path.exists() and not force:
+        raise typer.BadParameter(f"{watchlists_path} already exists (use --force to overwrite)")
+
+    portfolio = load_portfolio(portfolio_path)
+    wl = build_default_watchlists(portfolio=portfolio, extra_watchlist_symbols=["IREN"])
+    save_watchlists(watchlists_path, wl)
+    Console().print(f"Wrote watchlists to {watchlists_path}")
+
+
+@watchlists_app.command("sync-positions")
+def watchlists_sync_positions(
+    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON (source of symbols)."),
+    watchlists_path: Path = typer.Option(
+        Path("data/watchlists.json"),
+        "--path",
+        help="Path to watchlists JSON store.",
+    ),
+    name: str = typer.Option("positions", "--name", help="Watchlist name to sync."),
+) -> None:
+    """Update a watchlist from the unique symbols in portfolio positions."""
+    portfolio = load_portfolio(portfolio_path)
+    wl = load_watchlists(watchlists_path)
+    wl.set(name, sorted({p.symbol.upper() for p in portfolio.positions}))
+    save_watchlists(watchlists_path, wl)
+    Console().print(f"Synced {name} in {watchlists_path}")
+
+
+@watchlists_app.command("list")
+def watchlists_list(
+    watchlists_path: Path = typer.Option(
+        Path("data/watchlists.json"),
+        "--path",
+        help="Path to watchlists JSON store.",
+    ),
+) -> None:
+    """List available watchlists and their symbols."""
+    wl = load_watchlists(watchlists_path)
+    console = Console()
+
+    if not wl.watchlists:
+        console.print(f"No watchlists in {watchlists_path}")
+        return
+
+    from rich.table import Table
+
+    table = Table(title=f"Watchlists ({watchlists_path})")
+    table.add_column("Name")
+    table.add_column("Symbols")
+    for name in sorted(wl.watchlists.keys()):
+        table.add_row(name, ", ".join(wl.watchlists[name]))
+    console.print(table)
+
+
+@watchlists_app.command("show")
+def watchlists_show(
+    name: str = typer.Argument(..., help="Watchlist name."),
+    watchlists_path: Path = typer.Option(
+        Path("data/watchlists.json"),
+        "--path",
+        help="Path to watchlists JSON store.",
+    ),
+) -> None:
+    """Show a watchlist's symbols."""
+    wl = load_watchlists(watchlists_path)
+    symbols = wl.get(name)
+    Console().print(f"{name}: {', '.join(symbols) if symbols else '(empty)'}")
+
+
+@watchlists_app.command("create")
+def watchlists_create(
+    name: str = typer.Argument(..., help="Watchlist name."),
+    watchlists_path: Path = typer.Option(
+        Path("data/watchlists.json"),
+        "--path",
+        help="Path to watchlists JSON store.",
+    ),
+) -> None:
+    """Create an empty watchlist."""
+    wl = load_watchlists(watchlists_path)
+    if name in wl.watchlists:
+        raise typer.BadParameter(f"Watchlist already exists: {name}")
+    wl.set(name, [])
+    save_watchlists(watchlists_path, wl)
+    Console().print(f"Created {name} in {watchlists_path}")
+
+
+@watchlists_app.command("add")
+def watchlists_add(
+    name: str = typer.Argument(..., help="Watchlist name."),
+    symbol: str = typer.Argument(..., help="Ticker symbol."),
+    watchlists_path: Path = typer.Option(
+        Path("data/watchlists.json"),
+        "--path",
+        help="Path to watchlists JSON store.",
+    ),
+) -> None:
+    """Add a symbol to a watchlist."""
+    wl = load_watchlists(watchlists_path)
+    if name not in wl.watchlists:
+        wl.set(name, [])
+    wl.add(name, symbol)
+    save_watchlists(watchlists_path, wl)
+    Console().print(f"Added {symbol.upper()} to {name}")
+
+
+@watchlists_app.command("remove")
+def watchlists_remove(
+    name: str = typer.Argument(..., help="Watchlist name."),
+    symbol: str = typer.Argument(..., help="Ticker symbol."),
+    watchlists_path: Path = typer.Option(
+        Path("data/watchlists.json"),
+        "--path",
+        help="Path to watchlists JSON store.",
+    ),
+) -> None:
+    """Remove a symbol from a watchlist."""
+    wl = load_watchlists(watchlists_path)
+    if name not in wl.watchlists:
+        raise typer.BadParameter(f"Unknown watchlist: {name}")
+    wl.remove(name, symbol)
+    save_watchlists(watchlists_path, wl)
+    Console().print(f"Removed {symbol.upper()} from {name}")
 
 
 @app.command("add-position")

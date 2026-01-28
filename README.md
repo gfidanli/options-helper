@@ -36,6 +36,18 @@ python3 -m options_helper init portfolio.json
 - Computes RSI + EMA trend state across timeframes and provides rule-based suggestions.
 - Command: `analyze`
 
+### Watchlists
+Maintain multiple named symbol lists for research workflows.
+
+- Commands: `watchlists init`, `watchlists list`, `watchlists show`, `watchlists add`, `watchlists remove`, `watchlists sync-positions`
+- Design/usage: `docs/WATCHLISTS.md`
+
+### Research (option ideas)
+Recommends short-dated (30–90 DTE) and long-dated (LEAPS) contracts to consider, based on multi-timeframe technicals.
+
+- Command: `research`
+- Design/usage: `docs/RESEARCH.md`
+
 ### Candle cache (daily OHLCV)
 `analyze` maintains a local daily OHLCV cache per symbol and resamples it for 3‑day and weekly indicators.
 
