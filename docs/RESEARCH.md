@@ -55,8 +55,14 @@ These levels are meant to help you frame a plan. They are not financial advice.
 ## Output reports (MVP)
 Every `research` run can be saved as a plain text report:
 
-- default location: `data/research/<YYYY-MM-DD>/`
-- default filename: `research-<symbol-or-watchlist>-YYYY-MM-DD_HHMMSS.txt`
+- **Run report (one file per run)**:
+  - location: `data/research/`
+  - filename: `research-<candles_through>-<HH:MM:SS>.txt`
+- **Ticker logs (one file per symbol)**:
+  - location: `data/research/tickers/`
+  - filename: `<SYMBOL>.txt`
+  - newest entry appears at the top
+  - one entry per candle day (re-running the same day overwrites that day)
 
 ### Strike window (efficiency)
 To avoid scanning huge chains, selection is restricted to a strike window around spot:

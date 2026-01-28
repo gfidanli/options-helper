@@ -109,12 +109,15 @@ def test_suggest_trade_levels_breakout_uses_breakout_level() -> None:
 
 def test_research_cli_saves_report_and_omits_spreads(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     today = date.today()
+    candle_day = today - timedelta(days=1)
+    run_dt_1 = __import__("datetime").datetime(today.year, today.month, today.day, 11, 59, 3)
+    run_dt_2 = __import__("datetime").datetime(today.year, today.month, today.day, 12, 0, 0)
     short_exp = today + timedelta(days=60)
     long_exp = today + timedelta(days=540)
     expiry_strs = [short_exp.isoformat(), long_exp.isoformat()]
 
     # 60+ weeks so weekly EMA50 is computable (required by analyze_underlying).
-    idx = pd.date_range(today - timedelta(days=420), periods=300, freq="B")
+    idx = pd.date_range(end=pd.Timestamp(candle_day), periods=300, freq="B")
     close = pd.Series(range(len(idx)), index=idx, dtype="float64") + 100.0
     history = pd.DataFrame({"Close": close, "High": close + 1.0, "Low": close - 1.0})
 
@@ -155,7 +158,20 @@ def test_research_cli_saves_report_and_omits_spreads(tmp_path: Path, monkeypatch
         encoding="utf-8",
     )
 
+    import datetime as _dt
+
+    class _FakeDateTime1(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ARG003
+            return run_dt_1
+
+    class _FakeDateTime2(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ARG003
+            return run_dt_2
+
     runner = CliRunner()
+    monkeypatch.setattr("options_helper.cli.datetime", _FakeDateTime1)
     res = runner.invoke(
         app,
         [
@@ -171,15 +187,39 @@ def test_research_cli_saves_report_and_omits_spreads(tmp_path: Path, monkeypatch
     assert "Saved research report to" in res.output
     assert "spread" not in res.output.lower()
 
-    import re
+    expected_run_path_1 = tmp_path / f"research-{candle_day.isoformat()}-11:59:03.txt"
+    assert expected_run_path_1.exists()
+    assert f"Saved research report to {expected_run_path_1}" in res.output
 
-    match = re.search(r"Saved research report to\s+(.+?\.txt)", res.output, flags=re.S)
-    assert match, res.output
-    saved_path = match.group(1).replace("\n", "").strip()
-    saved = Path(saved_path)
-    assert saved.exists()
-    assert saved.parent == (tmp_path / today.isoformat())
-
-    txt = saved.read_text(encoding="utf-8")
+    txt = expected_run_path_1.read_text(encoding="utf-8")
+    assert f"candles_through: {candle_day.isoformat()}" in txt
     assert "Suggested entry (underlying)" in txt
-    assert "Entry" in txt
+
+    ticker_path = tmp_path / "tickers" / "TEST.txt"
+    assert ticker_path.exists()
+    ticker_txt = ticker_path.read_text(encoding="utf-8")
+    assert f"=== {candle_day.isoformat()} ===" in ticker_txt
+    assert f"run_at: {run_dt_1.strftime('%Y-%m-%d %H:%M:%S')}" in ticker_txt
+
+    # Re-run later in the same day: overwrite that day's ticker entry.
+    monkeypatch.setattr("options_helper.cli.datetime", _FakeDateTime2)
+    res2 = runner.invoke(
+        app,
+        [
+            "research",
+            str(portfolio_path),
+            "--symbol",
+            "TEST",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+    assert res2.exit_code == 0, res2.output
+    assert (tmp_path / f"research-{candle_day.isoformat()}-12:00:00.txt").exists()
+
+    ticker_txt2 = ticker_path.read_text(encoding="utf-8")
+    assert ticker_txt2.count(f"=== {candle_day.isoformat()} ===") == 1
+    assert f"run_at: {run_dt_2.strftime('%Y-%m-%d %H:%M:%S')}" in ticker_txt2
+    assert f"run_at: {run_dt_1.strftime('%Y-%m-%d %H:%M:%S')}" not in ticker_txt2
+
+    assert "Entry" in ticker_txt2

@@ -567,19 +567,35 @@ def research(
 
     report_buffer = None
     report_console = None
+    symbol_outputs: dict[str, str] = {}
+    symbol_candle_dates: dict[str, date] = {}
     if save:
         import io
 
         report_buffer = io.StringIO()
         report_console = Console(file=report_buffer, width=200, force_terminal=False)
 
+    symbol_console: Console | None = None
+
     def emit(*args, **kwargs) -> None:  # type: ignore[no-untyped-def]
         console.print(*args, **kwargs)
         if report_console is not None:
             report_console.print(*args, **kwargs)
+        if symbol_console is not None:
+            symbol_console.print(*args, **kwargs)
 
     for sym in symbols:
+        symbol_buffer = None
+        symbol_console = None
+        if save:
+            import io
+
+            symbol_buffer = io.StringIO()
+            symbol_console = Console(file=symbol_buffer, width=200, force_terminal=False)
+
         history = candle_store.get_daily_history(sym, period=period)
+        if not history.empty:
+            symbol_candle_dates[sym] = history.index.max().date()
         setup = analyze_underlying(sym, history=history, risk_profile=rp)
 
         emit(f"\n[bold]{sym}[/bold] — setup: {setup.direction.value}")
@@ -714,15 +730,59 @@ def research(
 
         emit(table)
 
+        if symbol_buffer is not None:
+            symbol_outputs[sym] = symbol_buffer.getvalue().lstrip()
+
+    def _render_ticker_entry(*, sym: str, candle_day: date, run_dt: datetime, body: str) -> str:
+        run_ts = run_dt.strftime("%Y-%m-%d %H:%M:%S")
+        header = f"=== {candle_day.isoformat()} ===\nrun_at: {run_ts}\ncandles_through: {candle_day.isoformat()}\n"
+        return f"{header}\n{body.strip()}\n"
+
+    def _parse_ticker_entries(text: str) -> dict[str, str]:
+        import re
+
+        pattern = re.compile(r"^=== (\\d{4}-\\d{2}-\\d{2}) ===$", re.M)
+        matches = list(pattern.finditer(text))
+        if not matches:
+            return {}
+
+        entries: dict[str, str] = {}
+        for idx, match in enumerate(matches):
+            day = match.group(1)
+            start = match.start()
+            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+            entries[day] = text[start:end].strip()
+        return entries
+
+    def _upsert_ticker_entry(*, path: Path, candle_day: date, new_entry: str) -> None:
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        entries = _parse_ticker_entries(existing)
+        entries[candle_day.isoformat()] = new_entry.strip()
+        ordered_days = sorted(entries.keys(), reverse=True)
+        out = "\n\n".join(entries[d] for d in ordered_days).rstrip() + "\n"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(out, encoding="utf-8")
+
     if save and report_buffer is not None:
-        target = symbols[0] if symbol else watchlist
         run_dt = datetime.now()
-        day_dir = output_dir / run_dt.date().isoformat()
-        day_dir.mkdir(parents=True, exist_ok=True)
-        run_stamp = run_dt.strftime("%Y-%m-%d_%H%M%S")
-        out_path = day_dir / f"research-{target}-{run_stamp}.txt"
-        out_path.write_text(report_buffer.getvalue(), encoding="utf-8")
-        # soft_wrap avoids breaking long paths across multiple lines.
+        candle_day = max(symbol_candle_dates.values()) if symbol_candle_dates else run_dt.date()
+        run_time = run_dt.strftime("%H:%M:%S")
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        out_path = output_dir / f"research-{candle_day.isoformat()}-{run_time}.txt"
+        header = (
+            f"run_at: {run_dt.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"candles_through: {candle_day.isoformat()}\n"
+            f"symbols: {', '.join(symbols)}\n\n"
+        )
+        out_path.write_text(header + report_buffer.getvalue().lstrip(), encoding="utf-8")
+
+        tickers_dir = output_dir / "tickers"
+        for sym, body in symbol_outputs.items():
+            sym_day = symbol_candle_dates.get(sym) or candle_day
+            entry = _render_ticker_entry(sym=sym, candle_day=sym_day, run_dt=run_dt, body=body)
+            _upsert_ticker_entry(path=tickers_dir / f"{sym}.txt", candle_day=sym_day, new_entry=entry)
+
         console.print(f"\nSaved research report to {out_path}", soft_wrap=True)
 
 
