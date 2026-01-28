@@ -195,6 +195,7 @@ def test_research_cli_saves_report_and_omits_spreads(tmp_path: Path, monkeypatch
     txt = expected_run_path_1.read_text(encoding="utf-8")
     assert f"candles_through: {candle_day.isoformat()} 00:00:00" in txt
     assert "Suggested entry (underlying)" in txt
+    assert "(+0.00%)" in txt
 
     ticker_path = tmp_path / "tickers" / "TEST.txt"
     assert ticker_path.exists()

@@ -610,23 +610,20 @@ def research(
             emit("  - No spot price; skipping option selection.")
             continue
 
-        entry_change_pct = None
-        try:
-            close_series = history["Close"].dropna()
-            if len(close_series) >= 2:
-                prev_close = float(close_series.iloc[-2])
-                last_close_val = float(close_series.iloc[-1])
-                if prev_close:
-                    entry_change_pct = (last_close_val / prev_close - 1.0) * 100.0
-        except Exception:  # noqa: BLE001
-            entry_change_pct = None
-
         levels = suggest_trade_levels(setup, history=history, risk_profile=rp)
         if levels.entry is not None:
-            if entry_change_pct is None:
+            # Percent change relative to the latest close (setup.spot).
+            pct_from_close = None
+            try:
+                if setup.spot:
+                    pct_from_close = (float(levels.entry) / float(setup.spot) - 1.0) * 100.0
+            except Exception:  # noqa: BLE001
+                pct_from_close = None
+
+            if pct_from_close is None:
                 emit(f"  - Suggested entry (underlying): ${levels.entry:.2f}")
             else:
-                emit(f"  - Suggested entry (underlying): ${levels.entry:.2f} ({entry_change_pct:+.2f}%)")
+                emit(f"  - Suggested entry (underlying): ${levels.entry:.2f} ({pct_from_close:+.2f}%)")
         if levels.pullback_entry is not None:
             emit(f"  - Pullback entry (underlying): ${levels.pullback_entry:.2f}")
         if levels.stop is not None:
