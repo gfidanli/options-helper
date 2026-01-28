@@ -56,13 +56,15 @@ def _normalize_history(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
     out = df.copy()
-    if not isinstance(out.index, pd.DatetimeIndex):
-        # CSV caches may store tz offsets (e.g. "...-05:00") which can be fragile across pandas versions.
-        idx = pd.to_datetime(out.index, errors="coerce", utc=True)
+    # Normalize index to a timezone-naive DatetimeIndex to avoid mixed-tz concat issues.
+    idx = pd.to_datetime(out.index, errors="coerce", utc=True)
+    if isinstance(idx, pd.DatetimeIndex):
         if idx.isna().all():
             raise CandleCacheError("Unable to normalize candle index to datetime")
-        out.index = idx
-        out = out[~out.index.isna()]
+        out = out.loc[~idx.isna()].copy()
+        out.index = idx[~idx.isna()].tz_localize(None)
+    else:
+        raise CandleCacheError("Unable to normalize candle index to datetime")
     out = out[~out.index.duplicated(keep="last")].sort_index()
     return out
 

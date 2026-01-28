@@ -91,3 +91,21 @@ def test_backfill_earlier_history_when_period_expands(tmp_path) -> None:
     assert end == cached_start
     assert out.index.min().date() == start
 
+
+def test_load_normalizes_mixed_tz_index(tmp_path) -> None:
+    # Simulate a cached CSV with mixed tz offsets in the index.
+    path = tmp_path / "UROY.csv"
+    path.write_text(
+        "Date,Open,High,Low,Close,Volume\n"
+        "2026-01-01 00:00:00-05:00,1,1,1,1,1\n"
+        "2026-01-02 00:00:00+00:00,2,2,2,2,2\n",
+        encoding="utf-8",
+    )
+
+    store = CandleStore(tmp_path, backfill_days=0)
+    df = store.load("UROY")
+    assert isinstance(df.index, pd.DatetimeIndex)
+    # Should be tz-naive after normalization.
+    assert df.index.tz is None
+    # Resampling should work.
+    _ = df["Close"].resample("W-FRI").last()
