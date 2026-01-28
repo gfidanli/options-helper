@@ -42,6 +42,22 @@ The tool chooses:
   - calls: ~`+0.70` (more stock-like, lower theta pressure)
   - puts:  ~`-0.70`
 
+## Trade levels (MVP)
+For directional setups, the tool prints **suggested underlying entry and stop levels** (best-effort):
+
+- **Entry**: current spot (latest close in the candle cache)
+- **Stop**: a simple “technical invalidation” level, based on:
+  - weekly breakout level (when a weekly breakout is detected), or
+  - weekly/daily EMA support + recent swing levels (depending on risk tolerance)
+
+These levels are meant to help you frame a plan. They are not financial advice.
+
+## Output reports (MVP)
+Every `research` run can be saved as a plain text report:
+
+- default location: `data/research/`
+- default filename: `research-<symbol-or-watchlist>-YYYY-MM-DD.txt`
+
 ### Strike window (efficiency)
 To avoid scanning huge chains, selection is restricted to a strike window around spot:
 - default: `--window-pct 0.30` (±30% around spot)
@@ -51,11 +67,6 @@ Preference is given to strikes with:
 - open interest ≥ `min_open_interest` OR volume ≥ `min_volume`
 
 If nothing passes the filter, it falls back to the best strike by delta/ATM.
-
-### Optional idea: Call debit spread
-For bullish setups, the tool also attempts a **call debit spread** on the short-dated expiry:
-- buy ~0.40 delta call
-- sell a higher strike ~0.25 delta call
 
 ## CLI usage
 Run research on your default watchlist named `watchlist`:
@@ -70,8 +81,17 @@ Run research for a single ticker:
 options-helper research portfolio.json --symbol IREN
 ```
 
+Disable saving the report:
+
+```bash
+options-helper research portfolio.json --symbol IREN --no-save
+```
+
 ## Notes / limitations
 - Uses Black–Scholes to estimate delta from `impliedVolatility` (best-effort).
 - Yahoo options data can be stale/incomplete, especially on illiquid chains.
 - This does not consider your total capital/risk limits in the recommendation (by request).
 
+## Future improvements (not in MVP yet)
+- Multi-leg strategies (debit spreads, calendars, diagonals, etc.).
+- Entry/stop logic that uses explicit support/resistance detection, ATR-based stops, and multi-timeframe confirmation.

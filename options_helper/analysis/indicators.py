@@ -88,7 +88,9 @@ def stoch_rsi(
 
     rsi_min = rsi_series.rolling(window=stoch_window).min()
     rsi_max = rsi_series.rolling(window=stoch_window).max()
-    denom = (rsi_max - rsi_min).replace(0.0, pd.NA)
+    denom = (rsi_max - rsi_min)
+    # Avoid pandas dtype=object by using NaN (not pd.NA) for zero ranges.
+    denom = denom.where(denom != 0.0)
     stoch = (rsi_series - rsi_min) / denom
     stoch_k = stoch.rolling(window=smooth_k).mean()
     val = stoch_k.iloc[-1]

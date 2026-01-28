@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from pathlib import Path
 
 import pandas as pd
+from typer.testing import CliRunner
 
-from options_helper.analysis.research import choose_expiry, select_option_candidate
+from options_helper.analysis.research import (
+    Direction,
+    UnderlyingSetup,
+    choose_expiry,
+    select_option_candidate,
+    suggest_trade_levels,
+)
+from options_helper.cli import app
+from options_helper.data.yf_client import OptionsChain
+from options_helper.models import RiskProfile
 
 
 def test_choose_expiry_picks_closest_to_target() -> None:
@@ -62,3 +73,106 @@ def test_select_option_candidate_prefers_target_delta() -> None:
     assert otm is not None
     assert otm.strike in {100.0, 110.0}
 
+
+def test_suggest_trade_levels_breakout_uses_breakout_level() -> None:
+    # 60 weeks of steadily rising closes -> breakout on the latest week.
+    idx = pd.date_range("2024-01-01", periods=300, freq="B")
+    close = pd.Series(range(len(idx)), index=idx, dtype="float64") + 100.0
+    history = pd.DataFrame(
+        {
+            "Close": close,
+            "High": close + 1.0,
+            "Low": close - 1.0,
+        }
+    )
+
+    setup = UnderlyingSetup(
+        symbol="TEST",
+        spot=float(close.iloc[-1]),
+        direction=Direction.BULLISH,
+        reasons=[],
+        daily_rsi=None,
+        daily_stoch_rsi=None,
+        weekly_rsi=None,
+        weekly_breakout=True,
+    )
+    rp = RiskProfile(tolerance="high", support_proximity_pct=0.03, breakout_lookback_weeks=20)
+    levels = suggest_trade_levels(setup, history=history, risk_profile=rp)
+
+    close_w = close.resample("W-FRI").last().dropna()
+    expected_breakout_level = float(close_w.iloc[-21:-1].max())
+    assert levels.entry == setup.spot
+    assert levels.pullback_entry == expected_breakout_level
+    assert levels.stop is not None
+    assert abs(levels.stop - expected_breakout_level * (1.0 - rp.support_proximity_pct)) < 1e-6
+
+
+def test_research_cli_saves_report_and_omits_spreads(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    today = date.today()
+    short_exp = today + timedelta(days=60)
+    long_exp = today + timedelta(days=540)
+    expiry_strs = [short_exp.isoformat(), long_exp.isoformat()]
+
+    # 60+ weeks so weekly EMA50 is computable (required by analyze_underlying).
+    idx = pd.date_range(today - timedelta(days=420), periods=300, freq="B")
+    close = pd.Series(range(len(idx)), index=idx, dtype="float64") + 100.0
+    history = pd.DataFrame({"Close": close, "High": close + 1.0, "Low": close - 1.0})
+
+    calls = pd.DataFrame(
+        {
+            "strike": [95.0, 100.0, 105.0],
+            "bid": [8.0, 5.0, 3.0],
+            "ask": [9.0, 6.0, 3.5],
+            "lastPrice": [8.5, 5.5, 3.25],
+            "impliedVolatility": [0.25, 0.25, 0.25],
+            "openInterest": [500, 500, 500],
+            "volume": [50, 50, 50],
+        }
+    )
+    puts = calls.copy()
+
+    class _StubTicker:
+        def __init__(self) -> None:
+            self.options = expiry_strs
+
+    class _StubClient:
+        def ticker(self, symbol: str) -> _StubTicker:  # noqa: ARG002
+            return _StubTicker()
+
+        def get_options_chain(self, symbol: str, expiry: date) -> OptionsChain:  # noqa: ARG002
+            return OptionsChain(symbol="TEST", expiry=expiry, calls=calls, puts=puts)
+
+    monkeypatch.setattr("options_helper.cli.YFinanceClient", _StubClient)
+
+    def _stub_history(self, symbol: str, *, period: str = "5y"):  # noqa: ARG001
+        return history
+
+    monkeypatch.setattr("options_helper.cli.CandleStore.get_daily_history", _stub_history)
+
+    portfolio_path = tmp_path / "portfolio.json"
+    portfolio_path.write_text(
+        '{"cash": 0, "risk_profile": {"tolerance": "high", "max_portfolio_risk_pct": null, "max_single_position_risk_pct": null}}',
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "research",
+            str(portfolio_path),
+            "--symbol",
+            "TEST",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    assert "Saved research report to" in res.output
+    assert "spread" not in res.output.lower()
+
+    saved = tmp_path / f"research-TEST-{today.isoformat()}.txt"
+    assert saved.exists()
+    txt = saved.read_text(encoding="utf-8")
+    assert "Suggested entry (underlying)" in txt
+    assert "Entry" in txt

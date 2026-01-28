@@ -14,9 +14,9 @@ from options_helper.analysis.performance import compute_daily_performance_quote
 from options_helper.analysis.research import (
     Direction,
     analyze_underlying,
-    build_call_debit_spread,
     choose_expiry,
     select_option_candidate,
+    suggest_trade_levels,
 )
 from options_helper.analysis.greeks import black_scholes_greeks
 from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, sma
@@ -540,6 +540,12 @@ def research(
     short_max_dte: int = typer.Option(90, "--short-max-dte"),
     long_min_dte: int = typer.Option(365, "--long-min-dte"),
     long_max_dte: int = typer.Option(1500, "--long-max-dte"),
+    save: bool = typer.Option(True, "--save/--no-save", help="Save the research output to a .txt report."),
+    output_dir: Path = typer.Option(
+        Path("data/research"),
+        "--output-dir",
+        help="Directory for saved research reports (ignored when --no-save).",
+    ),
 ) -> None:
     """Recommend short-dated (30-90d) and long-dated (LEAPS) contracts based on technicals."""
     portfolio = load_portfolio(portfolio_path)
@@ -559,21 +565,44 @@ def research(
 
     from rich.table import Table
 
+    report_buffer = None
+    report_console = None
+    if save:
+        import io
+
+        report_buffer = io.StringIO()
+        report_console = Console(file=report_buffer, width=200, force_terminal=False)
+
+    def emit(*args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        console.print(*args, **kwargs)
+        if report_console is not None:
+            report_console.print(*args, **kwargs)
+
     for sym in symbols:
         history = candle_store.get_daily_history(sym, period=period)
         setup = analyze_underlying(sym, history=history, risk_profile=rp)
 
-        console.print(f"\n[bold]{sym}[/bold] — setup: {setup.direction.value}")
+        emit(f"\n[bold]{sym}[/bold] — setup: {setup.direction.value}")
         for r in setup.reasons:
-            console.print(f"  - {r}")
+            emit(f"  - {r}")
 
         if setup.spot is None:
-            console.print("  - No spot price; skipping option selection.")
+            emit("  - No spot price; skipping option selection.")
             continue
+
+        levels = suggest_trade_levels(setup, history=history, risk_profile=rp)
+        if levels.entry is not None:
+            emit(f"  - Suggested entry (underlying): ${levels.entry:.2f}")
+        if levels.pullback_entry is not None:
+            emit(f"  - Pullback entry (underlying): ${levels.pullback_entry:.2f}")
+        if levels.stop is not None:
+            emit(f"  - Suggested stop (underlying): ${levels.stop:.2f}")
+        for note in levels.notes:
+            emit(f"    - {note}")
 
         expiry_strs = list(client.ticker(sym).options or [])
         if not expiry_strs:
-            console.print("  - No listed option expirations found.")
+            emit("  - No listed option expirations found.")
             continue
 
         short_exp = choose_expiry(
@@ -597,7 +626,7 @@ def research(
                 _, long_exp = max(parsed, key=lambda t: t[0])
 
         if setup.direction == Direction.NEUTRAL:
-            console.print("  - No strong directional setup; skipping contract recommendations.")
+            emit("  - No strong directional setup; skipping contract recommendations.")
             continue
 
         opt_type: OptionType = "call" if setup.direction == Direction.BULLISH else "put"
@@ -610,7 +639,7 @@ def research(
         table.add_column("DTE", justify="right")
         table.add_column("Type")
         table.add_column("Strike", justify="right")
-        table.add_column("Mark", justify="right")
+        table.add_column("Entry", justify="right")
         table.add_column("Δ", justify="right")
         table.add_column("IV", justify="right")
         table.add_column("OI", justify="right")
@@ -647,33 +676,8 @@ def research(
                     "-" if short_pick.volume is None else str(short_pick.volume),
                     why,
                 )
-
-                if opt_type == "call":
-                    spread = build_call_debit_spread(
-                        chain.calls,
-                        symbol=sym,
-                        expiry=short_exp,
-                        spot=setup.spot,
-                        window_pct=window_pct,
-                        min_open_interest=min_oi,
-                        min_volume=min_vol,
-                    )
-                    if spread and spread.debit is not None:
-                        table.add_row(
-                            "30–90d",
-                            spread.expiry.isoformat(),
-                            str(spread.dte),
-                            "call",
-                            f"{spread.long_leg.strike:g}/{spread.short_leg.strike:g}",
-                            f"${spread.debit:.2f}",
-                            "-",
-                            "-",
-                            "-",
-                            "-",
-                            "Call debit spread (lower cost; capped upside).",
-                        )
         else:
-            console.print(f"  - No expiries found in {short_min_dte}-{short_max_dte} DTE range.")
+            emit(f"  - No expiries found in {short_min_dte}-{short_max_dte} DTE range.")
 
         if long_exp is not None:
             chain = client.get_options_chain(sym, long_exp)
@@ -706,9 +710,16 @@ def research(
                     why,
                 )
         else:
-            console.print(f"  - No expiries found in {long_min_dte}-{long_max_dte} DTE range.")
+            emit(f"  - No expiries found in {long_min_dte}-{long_max_dte} DTE range.")
 
-        console.print(table)
+        emit(table)
+
+    if save and report_buffer is not None:
+        target = symbols[0] if symbol else watchlist
+        output_dir.mkdir(parents=True, exist_ok=True)
+        out_path = output_dir / f"research-{target}-{date.today().isoformat()}.txt"
+        out_path.write_text(report_buffer.getvalue(), encoding="utf-8")
+        console.print(f"\nSaved research report to {out_path}")
 
 
 @app.command()

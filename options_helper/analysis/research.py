@@ -59,6 +59,14 @@ class SpreadCandidate:
     rationale: list[str]
 
 
+@dataclass(frozen=True)
+class TradeLevels:
+    entry: float | None
+    pullback_entry: float | None
+    stop: float | None
+    notes: list[str]
+
+
 def _mark_price(*, bid: float | None, ask: float | None, last: float | None) -> float | None:
     if bid is not None and ask is not None and bid > 0 and ask > 0:
         return (bid + ask) / 2.0
@@ -222,6 +230,140 @@ def analyze_underlying(
         weekly_rsi=rsi_w,
         weekly_breakout=breakout_w,
     )
+
+
+def _breakout_up_level(close: pd.Series, lookback: int) -> float | None:
+    if lookback <= 1 or close.empty or len(close) < lookback + 1:
+        return None
+    return float(close.iloc[-(lookback + 1) : -1].max())
+
+
+def _breakout_down_level(close: pd.Series, lookback: int) -> float | None:
+    if lookback <= 1 or close.empty or len(close) < lookback + 1:
+        return None
+    return float(close.iloc[-(lookback + 1) : -1].min())
+
+
+def suggest_trade_levels(
+    setup: UnderlyingSetup,
+    *,
+    history: pd.DataFrame,
+    risk_profile: RiskProfile,
+    swing_lookback_days: int = 20,
+) -> TradeLevels:
+    """
+    Best-effort entry/stop levels on the underlying (not the option premium).
+
+    This is intentionally simple for the MVP; we can iterate into ATR-based stops and explicit S/R later.
+    """
+    if setup.spot is None or history is None or history.empty:
+        return TradeLevels(entry=None, pullback_entry=None, stop=None, notes=["No candle history available."])
+
+    entry = float(setup.spot)
+    buffer_pct = float(risk_profile.support_proximity_pct)
+    lookback_weeks = int(risk_profile.breakout_lookback_weeks)
+    notes: list[str] = []
+
+    close = history.get("Close")
+    if close is None:
+        return TradeLevels(entry=entry, pullback_entry=None, stop=None, notes=["No close prices available."])
+    close = close.dropna()
+    if close.empty:
+        return TradeLevels(entry=entry, pullback_entry=None, stop=None, notes=["No close prices available."])
+
+    low = history.get("Low", close).dropna()
+    high = history.get("High", close).dropna()
+
+    ema20_d = ema(close, 20)
+    ema50_d = ema(close, 50)
+
+    close_w = close.resample("W-FRI").last().dropna()
+    ema20_w = ema(close_w, 20) if not close_w.empty else None
+    ema50_w = ema(close_w, 50) if not close_w.empty else None
+
+    swing_low = None
+    swing_high = None
+    if not low.empty:
+        swing_low = float(low.iloc[-swing_lookback_days:].min())
+    if not high.empty:
+        swing_high = float(high.iloc[-swing_lookback_days:].max())
+
+    pullback_entry: float | None = None
+    stop: float | None = None
+
+    if setup.direction == Direction.BULLISH:
+        breakout_level = _breakout_up_level(close_w, lookback_weeks)
+        breakout_now = breakout_up(close_w, lookback_weeks) is True
+
+        if breakout_now and breakout_level is not None:
+            pullback_entry = breakout_level
+            stop = breakout_level * (1.0 - buffer_pct)
+            notes.append(f"Stop below weekly breakout level (~{breakout_level:.2f}) with {buffer_pct:.0%} buffer.")
+        else:
+            pullback_entry = ema20_d or ema20_w
+
+            supports: list[tuple[str, float]] = []
+            for label, value in (
+                ("weekly EMA50", ema50_w),
+                ("weekly EMA20", ema20_w),
+                ("daily EMA50", ema50_d),
+                ("daily EMA20", ema20_d),
+                (f"{swing_lookback_days}d swing low", swing_low),
+            ):
+                if value is None:
+                    continue
+                supports.append((label, float(value)))
+
+            below = [(label, value) for label, value in supports if value < entry]
+            candidates = below if below else supports
+
+            if candidates:
+                if risk_profile.tolerance == "high":
+                    stop_label, stop_base = min(candidates, key=lambda t: t[1])
+                elif risk_profile.tolerance == "low":
+                    stop_label, stop_base = max(candidates, key=lambda t: t[1])
+                else:
+                    stop_label, stop_base = max(candidates, key=lambda t: t[1])
+                stop = stop_base * (1.0 - buffer_pct)
+                notes.append(f"Stop below {stop_label} (~{stop_base:.2f}) with {buffer_pct:.0%} buffer.")
+
+    elif setup.direction == Direction.BEARISH:
+        breakdown_level = _breakout_down_level(close_w, lookback_weeks)
+        breakdown_now = breakout_down(close_w, lookback_weeks) is True
+
+        if breakdown_now and breakdown_level is not None:
+            pullback_entry = breakdown_level
+            stop = breakdown_level * (1.0 + buffer_pct)
+            notes.append(f"Stop above weekly breakdown level (~{breakdown_level:.2f}) with {buffer_pct:.0%} buffer.")
+        else:
+            pullback_entry = ema20_d or ema20_w
+
+            resistances: list[tuple[str, float]] = []
+            for label, value in (
+                ("weekly EMA50", ema50_w),
+                ("weekly EMA20", ema20_w),
+                ("daily EMA50", ema50_d),
+                ("daily EMA20", ema20_d),
+                (f"{swing_lookback_days}d swing high", swing_high),
+            ):
+                if value is None:
+                    continue
+                resistances.append((label, float(value)))
+
+            above = [(label, value) for label, value in resistances if value > entry]
+            candidates = above if above else resistances
+
+            if candidates:
+                if risk_profile.tolerance == "high":
+                    stop_label, stop_base = max(candidates, key=lambda t: t[1])
+                elif risk_profile.tolerance == "low":
+                    stop_label, stop_base = min(candidates, key=lambda t: t[1])
+                else:
+                    stop_label, stop_base = min(candidates, key=lambda t: t[1])
+                stop = stop_base * (1.0 + buffer_pct)
+                notes.append(f"Stop above {stop_label} (~{stop_base:.2f}) with {buffer_pct:.0%} buffer.")
+
+    return TradeLevels(entry=entry, pullback_entry=pullback_entry, stop=stop, notes=notes)
 
 
 def _filter_strike_window(df: pd.DataFrame, *, spot: float, window_pct: float) -> pd.DataFrame:
@@ -394,4 +536,3 @@ def build_call_debit_spread(
         debit=debit,
         rationale=rationale,
     )
-
