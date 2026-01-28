@@ -9,10 +9,12 @@ import typer
 from rich.console import Console
 
 from options_helper.analysis.advice import Advice, PositionMetrics, advise
+from options_helper.analysis.flow import compute_flow, summarize_flow
 from options_helper.analysis.performance import compute_daily_performance_quote
 from options_helper.analysis.greeks import black_scholes_greeks
 from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, sma
 from options_helper.data.candles import CandleStore, last_close
+from options_helper.data.options_snapshots import OptionsSnapshotStore
 from options_helper.data.yf_client import DataFetchError, YFinanceClient, contract_row_by_strike
 from options_helper.models import OptionType, Portfolio, Position, RiskProfile
 from options_helper.reporting import render_positions, render_summary
@@ -297,6 +299,200 @@ def daily_performance(
     total_str = f"{total_daily_pnl:+.2f}"
     pct_str = "-" if total_pct is None else f"{total_pct:+.2%}"
     console.print(f"\nTotal daily PnL: ${total_str} ({pct_str})")
+
+
+@app.command("snapshot-options")
+def snapshot_options(
+    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
+    cache_dir: Path = typer.Option(
+        Path("data/options_snapshots"),
+        "--cache-dir",
+        help="Directory for options chain snapshots.",
+    ),
+    candle_cache_dir: Path = typer.Option(
+        Path("data/candles"),
+        "--candle-cache-dir",
+        help="Directory for cached daily candles (used to estimate spot).",
+    ),
+    window_pct: float = typer.Option(
+        0.30,
+        "--window-pct",
+        min=0.0,
+        max=2.0,
+        help="Strike window around spot (e.g. 0.30 = +/-30%).",
+    ),
+    spot_period: str = typer.Option(
+        "10d",
+        "--spot-period",
+        help="Candle period used to estimate spot price from daily candles.",
+    ),
+) -> None:
+    """Save a once-daily options chain snapshot (windowed around spot) for flow analysis."""
+    portfolio = load_portfolio(portfolio_path)
+    console = Console()
+
+    if not portfolio.positions:
+        console.print("No positions.")
+        raise typer.Exit(0)
+
+    store = OptionsSnapshotStore(cache_dir)
+    candle_store = CandleStore(candle_cache_dir)
+    client = YFinanceClient()
+
+    expiries_by_symbol: dict[str, set[date]] = {}
+    for p in portfolio.positions:
+        expiries_by_symbol.setdefault(p.symbol, set()).add(p.expiry)
+
+    snapshot_date = date.today()
+
+    console.print(
+        f"Snapshotting options chains for {len(expiries_by_symbol)} symbol(s) on {snapshot_date.isoformat()}..."
+    )
+
+    for symbol, expiries in sorted(expiries_by_symbol.items()):
+        history = candle_store.get_daily_history(symbol, period=spot_period)
+        spot = last_close(history)
+        if spot is None:
+            try:
+                spot = client.get_underlying(symbol, period=spot_period, interval="1d").last_price
+            except DataFetchError:
+                spot = None
+
+        if spot is None or spot <= 0:
+            console.print(f"[yellow]Warning:[/yellow] {symbol}: missing spot price; skipping snapshot.")
+            continue
+
+        strike_min = spot * (1.0 - window_pct)
+        strike_max = spot * (1.0 + window_pct)
+
+        meta = {
+            "spot": spot,
+            "window_pct": window_pct,
+            "strike_min": strike_min,
+            "strike_max": strike_max,
+            "snapshot_date": snapshot_date.isoformat(),
+        }
+
+        for exp in sorted(expiries):
+            chain = client.get_options_chain(symbol, exp)
+            calls = chain.calls.copy()
+            puts = chain.puts.copy()
+            calls["optionType"] = "call"
+            puts["optionType"] = "put"
+            calls["expiry"] = exp.isoformat()
+            puts["expiry"] = exp.isoformat()
+
+            df = pd.concat([calls, puts], ignore_index=True)
+            if "strike" in df.columns:
+                df = df[(df["strike"] >= strike_min) & (df["strike"] <= strike_max)]
+
+            keep = [
+                "contractSymbol",
+                "optionType",
+                "expiry",
+                "strike",
+                "lastPrice",
+                "bid",
+                "ask",
+                "change",
+                "percentChange",
+                "volume",
+                "openInterest",
+                "impliedVolatility",
+                "inTheMoney",
+            ]
+            keep = [c for c in keep if c in df.columns]
+            df = df[keep]
+
+            store.save_expiry_snapshot(symbol, snapshot_date, expiry=exp, snapshot=df, meta=meta)
+            console.print(f"{symbol} {exp.isoformat()}: saved {len(df)} contracts")
+
+
+@app.command("flow")
+def flow_report(
+    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
+    cache_dir: Path = typer.Option(
+        Path("data/options_snapshots"),
+        "--cache-dir",
+        help="Directory for options chain snapshots.",
+    ),
+    top: int = typer.Option(10, "--top", min=1, max=100, help="Top contracts per symbol to display."),
+) -> None:
+    """Report day-to-day OI/volume deltas from locally captured snapshots."""
+    portfolio = load_portfolio(portfolio_path)
+    console = Console()
+
+    store = OptionsSnapshotStore(cache_dir)
+    symbols = sorted({p.symbol for p in portfolio.positions})
+    if not symbols:
+        console.print("No positions.")
+        raise typer.Exit(0)
+
+    pos_keys = {(p.symbol, p.expiry.isoformat(), float(p.strike), p.option_type) for p in portfolio.positions}
+
+    from rich.table import Table
+
+    for sym in symbols:
+        dates = store.latest_dates(sym, n=2)
+        if len(dates) < 2:
+            console.print(f"[yellow]No flow data for {sym}:[/yellow] need at least 2 snapshots.")
+            continue
+
+        prev_date, today_date = dates[-2], dates[-1]
+        today_df = store.load_day(sym, today_date)
+        prev_df = store.load_day(sym, prev_date)
+        if today_df.empty or prev_df.empty:
+            console.print(f"[yellow]No flow data for {sym}:[/yellow] empty snapshot(s).")
+            continue
+
+        flow = compute_flow(today_df, prev_df)
+        summary = summarize_flow(flow)
+
+        console.print(
+            f"\n[bold]{sym}[/bold] flow {prev_date.isoformat()} → {today_date.isoformat()} | "
+            f"calls ΔOI$={summary['calls_delta_oi_notional']:,.0f} | puts ΔOI$={summary['puts_delta_oi_notional']:,.0f}"
+        )
+
+        if flow.empty:
+            console.print("No flow rows.")
+            continue
+
+        if "deltaOI_notional" in flow.columns:
+            flow = flow.assign(_abs=flow["deltaOI_notional"].abs())
+            flow = flow.sort_values("_abs", ascending=False).drop(columns=["_abs"])
+
+        table = Table(title=f"{sym} top {top} contracts by |ΔOI_notional|")
+        table.add_column("*")
+        table.add_column("Expiry")
+        table.add_column("Type")
+        table.add_column("Strike", justify="right")
+        table.add_column("ΔOI", justify="right")
+        table.add_column("OI", justify="right")
+        table.add_column("Vol", justify="right")
+        table.add_column("ΔOI$", justify="right")
+        table.add_column("Class")
+
+        for _, row in flow.head(top).iterrows():
+            expiry = str(row.get("expiry", "-"))
+            opt_type = str(row.get("optionType", "-"))
+            strike = row.get("strike")
+            strike_val = float(strike) if strike is not None and not pd.isna(strike) else None
+            key = (sym, expiry, strike_val if strike_val is not None else float("nan"), opt_type)
+            in_port = key in pos_keys if strike_val is not None else False
+
+            table.add_row(
+                "*" if in_port else "",
+                expiry,
+                opt_type,
+                "-" if strike_val is None else f"{strike_val:g}",
+                "-" if pd.isna(row.get("deltaOI")) else f"{row.get('deltaOI'):+.0f}",
+                "-" if pd.isna(row.get("openInterest")) else f"{row.get('openInterest'):.0f}",
+                "-" if pd.isna(row.get("volume")) else f"{row.get('volume'):.0f}",
+                "-" if pd.isna(row.get("deltaOI_notional")) else f"{row.get('deltaOI_notional'):+.0f}",
+                str(row.get("flow_class", "-")),
+            )
+
+        console.print(table)
 
 
 @app.command()
