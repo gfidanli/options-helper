@@ -716,10 +716,14 @@ def research(
 
     if save and report_buffer is not None:
         target = symbols[0] if symbol else watchlist
-        output_dir.mkdir(parents=True, exist_ok=True)
-        out_path = output_dir / f"research-{target}-{date.today().isoformat()}.txt"
+        run_dt = datetime.now()
+        day_dir = output_dir / run_dt.date().isoformat()
+        day_dir.mkdir(parents=True, exist_ok=True)
+        run_stamp = run_dt.strftime("%Y-%m-%d_%H%M%S")
+        out_path = day_dir / f"research-{target}-{run_stamp}.txt"
         out_path.write_text(report_buffer.getvalue(), encoding="utf-8")
-        console.print(f"\nSaved research report to {out_path}")
+        # soft_wrap avoids breaking long paths across multiple lines.
+        console.print(f"\nSaved research report to {out_path}", soft_wrap=True)
 
 
 @app.command()

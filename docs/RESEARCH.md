@@ -55,8 +55,8 @@ These levels are meant to help you frame a plan. They are not financial advice.
 ## Output reports (MVP)
 Every `research` run can be saved as a plain text report:
 
-- default location: `data/research/`
-- default filename: `research-<symbol-or-watchlist>-YYYY-MM-DD.txt`
+- default location: `data/research/<YYYY-MM-DD>/`
+- default filename: `research-<symbol-or-watchlist>-YYYY-MM-DD_HHMMSS.txt`
 
 ### Strike window (efficiency)
 To avoid scanning huge chains, selection is restricted to a strike window around spot:

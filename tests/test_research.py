@@ -171,8 +171,15 @@ def test_research_cli_saves_report_and_omits_spreads(tmp_path: Path, monkeypatch
     assert "Saved research report to" in res.output
     assert "spread" not in res.output.lower()
 
-    saved = tmp_path / f"research-TEST-{today.isoformat()}.txt"
+    import re
+
+    match = re.search(r"Saved research report to\s+(.+?\.txt)", res.output, flags=re.S)
+    assert match, res.output
+    saved_path = match.group(1).replace("\n", "").strip()
+    saved = Path(saved_path)
     assert saved.exists()
+    assert saved.parent == (tmp_path / today.isoformat())
+
     txt = saved.read_text(encoding="utf-8")
     assert "Suggested entry (underlying)" in txt
     assert "Entry" in txt
