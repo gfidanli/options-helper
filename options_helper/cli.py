@@ -569,6 +569,7 @@ def research(
     report_console = None
     symbol_outputs: dict[str, str] = {}
     symbol_candle_dates: dict[str, date] = {}
+    symbol_candle_datetimes: dict[str, datetime] = {}
     if save:
         import io
 
@@ -595,7 +596,10 @@ def research(
 
         history = candle_store.get_daily_history(sym, period=period)
         if not history.empty:
-            symbol_candle_dates[sym] = history.index.max().date()
+            last_ts = history.index.max()
+            # Candle store normalizes to tz-naive DatetimeIndex.
+            symbol_candle_dates[sym] = last_ts.date()
+            symbol_candle_datetimes[sym] = last_ts.to_pydatetime() if hasattr(last_ts, "to_pydatetime") else last_ts
         setup = analyze_underlying(sym, history=history, risk_profile=rp)
 
         emit(f"\n[bold]{sym}[/bold] — setup: {setup.direction.value}")
@@ -606,9 +610,23 @@ def research(
             emit("  - No spot price; skipping option selection.")
             continue
 
+        entry_change_pct = None
+        try:
+            close_series = history["Close"].dropna()
+            if len(close_series) >= 2:
+                prev_close = float(close_series.iloc[-2])
+                last_close_val = float(close_series.iloc[-1])
+                if prev_close:
+                    entry_change_pct = (last_close_val / prev_close - 1.0) * 100.0
+        except Exception:  # noqa: BLE001
+            entry_change_pct = None
+
         levels = suggest_trade_levels(setup, history=history, risk_profile=rp)
         if levels.entry is not None:
-            emit(f"  - Suggested entry (underlying): ${levels.entry:.2f}")
+            if entry_change_pct is None:
+                emit(f"  - Suggested entry (underlying): ${levels.entry:.2f}")
+            else:
+                emit(f"  - Suggested entry (underlying): ${levels.entry:.2f} ({entry_change_pct:+.2f}%)")
         if levels.pullback_entry is not None:
             emit(f"  - Pullback entry (underlying): ${levels.pullback_entry:.2f}")
         if levels.stop is not None:
@@ -765,14 +783,16 @@ def research(
 
     if save and report_buffer is not None:
         run_dt = datetime.now()
-        candle_day = max(symbol_candle_dates.values()) if symbol_candle_dates else run_dt.date()
-        run_time = run_dt.strftime("%H:%M:%S")
+        candle_dt = max(symbol_candle_datetimes.values()) if symbol_candle_datetimes else run_dt
+        candle_day = candle_dt.date()
+        candle_stamp = candle_dt.strftime("%Y-%m-%d_%H%M%S")
+        run_stamp = run_dt.strftime("%Y-%m-%d_%H%M%S")
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        out_path = output_dir / f"research-{candle_day.isoformat()}-{run_time}.txt"
+        out_path = output_dir / f"research-{candle_stamp}-{run_stamp}.txt"
         header = (
             f"run_at: {run_dt.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"candles_through: {candle_day.isoformat()}\n"
+            f"candles_through: {candle_dt.strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"symbols: {', '.join(symbols)}\n\n"
         )
         out_path.write_text(header + report_buffer.getvalue().lstrip(), encoding="utf-8")

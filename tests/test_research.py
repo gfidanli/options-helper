@@ -112,6 +112,7 @@ def test_research_cli_saves_report_and_omits_spreads(tmp_path: Path, monkeypatch
     candle_day = today - timedelta(days=1)
     run_dt_1 = __import__("datetime").datetime(today.year, today.month, today.day, 11, 59, 3)
     run_dt_2 = __import__("datetime").datetime(today.year, today.month, today.day, 12, 0, 0)
+    candle_dt_stamp = f"{candle_day.isoformat()}_000000"
     short_exp = today + timedelta(days=60)
     long_exp = today + timedelta(days=540)
     expiry_strs = [short_exp.isoformat(), long_exp.isoformat()]
@@ -187,12 +188,12 @@ def test_research_cli_saves_report_and_omits_spreads(tmp_path: Path, monkeypatch
     assert "Saved research report to" in res.output
     assert "spread" not in res.output.lower()
 
-    expected_run_path_1 = tmp_path / f"research-{candle_day.isoformat()}-11:59:03.txt"
+    expected_run_path_1 = tmp_path / f"research-{candle_dt_stamp}-{run_dt_1.strftime('%Y-%m-%d_%H%M%S')}.txt"
     assert expected_run_path_1.exists()
     assert f"Saved research report to {expected_run_path_1}" in res.output
 
     txt = expected_run_path_1.read_text(encoding="utf-8")
-    assert f"candles_through: {candle_day.isoformat()}" in txt
+    assert f"candles_through: {candle_day.isoformat()} 00:00:00" in txt
     assert "Suggested entry (underlying)" in txt
 
     ticker_path = tmp_path / "tickers" / "TEST.txt"
@@ -215,7 +216,7 @@ def test_research_cli_saves_report_and_omits_spreads(tmp_path: Path, monkeypatch
         ],
     )
     assert res2.exit_code == 0, res2.output
-    assert (tmp_path / f"research-{candle_day.isoformat()}-12:00:00.txt").exists()
+    assert (tmp_path / f"research-{candle_dt_stamp}-{run_dt_2.strftime('%Y-%m-%d_%H%M%S')}.txt").exists()
 
     ticker_txt2 = ticker_path.read_text(encoding="utf-8")
     assert ticker_txt2.count(f"=== {candle_day.isoformat()} ===") == 1

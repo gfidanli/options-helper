@@ -57,7 +57,7 @@ Every `research` run can be saved as a plain text report:
 
 - **Run report (one file per run)**:
   - location: `data/research/`
-  - filename: `research-<candles_through>-<HH:MM:SS>.txt`
+  - filename: `research-<candles_datetime>-<run_datetime>.txt` (formatted as `YYYY-MM-DD_HHMMSS`)
 - **Ticker logs (one file per symbol)**:
   - location: `data/research/tickers/`
   - filename: `<SYMBOL>.txt`
