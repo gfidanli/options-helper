@@ -33,7 +33,7 @@ To keep snapshots small and focused, the tool saves a **strike window around spo
 - strikes saved: `spot * (1 - window_pct)` to `spot * (1 + window_pct)`
 
 Default:
-- `window_pct = 0.30` (±30% around spot)
+- `window_pct = 1.0` (±100% around spot)
 
 You can override:
 

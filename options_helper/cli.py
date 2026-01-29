@@ -325,11 +325,11 @@ def snapshot_options(
         help="Directory for cached daily candles (used to estimate spot).",
     ),
     window_pct: float = typer.Option(
-        0.30,
+        1.0,
         "--window-pct",
         min=0.0,
         max=2.0,
-        help="Strike window around spot (e.g. 0.30 = +/-30%).",
+        help="Strike window around spot (e.g. 1.0 = +/-100%).",
     ),
     spot_period: str = typer.Option(
         "10d",

@@ -26,5 +26,5 @@ echo "[$(date)] Running daily options snapshot..."
 "${VENV_BIN}/options-helper" snapshot-options "${PORTFOLIO}" \
   --cache-dir "${REPO_DIR}/data/options_snapshots" \
   --candle-cache-dir "${REPO_DIR}/data/candles" \
-  --window-pct 0.30 \
+  --window-pct 1.0 \
   >> "${LOG_DIR}/options_snapshot.log" 2>&1
