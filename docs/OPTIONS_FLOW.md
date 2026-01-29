@@ -22,6 +22,10 @@ Snapshots are stored under a root directory (default `data/options_snapshots`):
 
 Each `{EXPIRY}.csv` file includes both calls and puts in one table with an `optionType` column.
 
+**Important:** `{YYYY-MM-DD}` is the **data date** (latest available daily candle date used to estimate spot), not the
+wall-clock time you ran the snapshot. This avoids pre-market runs being labeled as “today” when the latest daily candle
+is still “yesterday’s close”.
+
 ## Snapshot scope (window around spot)
 To keep snapshots small and focused, the tool saves a **strike window around spot**:
 

@@ -353,24 +353,35 @@ def snapshot_options(
     for p in portfolio.positions:
         expiries_by_symbol.setdefault(p.symbol, set()).add(p.expiry)
 
-    snapshot_date = date.today()
+    # Snapshot folder date should reflect the data period (latest available daily candle),
+    # not the wall-clock run date. This matters for pre-market runs where the latest
+    # daily candle is still yesterday's close.
+    dates_used: set[date] = set()
 
-    console.print(
-        f"Snapshotting options chains for {len(expiries_by_symbol)} symbol(s) on {snapshot_date.isoformat()}..."
-    )
+    console.print(f"Snapshotting options chains for {len(expiries_by_symbol)} symbol(s)...")
 
     for symbol, expiries in sorted(expiries_by_symbol.items()):
         history = candle_store.get_daily_history(symbol, period=spot_period)
         spot = last_close(history)
+        data_date: date | None = history.index.max().date() if not history.empty else None
         if spot is None:
             try:
-                spot = client.get_underlying(symbol, period=spot_period, interval="1d").last_price
+                underlying = client.get_underlying(symbol, period=spot_period, interval="1d")
+                spot = underlying.last_price
+                if data_date is None and underlying.history is not None and not underlying.history.empty:
+                    try:
+                        data_date = underlying.history.index.max().date()
+                    except Exception:  # noqa: BLE001
+                        pass
             except DataFetchError:
                 spot = None
 
         if spot is None or spot <= 0:
             console.print(f"[yellow]Warning:[/yellow] {symbol}: missing spot price; skipping snapshot.")
             continue
+
+        effective_snapshot_date = data_date or date.today()
+        dates_used.add(effective_snapshot_date)
 
         strike_min = spot * (1.0 - window_pct)
         strike_max = spot * (1.0 + window_pct)
@@ -380,9 +391,8 @@ def snapshot_options(
             "window_pct": window_pct,
             "strike_min": strike_min,
             "strike_max": strike_max,
-            "snapshot_date": snapshot_date.isoformat(),
+            "snapshot_date": effective_snapshot_date.isoformat(),
         }
-
         for exp in sorted(expiries):
             chain = client.get_options_chain(symbol, exp)
             calls = chain.calls.copy()
@@ -414,8 +424,12 @@ def snapshot_options(
             keep = [c for c in keep if c in df.columns]
             df = df[keep]
 
-            store.save_expiry_snapshot(symbol, snapshot_date, expiry=exp, snapshot=df, meta=meta)
+            store.save_expiry_snapshot(symbol, effective_snapshot_date, expiry=exp, snapshot=df, meta=meta)
             console.print(f"{symbol} {exp.isoformat()}: saved {len(df)} contracts")
+
+    if dates_used:
+        days = ", ".join(sorted({d.isoformat() for d in dates_used}))
+        console.print(f"Snapshot complete. Data date(s): {days}.")
 
 
 @app.command("flow")
