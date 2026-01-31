@@ -98,3 +98,20 @@ For this CVX run we wrote in-sample results to a separate base dir to avoid over
 Observed (in-sample) summary:
 - TrendPullbackATR best params: `atr_window=21, sma_window=30, z_window=30, add_z=-1.0, trim_ext_atr=1.0, stop_mult_atr=2.5` (B&H return over same window still higher).
 - MeanReversionBollinger best params: `bb_window=20, bb_dev=2.5, p_entry=0.05, p_exit=0.4, atr_window=21, stop_mult_atr=2.5` (higher drawdown; walk-forward stability still failed).
+
+## 8) Experiment — 12-Month Validation + `min_trades=5`
+
+To test whether low trade counts were driving the instability, we re-ran walk-forward with:
+- `walk_forward.validate_months = 12`
+- `optimization.custom_score.min_trades = 5`
+
+Config used (local override, not committed):
+- `data/technicals/technical_backtesting_cvx_validate12_mintrades5.yaml`
+
+Artifacts written to a separate base dir:
+- `artifacts/technicals_cvx_validate12_mintrades5/params/CVX/TrendPullbackATR.json`
+- `artifacts/technicals_cvx_validate12_mintrades5/params/CVX/MeanReversionBollinger.json`
+
+Outcome:
+- Both strategies **still** returned `used_defaults=true` with `reason="unstable_or_low_trades"`.
+- 12-month validation windows eliminated the “0-trade validation fold” issue, but per-fold trade counts were still frequently **< 5**, so the `min_trades` gate still failed.
