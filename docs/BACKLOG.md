@@ -67,6 +67,15 @@ Deliverables:
 Definition of done:
 - One cron-friendly command produces a daily report artifact and updates derived series.
 
+### Milestone M5 — Derived insights (percentiles + trends)
+**Goal:** make “is IV high vs its own history?” easy and repeatable from the derived store.
+
+Deliverables:
+- F-006 v1: `derived stats` prints percentile ranks and trend flags for key fields (console + JSON output).
+
+Definition of done:
+- Runs offline on derived CSVs and produces deterministic JSON for fixture inputs.
+
 ---
 
 ## Dependency map (summary)
@@ -452,4 +461,3 @@ options-helper derived show --symbol CVX --last 30
 
 ### Testing
 - Idempotency tests and schema tests using fixture snapshots.
-

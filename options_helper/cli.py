@@ -13,7 +13,7 @@ from rich.console import Console
 from options_helper.analysis.advice import Advice, PositionMetrics, advise
 from options_helper.analysis.chain_metrics import compute_chain_report
 from options_helper.analysis.compare_metrics import compute_compare_report
-from options_helper.analysis.derived_metrics import DerivedRow
+from options_helper.analysis.derived_metrics import DerivedRow, compute_derived_stats
 from options_helper.analysis.flow import FlowGroupBy, aggregate_flow_window, compute_flow, summarize_flow
 from options_helper.analysis.performance import compute_daily_performance_quote
 from options_helper.analysis.research import (
@@ -27,7 +27,7 @@ from options_helper.analysis.roll_plan import compute_roll_plan
 from options_helper.analysis.greeks import add_black_scholes_greeks_to_chain, black_scholes_greeks
 from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, sma
 from options_helper.data.candles import CandleStore, last_close
-from options_helper.data.derived import DERIVED_SCHEMA_VERSION, DerivedStore
+from options_helper.data.derived import DERIVED_COLUMNS_V1, DERIVED_SCHEMA_VERSION, DerivedStore
 from options_helper.data.earnings import EarningsRecord, EarningsStore
 from options_helper.data.options_snapshots import OptionsSnapshotStore
 from options_helper.data.yf_client import DataFetchError, YFinanceClient, contract_row_by_strike
@@ -198,6 +198,87 @@ def derived_show(
         for _, row in tail.iterrows():
             t.add_row(*["" if pd.isna(v) else str(v) for v in row.tolist()])
         console.print(t)
+    except typer.Exit:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1)
+
+
+@derived_app.command("stats")
+def derived_stats(
+    symbol: str = typer.Option(..., "--symbol", help="Symbol to analyze."),
+    as_of: str = typer.Option("latest", "--as-of", help="Derived date (YYYY-MM-DD) or 'latest'."),
+    derived_dir: Path = typer.Option(
+        Path("data/derived"),
+        "--derived-dir",
+        help="Directory for derived metric files (reads {derived_dir}/{SYMBOL}.csv).",
+    ),
+    window: int = typer.Option(60, "--window", min=1, max=3650, help="Lookback window for percentiles."),
+    trend_window: int = typer.Option(5, "--trend-window", min=1, max=3650, help="Lookback window for trend flags."),
+    format: str = typer.Option("console", "--format", help="Output format: console|json"),
+    out: Path | None = typer.Option(
+        None,
+        "--out",
+        help="Output root for saved artifacts (writes under {out}/derived/{SYMBOL}/).",
+    ),
+) -> None:
+    """Percentile ranks and trend flags from the derived-metrics history (offline)."""
+    from rich.table import Table
+
+    console = Console(width=200)
+    derived = DerivedStore(derived_dir)
+
+    try:
+        df = derived.load(symbol)
+        if df.empty:
+            console.print(f"No derived rows found for {symbol.upper()} in {derived_dir}")
+            raise typer.Exit(1)
+
+        fmt = format.strip().lower()
+        if fmt not in {"console", "json"}:
+            raise typer.BadParameter("Invalid --format (use console|json)", param_hint="--format")
+
+        report = compute_derived_stats(
+            df,
+            symbol=symbol,
+            as_of=as_of,
+            window=window,
+            trend_window=trend_window,
+            metric_columns=[c for c in DERIVED_COLUMNS_V1 if c != "date"],
+        )
+
+        if fmt == "json":
+            console.print(report.model_dump_json(indent=2))
+        else:
+            t = Table(
+                title=f"{report.symbol} derived stats (as-of {report.as_of}; pct w={window}; trend w={trend_window})"
+            )
+            t.add_column("metric")
+            t.add_column("value", justify="right")
+            t.add_column(f"pct({window})", justify="right")
+            t.add_column(f"trend({trend_window})", justify="right")
+            t.add_column("Δ", justify="right")
+            t.add_column("Δ%", justify="right")
+
+            for m in report.metrics:
+                value = "" if m.value is None else f"{m.value:.8g}"
+                pct = "" if m.percentile is None else f"{m.percentile:.1f}"
+                delta = "" if m.trend_delta is None else f"{m.trend_delta:.8g}"
+                delta_pct = "" if m.trend_delta_pct is None else f"{m.trend_delta_pct:.2f}"
+                trend = "" if m.trend_direction is None else m.trend_direction
+                t.add_row(m.name, value, pct, trend, delta, delta_pct)
+
+            console.print(t)
+            if report.warnings:
+                console.print(f"[yellow]Warnings:[/yellow] {', '.join(report.warnings)}")
+
+        if out is not None:
+            base = out / "derived" / report.symbol
+            base.mkdir(parents=True, exist_ok=True)
+            out_path = base / f"{report.as_of}_w{window}_tw{trend_window}.json"
+            out_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+            console.print(f"\nSaved: {out_path}")
     except typer.Exit:
         raise
     except Exception as exc:  # noqa: BLE001

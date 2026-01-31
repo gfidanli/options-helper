@@ -33,6 +33,13 @@ Show last N rows:
 options-helper derived show --symbol CVX --last 30
 ```
 
+Stats (percentiles + trend flags):
+
+```bash
+options-helper derived stats --symbol CVX --as-of latest --window 60 --trend-window 5
+options-helper derived stats --symbol CVX --as-of latest --window 60 --trend-window 5 --format json
+```
+
 ## CLI flags
 
 ### `derived update`
@@ -46,8 +53,17 @@ options-helper derived show --symbol CVX --last 30
 - `--derived-dir PATH`: derived store directory (default `data/derived`)
 - `--last N`: show last N rows (default `30`)
 
+### `derived stats`
+- `--symbol TICKER`: symbol to analyze (required)
+- `--as-of YYYY-MM-DD|latest`: derived date to evaluate (default `latest`)
+- `--derived-dir PATH`: derived store directory (default `data/derived`)
+- `--window N`: percentile lookback window (default `60`)
+- `--trend-window N`: trend lookback window (default `5`)
+- `--format console|json`: output format (default `console`)
+- `--out PATH`: output root for saved artifacts (writes under `{out}/derived/{SYMBOL}/`)
+
 ## Caveats (best-effort)
 
 - Derived rows depend on what’s present in the snapshot window; missing strikes/greeks can lead to null fields.
 - Re-running `derived update` for the same `{SYMBOL, date}` overwrites that day’s row (no duplicates).
-
+- `derived stats` percentiles and trends are computed from the stored series; missing values reduce the effective sample size.

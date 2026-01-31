@@ -161,3 +161,65 @@ def test_derived_show_prints_rows(tmp_path: Path) -> None:
     assert "AAA derived metrics" in res.output
     assert "2026-01-02" in res.output
 
+
+def test_derived_stats_json_percentiles_and_trends(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "snapshots"
+    derived_dir = tmp_path / "derived"
+
+    _write_snapshot_day(cache_dir, symbol="AAA", day="2026-01-01", spot=95.0)
+    _write_snapshot_day(cache_dir, symbol="AAA", day="2026-01-02", spot=100.0)
+    _write_snapshot_day(cache_dir, symbol="AAA", day="2026-01-03", spot=105.0)
+
+    runner = CliRunner()
+    for day in ["2026-01-01", "2026-01-02", "2026-01-03"]:
+        res = runner.invoke(
+            app,
+            [
+                "derived",
+                "update",
+                "--symbol",
+                "AAA",
+                "--as-of",
+                day,
+                "--cache-dir",
+                str(cache_dir),
+                "--derived-dir",
+                str(derived_dir),
+            ],
+        )
+        assert res.exit_code == 0, res.output
+
+    res = runner.invoke(
+        app,
+        [
+            "derived",
+            "stats",
+            "--symbol",
+            "AAA",
+            "--as-of",
+            "latest",
+            "--derived-dir",
+            str(derived_dir),
+            "--window",
+            "3",
+            "--trend-window",
+            "3",
+            "--format",
+            "json",
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    payload = json.loads(res.output)
+
+    assert payload["symbol"] == "AAA"
+    assert payload["as_of"] == "2026-01-03"
+
+    metrics = {m["name"]: m for m in payload["metrics"]}
+    assert metrics["spot"]["value"] == pytest.approx(105.0)
+    assert metrics["spot"]["percentile"] == pytest.approx(100.0)
+    assert metrics["spot"]["trend_direction"] == "up"
+    assert metrics["spot"]["trend_delta"] == pytest.approx(10.0)
+
+    # Constant values should be ~50th percentile and flat.
+    assert metrics["atm_iv_near"]["percentile"] == pytest.approx(50.0)
+    assert metrics["atm_iv_near"]["trend_direction"] == "flat"
