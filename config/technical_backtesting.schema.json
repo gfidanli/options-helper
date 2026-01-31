@@ -1,0 +1,299 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Technical Backtesting Configuration Schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "timezone": {
+      "type": "string"
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "candles": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source": { "type": "string" },
+            "frequency": { "type": "string" },
+            "weekly_resample_rule": { "type": "string" },
+            "price_adjustment": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "auto_adjust": { "type": "boolean" },
+                "back_adjust": { "type": "boolean" }
+              },
+              "required": ["auto_adjust", "back_adjust"]
+            },
+            "required_columns": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "optional_columns": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "dropna_ohlc": { "type": "boolean" }
+          },
+          "required": [
+            "source",
+            "frequency",
+            "weekly_resample_rule",
+            "price_adjustment",
+            "required_columns",
+            "dropna_ohlc"
+          ]
+        },
+        "warmup_bars": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["candles", "warmup_bars"]
+    },
+    "indicators": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": { "type": "string" },
+        "atr": {
+          "type": "object",
+          "properties": {
+            "window_default": { "type": "integer" },
+            "window_grid": {
+              "type": "array",
+              "items": { "type": "integer" }
+            }
+          },
+          "required": ["window_default", "window_grid"]
+        },
+        "sma": {
+          "type": "object",
+          "properties": {
+            "window_default": { "type": "integer" },
+            "window_grid": {
+              "type": "array",
+              "items": { "type": "integer" }
+            }
+          },
+          "required": ["window_default", "window_grid"]
+        },
+        "zscore": {
+          "type": "object",
+          "properties": {
+            "window_default": { "type": "integer" },
+            "window_grid": {
+              "type": "array",
+              "items": { "type": "integer" }
+            }
+          },
+          "required": ["window_default", "window_grid"]
+        },
+        "bollinger": {
+          "type": "object",
+          "properties": {
+            "window_default": { "type": "integer" },
+            "dev_default": { "type": "number" },
+            "window_grid": {
+              "type": "array",
+              "items": { "type": "integer" }
+            },
+            "dev_grid": {
+              "type": "array",
+              "items": { "type": "number" }
+            }
+          },
+          "required": [
+            "window_default",
+            "dev_default",
+            "window_grid",
+            "dev_grid"
+          ]
+        },
+        "rsi": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "window_default": { "type": "integer" },
+            "window_grid": {
+              "type": "array",
+              "items": { "type": "integer" }
+            }
+          },
+          "required": ["enabled"]
+        }
+      },
+      "required": ["provider", "atr", "sma", "zscore", "bollinger", "rsi"]
+    },
+    "weekly_regime": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "resample_rule": { "type": "string" },
+        "fast_ma": { "type": "integer" },
+        "slow_ma": { "type": "integer" },
+        "logic": { "type": "string" }
+      },
+      "required": [
+        "enabled",
+        "resample_rule",
+        "fast_ma",
+        "slow_ma",
+        "logic"
+      ]
+    },
+    "backtest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "engine": { "type": "string" },
+        "cash": { "type": "number" },
+        "commission": { "type": "number" },
+        "trade_on_close": { "type": "boolean" },
+        "exclusive_orders": { "type": "boolean" },
+        "hedging": { "type": "boolean" },
+        "margin": { "type": "number" },
+        "slippage_bps": { "type": "number" }
+      },
+      "required": [
+        "engine",
+        "cash",
+        "commission",
+        "trade_on_close",
+        "exclusive_orders",
+        "hedging",
+        "margin",
+        "slippage_bps"
+      ]
+    },
+    "optimization": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "method": { "type": "string" },
+        "maximize": { "type": "string" },
+        "min_train_bars": { "type": "integer", "minimum": 0 },
+        "custom_score": {
+          "type": "object",
+          "properties": {
+            "return_key": { "type": "string" },
+            "max_drawdown_key": { "type": "string" },
+            "trades_key": { "type": "string" },
+            "weights": {
+              "type": "object",
+              "properties": {
+                "drawdown_lambda": { "type": "number" },
+                "turnover_mu": { "type": "number" }
+              }
+            },
+            "min_trades": { "type": "integer" }
+          }
+        },
+        "sambo": {
+          "type": "object",
+          "properties": {
+            "max_tries": { "type": "integer" },
+            "random_state": { "type": "integer" }
+          }
+        }
+      },
+      "required": ["enabled", "method", "maximize"]
+    },
+    "walk_forward": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "train_years": { "type": "number" },
+        "validate_months": { "type": "number" },
+        "step_months": { "type": "number" },
+        "min_history_years": { "type": "number" },
+        "selection": {
+          "type": "object",
+          "properties": {
+            "metric": { "type": "string" },
+            "stability": {
+              "type": "object",
+              "properties": {
+                "max_validate_score_cv": { "type": "number" }
+              }
+            }
+          }
+        },
+        "stability": {
+          "type": "object",
+          "properties": {
+            "max_validate_score_cv": { "type": "number" }
+          }
+        }
+      }
+    },
+    "calibration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "type": "string" },
+        "vol_bucket": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "atrp_window": { "type": "integer" },
+            "buckets": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "min_atrp": { "type": "number" },
+                  "max_atrp": { "type": "number" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "strategies": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "defaults": { "type": "object", "additionalProperties": true },
+          "search_space": { "type": "object", "additionalProperties": true },
+          "constraints": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "required": ["enabled", "defaults", "search_space", "constraints"]
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "base_dir": { "type": "string" },
+        "overwrite": { "type": "boolean" },
+        "write_heatmap": { "type": "boolean" },
+        "write_trades": { "type": "boolean" },
+        "params_path_template": { "type": "string" },
+        "report_path_template": { "type": "string" },
+        "heatmap_path_template": { "type": "string" }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "level": { "type": "string" },
+        "log_dir": { "type": "string" }
+      }
+    }
+  }
+}

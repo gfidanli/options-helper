@@ -1,0 +1,210 @@
+# config/technical_backtesting.yaml
+schema_version: 1
+timezone: America/Chicago
+
+data:
+  candles:
+    source: yfinance
+    frequency: "1d"
+
+    # Weekly regime is derived from daily bars using this pandas resample rule.
+    # Common choices: "W-FRI" (week ends Friday) or "W" (default week end).
+    weekly_resample_rule: "W-FRI"
+
+    # IMPORTANT: yfinance adjustment settings materially impact technicals.
+    # Your existing yfinance fetch code should set these explicitly and ideally record them.
+    price_adjustment:
+      auto_adjust: true
+      back_adjust: false
+
+    required_columns: ["Open", "High", "Low", "Close"]
+    optional_columns: ["Volume"]
+
+    # Drop rows where OHLC are missing
+    dropna_ohlc: true
+
+  # Indicator warmup: ensure enough history for rolling windows before backtests begin
+  warmup_bars: 80
+
+indicators:
+  # Default implementation provider for technical indicators
+  provider: "ta"  # allowed: "ta" (default). Optional future: "talib"
+
+  atr:
+    window_default: 14
+    window_grid: [10, 14, 21]
+
+  sma:
+    window_default: 20
+    window_grid: [20, 30, 40]
+
+  zscore:
+    window_default: 20
+    window_grid: [20, 30, 40]
+
+  bollinger:
+    window_default: 20
+    dev_default: 2.0
+    window_grid: [10, 20, 30, 40]
+    dev_grid: [1.5, 2.0, 2.5]
+
+  rsi:
+    enabled: true
+    window_default: 14
+    window_grid: [10, 14, 21]
+
+weekly_regime:
+  enabled: true
+  resample_rule: "W-FRI"
+  fast_ma: 10
+  slow_ma: 20
+  # Regime is "up" when weekly_close > fast_ma AND fast_ma > slow_ma
+  logic: "close_above_fast_and_fast_above_slow"
+
+backtest:
+  engine: "backtesting.py"
+  cash: 100000
+
+  # Commission as fraction of trade value (e.g., 0.0005 = 5 bps per trade).
+  commission: 0.0005
+
+  # backtesting.py supports trade_on_close; prefer False for conservative fills.
+  trade_on_close: false
+
+  # If true, prevents overlapping orders; safer for simple signal strategies.
+  exclusive_orders: true
+
+  hedging: false
+  margin: 1.0
+
+  # Optional: If you want fill slippage, implement as an adjustment in strategy fill assumptions.
+  # Keep 0 if unused.
+  slippage_bps: 0
+
+optimization:
+  enabled: true
+
+  # method: "grid" (deterministic) or "sambo" (faster search for larger spaces)
+  method: "grid"
+
+  # maximize: either a backtesting.py built-in stats key, or "custom_score"
+  maximize: "custom_score"
+
+  # Custom objective: score = return - λ*|drawdown| - μ*turnover
+  # Keys below correspond to backtesting.py result stats dict keys.
+  custom_score:
+    return_key: "Return (Ann.) [%]"
+    max_drawdown_key: "Max. Drawdown [%]"
+    trades_key: "# Trades"
+
+    weights:
+      drawdown_lambda: 0.35
+      turnover_mu: 0.02
+
+    # Hard filters (applied after a run or within optimizer callback)
+    min_trades: 10
+
+  sambo:
+    max_tries: 200
+    random_state: 42
+
+  # Require enough history in a train slice before optimizing
+  min_train_bars: 756  # ~3y of trading days
+
+walk_forward:
+  enabled: true
+  train_years: 4
+  validate_months: 6
+  step_months: 6
+  min_history_years: 6
+
+  selection:
+    metric: "validate_score_mean"
+
+    # Optional stability gating — if unstable, fall back to defaults/buckets.
+    stability:
+      max_validate_score_cv: 0.60  # coefficient of variation threshold
+
+calibration:
+  # "per_ticker" (default), or "vol_bucket" to share params across ATR% buckets.
+  mode: "per_ticker"
+
+  vol_bucket:
+    enabled: false
+    atrp_window: 14
+    buckets:
+      low:
+        max_atrp: 0.02
+      medium:
+        min_atrp: 0.02
+        max_atrp: 0.04
+      high:
+        min_atrp: 0.04
+
+strategies:
+  TrendPullbackATR:
+    enabled: true
+
+    defaults:
+      atr_window: 14
+      sma_window: 20
+      z_window: 20
+      add_z: -1.0
+      trim_ext_atr: 1.8
+      stop_mult_atr: 2.5
+      use_weekly_filter: true
+
+    search_space:
+      atr_window: [10, 14, 21]
+      sma_window: [20, 30, 40]
+      z_window: [20, 30, 40]
+      add_z: [-0.5, -1.0, -1.5, -2.0]
+      trim_ext_atr: [1.0, 1.5, 2.0, 2.5]
+      stop_mult_atr: [1.5, 2.0, 2.5, 3.0, 3.5]
+      use_weekly_filter: [true]
+
+    # Constraints are strings to eval against the param dict (LLM should implement safely).
+    constraints:
+      - "trim_ext_atr > 0"
+      - "stop_mult_atr >= 1.0"
+      - "sma_window == z_window"
+
+  MeanReversionBollinger:
+    enabled: true
+
+    defaults:
+      bb_window: 20
+      bb_dev: 2.0
+      p_entry: 0.10
+      p_exit: 0.50
+      atr_window: 14
+      stop_mult_atr: 2.0
+      use_weekly_filter: false
+
+    search_space:
+      bb_window: [10, 20, 30, 40]
+      bb_dev: [1.5, 2.0, 2.5]
+      p_entry: [0.00, 0.05, 0.10, 0.15, 0.20]
+      p_exit: [0.40, 0.50, 0.60, 0.70]
+      atr_window: [10, 14, 21]
+      stop_mult_atr: [0.0, 1.5, 2.0, 2.5, 3.0]
+      use_weekly_filter: [false]
+
+    constraints:
+      - "p_entry < p_exit"
+      - "stop_mult_atr >= 0.0"
+
+artifacts:
+  base_dir: "artifacts/technicals"
+  overwrite: false
+
+  write_heatmap: true
+  write_trades: false
+
+  params_path_template: "params/{ticker}/{strategy}.json"
+  report_path_template: "reports/{ticker}/{strategy}/summary.md"
+  heatmap_path_template: "reports/{ticker}/{strategy}/heatmap.csv"
+
+logging:
+  level: "INFO"
+  log_dir: "logs/technicals"
