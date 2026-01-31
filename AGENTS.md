@@ -13,6 +13,11 @@ This repo is an information/decision-support tool. Keep outputs and docs clear t
 - Run CLI (preferred): `./.venv/bin/options-helper --help`
 - Run tests: `./.venv/bin/python -m pytest`
 
+## Git workflow
+- Make **regular, logical commits** when a unit of work is complete and tests pass.
+- Prefer small commits with clear messages over large “mega-commits”.
+- Don’t commit local state (e.g. `data/`, `portfolio.json`).
+
 ## Local state (do not commit)
 - `portfolio.json` and everything under `data/` are gitignored.
 - Prefer adding fixtures under `tests/` instead of committing real market data.
@@ -35,4 +40,3 @@ This repo is an information/decision-support tool. Keep outputs and docs clear t
 - Optimize for **position management** and **signal clarity** over complex modeling.
 - Start with simple rules and measurable outputs; iterate with tests and docs.
 - Track next ideas in `FEATURE_IDEAS.md`.
-
