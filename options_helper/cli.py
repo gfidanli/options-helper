@@ -48,6 +48,7 @@ from options_helper.storage import load_portfolio, save_portfolio, write_templat
 from options_helper.watchlists import build_default_watchlists, load_watchlists, save_watchlists
 from options_helper.technicals_backtesting.backtest.optimizer import optimize_params
 from options_helper.technicals_backtesting.backtest.walk_forward import walk_forward_optimize
+from options_helper.technicals_backtesting.feature_selection import required_feature_columns_for_strategy
 from options_helper.technicals_backtesting.pipeline import compute_features, warmup_bars
 from options_helper.technicals_backtesting.strategies.registry import get_strategy
 
@@ -2568,6 +2569,12 @@ def technicals_optimize(
     StrategyClass = get_strategy(strategy)
     strat_cfg = cfg["strategies"][strategy]
     opt_cfg = cfg["optimization"]
+    needed = required_feature_columns_for_strategy(strategy, strat_cfg)
+    cols = ["Open", "High", "Low", "Close"]
+    if "Volume" in features.columns:
+        cols.append("Volume")
+    cols += [c for c in needed if c in features.columns]
+    features = features.loc[:, [c for c in cols if c in features.columns]]
 
     warmup = warmup_bars(cfg)
     best_params, best_stats, heatmap = optimize_params(
@@ -2636,6 +2643,12 @@ def technicals_walk_forward(
     strat_cfg = cfg["strategies"][strategy]
     opt_cfg = cfg["optimization"]
     walk_cfg = cfg["walk_forward"]
+    needed = required_feature_columns_for_strategy(strategy, strat_cfg)
+    cols = ["Open", "High", "Low", "Close"]
+    if "Volume" in features.columns:
+        cols.append("Volume")
+    cols += [c for c in needed if c in features.columns]
+    features = features.loc[:, [c for c in cols if c in features.columns]]
 
     warmup = warmup_bars(cfg)
     result = walk_forward_optimize(
@@ -2736,11 +2749,17 @@ def technicals_run_all(
             for strategy, strat_cfg in cfg["strategies"].items():
                 if not strat_cfg.get("enabled", False):
                     continue
+                needed = required_feature_columns_for_strategy(strategy, strat_cfg)
+                cols = ["Open", "High", "Low", "Close"]
+                if "Volume" in features.columns:
+                    cols.append("Volume")
+                cols += [c for c in needed if c in features.columns]
+                strat_features = features.loc[:, [c for c in cols if c in features.columns]]
                 StrategyClass = get_strategy(strategy)
                 opt_cfg = cfg["optimization"]
                 if cfg["walk_forward"]["enabled"]:
                     result = walk_forward_optimize(
-                        features,
+                        strat_features,
                         StrategyClass,
                         cfg["backtest"],
                         strat_cfg["search_space"],
@@ -2786,7 +2805,7 @@ def technicals_run_all(
                     params = result.params
                 else:
                     best_params, train_stats, heatmap = optimize_params(
-                        features,
+                        strat_features,
                         StrategyClass,
                         cfg["backtest"],
                         strat_cfg["search_space"],

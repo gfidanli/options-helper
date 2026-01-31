@@ -131,15 +131,26 @@ class TaIndicatorProvider:
             rule = weekly_cfg["resample_rule"]
             fast = int(weekly_cfg["fast_ma"])
             slow = int(weekly_cfg["slow_ma"])
+            ma_type = str(weekly_cfg.get("ma_type", "sma")).strip().lower()
+            logic = str(weekly_cfg.get("logic", "close_above_fast_and_fast_above_slow")).strip().lower()
             weekly = (
                 out[["Open", "High", "Low", "Close"]]
                 .resample(rule)
                 .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
             )
             weekly_close = weekly["Close"]
-            weekly_fast = weekly_close.rolling(window=fast).mean()
-            weekly_slow = weekly_close.rolling(window=slow).mean()
-            trend = (weekly_close > weekly_fast) & (weekly_fast > weekly_slow)
+            if ma_type == "ema":
+                weekly_fast = weekly_close.ewm(span=fast, adjust=False, min_periods=fast).mean()
+                weekly_slow = weekly_close.ewm(span=slow, adjust=False, min_periods=slow).mean()
+            else:
+                weekly_fast = weekly_close.rolling(window=fast).mean()
+                weekly_slow = weekly_close.rolling(window=slow).mean()
+
+            if logic in {"fast_above_slow", "ma_fast_above_slow"}:
+                trend = weekly_fast > weekly_slow
+            else:
+                # Default: close_above_fast_and_fast_above_slow
+                trend = (weekly_close > weekly_fast) & (weekly_fast > weekly_slow)
 
             out[f"weekly_sma_{fast}"] = weekly_fast.reindex(out.index, method="ffill")
             out[f"weekly_sma_{slow}"] = weekly_slow.reindex(out.index, method="ffill")

@@ -24,7 +24,7 @@ data:
     dropna_ohlc: true
 
   # Indicator warmup: ensure enough history for rolling windows before backtests begin
-  warmup_bars: 80
+  warmup_bars: 200
 
 indicators:
   # Default implementation provider for technical indicators
@@ -32,15 +32,15 @@ indicators:
 
   atr:
     window_default: 14
-    window_grid: [10, 14, 21]
+    window_grid: [7, 10, 14, 21]
 
   sma:
     window_default: 20
-    window_grid: [20, 30, 40]
+    window_grid: [10, 15, 20, 30, 40]
 
   zscore:
     window_default: 20
-    window_grid: [20, 30, 40]
+    window_grid: [10, 20, 30, 40, 50]
 
   bollinger:
     window_default: 20
@@ -56,10 +56,12 @@ indicators:
 weekly_regime:
   enabled: true
   resample_rule: "W-FRI"
-  fast_ma: 10
-  slow_ma: 20
+  ma_type: "ema"
+  fast_ma: 9
+  slow_ma: 21
   # Regime is "up" when weekly_close > fast_ma AND fast_ma > slow_ma
-  logic: "close_above_fast_and_fast_above_slow"
+  #"close_above_fast_and_fast_above_slow"
+  logic: "fast_above_slow"
 
 backtest:
   engine: "backtesting.py"

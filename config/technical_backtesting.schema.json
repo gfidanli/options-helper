@@ -134,6 +134,7 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "resample_rule": { "type": "string" },
+        "ma_type": { "type": "string" },
         "fast_ma": { "type": "integer" },
         "slow_ma": { "type": "integer" },
         "logic": { "type": "string" }

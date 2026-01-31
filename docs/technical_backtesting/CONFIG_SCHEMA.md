@@ -59,6 +59,7 @@ This schema corresponds exactly to `config/technical_backtesting.yaml`. You can 
 |-------|------|----------|-------------|
 | `enabled` | bool | Yes | Whether weekly regime is computed. |
 | `resample_rule` | string | Yes | Weekly resample rule. |
+| `ma_type` | string | No | Weekly MA type (`"sma"` default, or `"ema"`). |
 | `fast_ma` | int | Yes | Fast weekly MA. |
 | `slow_ma` | int | Yes | Slow weekly MA. |
 | `logic` | string | Yes | Describes regime logic (e.g., `"close_above_fast_and_fast_above_slow"`). |

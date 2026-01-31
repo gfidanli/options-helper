@@ -68,12 +68,17 @@ def walk_forward_optimize(
     if df_features.empty:
         return WalkForwardResult(defaults, [], {"stable": False}, True, "empty_data")
 
-    total_years = (df_features.index.max() - df_features.index.min()).days / 365.25
+    # Apply warmup once globally, not per fold slice, to avoid empty validate windows.
+    df_used = df_features.iloc[warmup_bars:] if warmup_bars > 0 else df_features
+    if df_used.empty:
+        return WalkForwardResult(defaults, [], {"stable": False}, True, "empty_after_warmup")
+
+    total_years = (df_used.index.max() - df_used.index.min()).days / 365.25
     if total_years < walk_cfg["min_history_years"]:
         return WalkForwardResult(defaults, [], {"stable": False}, True, "insufficient_history")
 
     splits = _generate_splits(
-        df_features.index,
+        df_used.index,
         walk_cfg["train_years"],
         walk_cfg["validate_months"],
         walk_cfg["step_months"],
@@ -81,8 +86,8 @@ def walk_forward_optimize(
 
     folds: list[dict[str, Any]] = []
     for train_start, train_end, val_start, val_end in splits:
-        train_df = df_features.loc[train_start:train_end]
-        validate_df = df_features.loc[val_start:val_end]
+        train_df = df_used.loc[train_start:train_end]
+        validate_df = df_used.loc[val_start:val_end]
         if min_train_bars and len(train_df) < min_train_bars:
             continue
 
@@ -96,7 +101,7 @@ def walk_forward_optimize(
             method,
             sambo_cfg,
             custom_score_cfg,
-            warmup_bars=warmup_bars,
+            warmup_bars=0,
             return_heatmap=return_heatmap,
         )
         validate_stats = run_backtest(
@@ -104,7 +109,7 @@ def walk_forward_optimize(
             StrategyClass,
             bt_cfg,
             best_params,
-            warmup_bars=warmup_bars,
+            warmup_bars=0,
         )
         validate_score = score_stats(validate_stats, maximize, custom_score_cfg)
 
