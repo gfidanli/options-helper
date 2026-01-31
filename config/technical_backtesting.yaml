@@ -59,9 +59,11 @@ weekly_regime:
   ma_type: "ema"
   fast_ma: 9
   slow_ma: 21
-  # Regime is "up" when weekly_close > fast_ma AND fast_ma > slow_ma
-  #"close_above_fast_and_fast_above_slow"
-  logic: "fast_above_slow"
+  # Regime logic options (in order of strictness):
+  # - close_above_fast_and_fast_above_slow
+  # - close_above_fast
+  # - fast_above_slow
+  logic: "close_above_fast"
 
 backtest:
   engine: "backtesting.py"
