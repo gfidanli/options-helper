@@ -1,0 +1,84 @@
+# `briefing` — Daily Markdown Report (Offline-First)
+
+`briefing` generates a cron-friendly daily Markdown report from locally stored snapshot files under
+`data/options_snapshots/`.
+
+It is intended to make the workflow **regular**:
+- one saved artifact per day,
+- per-symbol “state + change + flow” highlights,
+- optional derived-metrics history updates.
+
+This tool is for informational/educational use only and is not financial advice.
+
+## Usage
+
+```bash
+options-helper briefing portfolio.json --as-of latest --compare -1
+```
+
+Include watchlists (in addition to portfolio symbols):
+
+```bash
+options-helper briefing portfolio.json \
+  --watchlists-path data/watchlists.json \
+  --watchlist positions \
+  --watchlist monitor \
+  --as-of latest \
+  --compare -1
+```
+
+Write to a custom path (or directory):
+
+```bash
+options-helper briefing portfolio.json --as-of 2026-01-30 --out data/reports/daily/2026-01-30.md
+options-helper briefing portfolio.json --as-of 2026-01-30 --out data/reports/daily/
+```
+
+Disable derived updates:
+
+```bash
+options-helper briefing portfolio.json --as-of latest --no-update-derived
+```
+
+## Output
+
+By default it writes:
+- `data/reports/daily/{YYYY-MM-DD}.md`
+
+The report includes:
+- Portfolio table (best-effort marks/PnL from the same snapshot day)
+- Per symbol:
+  - Chain highlights (walls, near-term EM/IV, gamma peak)
+  - Compare highlights (spot + key deltas), if `--compare` is enabled and snapshots exist
+  - Flow zones (net, aggregated by strike), if compare snapshots exist
+  - Warnings/errors when data is missing
+
+## Inputs (snapshots)
+
+Requires snapshots from `snapshot-options`:
+- `data/options_snapshots/{SYMBOL}/{YYYY-MM-DD}/meta.json` (must include a usable spot)
+- `data/options_snapshots/{SYMBOL}/{YYYY-MM-DD}/{EXPIRY}.csv`
+
+Notes:
+- `--as-of latest` is resolved **per symbol**.
+- Relative `--compare` offsets (e.g., `-1`) are resolved **per symbol** relative to that symbol’s `--as-of`.
+
+## CLI flags
+
+- `--as-of YYYY-MM-DD|latest`: snapshot date (default `latest`)
+- `--compare -1|-5|YYYY-MM-DD|none`: include compare/flow sections (default `-1`)
+- `--cache-dir PATH`: snapshots root (default `data/options_snapshots`)
+- `--watchlists-path PATH`: watchlists store path (default `data/watchlists.json`)
+- `--watchlist NAME`: include symbols from a watchlist (repeatable)
+- `--symbol TICKER`: only include a single symbol (overrides selection)
+- `--out PATH`: output Markdown path or directory (default `data/reports/daily/{ASOF}.md`)
+- `--update-derived/--no-update-derived`: update `data/derived/{SYMBOL}.csv` per symbol (default on)
+- `--derived-dir PATH`: derived store directory (default `data/derived`)
+- `--top N`: include top N rows in compare/flow sections (default `3`)
+
+## Caveats (best-effort)
+
+- If a symbol is missing snapshots or `meta.json` spot, its section will include errors and skip compare/flow.
+- Portfolio “mark” and “PnL” are best-effort matches against snapshot rows (expiry/type/strike).
+- Flow is a heuristic derived from day-to-day ΔOI; treat it as a positioning proxy, not certainty.
+

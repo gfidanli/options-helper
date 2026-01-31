@@ -13,6 +13,7 @@ from rich.console import Console
 from options_helper.analysis.advice import Advice, PositionMetrics, advise
 from options_helper.analysis.chain_metrics import compute_chain_report
 from options_helper.analysis.compare_metrics import compute_compare_report
+from options_helper.analysis.derived_metrics import DerivedRow
 from options_helper.analysis.flow import FlowGroupBy, aggregate_flow_window, compute_flow, summarize_flow
 from options_helper.analysis.performance import compute_daily_performance_quote
 from options_helper.analysis.research import (
@@ -26,6 +27,7 @@ from options_helper.analysis.roll_plan import compute_roll_plan
 from options_helper.analysis.greeks import add_black_scholes_greeks_to_chain, black_scholes_greeks
 from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, sma
 from options_helper.data.candles import CandleStore, last_close
+from options_helper.data.derived import DERIVED_SCHEMA_VERSION, DerivedStore
 from options_helper.data.earnings import EarningsRecord, EarningsStore
 from options_helper.data.options_snapshots import OptionsSnapshotStore
 from options_helper.data.yf_client import DataFetchError, YFinanceClient, contract_row_by_strike
@@ -36,6 +38,7 @@ from options_helper.reporting_chain import (
     render_chain_report_markdown,
     render_compare_report_console,
 )
+from options_helper.reporting_briefing import BriefingSymbolSection, render_briefing_markdown
 from options_helper.reporting_roll import render_roll_plan_console
 from options_helper.storage import load_portfolio, save_portfolio, write_template
 from options_helper.watchlists import build_default_watchlists, load_watchlists, save_watchlists
@@ -43,6 +46,8 @@ from options_helper.watchlists import build_default_watchlists, load_watchlists,
 app = typer.Typer(add_completion=False)
 watchlists_app = typer.Typer(help="Manage symbol watchlists.")
 app.add_typer(watchlists_app, name="watchlists")
+derived_app = typer.Typer(help="Persist derived metrics from local snapshots.")
+app.add_typer(derived_app, name="derived")
 
 
 def _parse_date(value: str) -> date:
@@ -116,6 +121,88 @@ def _mark_price(*, bid: float | None, ask: float | None, last: float | None) -> 
     if bid is not None and bid > 0:
         return bid
     return None
+
+
+@derived_app.command("update")
+def derived_update(
+    symbol: str = typer.Option(..., "--symbol", help="Symbol to update."),
+    as_of: str = typer.Option("latest", "--as-of", help="Snapshot date (YYYY-MM-DD) or 'latest'."),
+    cache_dir: Path = typer.Option(
+        Path("data/options_snapshots"),
+        "--cache-dir",
+        help="Directory for options chain snapshots.",
+    ),
+    derived_dir: Path = typer.Option(
+        Path("data/derived"),
+        "--derived-dir",
+        help="Directory for derived metric files (writes {derived_dir}/{SYMBOL}.csv).",
+    ),
+) -> None:
+    """Append or upsert a derived-metrics row for a symbol/day (offline)."""
+    console = Console()
+    store = OptionsSnapshotStore(cache_dir)
+    derived = DerivedStore(derived_dir)
+
+    try:
+        as_of_date = store.resolve_date(symbol, as_of)
+        df = store.load_day(symbol, as_of_date)
+        meta = store.load_meta(symbol, as_of_date)
+        spot = _spot_from_meta(meta)
+        if spot is None:
+            raise ValueError("missing spot price in meta.json (run snapshot-options first)")
+
+        report = compute_chain_report(
+            df,
+            symbol=symbol,
+            as_of=as_of_date,
+            spot=spot,
+            expiries_mode="near",
+            top=10,
+            best_effort=True,
+        )
+
+        row = DerivedRow.from_chain_report(report)
+        out_path = derived.upsert(symbol, row)
+        console.print(f"Derived schema v{DERIVED_SCHEMA_VERSION} updated: {out_path}")
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1)
+
+
+@derived_app.command("show")
+def derived_show(
+    symbol: str = typer.Option(..., "--symbol", help="Symbol to show."),
+    derived_dir: Path = typer.Option(
+        Path("data/derived"),
+        "--derived-dir",
+        help="Directory for derived metric files (reads {derived_dir}/{SYMBOL}.csv).",
+    ),
+    last: int = typer.Option(30, "--last", min=1, max=3650, help="Show the last N rows."),
+) -> None:
+    """Print the last N rows of derived metrics for a symbol."""
+    from rich.table import Table
+
+    console = Console(width=200)
+    derived = DerivedStore(derived_dir)
+
+    try:
+        df = derived.load(symbol)
+        if df.empty:
+            console.print(f"No derived rows found for {symbol.upper()} in {derived_dir}")
+            raise typer.Exit(1)
+
+        tail = df.tail(last)
+        t = Table(title=f"{symbol.upper()} derived metrics (last {min(last, len(df))})")
+        for col in tail.columns:
+            t.add_column(col)
+        for _, row in tail.iterrows():
+            t.add_row(*["" if pd.isna(v) else str(v) for v in row.tolist()])
+        console.print(t)
+    except typer.Exit:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1)
 
 
 def _position_metrics(
@@ -1103,6 +1190,273 @@ def compare_snapshots(
     except Exception as exc:  # noqa: BLE001
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1)
+
+
+@app.command("briefing")
+def briefing(
+    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
+    watchlists_path: Path = typer.Option(
+        Path("data/watchlists.json"),
+        "--watchlists-path",
+        help="Path to watchlists JSON store (used with --watchlist).",
+    ),
+    watchlist: list[str] = typer.Option(
+        [],
+        "--watchlist",
+        help="Watchlist name to include (repeatable). Adds to portfolio symbols.",
+    ),
+    symbol: str | None = typer.Option(
+        None,
+        "--symbol",
+        help="Only include a single symbol (overrides portfolio/watchlists selection).",
+    ),
+    as_of: str = typer.Option("latest", "--as-of", help="Snapshot date (YYYY-MM-DD) or 'latest'."),
+    compare: str = typer.Option(
+        "-1",
+        "--compare",
+        help="Compare spec: -1|-5|YYYY-MM-DD|none (relative offsets are per-symbol).",
+    ),
+    cache_dir: Path = typer.Option(
+        Path("data/options_snapshots"),
+        "--cache-dir",
+        help="Directory for options chain snapshots.",
+    ),
+    out: Path | None = typer.Option(
+        None,
+        "--out",
+        help="Output path (Markdown) or directory. Default: data/reports/daily/{ASOF}.md",
+    ),
+    update_derived: bool = typer.Option(
+        True,
+        "--update-derived/--no-update-derived",
+        help="Update derived metrics for included symbols (per-symbol CSV).",
+    ),
+    derived_dir: Path = typer.Option(
+        Path("data/derived"),
+        "--derived-dir",
+        help="Directory for derived metric files (used when --update-derived).",
+    ),
+    top: int = typer.Option(3, "--top", min=1, max=10, help="Top rows to include in compare/flow sections."),
+) -> None:
+    """Generate a daily Markdown briefing for portfolio + optional watchlists (offline-first)."""
+    console = Console(width=200)
+    portfolio = load_portfolio(portfolio_path)
+
+    portfolio_symbols = sorted({p.symbol.upper() for p in portfolio.positions})
+    watch_symbols: list[str] = []
+    if watchlist:
+        try:
+            wl = load_watchlists(watchlists_path)
+            for name in watchlist:
+                watch_symbols.extend(wl.get(name))
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[yellow]Warning:[/yellow] failed to load watchlists: {exc}")
+
+    symbols = sorted(set(portfolio_symbols).union({s.upper() for s in watch_symbols if s}))
+    if symbol is not None:
+        symbols = [symbol.upper().strip()]
+
+    if not symbols:
+        console.print("[red]Error:[/red] no symbols selected (empty portfolio and no watchlists)")
+        raise typer.Exit(1)
+
+    store = OptionsSnapshotStore(cache_dir)
+    derived_store = DerivedStore(derived_dir)
+
+    # Cache day snapshots for portfolio marks (best-effort).
+    day_cache: dict[str, tuple[date, pd.DataFrame]] = {}
+
+    sections: list[BriefingSymbolSection] = []
+    resolved_to_dates: list[date] = []
+    compare_norm = compare.strip().lower()
+    compare_enabled = compare_norm not in {"none", "off", "false", "0"}
+
+    for sym in symbols:
+        errors: list[str] = []
+        warnings: list[str] = []
+        chain = None
+        compare_report = None
+        flow_net = None
+        derived_updated = False
+
+        try:
+            to_date = store.resolve_date(sym, as_of)
+            resolved_to_dates.append(to_date)
+
+            df_to = store.load_day(sym, to_date)
+            meta_to = store.load_meta(sym, to_date)
+            spot_to = _spot_from_meta(meta_to)
+            if spot_to is None:
+                raise ValueError("missing spot price in meta.json (run snapshot-options first)")
+
+            day_cache[sym] = (to_date, df_to)
+
+            chain = compute_chain_report(
+                df_to,
+                symbol=sym,
+                as_of=to_date,
+                spot=spot_to,
+                expiries_mode="near",
+                top=10,
+                best_effort=True,
+            )
+
+            if update_derived:
+                row = DerivedRow.from_chain_report(chain)
+                try:
+                    derived_store.upsert(sym, row)
+                    derived_updated = True
+                except Exception as exc:  # noqa: BLE001
+                    warnings.append(f"derived update failed: {exc}")
+
+            if compare_enabled:
+                from_date: date | None = None
+                if compare_norm.startswith("-") and compare_norm[1:].isdigit():
+                    try:
+                        from_date = store.resolve_relative_date(sym, to_date=to_date, offset=int(compare_norm))
+                    except Exception as exc:  # noqa: BLE001
+                        warnings.append(f"compare unavailable: {exc}")
+                else:
+                    from_date = store.resolve_date(sym, compare_norm)
+
+                if from_date is not None and from_date != to_date:
+                    df_from = store.load_day(sym, from_date)
+                    meta_from = store.load_meta(sym, from_date)
+                    spot_from = _spot_from_meta(meta_from)
+                    if spot_from is None:
+                        warnings.append("compare unavailable: missing spot in from-date meta.json")
+                    elif df_from.empty or df_to.empty:
+                        warnings.append("compare unavailable: missing snapshot CSVs for from/to date")
+                    else:
+                        compare_report, _, _ = compute_compare_report(
+                            symbol=sym,
+                            from_date=from_date,
+                            to_date=to_date,
+                            from_df=df_from,
+                            to_df=df_to,
+                            spot_from=spot_from,
+                            spot_to=spot_to,
+                            top=top,
+                        )
+
+                        try:
+                            flow = compute_flow(df_to, df_from, spot=spot_to)
+                            flow_net = aggregate_flow_window([flow], group_by="strike")
+                        except Exception:  # noqa: BLE001
+                            warnings.append("flow unavailable: compute failed")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(str(exc))
+
+        as_of_label = "-" if sym not in day_cache else day_cache[sym][0].isoformat()
+        sections.append(
+            BriefingSymbolSection(
+                symbol=sym,
+                as_of=as_of_label,
+                chain=chain,
+                compare=compare_report,
+                flow_net=flow_net,
+                errors=errors,
+                warnings=warnings,
+                derived_updated=derived_updated,
+            )
+        )
+
+    if not resolved_to_dates:
+        console.print("[red]Error:[/red] no snapshots found for selected symbols")
+        raise typer.Exit(1)
+    report_date = max(resolved_to_dates).isoformat()
+    portfolio_rows: list[dict[str, str]] = []
+    for p in portfolio.positions:
+        sym = p.symbol.upper()
+        to_date, df_to = day_cache.get(sym, (None, pd.DataFrame()))
+
+        mark = None
+        if not df_to.empty:
+            sub = df_to.copy()
+            if "expiry" in sub.columns:
+                sub = sub[sub["expiry"].astype(str) == p.expiry.isoformat()]
+            if "optionType" in sub.columns:
+                sub = sub[sub["optionType"].astype(str).str.lower() == p.option_type]
+            if "strike" in sub.columns:
+                strike = pd.to_numeric(sub["strike"], errors="coerce")
+                sub = sub.assign(_strike=strike)
+                sub = sub[(sub["_strike"] - float(p.strike)).abs() < 1e-9]
+            if not sub.empty:
+                row = sub.iloc[0]
+                mark = _mark_price(
+                    bid=_extract_float(row, "bid"),
+                    ask=_extract_float(row, "ask"),
+                    last=_extract_float(row, "lastPrice"),
+                )
+
+        pnl_abs = None
+        pnl_pct = None
+        if mark is not None:
+            pnl_abs = (mark - p.cost_basis) * 100.0 * p.contracts
+            pnl_pct = ((mark / p.cost_basis) - 1.0) if p.cost_basis > 0 else None
+
+        portfolio_rows.append(
+            {
+                "id": p.id,
+                "symbol": sym,
+                "type": p.option_type,
+                "expiry": p.expiry.isoformat(),
+                "strike": f"{p.strike:g}",
+                "ct": str(p.contracts),
+                "cost": f"{p.cost_basis:.2f}",
+                "mark": "-" if mark is None else f"{mark:.2f}",
+                "pnl_$": "-" if pnl_abs is None else f"{pnl_abs:+.0f}",
+                "pnl_%": "-" if pnl_pct is None else f"{pnl_pct * 100.0:+.1f}%",
+                "as_of": "-" if to_date is None else to_date.isoformat(),
+            }
+        )
+
+    portfolio_table_md = None
+    if portfolio_rows:
+        headers = ["ID", "Sym", "Type", "Exp", "Strike", "Ct", "Cost", "Mark", "PnL $", "PnL %", "As-of"]
+        lines = [
+            "| " + " | ".join(headers) + " |",
+            "|---|---|---|---|---:|---:|---:|---:|---:|---:|---|",
+        ]
+        for r in portfolio_rows:
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        r["id"],
+                        r["symbol"],
+                        r["type"],
+                        r["expiry"],
+                        r["strike"],
+                        r["ct"],
+                        r["cost"],
+                        r["mark"],
+                        r["pnl_$"],
+                        r["pnl_%"],
+                        r["as_of"],
+                    ]
+                )
+                + " |"
+            )
+        portfolio_table_md = "\n".join(lines)
+
+    md = render_briefing_markdown(
+        report_date=report_date,
+        portfolio_path=str(portfolio_path),
+        symbol_sections=sections,
+        portfolio_table_md=portfolio_table_md,
+    )
+
+    if out is None:
+        out_path = Path("data/reports/daily") / f"{report_date}.md"
+    else:
+        out_path = out
+        if out_path.suffix.lower() != ".md":
+            out_path = out_path / f"{report_date}.md"
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(md, encoding="utf-8")
+    console.print(f"Saved: {out_path}")
 
 
 @app.command("roll-plan")
