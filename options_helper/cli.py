@@ -1283,6 +1283,79 @@ def earnings(
     console.print(f"Source: {record.source} (fetched_at={record.fetched_at.isoformat()})")
 
 
+@app.command("refresh-earnings")
+def refresh_earnings(
+    watchlists_path: Path = typer.Option(
+        Path("data/watchlists.json"),
+        "--watchlists-path",
+        help="Path to watchlists JSON store (symbols source).",
+    ),
+    watchlist: list[str] = typer.Option(
+        [],
+        "--watchlist",
+        help="Watchlist name(s) to refresh (default: all watchlists).",
+    ),
+    cache_dir: Path = typer.Option(
+        Path("data/earnings"),
+        "--cache-dir",
+        help="Directory for cached earnings dates.",
+    ),
+) -> None:
+    """Fetch and cache next earnings dates for symbols in watchlists (best-effort)."""
+    console = Console(width=120)
+    wl = load_watchlists(watchlists_path)
+
+    symbols: set[str] = set()
+    if watchlist:
+        for name in watchlist:
+            symbols.update(wl.get(name))
+    else:
+        for syms in (wl.watchlists or {}).values():
+            symbols.update(syms or [])
+
+    symbols = {s.strip().upper() for s in symbols if s and s.strip()}
+    if not symbols:
+        console.print("No symbols found (no watchlists or empty watchlist selection).")
+        raise typer.Exit(0)
+
+    store = EarningsStore(cache_dir)
+    client = YFinanceClient()
+
+    ok = 0
+    err = 0
+    unknown = 0
+
+    console.print(f"Refreshing earnings for {len(symbols)} symbol(s)...")
+    for sym in sorted(symbols):
+        try:
+            ev = client.get_next_earnings_event(sym)
+            record = EarningsRecord(
+                symbol=sym,
+                fetched_at=datetime.now(tz=timezone.utc),
+                source=ev.source,
+                next_earnings_date=ev.next_date,
+                window_start=ev.window_start,
+                window_end=ev.window_end,
+                raw=ev.raw,
+                notes=[],
+            )
+            path = store.save(record)
+            ok += 1
+            if record.next_earnings_date is None:
+                unknown += 1
+                console.print(f"[yellow]Warning:[/yellow] {sym}: next earnings unknown (saved {path})")
+            else:
+                console.print(f"{sym}: {record.next_earnings_date.isoformat()} (saved {path})")
+        except DataFetchError as exc:
+            err += 1
+            console.print(f"[red]Error:[/red] {sym}: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            err += 1
+            console.print(f"[red]Error:[/red] {sym}: {exc}")
+
+    console.print(f"Done. ok={ok} unknown={unknown} errors={err}")
+
+
 @app.command()
 def research(
     portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON (risk profile + candle cache config)."),

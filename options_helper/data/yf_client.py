@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 import pandas as pd
@@ -25,6 +25,16 @@ class OptionsChain:
     expiry: date
     calls: pd.DataFrame
     puts: pd.DataFrame
+
+
+@dataclass(frozen=True)
+class EarningsEvent:
+    symbol: str
+    next_date: date | None
+    window_start: date | None = None
+    window_end: date | None = None
+    source: str = "unknown"
+    raw: dict[str, Any] | None = None
 
 
 class YFinanceClient:
@@ -98,6 +108,145 @@ class YFinanceClient:
             raise
         except Exception as exc:  # noqa: BLE001
             raise DataFetchError(f"Failed to fetch raw options payload for {symbol} {expiry_str}") from exc
+
+    def get_next_earnings_event(self, symbol: str, *, today: date | None = None) -> EarningsEvent:
+        """
+        Best-effort fetch of the next earnings date.
+
+        Yahoo/yfinance earnings fields are inconsistent:
+        - may be missing entirely
+        - may be a range/window (start/end)
+        - may be stale or timezone-shifted
+        """
+        sym = symbol.upper()
+        today_val = today or date.today()
+        ticker = self.ticker(sym)
+
+        # 1) Prefer the historical-ish earnings dates table when present.
+        try:
+            get_dates = getattr(ticker, "get_earnings_dates", None)
+            if callable(get_dates):
+                df = get_dates(limit=12)
+                dt_candidates: list[date] = []
+                if isinstance(df, pd.DataFrame) and not df.empty:
+                    # yfinance commonly returns a DatetimeIndex here.
+                    if isinstance(df.index, pd.DatetimeIndex):
+                        for ts in df.index:
+                            try:
+                                dt_candidates.append(ts.to_pydatetime().date())
+                            except Exception:  # noqa: BLE001
+                                continue
+                    # Some variants include an explicit date column.
+                    for col in ("Earnings Date", "EarningsDate", "earningsDate"):
+                        if col in df.columns:
+                            ser = df[col].dropna()
+                            for v in ser.tolist():
+                                d = _coerce_to_date(v)
+                                if d is not None:
+                                    dt_candidates.append(d)
+
+                future = sorted({d for d in dt_candidates if d >= today_val})
+                next_date = future[0] if future else None
+                if next_date is not None:
+                    return EarningsEvent(
+                        symbol=sym,
+                        next_date=next_date,
+                        source="yfinance.get_earnings_dates",
+                        raw={"rows": int(len(df)) if isinstance(df, pd.DataFrame) else None},
+                    )
+        except Exception:  # noqa: BLE001
+            # Fall through to calendar parsing.
+            pass
+
+        # 2) Fall back to the calendar field (often a single date or a 2-date window).
+        try:
+            cal = getattr(ticker, "calendar", None)
+            start = end = None
+
+            if isinstance(cal, pd.DataFrame) and not cal.empty:
+                # Typical yfinance layout: index contains keys (e.g. "Earnings Date") and a single column.
+                if "Earnings Date" in cal.index:
+                    row = cal.loc["Earnings Date"]
+                    # Row might be a Series across columns.
+                    values = row.tolist() if hasattr(row, "tolist") else [row]
+                    start, end = _extract_date_window(values)
+                elif "Earnings Date" in cal.columns:
+                    values = cal["Earnings Date"].dropna().tolist()
+                    start, end = _extract_date_window(values)
+
+            elif isinstance(cal, dict):
+                # Some variants return a dict-like payload.
+                if "Earnings Date" in cal:
+                    start, end = _extract_date_window([cal["Earnings Date"]])
+
+            next_date = None
+            if start is not None and start >= today_val:
+                next_date = start
+            elif end is not None and end >= today_val:
+                next_date = end
+
+            return EarningsEvent(
+                symbol=sym,
+                next_date=next_date,
+                window_start=start,
+                window_end=end,
+                source="yfinance.calendar",
+                raw=None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise DataFetchError(f"Failed to fetch earnings calendar for {sym}") from exc
+
+
+def _coerce_to_date(value: Any) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    # pandas Timestamp is a datetime subclass
+    if isinstance(value, datetime):
+        return value.date()
+    try:
+        # Try pandas Timestamp conversion
+        if hasattr(value, "to_pydatetime"):
+            dt = value.to_pydatetime()
+            if isinstance(dt, datetime):
+                return dt.date()
+    except Exception:  # noqa: BLE001
+        pass
+    if isinstance(value, str):
+        s = value.strip()
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y"):
+            try:
+                return datetime.strptime(s, fmt).date()
+            except Exception:  # noqa: BLE001
+                continue
+    return None
+
+
+def _extract_date_window(values: list[Any]) -> tuple[date | None, date | None]:
+    """
+    Parse a possible earnings date window from a list of raw values.
+
+    Yahoo may provide:
+    - a single date
+    - two dates (start/end of an earnings window)
+    - nested lists/tuples
+    """
+    flat: list[Any] = []
+    for v in values:
+        if isinstance(v, (list, tuple)):
+            flat.extend(list(v))
+        else:
+            flat.append(v)
+
+    dates = [_coerce_to_date(v) for v in flat]
+    dates = [d for d in dates if d is not None]
+    if not dates:
+        return None, None
+    dates_sorted = sorted(set(dates))
+    if len(dates_sorted) == 1:
+        return dates_sorted[0], None
+    return dates_sorted[0], dates_sorted[1]
 
 
 def _row_value(row: Any, key: str) -> float | int | None:
