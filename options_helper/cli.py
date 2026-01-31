@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -30,6 +31,9 @@ from options_helper.data.candles import CandleStore, last_close
 from options_helper.data.derived import DERIVED_COLUMNS_V1, DERIVED_SCHEMA_VERSION, DerivedStore
 from options_helper.data.earnings import EarningsRecord, EarningsStore
 from options_helper.data.options_snapshots import OptionsSnapshotStore
+from options_helper.data.technical_backtesting_artifacts import write_artifacts
+from options_helper.data.technical_backtesting_config import load_technical_backtesting_config
+from options_helper.data.technical_backtesting_io import load_ohlc_from_cache, load_ohlc_from_path
 from options_helper.data.yf_client import DataFetchError, YFinanceClient, contract_row_by_strike
 from options_helper.models import OptionType, Position, RiskProfile
 from options_helper.reporting import render_positions, render_summary
@@ -42,12 +46,18 @@ from options_helper.reporting_briefing import BriefingSymbolSection, render_brie
 from options_helper.reporting_roll import render_roll_plan_console
 from options_helper.storage import load_portfolio, save_portfolio, write_template
 from options_helper.watchlists import build_default_watchlists, load_watchlists, save_watchlists
+from options_helper.technicals_backtesting.backtest.optimizer import optimize_params
+from options_helper.technicals_backtesting.backtest.walk_forward import walk_forward_optimize
+from options_helper.technicals_backtesting.pipeline import compute_features, warmup_bars
+from options_helper.technicals_backtesting.strategies.registry import get_strategy
 
 app = typer.Typer(add_completion=False)
 watchlists_app = typer.Typer(help="Manage symbol watchlists.")
 app.add_typer(watchlists_app, name="watchlists")
 derived_app = typer.Typer(help="Persist derived metrics from local snapshots.")
 app.add_typer(derived_app, name="derived")
+technicals_app = typer.Typer(help="Technical indicators + backtesting/optimization.")
+app.add_typer(technicals_app, name="technicals")
 
 
 def _parse_date(value: str) -> date:
@@ -2466,3 +2476,353 @@ def watch(
         except Exception as exc:  # noqa: BLE001
             console.print(f"[red]Watch error:[/red] {exc}")
         time.sleep(minutes * 60)
+
+
+def _setup_technicals_logging(cfg: dict) -> None:
+    level = cfg["logging"]["level"].upper()
+    log_dir = Path(cfg["logging"]["log_dir"])
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "technical_backtesting.log"
+    handlers = [logging.StreamHandler(), logging.FileHandler(log_path)]
+    logging.basicConfig(
+        level=level,
+        handlers=handlers,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+
+def _load_ohlc_df(
+    *,
+    ohlc_path: Path | None,
+    symbol: str | None,
+    cache_dir: Path,
+) -> pd.DataFrame:
+    if ohlc_path:
+        return load_ohlc_from_path(ohlc_path)
+    if symbol:
+        return load_ohlc_from_cache(symbol, cache_dir)
+    raise typer.BadParameter("Provide --ohlc-path or --symbol/--cache-dir")
+
+
+def _stats_to_dict(stats: object | None) -> dict | None:
+    if stats is None:
+        return None
+    if isinstance(stats, pd.Series):
+        return {k: v for k, v in stats.to_dict().items() if not str(k).startswith("_")}
+    if isinstance(stats, dict):
+        return {k: v for k, v in stats.items() if not str(k).startswith("_")}
+    return {"value": stats}
+
+
+@technicals_app.command("compute-indicators")
+def technicals_compute_indicators(
+    ohlc_path: Path | None = typer.Option(None, "--ohlc-path", help="CSV/parquet OHLC path."),
+    symbol: str | None = typer.Option(None, "--symbol", help="Symbol to load from cache."),
+    cache_dir: Path = typer.Option(Path("data/candles"), "--cache-dir", help="Candle cache dir."),
+    output: Path | None = typer.Option(None, "--output", help="Output CSV/parquet path."),
+    config_path: Path = typer.Option(
+        Path("config/technical_backtesting.yaml"), "--config", help="Config path."
+    ),
+) -> None:
+    """Compute indicators from OHLC data and optionally persist to disk."""
+    console = Console(width=200)
+    cfg = load_technical_backtesting_config(config_path)
+    _setup_technicals_logging(cfg)
+
+    df = _load_ohlc_df(ohlc_path=ohlc_path, symbol=symbol, cache_dir=cache_dir)
+    if df.empty:
+        raise typer.BadParameter("No OHLC data found for indicator computation.")
+
+    features = compute_features(df, cfg)
+    console.print(f"Computed features: {len(features)} rows, {len(features.columns)} columns")
+
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        if output.suffix.lower() == ".parquet":
+            features.to_parquet(output)
+        else:
+            features.to_csv(output)
+        console.print(f"Wrote features to {output}")
+
+
+@technicals_app.command("optimize")
+def technicals_optimize(
+    strategy: str = typer.Option(..., "--strategy", help="Strategy name."),
+    ohlc_path: Path | None = typer.Option(None, "--ohlc-path", help="CSV/parquet OHLC path."),
+    symbol: str | None = typer.Option(None, "--symbol", help="Symbol to load from cache."),
+    cache_dir: Path = typer.Option(Path("data/candles"), "--cache-dir", help="Candle cache dir."),
+    config_path: Path = typer.Option(
+        Path("config/technical_backtesting.yaml"), "--config", help="Config path."
+    ),
+) -> None:
+    """Optimize strategy parameters for a single dataset."""
+    console = Console(width=200)
+    cfg = load_technical_backtesting_config(config_path)
+    _setup_technicals_logging(cfg)
+
+    df = _load_ohlc_df(ohlc_path=ohlc_path, symbol=symbol, cache_dir=cache_dir)
+    if df.empty:
+        raise typer.BadParameter("No OHLC data found for optimization.")
+
+    features = compute_features(df, cfg)
+    StrategyClass = get_strategy(strategy)
+    strat_cfg = cfg["strategies"][strategy]
+    opt_cfg = cfg["optimization"]
+
+    warmup = warmup_bars(cfg)
+    best_params, best_stats, heatmap = optimize_params(
+        features,
+        StrategyClass,
+        cfg["backtest"],
+        strat_cfg["search_space"],
+        strat_cfg["constraints"],
+        opt_cfg["maximize"],
+        opt_cfg["method"],
+        opt_cfg.get("sambo", {}),
+        opt_cfg.get("custom_score", {}),
+        warmup_bars=warmup,
+        return_heatmap=cfg["artifacts"].get("write_heatmap", False),
+    )
+
+    console.print(f"Best params: {best_params}")
+    ticker = symbol or "UNKNOWN"
+    data_meta = {
+        "start": features.index.min(),
+        "end": features.index.max(),
+        "bars": len(features),
+        "warmup_bars": warmup,
+    }
+    optimize_meta = {
+        "method": opt_cfg["method"],
+        "maximize": opt_cfg["maximize"],
+        "constraints": strat_cfg["constraints"],
+    }
+    paths = write_artifacts(
+        cfg,
+        ticker=ticker,
+        strategy=strategy,
+        params=best_params,
+        train_stats=best_stats,
+        walk_forward_result=None,
+        optimize_meta=optimize_meta,
+        data_meta=data_meta,
+        heatmap=heatmap,
+    )
+    console.print(f"Wrote params: {paths.params_path}")
+    console.print(f"Wrote summary: {paths.report_path}")
+
+
+@technicals_app.command("walk-forward")
+def technicals_walk_forward(
+    strategy: str = typer.Option(..., "--strategy", help="Strategy name."),
+    ohlc_path: Path | None = typer.Option(None, "--ohlc-path", help="CSV/parquet OHLC path."),
+    symbol: str | None = typer.Option(None, "--symbol", help="Symbol to load from cache."),
+    cache_dir: Path = typer.Option(Path("data/candles"), "--cache-dir", help="Candle cache dir."),
+    config_path: Path = typer.Option(
+        Path("config/technical_backtesting.yaml"), "--config", help="Config path."
+    ),
+) -> None:
+    """Run walk-forward optimization and write artifacts."""
+    console = Console(width=200)
+    cfg = load_technical_backtesting_config(config_path)
+    _setup_technicals_logging(cfg)
+
+    df = _load_ohlc_df(ohlc_path=ohlc_path, symbol=symbol, cache_dir=cache_dir)
+    if df.empty:
+        raise typer.BadParameter("No OHLC data found for walk-forward.")
+
+    features = compute_features(df, cfg)
+    StrategyClass = get_strategy(strategy)
+    strat_cfg = cfg["strategies"][strategy]
+    opt_cfg = cfg["optimization"]
+    walk_cfg = cfg["walk_forward"]
+
+    warmup = warmup_bars(cfg)
+    result = walk_forward_optimize(
+        features,
+        StrategyClass,
+        cfg["backtest"],
+        strat_cfg["search_space"],
+        strat_cfg["constraints"],
+        opt_cfg["maximize"],
+        opt_cfg["method"],
+        opt_cfg.get("sambo", {}),
+        opt_cfg.get("custom_score", {}),
+        walk_cfg,
+        strat_cfg["defaults"],
+        warmup_bars=warmup,
+        min_train_bars=opt_cfg.get("min_train_bars", 0),
+        return_heatmap=cfg["artifacts"].get("write_heatmap", False),
+    )
+
+    ticker = symbol or "UNKNOWN"
+    data_meta = {
+        "start": features.index.min(),
+        "end": features.index.max(),
+        "bars": len(features),
+        "warmup_bars": warmup,
+    }
+    optimize_meta = {
+        "method": opt_cfg["method"],
+        "maximize": opt_cfg["maximize"],
+        "constraints": strat_cfg["constraints"],
+    }
+    folds_out = []
+    for fold in result.folds:
+        folds_out.append(
+            {
+                "train_start": fold["train_start"],
+                "train_end": fold["train_end"],
+                "validate_start": fold["validate_start"],
+                "validate_end": fold["validate_end"],
+                "best_params": fold["best_params"],
+                "train_stats": _stats_to_dict(fold["train_stats"]),
+                "validate_stats": _stats_to_dict(fold["validate_stats"]),
+                "validate_score": fold["validate_score"],
+            }
+        )
+    wf_dict = {
+        "params": result.params,
+        "folds": folds_out,
+        "stability": result.stability,
+        "used_defaults": result.used_defaults,
+        "reason": result.reason,
+    }
+    heatmap = None
+    if result.folds:
+        best_fold = max(result.folds, key=lambda f: f.get("validate_score", float("-inf")))
+        heatmap = best_fold.get("heatmap")
+
+    paths = write_artifacts(
+        cfg,
+        ticker=ticker,
+        strategy=strategy,
+        params=result.params,
+        train_stats=None,
+        walk_forward_result=wf_dict,
+        optimize_meta=optimize_meta,
+        data_meta=data_meta,
+        heatmap=heatmap,
+    )
+    console.print(f"Wrote params: {paths.params_path}")
+    console.print(f"Wrote summary: {paths.report_path}")
+
+
+@technicals_app.command("run-all")
+def technicals_run_all(
+    tickers: str = typer.Option(..., "--tickers", help="Comma-separated tickers."),
+    cache_dir: Path = typer.Option(Path("data/candles"), "--cache-dir", help="Candle cache dir."),
+    config_path: Path = typer.Option(
+        Path("config/technical_backtesting.yaml"), "--config", help="Config path."
+    ),
+) -> None:
+    """Run both strategies for a list of tickers."""
+    console = Console(width=200)
+    cfg = load_technical_backtesting_config(config_path)
+    _setup_technicals_logging(cfg)
+
+    symbols = [s.strip().upper() for s in tickers.split(",") if s.strip()]
+    if not symbols:
+        raise typer.BadParameter("Provide at least one ticker.")
+
+    for symbol in symbols:
+        try:
+            df = load_ohlc_from_cache(symbol, cache_dir)
+            if df.empty:
+                console.print(f"[yellow]No data for {symbol} in cache.[/yellow]")
+                continue
+            features = compute_features(df, cfg)
+            warmup = warmup_bars(cfg)
+            for strategy, strat_cfg in cfg["strategies"].items():
+                if not strat_cfg.get("enabled", False):
+                    continue
+                StrategyClass = get_strategy(strategy)
+                opt_cfg = cfg["optimization"]
+                if cfg["walk_forward"]["enabled"]:
+                    result = walk_forward_optimize(
+                        features,
+                        StrategyClass,
+                        cfg["backtest"],
+                        strat_cfg["search_space"],
+                        strat_cfg["constraints"],
+                        opt_cfg["maximize"],
+                        opt_cfg["method"],
+                        opt_cfg.get("sambo", {}),
+                        opt_cfg.get("custom_score", {}),
+                        cfg["walk_forward"],
+                        strat_cfg["defaults"],
+                        warmup_bars=warmup,
+                        min_train_bars=opt_cfg.get("min_train_bars", 0),
+                        return_heatmap=cfg["artifacts"].get("write_heatmap", False),
+                    )
+                    folds_out = []
+                    for fold in result.folds:
+                        folds_out.append(
+                            {
+                                "train_start": fold["train_start"],
+                                "train_end": fold["train_end"],
+                                "validate_start": fold["validate_start"],
+                                "validate_end": fold["validate_end"],
+                                "best_params": fold["best_params"],
+                                "train_stats": _stats_to_dict(fold["train_stats"]),
+                                "validate_stats": _stats_to_dict(fold["validate_stats"]),
+                                "validate_score": fold["validate_score"],
+                            }
+                        )
+                    wf_dict = {
+                        "params": result.params,
+                        "folds": folds_out,
+                        "stability": result.stability,
+                        "used_defaults": result.used_defaults,
+                        "reason": result.reason,
+                    }
+                    heatmap = None
+                    if result.folds:
+                        best_fold = max(
+                            result.folds, key=lambda f: f.get("validate_score", float("-inf"))
+                        )
+                        heatmap = best_fold.get("heatmap")
+                    train_stats = None
+                    params = result.params
+                else:
+                    best_params, train_stats, heatmap = optimize_params(
+                        features,
+                        StrategyClass,
+                        cfg["backtest"],
+                        strat_cfg["search_space"],
+                        strat_cfg["constraints"],
+                        opt_cfg["maximize"],
+                        opt_cfg["method"],
+                        opt_cfg.get("sambo", {}),
+                        opt_cfg.get("custom_score", {}),
+                        warmup_bars=warmup,
+                        return_heatmap=cfg["artifacts"].get("write_heatmap", False),
+                    )
+                    wf_dict = None
+                    params = best_params
+
+                data_meta = {
+                    "start": features.index.min(),
+                    "end": features.index.max(),
+                    "bars": len(features),
+                    "warmup_bars": warmup,
+                }
+                optimize_meta = {
+                    "method": opt_cfg["method"],
+                    "maximize": opt_cfg["maximize"],
+                    "constraints": strat_cfg["constraints"],
+                }
+                write_artifacts(
+                    cfg,
+                    ticker=symbol,
+                    strategy=strategy,
+                    params=params,
+                    train_stats=train_stats,
+                    walk_forward_result=wf_dict,
+                    optimize_meta=optimize_meta,
+                    data_meta=data_meta,
+                    heatmap=heatmap,
+                )
+            console.print(f"[green]Completed[/green] {symbol}")
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[red]{symbol} failed:[/red] {exc}")
