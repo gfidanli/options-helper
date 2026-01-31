@@ -64,3 +64,8 @@ The default cron job (`scripts/cron_daily_options_snapshot.sh`) runs:
 - `options-helper snapshot-options portfolio.json` (options chain snapshots for position expiries)
 
 This keeps the candle cache up to date daily so `research` can compute higher-timeframe technicals efficiently.
+
+Related cron scripts (optional):
+- Daily monitor watchlist option snapshots: `scripts/cron_daily_monitor_options_snapshot.sh`
+- Daily briefing report: `scripts/cron_daily_briefing.sh`
+- Weekly earnings refresh: `scripts/cron_weekly_refresh_earnings.sh`

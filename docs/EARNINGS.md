@@ -45,3 +45,26 @@ By default, earnings records are stored under:
 - `data/earnings/{SYMBOL}.json`
 
 You can override the directory with `--cache-dir`.
+
+## Automation (cron)
+
+To keep watchlist earnings dates fresh, schedule a weekly refresh:
+
+- `scripts/cron_weekly_refresh_earnings.sh`
+- `scripts/install_cron_weekly_refresh_earnings.sh`
+
+Install (prints the crontab block):
+
+```bash
+./scripts/install_cron_weekly_refresh_earnings.sh
+```
+
+Install automatically:
+
+```bash
+./scripts/install_cron_weekly_refresh_earnings.sh --install
+```
+
+Defaults:
+- Runs on **Mondays at 17:50 local time**.
+- Logs to `data/logs/earnings_refresh.log`.

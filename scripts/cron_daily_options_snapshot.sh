@@ -8,6 +8,15 @@ PORTFOLIO="${REPO_DIR}/portfolio.json"
 LOG_DIR="${REPO_DIR}/data/logs"
 mkdir -p "${LOG_DIR}"
 
+LOCKS_DIR="${REPO_DIR}/data/locks"
+LOCK_PATH="${LOCKS_DIR}/options_helper_cron.lock"
+mkdir -p "${LOCKS_DIR}"
+if ! mkdir "${LOCK_PATH}" 2>/dev/null; then
+  echo "[$(date)] Lock already held (${LOCK_PATH}); skipping daily options snapshot." >> "${LOG_DIR}/options_snapshot.log"
+  exit 0
+fi
+trap 'rmdir "${LOCK_PATH}" 2>/dev/null || true' EXIT
+
 if [[ ! -x "${VENV_BIN}/options-helper" ]]; then
   echo "options-helper not found at ${VENV_BIN}/options-helper"
   echo "Create a venv and install deps: python3 -m venv .venv && ./.venv/bin/pip install -e ."

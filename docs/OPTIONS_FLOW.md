@@ -177,3 +177,14 @@ To automatically install (attempts `crontab` update with a timeout):
 ```
 
 You can edit the schedule in `scripts/install_cron_daily_options_snapshot.sh`.
+
+### Optional: snapshot watchlists (monitor)
+If you maintain a watchlist like `monitor` and want offline flow/chain reports for it, schedule a separate
+watchlist snapshot job:
+
+- `scripts/cron_daily_monitor_options_snapshot.sh`
+- `scripts/install_cron_daily_monitor_options_snapshot.sh`
+
+Defaults:
+- Runs at **18:35 local time**, Monday–Friday.
+- Logs to `data/logs/monitor_snapshot.log`.

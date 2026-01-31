@@ -82,3 +82,25 @@ Notes:
 - Portfolio “mark” and “PnL” are best-effort matches against snapshot rows (expiry/type/strike).
 - Flow is a heuristic derived from day-to-day ΔOI; treat it as a positioning proxy, not certainty.
 
+## Automation (cron)
+
+This repo includes a helper script to generate a daily briefing after snapshots are captured:
+
+- `scripts/cron_daily_briefing.sh`
+- `scripts/install_cron_daily_briefing.sh`
+
+Install (prints the crontab block):
+
+```bash
+./scripts/install_cron_daily_briefing.sh
+```
+
+Install automatically:
+
+```bash
+./scripts/install_cron_daily_briefing.sh --install
+```
+
+Defaults:
+- Runs at **19:00 local time**, Monday–Friday.
+- Logs to `data/logs/briefing.log`.
