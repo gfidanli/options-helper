@@ -34,34 +34,34 @@ This repo’s default candle cache lives in `data/candles/` (gitignored). For CV
 
 The canonical config is `config/technical_backtesting.yaml`.
 
-For this CVX run we used a local override (not committed) at:
-- `data/technicals/technical_backtesting_cvx.yaml`
+For this CVX run we used a local override (not committed) to avoid overwriting prior artifacts:
+- `data/technicals/technical_backtesting_cvx_rerun_2026-01-31.yaml`
 
 Overrides applied:
-- `data.candles.price_adjustment.auto_adjust: false` (matches the cached CSV which includes `Adj Close`)
-- `optimization.method: sambo` (faster than full grid for walk-forward folds)
+- `artifacts.base_dir: artifacts/technicals_cvx_rerun_2026-01-31`
+- `artifacts.overwrite: true`
 
 ## 4) Run Commands
 
 ### 4.1 TrendPullbackATR walk-forward
-- `./.venv/bin/options-helper technicals walk-forward --strategy TrendPullbackATR --symbol CVX --cache-dir data/candles --config data/technicals/technical_backtesting_cvx.yaml`
+- `./.venv/bin/options-helper technicals walk-forward --strategy TrendPullbackATR --symbol CVX --cache-dir data/candles --config data/technicals/technical_backtesting_cvx_rerun_2026-01-31.yaml`
 
 ### 4.2 MeanReversionBollinger walk-forward
-- `./.venv/bin/options-helper technicals walk-forward --strategy MeanReversionBollinger --symbol CVX --cache-dir data/candles --config data/technicals/technical_backtesting_cvx.yaml`
+- `./.venv/bin/options-helper technicals walk-forward --strategy MeanReversionBollinger --symbol CVX --cache-dir data/candles --config data/technicals/technical_backtesting_cvx_rerun_2026-01-31.yaml`
 
 ## 5) Outputs
 
-Artifacts are written under `artifacts/technicals/` (gitignored):
+Artifacts are written under `artifacts/technicals_cvx_rerun_2026-01-31/` (gitignored):
 
 ### TrendPullbackATR
-- Params: `artifacts/technicals/params/CVX/TrendPullbackATR.json`
-- Report: `artifacts/technicals/reports/CVX/TrendPullbackATR/summary.md`
-- Heatmap: `artifacts/technicals/reports/CVX/TrendPullbackATR/heatmap.csv`
+- Params: `artifacts/technicals_cvx_rerun_2026-01-31/params/CVX/TrendPullbackATR.json`
+- Report: `artifacts/technicals_cvx_rerun_2026-01-31/reports/CVX/TrendPullbackATR/summary.md`
+- Heatmap: `artifacts/technicals_cvx_rerun_2026-01-31/reports/CVX/TrendPullbackATR/heatmap.csv`
 
 ### MeanReversionBollinger
-- Params: `artifacts/technicals/params/CVX/MeanReversionBollinger.json`
-- Report: `artifacts/technicals/reports/CVX/MeanReversionBollinger/summary.md`
-- Heatmap: `artifacts/technicals/reports/CVX/MeanReversionBollinger/heatmap.csv`
+- Params: `artifacts/technicals_cvx_rerun_2026-01-31/params/CVX/MeanReversionBollinger.json`
+- Report: `artifacts/technicals_cvx_rerun_2026-01-31/reports/CVX/MeanReversionBollinger/summary.md`
+- Heatmap: `artifacts/technicals_cvx_rerun_2026-01-31/reports/CVX/MeanReversionBollinger/heatmap.csv`
 
 ## 6) Results Snapshot (Run Date: 2026-01-31)
 

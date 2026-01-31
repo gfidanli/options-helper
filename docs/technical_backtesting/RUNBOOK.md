@@ -54,6 +54,16 @@ References:
 ### Run all strategies for multiple tickers
 - `./.venv/bin/options-helper technicals run-all --tickers AAPL,MSFT,SPY --cache-dir data/candles`
 
+### Re-run without overwriting old artifacts
+By default, `config/technical_backtesting.yaml` sets `artifacts.overwrite: false`.
+
+For a “fresh run” (new output directory), copy the config to a local override and change only the artifacts section:
+- `cp config/technical_backtesting.yaml data/technicals/technical_backtesting_local.yaml`
+- Edit:
+  - `artifacts.base_dir` (e.g., `artifacts/technicals_cvx_rerun_2026-01-31`)
+  - `artifacts.overwrite: true`
+- Run with `--config data/technicals/technical_backtesting_local.yaml`
+
 ## 5) Troubleshooting
 - If backtests start late (missing early period):
   - rolling indicators produce NaNs; simulation starts once all indicators are valid
