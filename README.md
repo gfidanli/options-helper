@@ -65,6 +65,11 @@ Also supports snapshotting watchlists and optional full-chain snapshots (raw Yah
 - Commands: `snapshot-options`, `flow`
 - Design/usage + cron setup: `docs/OPTIONS_FLOW.md`
 
+### Automation (cron)
+Recommended recurring data pulls and reporting jobs, with order/dependencies.
+
+- Doc: `docs/AUTOMATION.md`
+
 ### Offline chain intelligence (from snapshots)
 Builds repeatable chain dashboards and diffs using the local snapshot files under `data/options_snapshots/`.
 

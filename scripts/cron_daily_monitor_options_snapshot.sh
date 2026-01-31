@@ -39,6 +39,29 @@ if [[ ! -f "${WATCHLISTS}" ]]; then
   exit 0
 fi
 
+if ! python3 - <<'PY' "${WATCHLISTS}"
+from __future__ import annotations
+
+import json
+import sys
+
+path = sys.argv[1]
+try:
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+except Exception:
+    sys.exit(1)
+
+watchlists = raw.get("watchlists") or {}
+symbols = watchlists.get("monitor") or []
+clean = [s.strip().upper() for s in symbols if isinstance(s, str) and s.strip()]
+sys.exit(0 if clean else 1)
+PY
+then
+  echo "[$(date)] Watchlist 'monitor' missing/empty in ${WATCHLISTS}; skipping monitor snapshot." >> "${LOG_DIR}/monitor_snapshot.log"
+  exit 0
+fi
+
 echo "[$(date)] Running monitor watchlist options snapshot..." >> "${LOG_DIR}/monitor_snapshot.log"
 
 "${VENV_BIN}/options-helper" snapshot-options "${PORTFOLIO}" \
@@ -49,4 +72,3 @@ echo "[$(date)] Running monitor watchlist options snapshot..." >> "${LOG_DIR}/mo
   --max-expiries 2 \
   --window-pct 1.0 \
   >> "${LOG_DIR}/monitor_snapshot.log" 2>&1
-
