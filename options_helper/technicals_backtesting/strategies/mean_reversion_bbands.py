@@ -5,9 +5,10 @@ from backtesting import Strategy
 
 
 def _format_dev(dev: float) -> str:
-    if float(dev).is_integer():
-        return str(int(dev))
-    return str(dev).replace(".", "p")
+    dev_f = float(dev)
+    if dev_f.is_integer():
+        return str(int(dev_f))
+    return f"{dev_f:g}".replace(".", "p")
 
 
 class MeanReversionBollinger(Strategy):
@@ -28,7 +29,11 @@ class MeanReversionBollinger(Strategy):
     use_weekly_filter = False
 
     def init(self) -> None:
-        if self.p_entry >= self.p_exit:
+        self._p_entry = float(self.p_entry)
+        self._p_exit = float(self.p_exit)
+        self._stop_mult_atr = float(self.stop_mult_atr)
+
+        if self._p_entry >= self._p_exit:
             raise ValueError("p_entry must be less than p_exit")
         dev_label = _format_dev(self.bb_dev)
         self._mavg_col = f"bb_mavg_{int(self.bb_window)}"
@@ -79,19 +84,19 @@ class MeanReversionBollinger(Strategy):
             and prev_close >= prev_lband
             and close < lband
         )
-        pband_entry = not np.isnan(pband) and pband <= self.p_entry
+        pband_entry = not np.isnan(pband) and pband <= self._p_entry
 
         if not self.position:
             if self._weekly_ok() and (cross_below or pband_entry):
                 stop_price = None
-                if self.stop_mult_atr and self.stop_mult_atr > 0 and not np.isnan(atr):
-                    stop_price = close - self.stop_mult_atr * atr
+                if self._stop_mult_atr and self._stop_mult_atr > 0 and not np.isnan(atr):
+                    stop_price = close - self._stop_mult_atr * atr
                 if stop_price is not None:
                     self.buy(sl=stop_price)
                 else:
                     self.buy()
             return
 
-        pband_exit = not np.isnan(pband) and pband >= self.p_exit
+        pband_exit = not np.isnan(pband) and pband >= self._p_exit
         if (not np.isnan(mavg) and close >= mavg) or pband_exit:
             self.position.close()

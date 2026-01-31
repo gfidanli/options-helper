@@ -21,6 +21,10 @@ class TrendPullbackATR(Strategy):
     use_weekly_filter = True
 
     def init(self) -> None:
+        self._add_z = float(self.add_z)
+        self._trim_ext_atr = float(self.trim_ext_atr)
+        self._stop_mult_atr = float(self.stop_mult_atr)
+
         self._atr_col = f"atr_{int(self.atr_window)}"
         self._z_col = f"zscore_{int(self.z_window)}"
         self._ext_col = f"extension_atr_{int(self.sma_window)}_{int(self.atr_window)}"
@@ -61,15 +65,15 @@ class TrendPullbackATR(Strategy):
         )
 
         if not self.position:
-            if self._weekly_ok() and not np.isnan(zscore) and zscore <= self.add_z:
+            if self._weekly_ok() and not np.isnan(zscore) and zscore <= self._add_z:
                 stop_price = None
-                if self.stop_mult_atr and self.stop_mult_atr > 0 and not np.isnan(atr):
-                    stop_price = close - self.stop_mult_atr * atr
+                if self._stop_mult_atr and self._stop_mult_atr > 0 and not np.isnan(atr):
+                    stop_price = close - self._stop_mult_atr * atr
                 if stop_price is not None:
                     self.buy(sl=stop_price)
                 else:
                     self.buy()
             return
 
-        if not np.isnan(extension) and extension >= self.trim_ext_atr:
+        if not np.isnan(extension) and extension >= self._trim_ext_atr:
             self.position.close()

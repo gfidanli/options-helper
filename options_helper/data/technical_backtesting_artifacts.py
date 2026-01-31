@@ -74,7 +74,7 @@ def write_artifacts(
     walk_forward_result: Any | None,
     optimize_meta: dict,
     data_meta: dict,
-    heatmap: pd.DataFrame | None = None,
+    heatmap: pd.DataFrame | pd.Series | None = None,
 ) -> ArtifactPaths:
     paths = build_artifact_paths(cfg, ticker=ticker, strategy=strategy)
     overwrite = bool(cfg["artifacts"].get("overwrite", False))

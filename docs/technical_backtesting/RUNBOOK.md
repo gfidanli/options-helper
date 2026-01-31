@@ -6,6 +6,7 @@ Install (pin versions in your repo as you prefer):
 - pandas, numpy
 - ta
 - backtesting
+- (optional, required for `optimization.method: sambo`) `sambo` + `scikit-learn`
 - (optional) TA-Lib
 
 ## 2) Upstream Data Fetch Requirements

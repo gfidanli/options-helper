@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
@@ -8,6 +9,51 @@ from backtesting import Backtest, Strategy
 
 from options_helper.technicals_backtesting.backtest.metrics import compute_custom_score, has_min_trades
 from options_helper.technicals_backtesting.constraints import ConstraintError, evaluate_constraint
+
+
+@dataclass(frozen=True)
+class _Choice:
+    """
+    Wrapper to force SAMBO to treat numeric parameters as categorical choices.
+
+    backtesting.py's SAMBO integration converts integer/float arrays into continuous
+    ranges. Wrapping values keeps dtype=object so only these discrete values are explored.
+    """
+
+    value: Any
+
+    def __int__(self) -> int:  # pragma: no cover - exercised indirectly
+        return int(self.value)
+
+    def __float__(self) -> float:  # pragma: no cover - exercised indirectly
+        return float(self.value)
+
+
+def _unwrap_value(val: Any) -> Any:
+    if isinstance(val, _Choice):
+        return val.value
+    return val
+
+
+def _prepare_search_space(search_space: dict, *, method: str) -> dict:
+    if method != "sambo":
+        return search_space
+    prepared: dict[str, Any] = {}
+    for k, values in search_space.items():
+        # Keep bools as-is (they already become categorical); wrap ints/floats.
+        if isinstance(values, (list, tuple)):
+            out = []
+            for v in values:
+                if isinstance(v, bool):
+                    out.append(v)
+                elif isinstance(v, (int, float)):
+                    out.append(_Choice(v))
+                else:
+                    out.append(v)
+            prepared[k] = out
+        else:
+            prepared[k] = values
+    return prepared
 
 
 def _bt_kwargs(bt_cfg: dict) -> dict:
@@ -27,11 +73,11 @@ def _bt_kwargs(bt_cfg: dict) -> dict:
 
 def _constraint_func(constraints: list[str]):
     def _inner(*args: Any, **kwargs: Any) -> bool:
-        params = {}
+        params: dict[str, Any] = {}
         if kwargs:
-            params = kwargs
+            params = {k: _unwrap_value(v) for k, v in kwargs.items()}
         elif args and isinstance(args[0], dict):
-            params = args[0]
+            params = {k: _unwrap_value(v) for k, v in args[0].items()}
         for expr in constraints:
             try:
                 if not evaluate_constraint(expr, params):
@@ -56,7 +102,7 @@ def optimize_params(
     *,
     warmup_bars: int = 0,
     return_heatmap: bool = False,
-) -> tuple[dict, pd.Series, pd.DataFrame | None]:
+) -> tuple[dict, pd.Series, pd.Series | None]:
     if df_features.empty:
         raise ValueError("Empty feature frame for optimization")
 
@@ -89,7 +135,8 @@ def optimize_params(
     if "random_state" in sig.parameters:
         opt_kwargs["random_state"] = sambo_cfg.get("random_state")
 
-    stats_or_tuple = bt.optimize(**search_space, **opt_kwargs)
+    prepared_space = _prepare_search_space(search_space, method=method)
+    stats_or_tuple = bt.optimize(**prepared_space, **opt_kwargs)
     if return_heatmap:
         stats, heatmap = stats_or_tuple
     else:
@@ -97,7 +144,8 @@ def optimize_params(
 
     best_params = dict(stats._strategy.__dict__)
     best_params = {
-        k: v for k, v in best_params.items() if not k.startswith("_") and k in search_space
+        k: _unwrap_value(v)
+        for k, v in best_params.items()
+        if not k.startswith("_") and k in search_space
     }
     return best_params, stats, heatmap
-
