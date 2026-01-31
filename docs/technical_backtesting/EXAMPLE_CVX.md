@@ -87,3 +87,14 @@ Primary cause:
 Practical implication:
 - Unless you extend the validation window (e.g., 12 months) or relax the trade-count gating for validation, walk-forward will often fail stability checks and fall back to defaults for “slow” strategies.
 
+## 7) (Optional) In-sample Optimization Snapshot
+
+If you want a quick “best in-sample” fit (not walk-forward), run `technicals optimize`.
+
+For this CVX run we wrote in-sample results to a separate base dir to avoid overwriting walk-forward artifacts:
+- `artifacts/technicals_cvx_optimize/params/CVX/TrendPullbackATR.json`
+- `artifacts/technicals_cvx_optimize/params/CVX/MeanReversionBollinger.json`
+
+Observed (in-sample) summary:
+- TrendPullbackATR best params: `atr_window=21, sma_window=30, z_window=30, add_z=-1.0, trim_ext_atr=1.0, stop_mult_atr=2.5` (B&H return over same window still higher).
+- MeanReversionBollinger best params: `bb_window=20, bb_dev=2.5, p_entry=0.05, p_exit=0.4, atr_window=21, stop_mult_atr=2.5` (higher drawdown; walk-forward stability still failed).
