@@ -117,14 +117,42 @@ options-helper flow portfolio.json --watchlists-path data/watchlists.json --all-
 
 The report computes per-contract:
 - `ΔOI = OI_today - OI_prev`
-- `ΔOI_notional ≈ ΔOI * lastPrice * 100`
-- `volume_notional ≈ volume * lastPrice * 100`
+- `mark` (best-effort mid/last/ask/bid)
+- `premium_notional ≈ ΔOI * mark * 100`
+- `volume_notional ≈ volume * mark * 100`
+- `delta_notional ≈ ΔOI * bs_delta * spot * 100` (best-effort; spot from `meta.json`)
 
 And classifies activity (heuristic):
 - **building**: ΔOI significantly positive
 - **unwinding**: ΔOI significantly negative
 - **churn**: high volume but small ΔOI
 - **unknown**: insufficient prior snapshot coverage
+
+## Flow report (windowed + aggregated “zones”)
+Contract-level lists are useful but noisy. You can net multiple snapshot deltas and aggregate by strike/expiry:
+
+```bash
+options-helper flow portfolio.json --symbol CVX --window 5 --group-by strike
+options-helper flow portfolio.json --symbol CVX --window 5 --group-by expiry
+options-helper flow portfolio.json --symbol CVX --window 5 --group-by expiry-strike --top 20
+```
+
+Notes:
+- `--window N` nets the last **N snapshot-to-snapshot deltas** (requires **N+1 snapshots** for the symbol).
+- `--group-by` controls aggregation grain:
+  - `strike`: `(optionType, strike)`
+  - `expiry`: `(optionType, expiry)`
+  - `expiry-strike`: `(optionType, expiry, strike)`
+
+### Saving a JSON artifact
+You can persist the aggregated net flow output as JSON:
+
+```bash
+options-helper flow portfolio.json --symbol CVX --window 5 --group-by expiry-strike --out data/reports
+```
+
+Writes under:
+- `data/reports/flow/{SYMBOL}/{FROM}_to_{TO}_w{N}_{group_by}.json`
 
 ## Automation (cron)
 This repo includes scripts to run the snapshot once per weekday:

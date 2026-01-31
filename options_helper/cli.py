@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 import typer
@@ -12,7 +13,7 @@ from rich.console import Console
 from options_helper.analysis.advice import Advice, PositionMetrics, advise
 from options_helper.analysis.chain_metrics import compute_chain_report
 from options_helper.analysis.compare_metrics import compute_compare_report
-from options_helper.analysis.flow import compute_flow, summarize_flow
+from options_helper.analysis.flow import FlowGroupBy, aggregate_flow_window, compute_flow, summarize_flow
 from options_helper.analysis.performance import compute_daily_performance_quote
 from options_helper.analysis.research import (
     Direction,
@@ -25,6 +26,7 @@ from options_helper.analysis.roll_plan import compute_roll_plan
 from options_helper.analysis.greeks import add_black_scholes_greeks_to_chain, black_scholes_greeks
 from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, sma
 from options_helper.data.candles import CandleStore, last_close
+from options_helper.data.earnings import EarningsRecord, EarningsStore
 from options_helper.data.options_snapshots import OptionsSnapshotStore
 from options_helper.data.yf_client import DataFetchError, YFinanceClient, contract_row_by_strike
 from options_helper.models import OptionType, Position, RiskProfile
@@ -646,9 +648,31 @@ def flow_report(
         "--all-watchlists",
         help="Report flow for all watchlists in the watchlists store (instead of portfolio positions).",
     ),
+    symbol: str | None = typer.Option(
+        None,
+        "--symbol",
+        help="Only report a single symbol (overrides portfolio/watchlists selection).",
+    ),
+    window: int = typer.Option(
+        1,
+        "--window",
+        min=1,
+        max=30,
+        help="Number of snapshot-to-snapshot deltas to net (requires N+1 snapshots).",
+    ),
+    group_by: str = typer.Option(
+        "contract",
+        "--group-by",
+        help="Aggregation mode: contract|strike|expiry|expiry-strike",
+    ),
     top: int = typer.Option(10, "--top", min=1, max=100, help="Top contracts per symbol to display."),
+    out: Path | None = typer.Option(
+        None,
+        "--out",
+        help="Output root for saved artifacts (writes under {out}/flow/{SYMBOL}/).",
+    ),
 ) -> None:
-    """Report day-to-day OI/volume deltas from locally captured snapshots."""
+    """Report OI/volume deltas from locally captured snapshots (single-day or windowed)."""
     portfolio = load_portfolio(portfolio_path)
     console = Console()
 
@@ -674,55 +698,180 @@ def flow_report(
             symbols = sorted(symbols_set)
     else:
         symbols = sorted({p.symbol for p in portfolio.positions})
-        if not symbols:
+        if not symbols and symbol is None:
             console.print("No positions.")
             raise typer.Exit(0)
+
+    if symbol is not None:
+        symbols = [symbol.upper()]
 
     pos_keys = {(p.symbol, p.expiry.isoformat(), float(p.strike), p.option_type) for p in portfolio.positions}
 
     from rich.table import Table
 
+    group_by_norm = group_by.strip().lower()
+    valid_group_by = {"contract", "strike", "expiry", "expiry-strike"}
+    if group_by_norm not in valid_group_by:
+        raise typer.BadParameter(
+            f"Invalid --group-by (use {', '.join(sorted(valid_group_by))})",
+            param_hint="--group-by",
+        )
+    group_by_val = cast(FlowGroupBy, group_by_norm)
+
     for sym in symbols:
-        dates = store.latest_dates(sym, n=2)
-        if len(dates) < 2:
-            console.print(f"[yellow]No flow data for {sym}:[/yellow] need at least 2 snapshots.")
+        need = window + 1
+        dates = store.latest_dates(sym, n=need)
+        if len(dates) < need:
+            console.print(f"[yellow]No flow data for {sym}:[/yellow] need at least {need} snapshots.")
             continue
 
-        prev_date, today_date = dates[-2], dates[-1]
-        today_df = store.load_day(sym, today_date)
-        prev_df = store.load_day(sym, prev_date)
-        if today_df.empty or prev_df.empty:
-            console.print(f"[yellow]No flow data for {sym}:[/yellow] empty snapshot(s).")
+        pair_flows: list[pd.DataFrame] = []
+        for prev_date, today_date in zip(dates[:-1], dates[1:], strict=False):
+            today_df = store.load_day(sym, today_date)
+            prev_df = store.load_day(sym, prev_date)
+            if today_df.empty or prev_df.empty:
+                console.print(f"[yellow]No flow data for {sym}:[/yellow] empty snapshot(s) in window.")
+                pair_flows = []
+                break
+
+            spot = _spot_from_meta(store.load_meta(sym, today_date))
+            pair_flows.append(compute_flow(today_df, prev_df, spot=spot))
+
+        if not pair_flows:
             continue
 
-        flow = compute_flow(today_df, prev_df)
-        summary = summarize_flow(flow)
+        start_date, end_date = dates[0], dates[-1]
+
+        # Backward-compatible view: window=1 + per-contract list.
+        if window == 1 and group_by_norm == "contract":
+            prev_date, today_date = dates[-2], dates[-1]
+            flow = pair_flows[-1]
+            summary = summarize_flow(flow)
+
+            console.print(
+                f"\n[bold]{sym}[/bold] flow {prev_date.isoformat()} → {today_date.isoformat()} | "
+                f"calls ΔOI$={summary['calls_delta_oi_notional']:,.0f} | puts ΔOI$={summary['puts_delta_oi_notional']:,.0f}"
+            )
+
+            if flow.empty:
+                console.print("No flow rows.")
+                continue
+
+            if "deltaOI_notional" in flow.columns:
+                flow = flow.assign(_abs=flow["deltaOI_notional"].abs())
+                flow = flow.sort_values("_abs", ascending=False).drop(columns=["_abs"])
+
+            table = Table(title=f"{sym} top {top} contracts by |ΔOI_notional|")
+            table.add_column("*")
+            table.add_column("Expiry")
+            table.add_column("Type")
+            table.add_column("Strike", justify="right")
+            table.add_column("ΔOI", justify="right")
+            table.add_column("OI", justify="right")
+            table.add_column("Vol", justify="right")
+            table.add_column("ΔOI$", justify="right")
+            table.add_column("Class")
+
+            for _, row in flow.head(top).iterrows():
+                expiry = str(row.get("expiry", "-"))
+                opt_type = str(row.get("optionType", "-"))
+                strike = row.get("strike")
+                strike_val = float(strike) if strike is not None and not pd.isna(strike) else None
+                key = (sym, expiry, strike_val if strike_val is not None else float("nan"), opt_type)
+                in_port = key in pos_keys if strike_val is not None else False
+
+                table.add_row(
+                    "*" if in_port else "",
+                    expiry,
+                    opt_type,
+                    "-" if strike_val is None else f"{strike_val:g}",
+                    "-" if pd.isna(row.get("deltaOI")) else f"{row.get('deltaOI'):+.0f}",
+                    "-" if pd.isna(row.get("openInterest")) else f"{row.get('openInterest'):.0f}",
+                    "-" if pd.isna(row.get("volume")) else f"{row.get('volume'):.0f}",
+                    "-" if pd.isna(row.get("deltaOI_notional")) else f"{row.get('deltaOI_notional'):+.0f}",
+                    str(row.get("flow_class", "-")),
+                )
+
+            console.print(table)
+
+            if out is not None:
+                net = aggregate_flow_window(pair_flows, group_by="contract")
+                net = net.assign(_abs=net["deltaOI_notional"].abs() if "deltaOI_notional" in net.columns else 0.0)
+                sort_cols = ["_abs"]
+                ascending = [False]
+                for c in ["expiry", "strike", "optionType", "contractSymbol"]:
+                    if c in net.columns:
+                        sort_cols.append(c)
+                        ascending.append(True)
+                net = net.sort_values(sort_cols, ascending=ascending, na_position="last").drop(columns=["_abs"])
+
+                base = out / "flow" / sym.upper()
+                base.mkdir(parents=True, exist_ok=True)
+                out_path = base / f"{prev_date.isoformat()}_to_{today_date.isoformat()}_w1_contract.json"
+                artifact_net = net.rename(
+                    columns={
+                        "contractSymbol": "contract_symbol",
+                        "optionType": "option_type",
+                        "deltaOI": "delta_oi",
+                        "deltaOI_notional": "delta_oi_notional",
+                        "size": "n_pairs",
+                    }
+                )
+                payload = {
+                    "schema_version": 1,
+                    "symbol": sym.upper(),
+                    "from_date": prev_date.isoformat(),
+                    "to_date": today_date.isoformat(),
+                    "window": 1,
+                    "group_by": "contract",
+                    "snapshot_dates": [prev_date.isoformat(), today_date.isoformat()],
+                    "net": artifact_net.where(pd.notna(artifact_net), None).to_dict(orient="records"),
+                }
+                out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+                console.print(f"\nSaved: {out_path}")
+            continue
+
+        # Windowed + aggregated views.
+        net = aggregate_flow_window(pair_flows, group_by=group_by_val)
+        if net.empty:
+            console.print(f"\n[bold]{sym}[/bold] flow net window={window} ({start_date.isoformat()} → {end_date.isoformat()})")
+            console.print("No net flow rows.")
+            continue
+
+        calls_premium = float(net[net["optionType"] == "call"]["deltaOI_notional"].sum()) if "deltaOI_notional" in net.columns else 0.0
+        puts_premium = float(net[net["optionType"] == "put"]["deltaOI_notional"].sum()) if "deltaOI_notional" in net.columns else 0.0
 
         console.print(
-            f"\n[bold]{sym}[/bold] flow {prev_date.isoformat()} → {today_date.isoformat()} | "
-            f"calls ΔOI$={summary['calls_delta_oi_notional']:,.0f} | puts ΔOI$={summary['puts_delta_oi_notional']:,.0f}"
+            f"\n[bold]{sym}[/bold] flow net window={window} ({start_date.isoformat()} → {end_date.isoformat()}) | "
+            f"group-by={group_by_norm} | calls ΔOI$={calls_premium:,.0f} | puts ΔOI$={puts_premium:,.0f}"
         )
 
-        if flow.empty:
-            console.print("No flow rows.")
-            continue
+        net = net.assign(_abs=net["deltaOI_notional"].abs() if "deltaOI_notional" in net.columns else 0.0)
+        sort_cols = ["_abs"]
+        ascending = [False]
+        for c in ["expiry", "strike", "optionType", "contractSymbol"]:
+            if c in net.columns:
+                sort_cols.append(c)
+                ascending.append(True)
 
-        if "deltaOI_notional" in flow.columns:
-            flow = flow.assign(_abs=flow["deltaOI_notional"].abs())
-            flow = flow.sort_values("_abs", ascending=False).drop(columns=["_abs"])
+        net = net.sort_values(sort_cols, ascending=ascending, na_position="last").drop(columns=["_abs"])
 
-        table = Table(title=f"{sym} top {top} contracts by |ΔOI_notional|")
-        table.add_column("*")
-        table.add_column("Expiry")
-        table.add_column("Type")
-        table.add_column("Strike", justify="right")
-        table.add_column("ΔOI", justify="right")
-        table.add_column("OI", justify="right")
-        table.add_column("Vol", justify="right")
-        table.add_column("ΔOI$", justify="right")
-        table.add_column("Class")
+        def _render_zone_table(title: str) -> Table:
+            t = Table(title=title)
+            if group_by_norm == "contract":
+                t.add_column("*")
+            if group_by_norm in {"expiry", "expiry-strike", "contract"}:
+                t.add_column("Expiry")
+            if group_by_norm in {"strike", "expiry-strike", "contract"}:
+                t.add_column("Strike", justify="right")
+            t.add_column("Type")
+            t.add_column("Net ΔOI", justify="right")
+            t.add_column("Net ΔOI$", justify="right")
+            t.add_column("Net Δ$", justify="right")
+            t.add_column("N", justify="right")
+            return t
 
-        for _, row in flow.head(top).iterrows():
+        def _add_zone_row(t: Table, row) -> None:
             expiry = str(row.get("expiry", "-"))
             opt_type = str(row.get("optionType", "-"))
             strike = row.get("strike")
@@ -730,19 +879,62 @@ def flow_report(
             key = (sym, expiry, strike_val if strike_val is not None else float("nan"), opt_type)
             in_port = key in pos_keys if strike_val is not None else False
 
-            table.add_row(
-                "*" if in_port else "",
-                expiry,
-                opt_type,
-                "-" if strike_val is None else f"{strike_val:g}",
-                "-" if pd.isna(row.get("deltaOI")) else f"{row.get('deltaOI'):+.0f}",
-                "-" if pd.isna(row.get("openInterest")) else f"{row.get('openInterest'):.0f}",
-                "-" if pd.isna(row.get("volume")) else f"{row.get('volume'):.0f}",
-                "-" if pd.isna(row.get("deltaOI_notional")) else f"{row.get('deltaOI_notional'):+.0f}",
-                str(row.get("flow_class", "-")),
+            cells: list[str] = []
+            if group_by_norm == "contract":
+                cells.append("*" if in_port else "")
+            if group_by_norm in {"expiry", "expiry-strike", "contract"}:
+                cells.append(expiry)
+            if group_by_norm in {"strike", "expiry-strike", "contract"}:
+                cells.append("-" if strike_val is None else f"{strike_val:g}")
+            cells.extend(
+                [
+                    opt_type,
+                    "-" if pd.isna(row.get("deltaOI")) else f"{row.get('deltaOI'):+.0f}",
+                    "-" if pd.isna(row.get("deltaOI_notional")) else f"{row.get('deltaOI_notional'):+.0f}",
+                    "-" if pd.isna(row.get("delta_notional")) else f"{row.get('delta_notional'):+.0f}",
+                    "-" if pd.isna(row.get("size")) else f"{int(row.get('size')):d}",
+                ]
             )
+            t.add_row(*cells)
 
-        console.print(table)
+        building = net[net["deltaOI_notional"] > 0].head(top)
+        unwinding = net[net["deltaOI_notional"] < 0].head(top)
+
+        t_build = _render_zone_table(f"{sym} building zones (top {top} by |net ΔOI$|)")
+        for _, row in building.iterrows():
+            _add_zone_row(t_build, row)
+        console.print(t_build)
+
+        t_unwind = _render_zone_table(f"{sym} unwinding zones (top {top} by |net ΔOI$|)")
+        for _, row in unwinding.iterrows():
+            _add_zone_row(t_unwind, row)
+        console.print(t_unwind)
+
+        if out is not None:
+            base = out / "flow" / sym.upper()
+            base.mkdir(parents=True, exist_ok=True)
+            out_path = base / f"{start_date.isoformat()}_to_{end_date.isoformat()}_w{window}_{group_by_norm}.json"
+            artifact_net = net.rename(
+                columns={
+                    "contractSymbol": "contract_symbol",
+                    "optionType": "option_type",
+                    "deltaOI": "delta_oi",
+                    "deltaOI_notional": "delta_oi_notional",
+                    "size": "n_pairs",
+                }
+            )
+            payload = {
+                "schema_version": 1,
+                "symbol": sym.upper(),
+                "from_date": start_date.isoformat(),
+                "to_date": end_date.isoformat(),
+                "window": window,
+                "group_by": group_by_norm,
+                "snapshot_dates": [d.isoformat() for d in dates],
+                "net": artifact_net.where(pd.notna(artifact_net), None).to_dict(orient="records"),
+            }
+            out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+            console.print(f"\nSaved: {out_path}")
 
 
 @app.command("chain-report")
@@ -1009,6 +1201,86 @@ def roll_plan(
     except Exception as exc:  # noqa: BLE001
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1)
+
+
+@app.command("earnings")
+def earnings(
+    symbol: str = typer.Argument(..., help="Ticker symbol (e.g. IREN)."),
+    refresh: bool = typer.Option(False, "--refresh", help="Fetch from yfinance and update the local cache."),
+    set_date: str | None = typer.Option(
+        None,
+        "--set",
+        help="Manually set the next earnings date (YYYY-MM-DD). Overrides cached value.",
+    ),
+    clear: bool = typer.Option(False, "--clear", help="Delete cached earnings for the symbol."),
+    cache_dir: Path = typer.Option(
+        Path("data/earnings"),
+        "--cache-dir",
+        help="Directory for cached earnings dates.",
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Print the cached record as JSON."),
+) -> None:
+    """Show/cache the next earnings date (best-effort; Yahoo can be wrong/stale)."""
+    console = Console(width=120)
+    store = EarningsStore(cache_dir)
+    sym = symbol.upper().strip()
+
+    if clear:
+        deleted = store.delete(sym)
+        console.print(f"Deleted: {sym}" if deleted else f"No cache found for: {sym}")
+        return
+
+    record: EarningsRecord | None = None
+
+    if set_date is not None:
+        d = _parse_date(set_date)
+        record = EarningsRecord.manual(symbol=sym, next_earnings_date=d, note="Set via CLI --set.")
+        out_path = store.save(record)
+        console.print(f"Saved: {out_path}")
+    else:
+        record = store.load(sym)
+        if refresh or record is None:
+            client = YFinanceClient()
+            try:
+                ev = client.get_next_earnings_event(sym)
+            except DataFetchError as exc:
+                console.print(f"[red]Data error:[/red] {exc}")
+                raise typer.Exit(1)
+            record = EarningsRecord(
+                symbol=sym,
+                fetched_at=datetime.now(tz=timezone.utc),
+                source=ev.source,
+                next_earnings_date=ev.next_date,
+                window_start=ev.window_start,
+                window_end=ev.window_end,
+                raw=ev.raw,
+                notes=[],
+            )
+            out_path = store.save(record)
+            console.print(f"Saved: {out_path}")
+
+    if record is None:
+        console.print(f"No earnings record for {sym}.")
+        raise typer.Exit(1)
+
+    if json_out:
+        console.print_json(json.dumps(record.model_dump(mode='json'), sort_keys=True))
+        return
+
+    today = date.today()
+    if record.next_earnings_date is None:
+        console.print(f"{sym} next earnings date: [yellow]unknown[/yellow] (source={record.source})")
+        return
+
+    days = (record.next_earnings_date - today).days
+    suffix = "today" if days == 0 else f"in {days} day(s)"
+    console.print(f"{sym} next earnings: [bold]{record.next_earnings_date.isoformat()}[/bold] ({suffix})")
+    if record.window_start or record.window_end:
+        console.print(
+            f"Earnings window: {record.window_start.isoformat() if record.window_start else '-'}"
+            f" → {record.window_end.isoformat() if record.window_end else '-'}"
+        )
+    console.print(f"Source: {record.source} (fetched_at={record.fetched_at.isoformat()})")
 
 
 @app.command()

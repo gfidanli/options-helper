@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Literal
 
 import pandas as pd
+
+from options_helper.analysis.chain_metrics import compute_mark_price
 
 
 class FlowClass(str, Enum):
@@ -56,10 +59,13 @@ def classify_flow(
     - OI generally updates once/day; volume is same-day.
     - This is not a definitive "smart money" label; it's a positioning proxy.
     """
-    if oi_prev is None or oi_today is None or delta_oi is None:
+    def _missing(x: float | None) -> bool:
+        return x is None or pd.isna(x)
+
+    if _missing(oi_prev) or _missing(oi_today) or _missing(delta_oi):
         return FlowClass.UNKNOWN
 
-    volume = volume or 0.0
+    volume = 0.0 if volume is None or pd.isna(volume) else float(volume)
 
     # Adaptive threshold: require a meaningful OI change to classify build/unwind.
     threshold = max(10.0, 0.10 * max(oi_prev, 0.0))
@@ -77,7 +83,7 @@ def classify_flow(
     return FlowClass.UNKNOWN
 
 
-def compute_flow(today: pd.DataFrame, prev: pd.DataFrame) -> pd.DataFrame:
+def compute_flow(today: pd.DataFrame, prev: pd.DataFrame, *, spot: float | None = None) -> pd.DataFrame:
     """
     Compute day-to-day flow metrics from two option chain snapshots.
 
@@ -104,26 +110,34 @@ def compute_flow(today: pd.DataFrame, prev: pd.DataFrame) -> pd.DataFrame:
 
     merged = t.merge(p, on="contractSymbol", how="left")
 
-    # Normalize types
-    merged["lastPrice"] = merged.get("lastPrice").map(_as_float) if "lastPrice" in merged.columns else None
-    merged["volume"] = merged.get("volume").map(_as_float) if "volume" in merged.columns else None
-    merged["openInterest"] = merged.get("openInterest").map(_as_float) if "openInterest" in merged.columns else None
-    merged["openInterest_prev"] = merged["openInterest_prev"].map(_as_float)
+    # Normalize types (prefer numeric dtype + NaN for missing)
+    merged["lastPrice"] = (
+        pd.to_numeric(merged.get("lastPrice"), errors="coerce") if "lastPrice" in merged.columns else float("nan")
+    )
+    merged["volume"] = pd.to_numeric(merged.get("volume"), errors="coerce") if "volume" in merged.columns else float("nan")
+    merged["openInterest"] = (
+        pd.to_numeric(merged.get("openInterest"), errors="coerce") if "openInterest" in merged.columns else float("nan")
+    )
+    merged["openInterest_prev"] = pd.to_numeric(merged.get("openInterest_prev"), errors="coerce")
 
     merged["deltaOI"] = merged["openInterest"] - merged["openInterest_prev"]
 
-    merged["deltaOI_notional"] = merged["deltaOI"] * merged["lastPrice"] * 100.0
-    merged["volume_notional"] = merged["volume"] * merged["lastPrice"] * 100.0
+    # Deterministic mark price for notional computations.
+    merged["mark"] = compute_mark_price(merged)
 
-    def _vol_oi(row) -> float | None:
-        oi_prev = row["openInterest_prev"]
-        vol = row["volume"]
-        if oi_prev is None or vol is None:
-            return None
-        denom = max(float(oi_prev), 1.0)
-        return float(vol) / denom
+    merged["deltaOI_notional"] = merged["deltaOI"] * merged["mark"] * 100.0
+    merged["volume_notional"] = merged["volume"] * merged["mark"] * 100.0
 
-    merged["vol_oi_ratio"] = merged.apply(_vol_oi, axis=1)
+    denom = merged["openInterest_prev"].clip(lower=1.0)
+    merged["vol_oi_ratio"] = merged["volume"] / denom
+
+    # Best-effort delta-notional:
+    #   ΔOI * delta * spot * 100
+    if spot is not None and spot > 0 and "bs_delta" in merged.columns:
+        merged["bs_delta"] = pd.to_numeric(merged.get("bs_delta"), errors="coerce")
+        merged["delta_notional"] = merged["deltaOI"] * merged["bs_delta"] * float(spot) * 100.0
+    else:
+        merged["delta_notional"] = float("nan")
 
     def _classify(row) -> str:
         return classify_flow(
@@ -155,3 +169,49 @@ def summarize_flow(flow: pd.DataFrame) -> dict[str, float]:
         "puts_delta_oi_notional": _sum_where("put"),
     }
 
+
+FlowGroupBy = Literal["contract", "strike", "expiry", "expiry-strike"]
+
+
+def aggregate_flow_window(flows: list[pd.DataFrame], *, group_by: FlowGroupBy) -> pd.DataFrame:
+    """
+    Net and aggregate a list of per-day flow frames (e.g., from multiple snapshot pairs).
+
+    This is a pure aggregation step. The caller is responsible for computing per-day flow frames
+    (including spot-aware delta-notional) via `compute_flow`.
+    """
+    non_empty = [f for f in flows if f is not None and not f.empty]
+    if not non_empty:
+        return pd.DataFrame()
+
+    df = pd.concat(non_empty, ignore_index=True)
+
+    group_cols: list[str]
+    if group_by == "contract":
+        group_cols = ["contractSymbol", "expiry", "optionType", "strike"]
+    elif group_by == "strike":
+        group_cols = ["optionType", "strike"]
+    elif group_by == "expiry":
+        group_cols = ["optionType", "expiry"]
+    elif group_by == "expiry-strike":
+        group_cols = ["optionType", "expiry", "strike"]
+    else:
+        raise ValueError(f"unsupported group_by: {group_by}")
+
+    missing = [c for c in group_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"flow missing columns required for group_by={group_by}: {missing}")
+
+    metric_cols = ["deltaOI", "deltaOI_notional", "volume_notional", "delta_notional"]
+    for c in metric_cols:
+        if c not in df.columns:
+            df[c] = float("nan")
+
+    sub = df[group_cols + metric_cols].copy()
+    for c in metric_cols:
+        sub[c] = pd.to_numeric(sub[c], errors="coerce")
+
+    agg = {c: "sum" for c in metric_cols}
+    grouped = sub.groupby(group_cols, as_index=False, sort=True).agg(agg)
+    grouped = grouped.merge(sub.groupby(group_cols, as_index=False, sort=True).size(), on=group_cols, how="left")
+    return grouped
