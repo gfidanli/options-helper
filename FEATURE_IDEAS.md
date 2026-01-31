@@ -1,5 +1,7 @@
 # Feature Ideas (Backlog)
 
+For a ranked backlog with full PRDs, milestones, and dependencies, see `docs/BACKLOG.md`.
+
 ## Research + Flow Integration (Conviction Score)
 Enhance `options-helper research` by incorporating the latest locally captured options-flow snapshot deltas:
 
@@ -23,4 +25,3 @@ Flow currently snapshots only **portfolio symbols and expiries in positions**. E
 - Snapshot windowed chains for a watchlist symbol set (configurable cadence).
 - Allow expiry selection rules (e.g., nearest monthly, 30–90DTE, farthest LEAPS).
 - Surface the same flow summary (`calls ΔOI$ / puts ΔOI$`) inside `research`.
-

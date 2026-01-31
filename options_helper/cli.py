@@ -18,7 +18,7 @@ from options_helper.analysis.research import (
     select_option_candidate,
     suggest_trade_levels,
 )
-from options_helper.analysis.greeks import black_scholes_greeks
+from options_helper.analysis.greeks import add_black_scholes_greeks_to_chain, black_scholes_greeks
 from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, sma
 from options_helper.data.candles import CandleStore, last_close
 from options_helper.data.options_snapshots import OptionsSnapshotStore
@@ -336,31 +336,106 @@ def snapshot_options(
         "--spot-period",
         help="Candle period used to estimate spot price from daily candles.",
     ),
+    watchlists_path: Path = typer.Option(
+        Path("data/watchlists.json"),
+        "--watchlists-path",
+        help="Path to watchlists JSON store (used with --watchlist/--all-watchlists).",
+    ),
+    watchlist: list[str] = typer.Option(
+        [],
+        "--watchlist",
+        help="Watchlist name to snapshot (repeatable). When provided, snapshots those watchlists instead of portfolio positions.",
+    ),
+    all_watchlists: bool = typer.Option(
+        False,
+        "--all-watchlists",
+        help="Snapshot all watchlists in the watchlists store (instead of portfolio positions).",
+    ),
+    all_expiries: bool = typer.Option(
+        False,
+        "--all-expiries",
+        help="Snapshot all expiries per symbol (instead of just expiries in portfolio positions).",
+    ),
+    full_chain: bool = typer.Option(
+        False,
+        "--full-chain",
+        help="Snapshot the full Yahoo options payload per expiry (writes .raw.json + a full CSV). Implies --all-expiries and disables strike-window filtering.",
+    ),
+    max_expiries: int | None = typer.Option(
+        None,
+        "--max-expiries",
+        min=1,
+        help="Optional cap on expiries per symbol (nearest first). Useful for watchlists or --full-chain.",
+    ),
+    risk_free_rate: float = typer.Option(
+        0.0,
+        "--risk-free-rate",
+        help="Risk-free rate used for best-effort Black-Scholes Greeks (e.g. 0.05 = 5%).",
+    ),
 ) -> None:
-    """Save a once-daily options chain snapshot (windowed around spot) for flow analysis."""
+    """Save a once-daily options chain snapshot (windowed around spot by default) for flow analysis."""
     portfolio = load_portfolio(portfolio_path)
     console = Console()
-
-    if not portfolio.positions:
-        console.print("No positions.")
-        raise typer.Exit(0)
 
     store = OptionsSnapshotStore(cache_dir)
     candle_store = CandleStore(candle_cache_dir)
     client = YFinanceClient()
 
+    want_full_chain = full_chain
+    want_all_expiries = all_expiries or want_full_chain
+
+    use_watchlists = bool(watchlist) or all_watchlists
+
+    watchlists_used: list[str] = []
     expiries_by_symbol: dict[str, set[date]] = {}
-    for p in portfolio.positions:
-        expiries_by_symbol.setdefault(p.symbol, set()).add(p.expiry)
+    symbols: list[str]
+
+    if use_watchlists:
+        wl = load_watchlists(watchlists_path)
+        if all_watchlists:
+            watchlists_used = sorted(wl.watchlists.keys())
+            symbols = sorted({s for syms in wl.watchlists.values() for s in syms})
+            if not symbols:
+                console.print(f"No watchlists in {watchlists_path}")
+                raise typer.Exit(0)
+        else:
+            symbols_set: set[str] = set()
+            for name in watchlist:
+                syms = wl.get(name)
+                if not syms:
+                    raise typer.BadParameter(
+                        f"Watchlist '{name}' is empty or missing in {watchlists_path}",
+                        param_hint="--watchlist",
+                    )
+                symbols_set.update(syms)
+            symbols = sorted(symbols_set)
+            watchlists_used = sorted(set(watchlist))
+    else:
+        if not portfolio.positions:
+            console.print("No positions.")
+            raise typer.Exit(0)
+        for p in portfolio.positions:
+            expiries_by_symbol.setdefault(p.symbol, set()).add(p.expiry)
+        symbols = sorted(expiries_by_symbol.keys())
 
     # Snapshot folder date should reflect the data period (latest available daily candle),
     # not the wall-clock run date. This matters for pre-market runs where the latest
     # daily candle is still yesterday's close.
     dates_used: set[date] = set()
 
-    console.print(f"Snapshotting options chains for {len(expiries_by_symbol)} symbol(s)...")
+    mode = "watchlists" if use_watchlists else "portfolio"
+    console.print(
+        f"Snapshotting options chains for {len(symbols)} symbol(s) "
+        f"({mode}, {'full' if want_full_chain else 'windowed'})..."
+    )
 
-    for symbol, expiries in sorted(expiries_by_symbol.items()):
+    # If the user snapshots watchlists without explicitly asking for all expiries/full-chain,
+    # default to the nearest couple expiries to keep runtime and storage sane.
+    effective_max_expiries = max_expiries
+    if use_watchlists and not want_all_expiries and effective_max_expiries is None:
+        effective_max_expiries = 2
+
+    for symbol in symbols:
         history = candle_store.get_daily_history(symbol, period=spot_period)
         spot = last_close(history)
         data_date: date | None = history.index.max().date() if not history.empty else None
@@ -388,13 +463,85 @@ def snapshot_options(
 
         meta = {
             "spot": spot,
-            "window_pct": window_pct,
-            "strike_min": strike_min,
-            "strike_max": strike_max,
+            "spot_period": spot_period,
+            "full_chain": want_full_chain,
+            "all_expiries": want_all_expiries,
+            "risk_free_rate": risk_free_rate,
+            "window_pct": None if want_full_chain else window_pct,
+            "strike_min": None if want_full_chain else strike_min,
+            "strike_max": None if want_full_chain else strike_max,
             "snapshot_date": effective_snapshot_date.isoformat(),
+            "symbol_source": mode,
+            "watchlists": watchlists_used,
         }
-        for exp in sorted(expiries):
-            chain = client.get_options_chain(symbol, exp)
+
+        expiries: list[date]
+        if not use_watchlists and not want_all_expiries:
+            expiries = sorted(expiries_by_symbol.get(symbol, set()))
+        else:
+            expiry_strs = list(client.ticker(symbol).options or [])
+            if not expiry_strs:
+                console.print(f"[yellow]Warning:[/yellow] {symbol}: no listed option expiries; skipping snapshot.")
+                continue
+            if effective_max_expiries is not None:
+                expiry_strs = expiry_strs[:effective_max_expiries]
+            expiries = [date.fromisoformat(s) for s in expiry_strs]
+
+        for exp in expiries:
+            if want_full_chain:
+                try:
+                    raw = client.get_options_chain_raw(symbol, exp)
+                except DataFetchError as exc:
+                    console.print(
+                        f"[yellow]Warning:[/yellow] {symbol} {exp.isoformat()}: {exc}; skipping snapshot."
+                    )
+                    continue
+
+                # Capture the full payload (raw) + a denormalized CSV for convenience.
+                meta_with_underlying = dict(meta)
+                meta_with_underlying["underlying"] = raw.get("underlying", {})
+
+                calls = pd.DataFrame(raw.get("calls", []))
+                puts = pd.DataFrame(raw.get("puts", []))
+                calls["optionType"] = "call"
+                puts["optionType"] = "put"
+                calls["expiry"] = exp.isoformat()
+                puts["expiry"] = exp.isoformat()
+
+                df = pd.concat([calls, puts], ignore_index=True)
+                df = add_black_scholes_greeks_to_chain(
+                    df,
+                    spot=spot,
+                    expiry=exp,
+                    as_of=effective_snapshot_date,
+                    r=risk_free_rate,
+                )
+
+                store.save_expiry_snapshot(
+                    symbol,
+                    effective_snapshot_date,
+                    expiry=exp,
+                    snapshot=df,
+                    meta=meta_with_underlying,
+                )
+                store.save_expiry_snapshot_raw(
+                    symbol,
+                    effective_snapshot_date,
+                    expiry=exp,
+                    raw=raw,
+                )
+                console.print(f"{symbol} {exp.isoformat()}: saved {len(df)} contracts (full)")
+                continue
+
+            # Default: windowed flow snapshot (compact columns).
+            try:
+                chain = client.get_options_chain(symbol, exp)
+            except DataFetchError as exc:
+                console.print(
+                    f"[yellow]Warning:[/yellow] {symbol} {exp.isoformat()}: {exc}; skipping snapshot."
+                )
+                continue
+
             calls = chain.calls.copy()
             puts = chain.puts.copy()
             calls["optionType"] = "call"
@@ -405,6 +552,14 @@ def snapshot_options(
             df = pd.concat([calls, puts], ignore_index=True)
             if "strike" in df.columns:
                 df = df[(df["strike"] >= strike_min) & (df["strike"] <= strike_max)]
+
+            df = add_black_scholes_greeks_to_chain(
+                df,
+                spot=spot,
+                expiry=exp,
+                as_of=effective_snapshot_date,
+                r=risk_free_rate,
+            )
 
             keep = [
                 "contractSymbol",
@@ -420,6 +575,11 @@ def snapshot_options(
                 "openInterest",
                 "impliedVolatility",
                 "inTheMoney",
+                "bs_price",
+                "bs_delta",
+                "bs_gamma",
+                "bs_theta_per_day",
+                "bs_vega",
             ]
             keep = [c for c in keep if c in df.columns]
             df = df[keep]
@@ -440,6 +600,21 @@ def flow_report(
         "--cache-dir",
         help="Directory for options chain snapshots.",
     ),
+    watchlists_path: Path = typer.Option(
+        Path("data/watchlists.json"),
+        "--watchlists-path",
+        help="Path to watchlists JSON store (used with --watchlist/--all-watchlists).",
+    ),
+    watchlist: list[str] = typer.Option(
+        [],
+        "--watchlist",
+        help="Watchlist name to include (repeatable). When provided, reports flow for those watchlists instead of portfolio positions.",
+    ),
+    all_watchlists: bool = typer.Option(
+        False,
+        "--all-watchlists",
+        help="Report flow for all watchlists in the watchlists store (instead of portfolio positions).",
+    ),
     top: int = typer.Option(10, "--top", min=1, max=100, help="Top contracts per symbol to display."),
 ) -> None:
     """Report day-to-day OI/volume deltas from locally captured snapshots."""
@@ -447,10 +622,30 @@ def flow_report(
     console = Console()
 
     store = OptionsSnapshotStore(cache_dir)
-    symbols = sorted({p.symbol for p in portfolio.positions})
-    if not symbols:
-        console.print("No positions.")
-        raise typer.Exit(0)
+    use_watchlists = bool(watchlist) or all_watchlists
+    if use_watchlists:
+        wl = load_watchlists(watchlists_path)
+        if all_watchlists:
+            symbols = sorted({s for syms in wl.watchlists.values() for s in syms})
+            if not symbols:
+                console.print(f"No watchlists in {watchlists_path}")
+                raise typer.Exit(0)
+        else:
+            symbols_set: set[str] = set()
+            for name in watchlist:
+                syms = wl.get(name)
+                if not syms:
+                    raise typer.BadParameter(
+                        f"Watchlist '{name}' is empty or missing in {watchlists_path}",
+                        param_hint="--watchlist",
+                    )
+                symbols_set.update(syms)
+            symbols = sorted(symbols_set)
+    else:
+        symbols = sorted({p.symbol for p in portfolio.positions})
+        if not symbols:
+            console.print("No positions.")
+            raise typer.Exit(0)
 
     pos_keys = {(p.symbol, p.expiry.isoformat(), float(p.strike), p.option_type) for p in portfolio.positions}
 

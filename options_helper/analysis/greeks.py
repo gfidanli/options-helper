@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from math import erf, exp, log, pi, sqrt
+
+import pandas as pd
 
 from options_helper.models import OptionType
 
@@ -68,3 +71,94 @@ def black_scholes_greeks(
         vega=float(vega),
     )
 
+
+def add_black_scholes_greeks_to_chain(
+    df: pd.DataFrame,
+    *,
+    spot: float,
+    expiry: date,
+    as_of: date | None = None,
+    r: float = 0.0,
+    option_type_col: str = "optionType",
+    strike_col: str = "strike",
+    iv_col: str = "impliedVolatility",
+    prefix: str = "bs_",
+) -> pd.DataFrame:
+    """
+    Add best-effort Black-Scholes Greeks to an options chain DataFrame.
+
+    Greeks are computed from:
+    - spot (s)
+    - strike (k)
+    - time to expiry in years (t_years)
+    - implied volatility (sigma)
+    - risk-free rate (r)
+
+    This is model-based and should be treated as an approximation.
+    """
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+
+    as_of = as_of or date.today()
+    dte = (expiry - as_of).days
+    t_years = dte / 365.0 if dte > 0 else None
+
+    cols = {
+        f"{prefix}price": [],
+        f"{prefix}delta": [],
+        f"{prefix}gamma": [],
+        f"{prefix}theta_per_day": [],
+        f"{prefix}vega": [],
+    }
+
+    # Always add the columns (stable schema), even if we can't compute.
+    if (
+        t_years is None
+        or t_years <= 0
+        or option_type_col not in out.columns
+        or strike_col not in out.columns
+        or iv_col not in out.columns
+    ):
+        for key in cols:
+            out[key] = None
+        return out
+
+    def _as_float(val) -> float | None:
+        try:
+            if val is None or (isinstance(val, float) and pd.isna(val)) or pd.isna(val):
+                return None
+            return float(val)
+        except Exception:  # noqa: BLE001
+            return None
+
+    for opt_type, strike, sigma in zip(
+        out[option_type_col].tolist(),
+        out[strike_col].tolist(),
+        out[iv_col].tolist(),
+    ):
+        opt = str(opt_type).lower().strip() if opt_type is not None else ""
+        k = _as_float(strike)
+        iv = _as_float(sigma)
+        if opt not in {"call", "put"} or k is None or iv is None:
+            for key in cols:
+                cols[key].append(None)
+            continue
+
+        g = black_scholes_greeks(option_type=opt, s=spot, k=k, t_years=t_years, sigma=iv, r=r)
+        if g is None:
+            for key in cols:
+                cols[key].append(None)
+            continue
+
+        cols[f"{prefix}price"].append(g.price)
+        cols[f"{prefix}delta"].append(g.delta)
+        cols[f"{prefix}gamma"].append(g.gamma)
+        cols[f"{prefix}theta_per_day"].append(g.theta_per_day)
+        cols[f"{prefix}vega"].append(g.vega)
+
+    for key, values in cols.items():
+        out[key] = values
+
+    return out

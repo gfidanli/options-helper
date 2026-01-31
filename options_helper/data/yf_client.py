@@ -66,6 +66,39 @@ class YFinanceClient:
         except Exception as exc:  # noqa: BLE001
             raise DataFetchError(f"Failed to fetch options chain for {symbol} {expiry_str}") from exc
 
+    def get_options_chain_raw(self, symbol: str, expiry: date) -> dict[str, Any]:
+        """
+        Fetch the raw Yahoo options payload for an expiry.
+
+        Notes:
+        - `yfinance` converts the raw payload into a fixed-column DataFrame, dropping
+          extra fields Yahoo returns. This method keeps the full payload so we can
+          snapshot everything Yahoo provides.
+        """
+        expiry_str = expiry.isoformat()
+        ticker = self.ticker(symbol)
+        try:
+            # Ensure expirations are populated.
+            available = list(ticker.options or [])
+            if available and expiry_str not in set(available):
+                raise DataFetchError(
+                    f"{symbol.upper()} has no options expiry {expiry_str} (available: {available[:5]}...)"
+                )
+
+            # `ticker._expirations` maps YYYY-MM-DD -> unix seconds used by the Yahoo endpoint.
+            ts = getattr(ticker, "_expirations", {}).get(expiry_str)
+            if ts is None:
+                raise DataFetchError(f"Missing expiry mapping for {symbol.upper()} {expiry_str}")
+
+            raw = ticker._download_options(ts)  # type: ignore[attr-defined]
+            if not raw:
+                raise DataFetchError(f"Empty options payload for {symbol.upper()} {expiry_str}")
+            return raw
+        except DataFetchError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise DataFetchError(f"Failed to fetch raw options payload for {symbol} {expiry_str}") from exc
+
 
 def _row_value(row: Any, key: str) -> float | int | None:
     if key not in row or pd.isna(row[key]):
@@ -91,4 +124,3 @@ def contract_row_by_strike(df: pd.DataFrame, strike: float) -> pd.Series | None:
     if pd.isna(idx):
         return None
     return df.loc[idx]
-

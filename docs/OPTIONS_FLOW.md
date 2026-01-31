@@ -26,6 +26,23 @@ Each `{EXPIRY}.csv` file includes both calls and puts in one table with an `opti
 wall-clock time you ran the snapshot. This avoids pre-market runs being labeled as “today” when the latest daily candle
 is still “yesterday’s close”.
 
+## Greeks (best-effort Black–Scholes)
+Snapshots also include **best-effort Black–Scholes Greeks** (computed locally, not sourced from Yahoo):
+
+- `bs_price`
+- `bs_delta`
+- `bs_gamma`
+- `bs_theta_per_day`
+- `bs_vega`
+
+Inputs:
+- spot from the daily candle close (or a fallback quote)
+- `impliedVolatility` from Yahoo
+- time to expiry (using the snapshot data date as-of)
+- optional `--risk-free-rate` (defaults to `0.0`)
+
+These are approximations and should be treated as a model-based estimate.
+
 ## Snapshot scope (window around spot)
 To keep snapshots small and focused, the tool saves a **strike window around spot**:
 
@@ -55,11 +72,47 @@ This snapshots:
 - only expirations in your positions for those symbols
 - calls + puts for those expiries, filtered by the strike window
 
+### Snapshotting watchlists (optional)
+You can also snapshot symbols from your watchlists store:
+
+```bash
+options-helper snapshot-options portfolio.json --watchlists-path data/watchlists.json --all-watchlists
+```
+
+Or one or more named watchlists (repeatable):
+
+```bash
+options-helper snapshot-options portfolio.json --watchlists-path data/watchlists.json --watchlist monitor --watchlist positions
+```
+
+By default, watchlist snapshots are capped to the **nearest 2 expiries** per symbol to keep runtime and storage reasonable.
+Use `--all-expiries` or `--full-chain` to override.
+
+### Full-chain snapshots (all expiries + raw Yahoo payload)
+If you want to snapshot **everything Yahoo returns for the options chain** (extra fields beyond yfinance’s fixed-column
+DataFrame) and **every listed expiry**, use `--full-chain`:
+
+```bash
+options-helper snapshot-options portfolio.json --watchlists-path data/watchlists.json --all-watchlists --full-chain
+```
+
+In `--full-chain` mode the tool writes, per symbol/day/expiry:
+- `{EXPIRY}.csv` — calls + puts with **all fields** returned by Yahoo
+- `{EXPIRY}.raw.json` — the **raw Yahoo payload** for that expiry
+
+Full-chain snapshots can be large; consider using a separate cache root via `--cache-dir`.
+
 ## Flow report (day-to-day)
 Once you have at least two snapshots for a symbol, you can view day-to-day deltas:
 
 ```bash
 options-helper flow portfolio.json
+```
+
+You can also report flow for watchlists:
+
+```bash
+options-helper flow portfolio.json --watchlists-path data/watchlists.json --all-watchlists
 ```
 
 The report computes per-contract:

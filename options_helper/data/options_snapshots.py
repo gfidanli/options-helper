@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -21,6 +22,18 @@ class OptionsSnapshotStore:
 
     def _day_dir(self, symbol: str, snapshot_date: date) -> Path:
         return self._symbol_dir(symbol) / snapshot_date.isoformat()
+
+    def _upsert_meta(self, day_dir: Path, meta: dict[str, Any]) -> None:
+        meta_path = day_dir / "meta.json"
+        if meta_path.exists():
+            try:
+                existing = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                existing = {}
+        else:
+            existing = {}
+        existing.update(meta)
+        meta_path.write_text(json.dumps(existing, indent=2, default=str), encoding="utf-8")
 
     def list_dates(self, symbol: str) -> list[date]:
         sym_dir = self._symbol_dir(symbol)
@@ -47,7 +60,7 @@ class OptionsSnapshotStore:
         *,
         expiry: date,
         snapshot: pd.DataFrame,
-        meta: dict | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> Path:
         day_dir = self._day_dir(symbol, snapshot_date)
         day_dir.mkdir(parents=True, exist_ok=True)
@@ -58,16 +71,28 @@ class OptionsSnapshotStore:
 
         # Optional shared meta file.
         if meta is not None:
-            meta_path = day_dir / "meta.json"
-            if meta_path.exists():
-                try:
-                    existing = json.loads(meta_path.read_text(encoding="utf-8"))
-                except Exception:  # noqa: BLE001
-                    existing = {}
-            else:
-                existing = {}
-            existing.update(meta)
-            meta_path.write_text(json.dumps(existing, indent=2, default=str), encoding="utf-8")
+            self._upsert_meta(day_dir, meta)
+
+        return out_path
+
+    def save_expiry_snapshot_raw(
+        self,
+        symbol: str,
+        snapshot_date: date,
+        *,
+        expiry: date,
+        raw: dict[str, Any],
+        meta: dict[str, Any] | None = None,
+    ) -> Path:
+        """Save the raw Yahoo options payload for an expiry (best-effort)."""
+        day_dir = self._day_dir(symbol, snapshot_date)
+        day_dir.mkdir(parents=True, exist_ok=True)
+
+        out_path = day_dir / f"{expiry.isoformat()}.raw.json"
+        out_path.write_text(json.dumps(raw, indent=2, default=str), encoding="utf-8")
+
+        if meta is not None:
+            self._upsert_meta(day_dir, meta)
 
         return out_path
 
@@ -96,4 +121,3 @@ class OptionsSnapshotStore:
         if "contractSymbol" in out.columns:
             out = out.drop_duplicates(subset=["contractSymbol"], keep="last")
         return out
-

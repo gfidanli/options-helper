@@ -60,6 +60,7 @@ Computes day’s P&L from options-chain `change` * contracts * 100 (best-effort;
 
 ### Options flow (OI/volume deltas)
 Collects a once-daily snapshot of a window around spot and computes ΔOI/volume-based positioning proxies.
+Also supports snapshotting watchlists and optional full-chain snapshots (raw Yahoo payload) for deeper analysis.
 
 - Commands: `snapshot-options`, `flow`
 - Design/usage + cron setup: `docs/OPTIONS_FLOW.md`
