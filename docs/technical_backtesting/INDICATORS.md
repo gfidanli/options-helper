@@ -74,6 +74,8 @@ Process:
 3) Define `weekly_trend_up` using a configured logic:
    - `logic: "close_above_fast_and_fast_above_slow"`:
      - `weekly_trend_up = (weekly_close > weekly_fast) AND (weekly_fast > weekly_slow)`
+   - `logic: "close_above_fast"`:
+     - `weekly_trend_up = (weekly_close > weekly_fast)`
    - `logic: "fast_above_slow"`:
      - `weekly_trend_up = (weekly_fast > weekly_slow)`
 4) Forward-fill weekly values back to daily rows.

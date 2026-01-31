@@ -62,7 +62,7 @@ This schema corresponds exactly to `config/technical_backtesting.yaml`. You can 
 | `ma_type` | string | No | Weekly MA type (`"sma"` default, or `"ema"`). |
 | `fast_ma` | int | Yes | Fast weekly MA. |
 | `slow_ma` | int | Yes | Slow weekly MA. |
-| `logic` | string | Yes | Describes regime logic (e.g., `"close_above_fast_and_fast_above_slow"`). |
+| `logic` | string | Yes | Weekly regime logic: `"close_above_fast_and_fast_above_slow"` (strict), `"close_above_fast"` (relaxed), or `"fast_above_slow"` (most relaxed). |
 
 ---
 

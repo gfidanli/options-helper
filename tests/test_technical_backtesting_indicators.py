@@ -46,3 +46,46 @@ def test_indicator_columns_and_no_lookahead() -> None:
             check_names=False,
         )
 
+
+def test_weekly_regime_logic_close_above_fast_is_more_permissive() -> None:
+    cfg = load_technical_backtesting_config()
+    cfg = dict(cfg)
+    cfg["weekly_regime"] = dict(cfg["weekly_regime"])
+    cfg["weekly_regime"]["enabled"] = True
+    cfg["weekly_regime"]["resample_rule"] = "W-FRI"
+    cfg["weekly_regime"]["ma_type"] = "sma"
+    cfg["weekly_regime"]["fast_ma"] = 3
+    cfg["weekly_regime"]["slow_ma"] = 6
+
+    # Construct weekly closes where the last week closes above fast MA,
+    # but fast MA is still below slow MA (so strict logic is False).
+    weekly_closes = [120, 118, 116, 114, 112, 110, 108, 106, 104, 102, 100, 105]
+    start = pd.Timestamp("2024-01-01")  # Monday
+    dates = pd.bdate_range(start=start, periods=len(weekly_closes) * 5)
+    close = []
+    for w in weekly_closes:
+        close.extend([float(w)] * 5)
+    df = pd.DataFrame(
+        {
+            "Open": close,
+            "High": [c + 1.0 for c in close],
+            "Low": [c - 1.0 for c in close],
+            "Close": close,
+            "Volume": [1_000_000] * len(close),
+        },
+        index=dates,
+    )
+
+    cfg_strict = dict(cfg)
+    cfg_strict["weekly_regime"] = dict(cfg["weekly_regime"])
+    cfg_strict["weekly_regime"]["logic"] = "close_above_fast_and_fast_above_slow"
+    feat_strict = compute_features(df, cfg_strict)
+
+    cfg_relaxed = dict(cfg)
+    cfg_relaxed["weekly_regime"] = dict(cfg["weekly_regime"])
+    cfg_relaxed["weekly_regime"]["logic"] = "close_above_fast"
+    feat_relaxed = compute_features(df, cfg_relaxed)
+
+    last_day = df.index.max()
+    assert bool(feat_relaxed.loc[last_day, "weekly_trend_up"]) is True
+    assert bool(feat_strict.loc[last_day, "weekly_trend_up"]) is False

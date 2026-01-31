@@ -148,6 +148,8 @@ class TaIndicatorProvider:
 
             if logic in {"fast_above_slow", "ma_fast_above_slow"}:
                 trend = weekly_fast > weekly_slow
+            elif logic in {"close_above_fast", "close_above_ma_fast"}:
+                trend = weekly_close > weekly_fast
             else:
                 # Default: close_above_fast_and_fast_above_slow
                 trend = (weekly_close > weekly_fast) & (weekly_fast > weekly_slow)
