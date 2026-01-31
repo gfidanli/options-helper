@@ -157,8 +157,6 @@ def analyze_underlying(
 
     spot = float(close.iloc[-1])
 
-    ema20_d = ema(close, 20)
-    ema50_d = ema(close, 50)
     rsi_d = rsi(close, 14)
     stoch_rsi_d = stoch_rsi(close)
 

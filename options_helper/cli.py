@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -9,6 +10,8 @@ import typer
 from rich.console import Console
 
 from options_helper.analysis.advice import Advice, PositionMetrics, advise
+from options_helper.analysis.chain_metrics import compute_chain_report
+from options_helper.analysis.compare_metrics import compute_compare_report
 from options_helper.analysis.flow import compute_flow, summarize_flow
 from options_helper.analysis.performance import compute_daily_performance_quote
 from options_helper.analysis.research import (
@@ -18,15 +21,22 @@ from options_helper.analysis.research import (
     select_option_candidate,
     suggest_trade_levels,
 )
+from options_helper.analysis.roll_plan import compute_roll_plan
 from options_helper.analysis.greeks import add_black_scholes_greeks_to_chain, black_scholes_greeks
 from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, sma
 from options_helper.data.candles import CandleStore, last_close
 from options_helper.data.options_snapshots import OptionsSnapshotStore
 from options_helper.data.yf_client import DataFetchError, YFinanceClient, contract_row_by_strike
-from options_helper.models import OptionType, Portfolio, Position, RiskProfile
+from options_helper.models import OptionType, Position, RiskProfile
 from options_helper.reporting import render_positions, render_summary
+from options_helper.reporting_chain import (
+    render_chain_report_console,
+    render_chain_report_markdown,
+    render_compare_report_console,
+)
+from options_helper.reporting_roll import render_roll_plan_console
 from options_helper.storage import load_portfolio, save_portfolio, write_template
-from options_helper.watchlists import Watchlists, build_default_watchlists, load_watchlists, save_watchlists
+from options_helper.watchlists import build_default_watchlists, load_watchlists, save_watchlists
 
 app = typer.Typer(add_completion=False)
 watchlists_app = typer.Typer(help="Manage symbol watchlists.")
@@ -41,6 +51,27 @@ def _parse_date(value: str) -> date:
         except ValueError:
             continue
     raise typer.BadParameter("Invalid date format. Use YYYY-MM-DD (recommended).")
+
+
+def _spot_from_meta(meta: dict) -> float | None:
+    if not meta:
+        return None
+    candidates = [
+        meta.get("spot"),
+        (meta.get("underlying") or {}).get("regularMarketPrice"),
+        (meta.get("underlying") or {}).get("regularMarketPreviousClose"),
+        (meta.get("underlying") or {}).get("regularMarketOpen"),
+    ]
+    for v in candidates:
+        try:
+            if v is None:
+                continue
+            spot = float(v)
+            if spot > 0:
+                return spot
+        except Exception:  # noqa: BLE001
+            continue
+    return None
 
 
 def _default_position_id(symbol: str, expiry: date, strike: float, option_type: OptionType) -> str:
@@ -712,6 +743,272 @@ def flow_report(
             )
 
         console.print(table)
+
+
+@app.command("chain-report")
+def chain_report(
+    symbol: str = typer.Option(..., "--symbol", help="Symbol to report on."),
+    as_of: str = typer.Option("latest", "--as-of", help="Snapshot date (YYYY-MM-DD) or 'latest'."),
+    cache_dir: Path = typer.Option(
+        Path("data/options_snapshots"),
+        "--cache-dir",
+        help="Directory for options chain snapshots.",
+    ),
+    format: str = typer.Option(
+        "console",
+        "--format",
+        help="Output format: console|md|json",
+    ),
+    out: Path | None = typer.Option(
+        None,
+        "--out",
+        help="Output root for saved artifacts (writes under {out}/chains/{SYMBOL}/).",
+    ),
+    top: int = typer.Option(10, "--top", min=1, max=100, help="Top strikes to show for walls/gamma."),
+    include_expiry: list[str] = typer.Option(
+        [],
+        "--include-expiry",
+        help="Include a specific expiry date (repeatable). When provided, overrides --expiries selection.",
+    ),
+    expiries: str = typer.Option(
+        "near",
+        "--expiries",
+        help="Expiry selection mode: near|monthly|all (ignored when --include-expiry is used).",
+    ),
+    best_effort: bool = typer.Option(
+        False,
+        "--best-effort",
+        help="Don't fail hard on missing fields; emit warnings and partial outputs.",
+    ),
+) -> None:
+    """Offline options chain dashboard from local snapshot files."""
+    console = Console()
+    store = OptionsSnapshotStore(cache_dir)
+
+    try:
+        as_of_date = store.resolve_date(symbol, as_of)
+        df = store.load_day(symbol, as_of_date)
+        meta = store.load_meta(symbol, as_of_date)
+        spot = _spot_from_meta(meta)
+        if spot is None:
+            raise ValueError("missing spot price in meta.json (run snapshot-options first)")
+
+        fmt = format.strip().lower()
+        if fmt not in {"console", "md", "json"}:
+            raise typer.BadParameter("Invalid --format (use console|md|json)", param_hint="--format")
+
+        expiries_mode = expiries.strip().lower()
+        if expiries_mode not in {"near", "monthly", "all"}:
+            raise typer.BadParameter("Invalid --expiries (use near|monthly|all)", param_hint="--expiries")
+
+        include_dates = [_parse_date(x) for x in include_expiry] if include_expiry else None
+
+        report = compute_chain_report(
+            df,
+            symbol=symbol,
+            as_of=as_of_date,
+            spot=spot,
+            expiries_mode=expiries_mode,  # type: ignore[arg-type]
+            include_expiries=include_dates,
+            top=top,
+            best_effort=best_effort,
+        )
+
+        if fmt == "console":
+            render_chain_report_console(console, report)
+        elif fmt == "md":
+            console.print(render_chain_report_markdown(report))
+        else:
+            console.print(report.model_dump_json(indent=2))
+
+        if out is not None:
+            base = out / "chains" / report.symbol
+            base.mkdir(parents=True, exist_ok=True)
+            json_path = base / f"{as_of_date.isoformat()}.json"
+            json_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+
+            # Write Markdown alongside JSON (human-friendly artifact).
+            md_path = base / f"{as_of_date.isoformat()}.md"
+            md_path.write_text(render_chain_report_markdown(report), encoding="utf-8")
+
+            console.print(f"\nSaved: {json_path}")
+            console.print(f"Saved: {md_path}")
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1)
+
+
+@app.command("compare")
+def compare_snapshots(
+    symbol: str = typer.Option(..., "--symbol", help="Symbol to diff."),
+    from_spec: str = typer.Option(
+        "-1",
+        "--from",
+        help="From snapshot date (YYYY-MM-DD) or a negative offset relative to --to (e.g. -1).",
+    ),
+    to_spec: str = typer.Option("latest", "--to", help="To snapshot date (YYYY-MM-DD) or 'latest'."),
+    cache_dir: Path = typer.Option(
+        Path("data/options_snapshots"),
+        "--cache-dir",
+        help="Directory for options chain snapshots.",
+    ),
+    top: int = typer.Option(10, "--top", min=1, max=100, help="Top rows to include per section."),
+    out: Path | None = typer.Option(
+        None,
+        "--out",
+        help="Output root for saved artifacts (writes under {out}/compare/{SYMBOL}/).",
+    ),
+) -> None:
+    """Diff two snapshot dates for a symbol (offline)."""
+    console = Console()
+    store = OptionsSnapshotStore(cache_dir)
+
+    try:
+        to_date = store.resolve_date(symbol, to_spec)
+
+        from_spec_norm = from_spec.strip().lower()
+        if from_spec_norm.startswith("-") and from_spec_norm[1:].isdigit():
+            from_date = store.resolve_relative_date(symbol, to_date=to_date, offset=int(from_spec_norm))
+        else:
+            from_date = store.resolve_date(symbol, from_spec_norm)
+
+        df_from = store.load_day(symbol, from_date)
+        df_to = store.load_day(symbol, to_date)
+        meta_from = store.load_meta(symbol, from_date)
+        meta_to = store.load_meta(symbol, to_date)
+
+        spot_from = _spot_from_meta(meta_from)
+        spot_to = _spot_from_meta(meta_to)
+        if spot_from is None or spot_to is None:
+            raise ValueError("missing spot price in meta.json (run snapshot-options first)")
+
+        diff, report_from, report_to = compute_compare_report(
+            symbol=symbol,
+            from_date=from_date,
+            to_date=to_date,
+            from_df=df_from,
+            to_df=df_to,
+            spot_from=spot_from,
+            spot_to=spot_to,
+            top=top,
+        )
+
+        render_compare_report_console(console, diff)
+
+        if out is not None:
+            base = out / "compare" / symbol.upper()
+            base.mkdir(parents=True, exist_ok=True)
+            out_path = base / f"{from_date.isoformat()}_to_{to_date.isoformat()}.json"
+            payload = {
+                "schema_version": 1,
+                "symbol": symbol.upper(),
+                "from": report_from.model_dump(),
+                "to": report_to.model_dump(),
+                "diff": diff.model_dump(),
+            }
+            out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+            console.print(f"\nSaved: {out_path}")
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1)
+
+
+@app.command("roll-plan")
+def roll_plan(
+    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON (positions + risk profile)."),
+    position_id: str = typer.Option(..., "--id", help="Position id to plan a roll for."),
+    as_of: str = typer.Option("latest", "--as-of", help="Snapshot date (YYYY-MM-DD) or 'latest'."),
+    cache_dir: Path = typer.Option(
+        Path("data/options_snapshots"),
+        "--cache-dir",
+        help="Directory for options chain snapshots.",
+    ),
+    intent: str = typer.Option(
+        "max-upside",
+        "--intent",
+        help="Intent: max-upside|reduce-theta|increase-delta|de-risk",
+    ),
+    horizon_months: int = typer.Option(..., "--horizon-months", min=1, max=60),
+    shape: str = typer.Option(
+        "out-same-strike",
+        "--shape",
+        help="Roll shape: out-same-strike|out-up|out-down",
+    ),
+    top: int = typer.Option(10, "--top", min=1, max=50, help="Number of candidates to display."),
+    max_debit: float | None = typer.Option(
+        None,
+        "--max-debit",
+        help="Max roll debit in dollars (total for position size).",
+    ),
+    min_credit: float | None = typer.Option(
+        None,
+        "--min-credit",
+        help="Min roll credit in dollars (total for position size).",
+    ),
+    min_open_interest: int | None = typer.Option(
+        None,
+        "--min-open-interest",
+        help="Override minimum open interest liquidity gate (default from risk profile).",
+    ),
+    min_volume: int | None = typer.Option(
+        None,
+        "--min-volume",
+        help="Override minimum volume liquidity gate (default from risk profile).",
+    ),
+) -> None:
+    """Propose and rank roll candidates for a single position using offline snapshots."""
+    console = Console(width=200)
+
+    portfolio = load_portfolio(portfolio_path)
+    position = next((p for p in portfolio.positions if p.id == position_id), None)
+    if position is None:
+        raise typer.BadParameter(f"No position found with id: {position_id}", param_hint="--id")
+
+    intent_norm = intent.strip().lower()
+    if intent_norm not in {"max-upside", "reduce-theta", "increase-delta", "de-risk"}:
+        raise typer.BadParameter(
+            "Invalid --intent (use max-upside|reduce-theta|increase-delta|de-risk)",
+            param_hint="--intent",
+        )
+
+    shape_norm = shape.strip().lower()
+    if shape_norm not in {"out-same-strike", "out-up", "out-down"}:
+        raise typer.BadParameter("Invalid --shape (use out-same-strike|out-up|out-down)", param_hint="--shape")
+
+    rp = portfolio.risk_profile
+    min_oi = rp.min_open_interest if min_open_interest is None else int(min_open_interest)
+    min_vol = rp.min_volume if min_volume is None else int(min_volume)
+
+    store = OptionsSnapshotStore(cache_dir)
+
+    try:
+        as_of_date = store.resolve_date(position.symbol, as_of)
+        df = store.load_day(position.symbol, as_of_date)
+        meta = store.load_meta(position.symbol, as_of_date)
+        spot = _spot_from_meta(meta)
+        if spot is None:
+            raise ValueError("missing spot price in meta.json (run snapshot-options first)")
+
+        report = compute_roll_plan(
+            df,
+            symbol=position.symbol,
+            as_of=as_of_date,
+            spot=spot,
+            position=position,
+            intent=intent_norm,  # type: ignore[arg-type]
+            horizon_months=horizon_months,
+            shape=shape_norm,  # type: ignore[arg-type]
+            min_open_interest=min_oi,
+            min_volume=min_vol,
+            max_debit=max_debit,
+            min_credit=min_credit,
+            top=top,
+        )
+
+        render_roll_plan_console(console, report)
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1)
 
 
 @app.command()

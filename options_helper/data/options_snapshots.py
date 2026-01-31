@@ -23,6 +23,57 @@ class OptionsSnapshotStore:
     def _day_dir(self, symbol: str, snapshot_date: date) -> Path:
         return self._symbol_dir(symbol) / snapshot_date.isoformat()
 
+    def load_meta(self, symbol: str, snapshot_date: date) -> dict[str, Any]:
+        day_dir = self._day_dir(symbol, snapshot_date)
+        meta_path = day_dir / "meta.json"
+        if not meta_path.exists():
+            return {}
+        try:
+            return json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            raise OptionsSnapshotError(f"Failed to read meta.json: {meta_path}") from exc
+
+    def resolve_date(self, symbol: str, spec: str) -> date:
+        """
+        Resolve a snapshot date spec:
+        - YYYY-MM-DD
+        - latest
+        """
+        spec = spec.strip().lower()
+        if spec == "latest":
+            dates = self.latest_dates(symbol, n=1)
+            if not dates:
+                raise OptionsSnapshotError(f"No snapshots found for {symbol}")
+            return dates[-1]
+        try:
+            return date.fromisoformat(spec)
+        except ValueError as exc:
+            raise OptionsSnapshotError(f"Invalid date spec: {spec} (use YYYY-MM-DD or 'latest')") from exc
+
+    def resolve_relative_date(self, symbol: str, *, to_date: date, offset: int) -> date:
+        """
+        Resolve a snapshot date relative to another snapshot date.
+
+        Example: offset=-1 means the snapshot immediately before `to_date`.
+        """
+        dates = self.list_dates(symbol)
+        if not dates:
+            raise OptionsSnapshotError(f"No snapshots found for {symbol}")
+
+        try:
+            idx = dates.index(to_date)
+        except ValueError as exc:
+            raise OptionsSnapshotError(
+                f"Snapshot date not found for {symbol}: {to_date.isoformat()}"
+            ) from exc
+
+        target_idx = idx + offset
+        if target_idx < 0 or target_idx >= len(dates):
+            raise OptionsSnapshotError(
+                f"Relative snapshot out of range for {symbol}: to={to_date.isoformat()} offset={offset}"
+            )
+        return dates[target_idx]
+
     def _upsert_meta(self, day_dir: Path, meta: dict[str, Any]) -> None:
         meta_path = day_dir / "meta.json"
         if meta_path.exists():

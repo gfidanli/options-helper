@@ -65,5 +65,11 @@ Also supports snapshotting watchlists and optional full-chain snapshots (raw Yah
 - Commands: `snapshot-options`, `flow`
 - Design/usage + cron setup: `docs/OPTIONS_FLOW.md`
 
+### Offline chain intelligence (from snapshots)
+Builds repeatable chain dashboards and diffs using the local snapshot files under `data/options_snapshots/`.
+
+- Commands: `chain-report`, `compare`, `roll-plan`
+- Design/usage: `docs/CHAIN_REPORT.md`, `docs/COMPARE.md`, `docs/ROLL_PLAN.md`
+
 ## Disclaimer
 This tool is for informational/educational use only and is not financial advice.
