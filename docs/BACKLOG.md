@@ -16,208 +16,66 @@ It is intentionally biased toward **offline, repeatable analysis** using the loc
 
 | Rank | ID    | Feature | Why it matters | Primary dependencies |
 |------|-------|---------|----------------|----------------------|
-| 1 | F-001 | `chain-report` (options chain dashboard) | Productizes the most common analysis (walls, term structure, expected move, gamma concentration) into a single repeatable command. | Snapshot loader + shared pricing/filters |
-| 2 | F-002 | `compare` (snapshot diff engine) | Most signal is in change (IV crush, wall shifts, OI builds). Enables “diff-first” workflow across reports. | F-001 metrics library |
-| 3 | F-003 | `roll-plan` (roll/position planner) | Turns winners into planned holds/rolls aligned with horizon (“maximize upside”, “extend time”, etc.). | F-001 mark/liquidity + optional live chain |
-| 4 | F-004 | `flow` upgrade (aggregations + multi-day netting) | Moves from noisy contract lists to “where is positioning building by strike/expiry (and is it persistent)?” | Existing `compute_flow` + multi-snapshot loader |
-| 5 | F-005 | `briefing` (daily report generator) | Makes analysis regular: one scheduled artifact combining chain + change + flow into a daily briefing. | F-001 + F-002 + F-004 |
-| 6 | F-006 | `derived` (derived-metrics time series store) | Unlocks percentiles/trends and makes “is IV high vs 60d?” easy, but depends on stable metric definitions. | F-001 metrics (optionally F-002) |
+| 1 | F-007 | Extension percentiles + regime drift | Adds per-ticker percentile context for extension and checks whether tails mean‑revert; supports adaptive thresholds. | technicals_backtesting + derived stats |
+
+## Completed (implemented)
+- F-001 `chain-report`
+- F-002 `compare`
+- F-003 `roll-plan`
+- F-004 `flow` upgrade (aggregations + netting)
+- F-005 `briefing` (daily report)
+- F-006 `derived` (metrics store + stats)
 
 ---
 
 ## Milestones (delivery plan)
 
-### Milestone M1 — Offline chain intelligence (core)
-**Goal:** make chain analysis and “what changed” a first-class, repeatable workflow.
+### Milestone M6 — Extension percentiles + regime drift
+**Goal:** add per-ticker extension percentiles and tail‑event follow‑through analysis, with rolling-window drift checks.
 
 Deliverables:
-- F-001 MVP: `options-helper chain-report` from snapshots (console + JSON output).
-- F-002 MVP: `options-helper compare` diffing two snapshot dates (console + JSON output).
-
-Definition of done:
-- Runs without network access and produces deterministic JSON for fixture snapshots.
-- CVX-like snapshots produce: P/C ratios, key walls, expected move, ATM IV term structure, skew (where possible), and top gamma strikes.
-
-### Milestone M2 — Portfolio decision tooling
-**Goal:** make “what should I do with this position?” systematic and explainable.
-
-Deliverables:
-- F-003 MVP: `options-helper roll-plan` for a single position (from portfolio) with ranked candidates.
-
-Definition of done:
-- For a position, prints a ranked table with roll cost, new DTE, delta/theta, liquidity checks, and rationale.
-- Supports `--intent max-upside` and `--horizon-months`.
-
-### Milestone M3 — Flow power-up
-**Goal:** convert daily snapshot deltas into higher-signal strike/expiry views.
-
-Deliverables:
-- F-004 MVP: `flow --window N` + `--group-by strike|expiry|expiry-strike` with premium-notional and delta-notional.
-
-Definition of done:
-- For symbols with ≥N+1 snapshots, prints “net building/unwinding zones” and persists a JSON artifact.
-
-### Milestone M4 — Automation + history
-**Goal:** make the workflow regular and measurable over time.
-
-Deliverables:
-- F-005 MVP: `briefing` generates daily Markdown for portfolio + watchlists, includes compare highlights.
-- F-006 MVP: `derived update` appends derived metrics per symbol/day; `derived show` prints last N rows.
-
-Definition of done:
-- One cron-friendly command produces a daily report artifact and updates derived series.
-
-### Milestone M5 — Derived insights (percentiles + trends)
-**Goal:** make “is IV high vs its own history?” easy and repeatable from the derived store.
-
-Deliverables:
-- F-006 v1: `derived stats` prints percentile ranks and trend flags for key fields (console + JSON output).
-
-Definition of done:
-- Runs offline on derived CSVs and produces deterministic JSON for fixture inputs.
+- F-007 MVP: compute extension percentiles from technicals_backtesting and add to briefing JSON + derived stats.
+- F-007 v1: tail‑event forward‑window analysis (1/3/5/10 day percentiles) + rolling 1y/3y/5y distribution comparisons.
 
 ---
 
 ## Dependency map (summary)
-- F-001 is foundational and should expose a reusable “metrics from snapshot” API.
-- F-002 should be implemented as “compute metrics for A and B → diff”, reusing F-001 metrics.
-- F-003 should reuse the shared mark/liquidity filters and (optionally) the Greeks code already in `options_helper/analysis/greeks.py`.
-- F-004 builds on existing `options_helper/analysis/flow.py` but adds aggregation + multi-day netting.
-- F-005 composes F-001 + F-002 + F-004 into a single daily artifact.
-- F-006 consumes F-001 outputs (and optionally F-002 deltas) to persist daily derived metrics.
+- F-007 consumes technicals_backtesting features and extends derived stats with distribution/percentile analytics.
 
 ---
 
 # PRDs
 
-## F-001 — `chain-report` (Options Chain Dashboard)
+## F-007 — Extension percentiles + regime drift
 
 ### Summary
-Add `options-helper chain-report` to produce a standardized options chain dashboard from local snapshot files:
-walls, P/C ratios, IV term structure, skew, expected moves, and gamma concentration.
-
-### Problem
-We can snapshot chains and compute per-contract flow, but we can’t quickly answer “what levels matter today?” and
-“what is the market pricing?” without ad-hoc scripts.
+Add per-ticker percentile context for `extension_atr` and analyze tail‑event follow‑through (1/3/5/10D),
+with rolling 1y/3y/5y distribution comparisons to detect regime drift.
 
 ### Goals
-- **Offline-first** report from `data/options_snapshots` (no fetch required).
-- Clear “levels” output: top OI strikes (overall + per expiry), expected move bands.
-- Stable machine-readable output (JSON) + readable console/Markdown output.
+- Provide a **normalized, per‑ticker** extension percentile (current and rolling windows).
+- Detect **tail events** (>= 95th / <= 5th) and summarize what typically happens next.
+- Compare **rolling distributions** (1y/3y/5y) to identify drift and inform which window is most appropriate.
 
-### Non-goals
-- Dealer positioning inference (net long/short gamma) beyond gross, model-based measures.
-- Intraday tape/prints.
-
-### Users / use-cases
-- Daily chain check for watchlist symbols after snapshots run.
-- Quick “what’s priced into next week / next monthly?” before planning a trade/roll.
-
-### CLI / UX
-Proposed:
-```bash
-options-helper chain-report --symbol CVX --as-of 2026-01-30
-options-helper chain-report --symbol CVX --as-of latest --out data/reports
-```
-
-Options:
-- `--cache-dir PATH` (default `data/options_snapshots`)
-- `--format console|md|json` (default `console`)
-- `--out PATH` (write artifacts; default none)
-- `--top INT` (default 10)
-- `--include-expiry YYYY-MM-DD` (repeatable)
-- `--expiries near|monthly|all` (default `near`)
-- `--best-effort` (don’t fail hard on missing fields; emit warnings)
-
-### Data inputs
-- Snapshot day directory: `data/options_snapshots/{SYMBOL}/{YYYY-MM-DD}/`
-  - `{EXPIRY}.csv` (calls+puts)
-  - `meta.json` (spot, snapshot_date, etc.)
-
-### Core computations (v1 scope)
-- Mark price per contract (mid if valid bid/ask else last).
-- Aggregate:
-  - call/put totals: OI, volume, premium-volume notional.
-  - per-expiry totals: OI and volume with P/C ratios.
-- “Walls”:
-  - top call OI strikes (at/above spot), top put OI strikes (at/below spot), overall + selected expiries.
-- Expected move:
-  - per expiry, approximate ATM straddle (nearest strike to spot with both call+put), using mark.
-- IV term structure:
-  - per expiry, approximate ATM IV (avg call/put IV at nearest strike).
-- Skew:
-  - per expiry, 25-delta put IV minus 25-delta call IV using stored BS deltas (best-effort).
-- Gamma concentration (gross):
-  - rank strikes by OI-weighted BS gamma, converted to a dollarized “gamma per 1% move” proxy.
-- Optional “max pain”:
-  - compute on strike grid per expiry (explicitly labeled heuristic).
-
-### Outputs
-- Console: rich tables + 5–10 “takeaways” bullets.
-- Optional artifacts:
-  - `data/reports/chains/{SYMBOL}/{YYYY-MM-DD}.md`
-  - `data/reports/chains/{SYMBOL}/{YYYY-MM-DD}.json` (stable schema)
-
-### Milestones
-- **MVP:** P/C ratios, expiry totals, walls, expected move (ATM straddle), IV term structure, gamma strike ranks; JSON schema.
-- **v1:** skew, max pain, configurable expiry selection, “liquidity filters” toggles.
-- **v2:** simple plots (ASCII sparkline or exported CSV), richer “key takeaways” engine.
-
-### Dependencies
-- Snapshot loader (`OptionsSnapshotStore`) and shared parsing utilities.
-- Shared helpers to:
-  - compute mark price consistently
-  - filter illiquid quotes (0 bid/ask, extreme spreads)
-
-### Acceptance criteria
-- Running on an existing snapshot day produces deterministic JSON and readable console output.
-- For CVX-like snapshots, the report surfaces:
-  - top call strikes near/above spot
-  - top put strikes near/below spot
-  - near-term expected move % for at least one expiry
-  - top gamma concentration strikes
-
-### Testing
-- No-network unit tests using fixture snapshots under `tests/fixtures/`.
-- Golden JSON tests (schema stability).
-
----
-
-## F-002 — `compare` (Snapshot Diff Engine)
-
-### Summary
-Add `options-helper compare` to diff two snapshot dates for a symbol using the same metrics as `chain-report`.
-
-### Problem
-The biggest insights often come from **change** (IV crush, wall migration, OI builds/unwinds), but today it’s manual.
-
-### Goals
-- Provide a consistent “diff-first” summary.
-- Enable composition: `chain-report --compare`, `briefing`, and flow summaries should reuse this diff output.
-
-### Non-goals
-- Forecasting or probabilistic predictions.
-
-### CLI / UX
-```bash
-options-helper compare --symbol CVX --from 2026-01-29 --to 2026-01-30
-options-helper compare --symbol CVX --to latest --from -1
-```
-
-Options:
-- `--cache-dir PATH`
-- `--top INT`
-- `--out PATH` (write JSON artifact)
+### Non‑goals
+- Predictive modeling beyond descriptive statistics.
+- Intraday signals (daily bars only).
 
 ### Outputs (v1)
-- Spot change and % change.
-- Changes in:
-  - P/C OI and P/C volume
-  - walls (strike + OI) for key expiries and overall
-  - ATM IV per expiry (pp)
-  - expected move per expiry (pp and $)
-  - gamma concentration top strikes
-- Link to per-contract ΔOI (reuse flow computation where prior OI exists):
+- `technicals_backtesting` snapshot: `extension_atr` + percentile(s).
+- `derived stats`: extension percentile(s) + drift summary.
+- Tail event table: next‑day/3‑day/5‑day/10‑day percentile outcomes for each tail event day.
+
+### Implementation notes
+- Use `technicals_backtesting` as the canonical indicator source.
+- Percentiles should be computed on a **per‑ticker** basis from cached candles.
+- Rolling windows: 1y / 3y / 5y (if enough data).
+- Drift: compare key quantiles (e.g., 5/50/95) and dispersion across windows.
+- Drift **flagging** (programmatic thresholds) is a future enhancement; v1 outputs a table only.
+
+### Testing
+- Deterministic synthetic OHLC series for percentile and tail‑event logic.
+- JSON payload tests for LLM‑friendly outputs.
   - top |ΔOI premium-notional|
   - top expiries by net ΔOI premium-notional
 
