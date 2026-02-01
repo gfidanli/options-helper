@@ -6,6 +6,7 @@ import pandas as pd
 
 from options_helper.analysis.chain_metrics import ChainReport
 from options_helper.analysis.compare_metrics import CompareReport
+from options_helper.technicals_backtesting.snapshot import TechnicalSnapshot
 
 
 def _fmt_pct_ratio(val: float | None, *, digits: int = 1) -> str:
@@ -150,6 +151,92 @@ def flow_takeaways(net: pd.DataFrame, *, top: int) -> list[str]:
     return out
 
 
+def technicals_takeaways(snapshot: TechnicalSnapshot) -> list[str]:
+    out: list[str] = []
+    out.append(f"Candles as-of: `{snapshot.asof}`")
+    if snapshot.close is not None:
+        out.append(f"Close: `{snapshot.close:.2f}`")
+    if snapshot.weekly_trend_up is not None:
+        out.append(f"Weekly trend up: `{snapshot.weekly_trend_up}`")
+    if snapshot.atr is not None:
+        atrp = "-" if snapshot.atrp is None else f"{snapshot.atrp * 100.0:.2f}%"
+        out.append(f"ATR{snapshot.atr_window}: `{snapshot.atr:.2f}` (ATR% `{atrp}`)")
+    if snapshot.zscore is not None:
+        out.append(f"Z{snapshot.z_window}: `{snapshot.zscore:+.2f}`")
+    if snapshot.extension_atr is not None:
+        out.append(f"Extension (Close vs SMA{snapshot.sma_window}, in ATR): `{snapshot.extension_atr:+.2f}`")
+    if snapshot.bb_pband is not None or snapshot.bb_wband is not None:
+        pband = "-" if snapshot.bb_pband is None else f"{snapshot.bb_pband:.2f}"
+        wband = "-" if snapshot.bb_wband is None else f"{snapshot.bb_wband:.2f}"
+        out.append(f"BB{snapshot.bb_window} dev={snapshot.bb_dev:g}: pband `{pband}`, wband `{wband}`")
+    if snapshot.rsi_window is not None and snapshot.rsi is not None:
+        out.append(f"RSI{snapshot.rsi_window}: `{snapshot.rsi:.0f}`")
+    return out
+
+
+def strike_map_takeaways(
+    *,
+    chain: ChainReport,
+    flow_net: pd.DataFrame | None,
+    technicals: TechnicalSnapshot | None,
+    top: int,
+) -> list[str]:
+    spot = float(chain.spot)
+    atr = None if technicals is None else technicals.atr
+
+    def _dist_atr(strike: float) -> str:
+        if atr is None or atr <= 0:
+            return "-"
+        return f"{(strike - spot) / atr:+.2f} ATR"
+
+    def _fmt_strike(label: str, strike: float | None) -> str | None:
+        if strike is None:
+            return None
+        return f"{label}: `{strike:g}` ({_dist_atr(float(strike))})"
+
+    out: list[str] = []
+
+    call_wall = chain.walls_overall.calls[0].strike if chain.walls_overall.calls else None
+    put_wall = chain.walls_overall.puts[0].strike if chain.walls_overall.puts else None
+    gamma_peak = chain.gamma.peak_strike
+
+    for label, strike in [("Call wall", call_wall), ("Put wall", put_wall), ("Gamma peak", gamma_peak)]:
+        line = _fmt_strike(label, strike)
+        if line is not None:
+            out.append(line)
+
+    if flow_net is None or flow_net.empty or "deltaOI_notional" not in flow_net.columns:
+        return out
+
+    df = flow_net.copy()
+    df["deltaOI_notional"] = pd.to_numeric(df["deltaOI_notional"], errors="coerce")
+    df["strike"] = pd.to_numeric(df.get("strike"), errors="coerce")
+    df = df.dropna(subset=["deltaOI_notional", "strike"])
+    if df.empty:
+        return out
+
+    df["_abs"] = df["deltaOI_notional"].abs()
+    df = df.sort_values(["_abs", "optionType", "strike"], ascending=[False, True, True], na_position="last")
+
+    def _fmt_flow_row(row) -> str:
+        opt_type = str(row.get("optionType", "-"))
+        strike = float(row.get("strike"))
+        dnoi = float(row.get("deltaOI_notional"))
+        return f"{opt_type} `{strike:g}`: ΔOI$ `{_fmt_money(dnoi, digits=0)}` ({_dist_atr(strike)})"
+
+    building = df[df["deltaOI_notional"] > 0].head(top)
+    unwinding = df[df["deltaOI_notional"] < 0].head(top)
+    if not building.empty:
+        out.append("Flow building (top):")
+        for _, row in building.iterrows():
+            out.append(f"- {_fmt_flow_row(row)}")
+    if not unwinding.empty:
+        out.append("Flow unwinding (top):")
+        for _, row in unwinding.iterrows():
+            out.append(f"- {_fmt_flow_row(row)}")
+    return out
+
+
 @dataclass(frozen=True)
 class BriefingSymbolSection:
     symbol: str
@@ -157,6 +244,7 @@ class BriefingSymbolSection:
     chain: ChainReport | None
     compare: CompareReport | None
     flow_net: pd.DataFrame | None
+    technicals: TechnicalSnapshot | None
     errors: list[str]
     warnings: list[str]
     derived_updated: bool = False
@@ -168,6 +256,7 @@ def render_briefing_markdown(
     portfolio_path: str,
     symbol_sections: list[BriefingSymbolSection],
     portfolio_table_md: str | None = None,
+    top: int = 3,
 ) -> str:
     lines: list[str] = []
 
@@ -189,12 +278,17 @@ def render_briefing_markdown(
         lines.append(f"## {sec.symbol} ({sec.as_of})")
         lines.append("")
 
-        if sec.errors and sec.chain is None:
+        if sec.errors and sec.chain is None and sec.technicals is None:
             lines.append("Errors:")
             for e in sec.errors:
                 lines.append(f"- {e}")
             lines.append("")
             continue
+        if sec.errors:
+            lines.append("Errors:")
+            for e in sec.errors:
+                lines.append(f"- {e}")
+            lines.append("")
 
         if sec.warnings:
             lines.append("Warnings:")
@@ -202,7 +296,32 @@ def render_briefing_markdown(
                 lines.append(f"- {w}")
             lines.append("")
 
+        if sec.technicals is not None:
+            lines.append("### Technicals (canonical: technicals_backtesting)")
+            for b in technicals_takeaways(sec.technicals):
+                lines.append(f"- {b}")
+            lines.append("")
+
         if sec.chain is not None:
+            if sec.technicals is not None:
+                sm = strike_map_takeaways(
+                    chain=sec.chain,
+                    flow_net=sec.flow_net,
+                    technicals=sec.technicals,
+                    top=top,
+                )
+                if sm:
+                    lines.append("### Strike map (spot + ATR distance)")
+                    lines.append(f"- Spot (snapshot): `{sec.chain.spot:.2f}`")
+                    for line in sm:
+                        if line.startswith("- "):
+                            lines.append(line)
+                        elif line.endswith(":"):
+                            lines.append(f"- {line}")
+                        else:
+                            lines.append(f"- {line}")
+                    lines.append("")
+
             lines.append("### Chain")
             for b in chain_takeaways(sec.chain):
                 lines.append(f"- {b}")
@@ -217,7 +336,7 @@ def render_briefing_markdown(
             lines.append("")
 
         if sec.flow_net is not None:
-            ft = flow_takeaways(sec.flow_net, top=3)
+            ft = flow_takeaways(sec.flow_net, top=top)
             if ft:
                 lines.append("### Flow (net, aggregated by strike)")
                 # `flow_takeaways` returns a small mixed list (section headers + bullets).

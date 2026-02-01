@@ -50,6 +50,7 @@ from options_helper.technicals_backtesting.backtest.optimizer import optimize_pa
 from options_helper.technicals_backtesting.backtest.walk_forward import walk_forward_optimize
 from options_helper.technicals_backtesting.feature_selection import required_feature_columns_for_strategy
 from options_helper.technicals_backtesting.pipeline import compute_features, warmup_bars
+from options_helper.technicals_backtesting.snapshot import compute_technical_snapshot
 from options_helper.technicals_backtesting.strategies.registry import get_strategy
 
 app = typer.Typer(add_completion=False)
@@ -1313,6 +1314,16 @@ def briefing(
         "--cache-dir",
         help="Directory for options chain snapshots.",
     ),
+    candle_cache_dir: Path = typer.Option(
+        Path("data/candles"),
+        "--candle-cache-dir",
+        help="Directory for cached daily candles (used for technical context).",
+    ),
+    technicals_config: Path = typer.Option(
+        Path("config/technical_backtesting.yaml"),
+        "--technicals-config",
+        help="Technical backtesting config (canonical indicator definitions).",
+    ),
     out: Path | None = typer.Option(
         None,
         "--out",
@@ -1354,6 +1365,14 @@ def briefing(
 
     store = OptionsSnapshotStore(cache_dir)
     derived_store = DerivedStore(derived_dir)
+    candle_store = CandleStore(candle_cache_dir)
+
+    technicals_cfg: dict | None = None
+    technicals_cfg_error: str | None = None
+    try:
+        technicals_cfg = load_technical_backtesting_config(technicals_config)
+    except Exception as exc:  # noqa: BLE001
+        technicals_cfg_error = str(exc)
 
     # Cache day snapshots for portfolio marks (best-effort).
     day_cache: dict[str, tuple[date, pd.DataFrame]] = {}
@@ -1369,6 +1388,7 @@ def briefing(
         chain = None
         compare_report = None
         flow_net = None
+        technicals = None
         derived_updated = False
 
         try:
@@ -1382,6 +1402,21 @@ def briefing(
                 raise ValueError("missing spot price in meta.json (run snapshot-options first)")
 
             day_cache[sym] = (to_date, df_to)
+
+            if technicals_cfg is None:
+                if technicals_cfg_error is not None:
+                    warnings.append(f"technicals unavailable: {technicals_cfg_error}")
+            else:
+                try:
+                    candles = candle_store.load(sym)
+                    if candles.empty:
+                        warnings.append("technicals unavailable: missing candle cache (run refresh-candles)")
+                    else:
+                        technicals = compute_technical_snapshot(candles, technicals_cfg)
+                        if technicals is None:
+                            warnings.append("technicals unavailable: insufficient candle history / warmup")
+                except Exception as exc:  # noqa: BLE001
+                    warnings.append(f"technicals unavailable: {exc}")
 
             chain = compute_chain_report(
                 df_to,
@@ -1447,6 +1482,7 @@ def briefing(
                 chain=chain,
                 compare=compare_report,
                 flow_net=flow_net,
+                technicals=technicals,
                 errors=errors,
                 warnings=warnings,
                 derived_updated=derived_updated,
@@ -1537,6 +1573,7 @@ def briefing(
         portfolio_path=str(portfolio_path),
         symbol_sections=sections,
         portfolio_table_md=portfolio_table_md,
+        top=top,
     )
 
     if out is None:
