@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Callable
+from typing import Callable, ClassVar
 
 import pandas as pd
 import yfinance as yf
@@ -75,6 +75,10 @@ class CandleStore:
     fetcher: HistoryFetcher = _default_fetcher
     backfill_days: int = 5
 
+    # yfinance can error on very old start dates (negative epoch). 1970-01-01 is a
+    # pragmatic "max" backfill floor for modern equities/options workflows.
+    _MAX_BACKFILL_START: ClassVar[date] = date(1970, 1, 1)
+
     def _path_for_symbol(self, symbol: str) -> Path:
         safe = symbol.upper().replace("/", "_")
         return self.root_dir / f"{safe}.csv"
@@ -100,26 +104,42 @@ class CandleStore:
         - Always refreshes the most recent candles by re-fetching a small tail window.
         """
         today = today or date.today()
-        desired_start = _parse_period_to_start(period, today=today)
+        period_norm = period.strip().lower()
+        desired_start = _parse_period_to_start(period_norm, today=today)
+        wants_max = period_norm == "max"
 
         cached = self.load(symbol)
         merged = cached
 
+        did_full_fetch = False
+
         # Backfill earlier history if required.
         if merged.empty:
-            if desired_start is None:
+            if wants_max:
                 merged = _normalize_history(self.fetcher(symbol, None, None))
+                did_full_fetch = True
+            elif desired_start is None:
+                merged = _normalize_history(self.fetcher(symbol, None, None))
+                did_full_fetch = True
             else:
                 merged = _normalize_history(self.fetcher(symbol, desired_start, None))
+        elif wants_max:
+            first_cached = merged.index.min().date()
+            fetched = self.fetcher(symbol, self._MAX_BACKFILL_START, first_cached)
+            fetched = _normalize_history(fetched)
+            if not fetched.empty:
+                merged = pd.concat([fetched, merged])
+                merged = merged[~merged.index.duplicated(keep="last")].sort_index()
         elif desired_start is not None:
             first_cached = merged.index.min().date()
             if desired_start < first_cached:
                 fetched = self.fetcher(symbol, desired_start, first_cached)
                 fetched = _normalize_history(fetched)
-                merged = pd.concat([fetched, merged]).sort_index()
+                merged = pd.concat([fetched, merged])
+                merged = merged[~merged.index.duplicated(keep="last")].sort_index()
 
         # Refresh the recent tail (captures late revisions / newly available data).
-        if not merged.empty and self.backfill_days > 0:
+        if not did_full_fetch and not merged.empty and self.backfill_days > 0:
             last_cached_dt = merged.index.max()
             refresh_start = (last_cached_dt.date() - timedelta(days=self.backfill_days))
             fetched = self.fetcher(symbol, refresh_start, None)

@@ -92,6 +92,31 @@ def test_backfill_earlier_history_when_period_expands(tmp_path) -> None:
     assert out.index.min().date() == start
 
 
+def test_period_max_backfills_earlier_history_when_cache_exists(tmp_path) -> None:
+    cached_start = date(2026, 1, 20)
+    cached = _df(cached_start, 5)
+
+    calls: list[tuple[str, date | None, date | None]] = []
+
+    def fetcher(symbol: str, start: date | None, end: date | None) -> pd.DataFrame:
+        calls.append((symbol, start, end))
+        assert start is not None
+        assert end is not None
+        # get_daily_history uses a far-past (epoch-safe) start for "max" backfills; keep the stub lightweight.
+        assert start == date(1970, 1, 1)
+        assert end == cached_start
+        return _df(date(2026, 1, 1), 10)
+
+    store = CandleStore(tmp_path, fetcher=fetcher, backfill_days=0)
+    store.save("UROY", cached)
+
+    out = store.get_daily_history("UROY", period="max", today=date(2026, 1, 27))
+
+    assert len(calls) == 1
+    assert out.index.min().date() == date(2026, 1, 1)
+    assert out.index.max().date() == (cached_start + timedelta(days=4))
+
+
 def test_load_normalizes_mixed_tz_index(tmp_path) -> None:
     # Simulate a cached CSV with mixed tz offsets in the index.
     path = tmp_path / "UROY.csv"
