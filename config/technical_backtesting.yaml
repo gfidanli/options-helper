@@ -225,3 +225,9 @@ extension_percentiles:
 
   # Forward windows (trading-day offsets) for tail-event follow-through.
   forward_days: [1, 3, 5, 10]
+
+  # Optional overrides per timeframe (used by `technicals extension-stats`).
+  # - Daily bars: include +15D (about 2 trading weeks).
+  # - Weekly bars: keep short windows in weeks.
+  forward_days_daily: [1, 3, 5, 10, 15]
+  forward_days_weekly: [1, 3, 5, 10]

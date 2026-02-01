@@ -37,10 +37,12 @@ The report outputs **p5 / p50 / p95** for each window so you can see if distribu
 ## 4) Tail‑event follow‑through
 
 We identify all days where extension percentile is in the **upper or lower tails** (configurable),
-then compute outcomes at +1/+3/+5/+10 trading days:
+then compute follow-through outcomes at forward offsets:
+- Daily: +1/+3/+5/+10/+15 trading days (by default)
+- Weekly: +1/+3/+5/+10 weeks (by default)
 
 - **Primary:** extension percentile (mean‑reversion in normalized terms)
-- **Secondary:** price return %
+- **Secondary:** max upside return (High-based, MFE-style)
 
 This helps answer questions like:
 “When extension hits the 95th percentile, does it mean‑revert quickly?”
@@ -50,6 +52,8 @@ This helps answer questions like:
 - **Briefing (Markdown + JSON):** current extension percentiles + rolling quantiles (daily + weekly).
 - **Extension stats report (`technicals extension-stats`):**
   - Daily tail‑event table
+    - includes weekly context columns (weekly extension percentile, weekly RSI tag, weekly divergence)
+  - Daily “Max Upside” summary (High-based; 1w/4w/3m/6m/1y)
   - Weekly tail‑event table
   - Rolling quantile tables (daily + weekly)
 
@@ -65,7 +69,9 @@ See `config/technical_backtesting.yaml` → `extension_percentiles`:
 - `days_per_year`: trading days/year (default 252)
 - `windows_years`: rolling windows
 - `tail_high_pct` / `tail_low_pct`: tail thresholds
-- `forward_days`: forward windows (trading‑day offsets)
+- `forward_days`: forward windows (base list; used for weekly unless overridden)
+- `forward_days_daily`: optional override for daily forward windows
+- `forward_days_weekly`: optional override for weekly forward windows
 
 ---
 

@@ -18,6 +18,7 @@ It is intentionally biased toward **offline, repeatable analysis** using the loc
 |------|-------|---------|----------------|----------------------|
 | 1 | F-007 | Extension percentiles + regime drift | Adds per-ticker percentile context for extension and checks whether tails mean‑revert; supports adaptive thresholds. | technicals_backtesting + derived stats |
 | 2 | F-008 | RSI divergence enrichment for extension | Adds a momentum-confirmation layer: elevated extension + bearish RSI divergence can flag “take profit / reversal risk” zones; symmetric bullish divergence helps with “capitulation” context. | technicals_backtesting + extension percentiles |
+| 3 | F-009 | Max-upside (High-based) + weekly context for extension tails | Aligns tail-event stats with longer-dated options positioning by summarizing max upside over 1w/4w/3m/6m/1y and adding weekly “context” (weekly extension/RSI/divergence). | extension percentiles + RSI divergence |
 
 ## Completed (implemented)
 - F-001 `chain-report`
@@ -45,6 +46,14 @@ Deliverables:
 Deliverables:
 - F-008 MVP: compute bearish/bullish RSI divergence flags on cached candles and surface them in `technicals extension-stats` artifacts.
 - F-008 v1: conditional forward-return / forward-percentile tables for tail events **with** vs **without** divergence; add a concise “current divergence” callout to the daily briefing.
+
+### Milestone M8 — Max-upside + weekly context for extension tails
+**Goal:** add long-horizon, call-friendly “max upside” statistics for downside extension setups and
+surface weekly extension/RSI/divergence context alongside daily tail events.
+
+Deliverables:
+- F-009 MVP: High-based max-upside summary for daily low-tail events over 1w/4w/3m/6m/1y; add +15D to daily forward extension percentiles.
+- F-009 v1: weekly RSI divergence + weekly RSI regime tagging; add weekly context columns to daily tail-event tables.
 
 ---
 
@@ -133,7 +142,7 @@ but momentum is weakening” (classic divergence), which often corresponds to �
 
 ### Non-goals
 - “Best” swing-point detection or complex pattern libraries (keep logic simple + explainable).
-- Intraday divergence; daily candles only (weekly can be added later).
+- Intraday divergence (keep to daily/weekly candles only).
 - Predictive claims; this is research context only.
 
 ### Definitions (v1)
@@ -207,6 +216,50 @@ but momentum is weakening” (classic divergence), which often corresponds to �
 - `technicals extension-stats --symbol CVX` produces artifacts that include divergence fields and conditional summaries.
 - Divergence artifacts include an RSI regime tag (`overbought`/`oversold`/`neutral`) and can be gated by RSI extremes.
 - Offline tests pass; no new network dependency added.
+
+---
+
+## F-009 — Max-upside (High-based) + weekly context for extension tails
+
+### Summary
+Enrich `technicals extension-stats` with long-horizon, **call-friendly** follow-through metrics:
+- replace short-horizon “fwd ret%” displays with **max-upside return** (MFE-style) using High vs entry Close
+- add a **Max Upside** summary table over longer horizons (1w/4w/3m/6m/1y) focused on downside-extension bullish setups
+- surface **weekly context** (weekly extension percentile + weekly RSI regime + weekly RSI divergence) alongside daily tail events
+
+This project is **not financial advice**; outputs are descriptive and intended for research/decision support.
+
+### Goals
+- Answer: “When a ticker is extremely extended to the downside and RSI is oversold (optionally with bullish divergence),
+  what upside tends to be reachable within common options horizons?”
+- Keep the workflow **offline**, **deterministic**, and **per‑ticker normalized** (percentile-based gating).
+- Make daily and weekly context easy to scan in a single report.
+
+### Non-goals
+- Options pricing/recommendations (strike/expiry selection is user-driven and separate).
+- Intraday signals.
+- Predictive claims.
+
+### Definitions
+- **Max upside (daily)** at horizon `H`: `max(High[t+1:t+H]) / Close[t] − 1`
+- Horizons (daily bars):
+  - 1w: 5
+  - 4w: 20
+  - 3m: 63
+  - 6m: 126
+  - 1y: 252
+- Weekly context is computed on weekly candles (resampled) and forward-filled onto daily dates for display.
+
+### Outputs
+- `technicals extension-stats` artifacts (`.json` + `.md`):
+  - Daily: add “Max Upside (Daily, High-based)” summary for low-tail setups.
+  - Daily tail-event table: add RSI-at-event regime + weekly context columns; add +15D forward percentile; show “Max ret%” instead of “Fwd ret%”.
+  - Weekly: add “RSI Divergence (Weekly)” section and include RSI regime in weekly tail-event table.
+- JSON schema bump for extension-stats artifacts.
+
+### Testing
+- Unit tests for max-upside computation on synthetic series.
+- CLI integration test for `technicals extension-stats` output shape (synthetic OHLC input).
 
 ---
 

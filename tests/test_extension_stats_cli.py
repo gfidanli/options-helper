@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pandas as pd
+from typer.testing import CliRunner
+
+from options_helper.cli import app
+
+
+def test_extension_stats_cli_writes_schema_v3_and_max_upside_section(tmp_path: Path) -> None:
+    # Synthetic OHLC: gentle uptrend with tight ranges to create extended readings.
+    idx = pd.date_range("2024-01-01", periods=160, freq="B")
+    close = pd.Series([100.0 + i * 0.15 for i in range(len(idx))], index=idx, dtype="float64")
+    ohlc = pd.DataFrame(
+        {
+            "Open": close.shift(1).fillna(close.iloc[0]),
+            "High": close * 1.01,
+            "Low": close * 0.99,
+            "Close": close,
+        },
+        index=idx,
+    )
+
+    ohlc_path = tmp_path / "ohlc.csv"
+    ohlc.to_csv(ohlc_path)
+
+    # Lower warmup + tail thresholds to ensure we get tail events deterministically.
+    cfg_src = Path("config/technical_backtesting.yaml").read_text(encoding="utf-8")
+    cfg_mod = (
+        cfg_src.replace("warmup_bars: 200", "warmup_bars: 20")
+        .replace("tail_high_pct: 97.5", "tail_high_pct: 80.0")
+        .replace("tail_low_pct: 2.5", "tail_low_pct: 20.0")
+    )
+    cfg_path = tmp_path / "cfg.yaml"
+    cfg_path.write_text(cfg_mod, encoding="utf-8")
+
+    out_dir = tmp_path / "reports"
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "technicals",
+            "extension-stats",
+            "--ohlc-path",
+            str(ohlc_path),
+            "--config",
+            str(cfg_path),
+            "--out",
+            str(out_dir),
+        ],
+    )
+    assert res.exit_code == 0, res.output
+
+    json_paths = list((out_dir / "UNKNOWN").glob("*.json"))
+    md_paths = list((out_dir / "UNKNOWN").glob("*.md"))
+    assert json_paths, "expected extension-stats JSON artifact"
+    assert md_paths, "expected extension-stats Markdown artifact"
+
+    payload = json.loads(json_paths[0].read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 3
+    assert 15 in payload["config"]["extension_percentiles"]["forward_days_daily"]
+    assert "max_upside_summary_daily" in payload
+
+    md = md_paths[0].read_text(encoding="utf-8")
+    assert "## Max Upside (Daily, High-based)" in md
+

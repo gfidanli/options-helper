@@ -310,6 +310,14 @@
         "forward_days": {
           "type": "array",
           "items": { "type": "integer", "minimum": 1 }
+        },
+        "forward_days_daily": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 }
+        },
+        "forward_days_weekly": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 }
         }
       },
       "required": ["days_per_year", "windows_years", "tail_high_pct", "tail_low_pct", "forward_days"]

@@ -9,9 +9,13 @@ position-management workflows.
 
 ---
 
-## 1) What it detects (daily bars)
+## 1) What it detects (daily + weekly bars)
 
-We look for divergences over a rolling window (default **14 trading bars**), anchored on the newer swing point:
+We look for divergences over a rolling window (default **14 bars**), anchored on the newer swing point.
+
+Notes:
+- On **daily** data, a “bar” is a trading day.
+- On **weekly** data, a “bar” is a week (week-end close per your resample rule).
 
 ### Bearish divergence (upside extension context)
 - Close makes a **higher swing high**.
@@ -56,8 +60,9 @@ Optional gating:
 Currently, divergence enrichment is surfaced in:
 - `options-helper technicals extension-stats` artifacts:
   - “RSI Divergence (Daily)” section (current recent-window divergence)
-  - Tail-event table gains `RSI div` + `RSI tag` columns (daily)
-  - A compact summary table comparing tail outcomes **with** vs **without** divergence
+  - “RSI Divergence (Weekly)” section (current recent-window divergence)
+  - Tail-event tables include divergence context and RSI regime tags
+  - A compact summary table comparing tail outcomes **with** vs **without** divergence (daily)
 
 ---
 
@@ -69,7 +74,7 @@ Example:
 ```
 
 Key knobs:
-- `--divergence-window-days` (default 14)
+- `--divergence-window-days` (default 14; interpreted as bars for each timeframe)
 - `--divergence-min-extension-days` (default 5)
 - `--divergence-min-extension-percentile` / `--divergence-max-extension-percentile` (defaults to tail thresholds)
 - `--divergence-min-price-delta-pct` / `--divergence-min-rsi-delta`
@@ -83,4 +88,3 @@ Key knobs:
 - Divergences are **descriptive patterns**, not predictions.
 - Swing-point logic is intentionally simple; choppy markets can produce many small swings.
 - Percentiles depend on the configured rolling window and the candle history quality.
-
