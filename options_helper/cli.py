@@ -2672,7 +2672,7 @@ def technicals_extension_stats(
     report_daily = compute_extension_percentiles(
         extension_series=features[ext_col],
         close_series=features["Close"],
-        windows_years=ext_cfg.get("windows_years", [1, 3, 5]),
+        windows_years=ext_cfg.get("windows_years", [3]),
         days_per_year=int(ext_cfg.get("days_per_year", 252)),
         tail_high_pct=float(ext_cfg.get("tail_high_pct", 95)),
         tail_low_pct=float(ext_cfg.get("tail_low_pct", 5)),
@@ -2689,7 +2689,7 @@ def technicals_extension_stats(
     report_weekly = compute_extension_percentiles(
         extension_series=weekly_ext,
         close_series=weekly_close,
-        windows_years=ext_cfg.get("windows_years", [1, 3, 5]),
+        windows_years=ext_cfg.get("windows_years", [3]),
         days_per_year=int(ext_cfg.get("days_per_year", 252) / 5),
         tail_high_pct=float(ext_cfg.get("tail_high_pct", 95)),
         tail_low_pct=float(ext_cfg.get("tail_low_pct", 5)),
@@ -2698,7 +2698,6 @@ def technicals_extension_stats(
     )
 
     sym_label = symbol.upper() if symbol else "UNKNOWN"
-    asof = report.asof
     payload = {
         "schema_version": 1,
         "symbol": sym_label,
@@ -2755,6 +2754,14 @@ def technicals_extension_stats(
         md_lines.append("- No tail events found.")
 
     md_lines.append("")
+    md_lines.append("## Current Percentiles (Weekly)")
+    if report_weekly.current_percentiles:
+        for years, pct in sorted(report_weekly.current_percentiles.items()):
+            md_lines.append(f"- {years}y: `{pct:.1f}`")
+    else:
+        md_lines.append("- No percentile windows available (insufficient history).")
+
+    md_lines.append("")
     md_lines.append("## Rolling Quantiles (Weekly p5 / p50 / p95)")
     if report_weekly.quantiles_by_window:
         for years, q in sorted(report_weekly.quantiles_by_window.items()):
@@ -2786,8 +2793,8 @@ def technicals_extension_stats(
     if out:
         base = out / sym_label
         base.mkdir(parents=True, exist_ok=True)
-        json_path = base / f"{asof}.json"
-        md_path = base / f"{asof}.md"
+        json_path = base / f"{report_daily.asof}.json"
+        md_path = base / f"{report_daily.asof}.md"
         if write_json:
             json_path.write_text(json.dumps(payload, indent=2, sort_keys=True, allow_nan=False), encoding="utf-8")
             console.print(f"Wrote JSON: {json_path}")
