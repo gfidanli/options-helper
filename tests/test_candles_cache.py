@@ -134,3 +134,35 @@ def test_load_normalizes_mixed_tz_index(tmp_path) -> None:
     assert df.index.tz is None
     # Resampling should work.
     _ = df["Close"].resample("W-FRI").last()
+
+
+def test_legacy_cache_upgrades_to_adjusted_without_fetch(tmp_path) -> None:
+    # Legacy cache: CSV exists but no meta.json, and it contains Adj Close.
+    idx = pd.to_datetime([date(2026, 1, 1), date(2026, 1, 2)])
+    legacy = pd.DataFrame(
+        {
+            "Open": [100.0, 110.0],
+            "High": [101.0, 111.0],
+            "Low": [99.0, 109.0],
+            "Close": [100.0, 110.0],
+            "Adj Close": [50.0, 55.0],
+            "Volume": [1, 2],
+        },
+        index=idx,
+    )
+    legacy.to_csv(tmp_path / "UROY.csv")
+
+    calls: list[tuple[str, date | None, date | None]] = []
+
+    def fetcher(symbol: str, start: date | None, end: date | None) -> pd.DataFrame:  # pragma: no cover
+        calls.append((symbol, start, end))
+        return pd.DataFrame()
+
+    store = CandleStore(tmp_path, fetcher=fetcher, backfill_days=0, auto_adjust=True, back_adjust=False)
+    out = store.get_daily_history("UROY", period="10d", today=date(2026, 1, 27))
+
+    assert calls == []
+    assert not out.empty
+    assert "Adj Close" not in out.columns
+    assert out["Close"].iloc[0] == 50.0
+    assert (tmp_path / "UROY.meta.json").exists()

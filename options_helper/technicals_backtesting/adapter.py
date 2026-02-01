@@ -9,6 +9,69 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
+def apply_yfinance_price_adjustment(df: pd.DataFrame, *, auto_adjust: bool, back_adjust: bool) -> pd.DataFrame:
+    """
+    Apply yfinance-style price adjustment locally.
+
+    This is a pure transformation used to ensure indicators/backtests operate on the
+    intended price series even when the upstream cache stored unadjusted OHLC.
+
+    Behavior:
+    - auto_adjust=True: adjust Open/High/Low/Close by (Adj Close / Close), replace Close with Adj Close, drop Adj Close
+      (mirrors yfinance.utils.auto_adjust)
+    - back_adjust=True: adjust Open/High/Low by (Adj Close / Close), keep Close, drop Adj Close
+      (mirrors yfinance.utils.back_adjust)
+    - If Adj Close is missing, returns df unchanged.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame() if df is None else df.copy()
+
+    auto_adjust = bool(auto_adjust)
+    back_adjust = bool(back_adjust)
+    if auto_adjust and back_adjust:
+        raise ValueError("Invalid price adjustment config: auto_adjust and back_adjust cannot both be true")
+
+    lower_cols = {str(c).strip().lower(): c for c in df.columns}
+    close_col = lower_cols.get("close")
+    adj_col = None
+    for key in ("adj close", "adj_close", "adjclose"):
+        if key in lower_cols:
+            adj_col = lower_cols[key]
+            break
+
+    if close_col is None or adj_col is None:
+        return df.copy()
+
+    out = df.copy()
+    close = pd.to_numeric(out[close_col], errors="coerce")
+    adj_close = pd.to_numeric(out[adj_col], errors="coerce")
+
+    ratio = adj_close / close
+    ratio = ratio.where(ratio.notna() & (ratio != 0.0), other=1.0)
+
+    if auto_adjust:
+        for col_key in ("open", "high", "low", "close"):
+            col = lower_cols.get(col_key)
+            if col is None:
+                continue
+            out[col] = pd.to_numeric(out[col], errors="coerce") * ratio
+        # Replace Close with Adj Close to match yfinance.auto_adjust output.
+        out[close_col] = adj_close
+        out = out.drop(columns=[adj_col])
+        return out
+
+    if back_adjust:
+        for col_key in ("open", "high", "low"):
+            col = lower_cols.get(col_key)
+            if col is None:
+                continue
+            out[col] = pd.to_numeric(out[col], errors="coerce") * ratio
+        out = out.drop(columns=[adj_col])
+        return out
+
+    return df.copy()
+
+
 def standardize_ohlc(
     df: pd.DataFrame,
     *,

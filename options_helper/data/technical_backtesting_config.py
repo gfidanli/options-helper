@@ -74,6 +74,10 @@ def _light_validate(cfg: dict) -> None:
     if provider not in {"ta", "talib"}:
         raise ConfigError("indicators.provider must be 'ta' or 'talib'")
 
+    price_adj = (cfg.get("data", {}).get("candles", {}) or {}).get("price_adjustment", {}) or {}
+    if bool(price_adj.get("auto_adjust")) and bool(price_adj.get("back_adjust")):
+        raise ConfigError("data.candles.price_adjustment: auto_adjust and back_adjust cannot both be true")
+
     ext_cfg = cfg.get("extension_percentiles", {})
     if ext_cfg:
         high = float(ext_cfg.get("tail_high_pct", 95))

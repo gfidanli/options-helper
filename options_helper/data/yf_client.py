@@ -50,7 +50,7 @@ class YFinanceClient:
     def get_underlying(self, symbol: str, *, period: str = "6mo", interval: str = "1d") -> UnderlyingData:
         try:
             ticker = self.ticker(symbol)
-            history = ticker.history(period=period, interval=interval, auto_adjust=False)
+            history = ticker.history(period=period, interval=interval, auto_adjust=False, back_adjust=False)
             last_price = None
             if not history.empty and "Close" in history.columns:
                 last_price = float(history["Close"].iloc[-1])
