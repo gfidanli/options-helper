@@ -3000,7 +3000,7 @@ def technicals_extension_stats(
     max_return_horizons_days = {"1w": 5, "4w": 20, "3m": 63, "6m": 126, "9m": 189, "1y": 252}
 
     payload = {
-        "schema_version": 4,
+        "schema_version": 5,
         "symbol": sym_label,
         "asof": report_daily.asof,
         "config": {
@@ -3117,9 +3117,9 @@ def technicals_extension_stats(
             except Exception:  # noqa: BLE001
                 ev["rsi_regime"] = None
 
-        # Max favorable move (directional):
-        # - low tail: max upside move using High (call framing)
-        # - high tail: max downside move using Low (put / pullback framing)
+        # Max favorable move + drawdown (directional):
+        # - low tail: favorable is bounce using High (>= 0), drawdown is pullback using Low (<= 0)
+        # - high tail: favorable is pullback using Low (<= 0), drawdown is squeeze using High (<= 0)
         max_up_short: dict[int, float | None] = {int(h): None for h in forward_days_daily}
         max_down_short: dict[int, float | None] = {int(h): None for h in forward_days_daily}
         max_up_long: dict[str, float | None] = {k: None for k in max_return_horizons_days.keys()}
@@ -3162,16 +3162,26 @@ def technicals_extension_stats(
                     )
                     max_down_long[str(label)] = None if r is None else float(r)
 
+        def _neg0_to_0(val: float) -> float:
+            return 0.0 if float(val) == 0.0 else float(val)
+
         direction = ev.get("direction")
         if direction == "low":
-            max_fav_short = dict(max_up_short)
-            max_fav_long = dict(max_up_long)
+            max_fav_short = {k: _none_if_nan(v) for k, v in max_up_short.items()}
+            max_fav_long = {k: _none_if_nan(v) for k, v in max_up_long.items()}
+            dd_short = {k: (None if v is None else _neg0_to_0(-float(v))) for k, v in max_down_short.items()}
+            dd_long = {k: (None if v is None else _neg0_to_0(-float(v))) for k, v in max_down_long.items()}
         elif direction == "high":
-            max_fav_short = dict(max_down_short)
-            max_fav_long = dict(max_down_long)
+            max_fav_short = {k: (None if v is None else _neg0_to_0(-float(v))) for k, v in max_down_short.items()}
+            max_fav_long = {k: (None if v is None else _neg0_to_0(-float(v))) for k, v in max_down_long.items()}
+            # Adverse move (drawdown) for high-tail mean reversion is a further squeeze up.
+            dd_short = {k: _none_if_nan(v) for k, v in max_up_short.items()}
+            dd_long = {k: _none_if_nan(v) for k, v in max_up_long.items()}
         else:
             max_fav_short = {int(h): None for h in forward_days_daily}
             max_fav_long = {k: None for k in max_return_horizons_days.keys()}
+            dd_short = {int(h): None for h in forward_days_daily}
+            dd_long = {k: None for k in max_return_horizons_days.keys()}
 
         # Retain up/down maps for debugging, but prefer *favorable* maps in displays/summaries.
         ev["forward_max_up_returns"] = max_up_short
@@ -3180,6 +3190,8 @@ def technicals_extension_stats(
         ev["max_up_returns"] = max_up_long
         ev["max_down_returns"] = max_down_long
         ev["max_fav_returns"] = max_fav_long
+        ev["forward_drawdown_returns"] = dd_short
+        ev["drawdown_returns"] = dd_long
 
         # Weekly context (ffill weekly values onto daily dates).
         wctx: dict[str, object] = {
@@ -3247,17 +3259,24 @@ def technicals_extension_stats(
                 max_up_short[int(h)] = None if r_up is None else float(r_up)
                 max_down_short[int(h)] = None if r_dn is None else float(r_dn)
 
+        def _neg0_to_0(val: float) -> float:
+            return 0.0 if float(val) == 0.0 else float(val)
+
         direction = ev.get("direction")
         if direction == "low":
-            max_fav_short = dict(max_up_short)
+            max_fav_short = {k: _none_if_nan(v) for k, v in max_up_short.items()}
+            dd_short = {k: (None if v is None else _neg0_to_0(-float(v))) for k, v in max_down_short.items()}
         elif direction == "high":
-            max_fav_short = dict(max_down_short)
+            max_fav_short = {k: (None if v is None else _neg0_to_0(-float(v))) for k, v in max_down_short.items()}
+            dd_short = {k: _none_if_nan(v) for k, v in max_up_short.items()}
         else:
             max_fav_short = {int(h): None for h in forward_days_weekly}
+            dd_short = {int(h): None for h in forward_days_weekly}
 
         ev["forward_max_up_returns"] = max_up_short
         ev["forward_max_down_returns"] = max_down_short
         ev["forward_max_fav_returns"] = max_fav_short
+        ev["forward_drawdown_returns"] = dd_short
 
     # Store max favorable-move summaries (JSON) for both tails:
     # - low tail: bounce (max-up move using High)
@@ -3318,14 +3337,30 @@ def technicals_extension_stats(
             rows = [ev for ev in daily_tail_events if fn(ev)]
             bucket_out: dict[str, object] = {"key": key, "label": label, "n": len(rows), "stats": {}}
             for h_label in max_return_horizons_days.keys():
-                vals = []
+                is_high_tail_bucket = str(key).startswith("high_tail")
+                fav_sign = -1.0 if is_high_tail_bucket else 1.0
+                dd_sign = 1.0 if is_high_tail_bucket else -1.0
+
+                fav_mags = []
+                dd_mags = []
                 for ev in rows:
                     v = (ev.get("max_fav_returns") or {}).get(h_label)
                     if v is not None and not pd.isna(v):
-                        vals.append(float(v) * 100.0)
+                        fav_mags.append(abs(float(v)) * 100.0)
+                    dd = (ev.get("drawdown_returns") or {}).get(h_label)
+                    if dd is not None and not pd.isna(dd):
+                        dd_mags.append(abs(float(dd)) * 100.0)
+
+                fav_med = _quantile(fav_mags, 0.50)
+                fav_p75 = _quantile(fav_mags, 0.75)
+                dd_med = _quantile(dd_mags, 0.50)
+                dd_p75 = _quantile(dd_mags, 0.75)
+
                 bucket_out["stats"][h_label] = {
-                    "median": _quantile(vals, 0.50),
-                    "p75": _quantile(vals, 0.75),
+                    "fav_median": None if fav_med is None else float(fav_sign) * float(fav_med),
+                    "fav_p75": None if fav_p75 is None else float(fav_sign) * float(fav_p75),
+                    "dd_median": None if dd_med is None else float(dd_sign) * float(dd_med),
+                    "dd_p75": None if dd_p75 is None else float(dd_sign) * float(dd_p75),
                 }
             max_move_summary_daily["buckets"].append(bucket_out)
     except Exception:  # noqa: BLE001
@@ -3495,22 +3530,34 @@ def technicals_extension_stats(
     md_lines.append("")
     md_lines.append("## Max Favorable Move (Daily)")
     md_lines.append(
-        "Metric (directional): low tail uses max(High)/Close - 1 (bounce); high tail uses -(min(Low)/Close - 1) (pullback)."
+        "Directional metrics: fav is in the mean-reversion direction; dd is max adverse move against it (both use High/Low vs entry Close)."
     )
+    md_lines.append("Cells: fav (med/p75); dd (med/p75).")
     md_lines.append("Descriptive (not financial advice).")
     max_up = payload.get("max_move_summary_daily", {}) if isinstance(payload, dict) else {}
     buckets = max_up.get("buckets", []) if isinstance(max_up, dict) else []
     if buckets:
-        md_lines.append("| Bucket | N | 1w (med/p75) | 4w | 3m | 6m | 9m | 1y |")
+        md_lines.append("| Bucket | N | 1w | 4w | 3m | 6m | 9m | 1y |")
         md_lines.append("|---|---:|---|---|---|---|---|---|")
 
-        def _fmt_cell(med: object, p75: object) -> str:
+        def _fmt_pair(med: object, p75: object) -> str:
             try:
                 if med is None or p75 is None:
                     return "-"
                 return f"{float(med):+.1f}% / {float(p75):+.1f}%"
             except Exception:  # noqa: BLE001
                 return "-"
+
+        def _fmt_cell(fav_med: object, fav_p75: object, dd_med: object, dd_p75: object) -> str:
+            fav = _fmt_pair(fav_med, fav_p75)
+            dd = _fmt_pair(dd_med, dd_p75)
+            if fav == "-" and dd == "-":
+                return "-"
+            if dd == "-":
+                return fav
+            if fav == "-":
+                return dd
+            return f"{fav}; {dd}"
 
         for b in buckets:
             if not isinstance(b, dict):
@@ -3519,7 +3566,7 @@ def technicals_extension_stats(
             stats = b.get("stats", {}) if isinstance(b.get("stats"), dict) else {}
             def _get(label: str) -> str:
                 s = stats.get(label, {}) if isinstance(stats.get(label), dict) else {}
-                return _fmt_cell(s.get("median"), s.get("p75"))
+                return _fmt_cell(s.get("fav_median"), s.get("fav_p75"), s.get("dd_median"), s.get("dd_p75"))
 
             md_lines.append(
                 f"| {b.get('label', '-')} | {n} | {_get('1w')} | {_get('4w')} | {_get('3m')} | {_get('6m')} | {_get('9m')} | {_get('1y')} |"

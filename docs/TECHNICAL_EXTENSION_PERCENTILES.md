@@ -42,9 +42,9 @@ then compute follow-through outcomes at forward offsets:
 - Weekly: +1/+3/+5/+10 weeks (by default)
 
 - **Primary:** extension percentile (mean‑reversion in normalized terms)
-- **Secondary:** max favorable move (directional, MFE-style)
-  - low tail: bounce using High (max up move)
-  - high tail: pullback using Low (max down move)
+- **Secondary:** max favorable move + max adverse move (drawdown), using future High/Low
+  - low tail: fav uses High (max up), dd uses Low (max down)
+  - high tail: fav uses Low (max down), dd uses High (max up)
 
 This helps answer questions like:
 “When extension hits the 95th percentile, does it mean‑revert quickly?”
@@ -56,7 +56,7 @@ This helps answer questions like:
   - Daily tail‑event table
     - includes weekly context columns (weekly extension percentile, weekly RSI tag, weekly divergence)
     - max ret% is shown for longer horizons (1w/4w/3m/6m/9m/1y)
-  - Daily “Max Favorable Move” summary (1w/4w/3m/6m/9m/1y; includes both low-tail and high-tail buckets)
+  - Daily “Max Favorable Move” summary (1w/4w/3m/6m/9m/1y; includes both low-tail and high-tail buckets; includes drawdown stats)
   - Weekly tail‑event table
   - Rolling quantile tables (daily + weekly)
 

@@ -9,7 +9,7 @@ from typer.testing import CliRunner
 from options_helper.cli import app
 
 
-def test_extension_stats_cli_writes_schema_v4_and_max_move_section(tmp_path: Path) -> None:
+def test_extension_stats_cli_writes_schema_v5_and_max_move_section(tmp_path: Path) -> None:
     # Synthetic OHLC: gentle uptrend with tight ranges to create extended readings.
     idx = pd.date_range("2024-01-01", periods=160, freq="B")
     close = pd.Series([100.0 + i * 0.15 for i in range(len(idx))], index=idx, dtype="float64")
@@ -60,12 +60,21 @@ def test_extension_stats_cli_writes_schema_v4_and_max_move_section(tmp_path: Pat
     assert md_paths, "expected extension-stats Markdown artifact"
 
     payload = json.loads(json_paths[0].read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 4
+    assert payload["schema_version"] == 5
     assert 15 in payload["config"]["extension_percentiles"]["forward_days_daily"]
     assert "max_upside_summary_daily" in payload
     assert "max_move_summary_daily" in payload
     assert payload["max_upside_summary_daily"]["buckets"], "expected non-empty max-upside buckets"
     assert "9m" in payload["config"]["max_forward_returns"]["horizons_days"]
 
+    # Ensure the summary carries both favorable and drawdown stats per horizon.
+    b0 = payload["max_move_summary_daily"]["buckets"][0]
+    s1w = b0["stats"]["1w"]
+    assert "fav_median" in s1w
+    assert "fav_p75" in s1w
+    assert "dd_median" in s1w
+    assert "dd_p75" in s1w
+
     md = md_paths[0].read_text(encoding="utf-8")
     assert "## Max Favorable Move (Daily)" in md
+    assert "Cells: fav (med/p75); dd (med/p75)." in md
