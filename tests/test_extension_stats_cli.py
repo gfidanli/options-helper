@@ -78,3 +78,191 @@ def test_extension_stats_cli_writes_schema_v5_and_max_move_section(tmp_path: Pat
     md = md_paths[0].read_text(encoding="utf-8")
     assert "## Max Favorable Move (Daily)" in md
     assert "Cells: fav (med/p75); dd (med/p75)." in md
+
+
+def test_extension_stats_cli_tail_pct_overrides_tail_thresholds(tmp_path: Path) -> None:
+    idx = pd.date_range("2024-01-01", periods=160, freq="B")
+    close = pd.Series([100.0 + i * 0.15 for i in range(len(idx))], index=idx, dtype="float64")
+    ohlc = pd.DataFrame(
+        {
+            "Open": close.shift(1).fillna(close.iloc[0]),
+            "High": close * 1.01,
+            "Low": close * 0.99,
+            "Close": close,
+        },
+        index=idx,
+    )
+
+    ohlc_path = tmp_path / "ohlc.csv"
+    ohlc.to_csv(ohlc_path)
+
+    cfg_src = Path("config/technical_backtesting.yaml").read_text(encoding="utf-8")
+    cfg_mod = cfg_src.replace("warmup_bars: 200", "warmup_bars: 20")
+    cfg_path = tmp_path / "cfg.yaml"
+    cfg_path.write_text(cfg_mod, encoding="utf-8")
+
+    out_dir = tmp_path / "reports"
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "technicals",
+            "extension-stats",
+            "--ohlc-path",
+            str(ohlc_path),
+            "--config",
+            str(cfg_path),
+            "--tail-pct",
+            "5",
+            "--out",
+            str(out_dir),
+        ],
+    )
+    assert res.exit_code == 0, res.output
+
+    json_paths = list((out_dir / "UNKNOWN").glob("*.json"))
+    assert json_paths, "expected extension-stats JSON artifact"
+    payload = json.loads(json_paths[0].read_text(encoding="utf-8"))
+
+    ext_cfg = payload["config"]["extension_percentiles"]
+    assert ext_cfg["tail_low_pct"] == 5.0
+    assert ext_cfg["tail_high_pct"] == 95.0
+
+    rsi_cfg = payload["config"]["rsi_divergence"]
+    assert rsi_cfg["min_extension_percentile"] == 95.0
+    assert rsi_cfg["max_extension_percentile"] == 5.0
+
+
+def test_extension_stats_cli_auto_window_years_short_history_uses_1y(tmp_path: Path) -> None:
+    idx = pd.date_range("2022-01-03", periods=900, freq="B")
+    close = pd.Series([50.0 + i * 0.05 for i in range(len(idx))], index=idx, dtype="float64")
+    ohlc = pd.DataFrame(
+        {
+            "Open": close.shift(1).fillna(close.iloc[0]),
+            "High": close * 1.01,
+            "Low": close * 0.99,
+            "Close": close,
+        },
+        index=idx,
+    )
+
+    ohlc_path = tmp_path / "ohlc_short.csv"
+    ohlc.to_csv(ohlc_path)
+
+    cfg_src = Path("config/technical_backtesting.yaml").read_text(encoding="utf-8")
+    cfg_mod = cfg_src.replace("warmup_bars: 200", "warmup_bars: 20")
+    cfg_path = tmp_path / "cfg.yaml"
+    cfg_path.write_text(cfg_mod, encoding="utf-8")
+
+    out_dir = tmp_path / "reports"
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "technicals",
+            "extension-stats",
+            "--ohlc-path",
+            str(ohlc_path),
+            "--config",
+            str(cfg_path),
+            "--out",
+            str(out_dir),
+        ],
+    )
+    assert res.exit_code == 0, res.output
+
+    json_paths = list((out_dir / "UNKNOWN").glob("*.json"))
+    payload = json.loads(json_paths[0].read_text(encoding="utf-8"))
+    assert payload["config"]["extension_percentiles"]["windows_years"] == [1]
+
+
+def test_extension_stats_cli_auto_window_years_long_history_uses_3y(tmp_path: Path) -> None:
+    idx = pd.date_range("2018-01-02", periods=1600, freq="B")
+    close = pd.Series([100.0 + i * 0.10 for i in range(len(idx))], index=idx, dtype="float64")
+    ohlc = pd.DataFrame(
+        {
+            "Open": close.shift(1).fillna(close.iloc[0]),
+            "High": close * 1.01,
+            "Low": close * 0.99,
+            "Close": close,
+        },
+        index=idx,
+    )
+
+    ohlc_path = tmp_path / "ohlc_long.csv"
+    ohlc.to_csv(ohlc_path)
+
+    cfg_src = Path("config/technical_backtesting.yaml").read_text(encoding="utf-8")
+    cfg_mod = cfg_src.replace("warmup_bars: 200", "warmup_bars: 20")
+    cfg_path = tmp_path / "cfg.yaml"
+    cfg_path.write_text(cfg_mod, encoding="utf-8")
+
+    out_dir = tmp_path / "reports"
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "technicals",
+            "extension-stats",
+            "--ohlc-path",
+            str(ohlc_path),
+            "--config",
+            str(cfg_path),
+            "--out",
+            str(out_dir),
+        ],
+    )
+    assert res.exit_code == 0, res.output
+
+    json_paths = list((out_dir / "UNKNOWN").glob("*.json"))
+    payload = json.loads(json_paths[0].read_text(encoding="utf-8"))
+    assert payload["config"]["extension_percentiles"]["windows_years"] == [3]
+
+
+def test_extension_stats_cli_percentile_window_years_override(tmp_path: Path) -> None:
+    idx = pd.date_range("2020-01-02", periods=900, freq="B")
+    close = pd.Series([100.0 + i * 0.05 for i in range(len(idx))], index=idx, dtype="float64")
+    ohlc = pd.DataFrame(
+        {
+            "Open": close.shift(1).fillna(close.iloc[0]),
+            "High": close * 1.01,
+            "Low": close * 0.99,
+            "Close": close,
+        },
+        index=idx,
+    )
+
+    ohlc_path = tmp_path / "ohlc_override.csv"
+    ohlc.to_csv(ohlc_path)
+
+    cfg_src = Path("config/technical_backtesting.yaml").read_text(encoding="utf-8")
+    cfg_mod = cfg_src.replace("warmup_bars: 200", "warmup_bars: 20")
+    cfg_path = tmp_path / "cfg.yaml"
+    cfg_path.write_text(cfg_mod, encoding="utf-8")
+
+    out_dir = tmp_path / "reports"
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "technicals",
+            "extension-stats",
+            "--ohlc-path",
+            str(ohlc_path),
+            "--config",
+            str(cfg_path),
+            "--percentile-window-years",
+            "2",
+            "--out",
+            str(out_dir),
+        ],
+    )
+    assert res.exit_code == 0, res.output
+
+    json_paths = list((out_dir / "UNKNOWN").glob("*.json"))
+    payload = json.loads(json_paths[0].read_text(encoding="utf-8"))
+    assert payload["config"]["extension_percentiles"]["windows_years"] == [2]

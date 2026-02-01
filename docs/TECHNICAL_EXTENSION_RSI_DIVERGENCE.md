@@ -41,6 +41,13 @@ To avoid tagging every small divergence, divergence detection is gated on extens
 
 Defaults come from your `extension_percentiles` tail thresholds (e.g. `tail_high_pct` / `tail_low_pct`).
 
+You can override the tail thresholds per run (and therefore the default divergence gates) via:
+- `--tail-pct X` → `tail_low_pct=X`, `tail_high_pct=100-X`
+
+The rolling percentile window used for extension gating is the same window used by `extension-stats` to compute
+percentiles/tail events. You can override it per run via:
+- `--percentile-window-years N`
+
 ---
 
 ## 3) RSI regime tagging (overbought/oversold)
@@ -71,6 +78,11 @@ Currently, divergence enrichment is surfaced in:
 Example:
 ```bash
 ./.venv/bin/options-helper technicals extension-stats --symbol CVX --cache-dir data/candles --out data/reports/technicals/extension --print
+```
+
+Relax the “extended” gating per ticker by relaxing tails:
+```bash
+./.venv/bin/options-helper technicals extension-stats --symbol LYFT --cache-dir data/candles --tail-pct 5 --print
 ```
 
 Key knobs:

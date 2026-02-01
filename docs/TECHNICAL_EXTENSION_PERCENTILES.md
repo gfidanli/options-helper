@@ -65,6 +65,17 @@ Example:
 ./.venv/bin/options-helper technicals extension-stats --symbol CVX --cache-dir data/candles --out data/reports/technicals/extension --print
 ```
 
+Relax tails (per run / per ticker) with a symmetric threshold override:
+```
+./.venv/bin/options-helper technicals extension-stats --symbol LYFT --cache-dir data/candles --tail-pct 5 --print
+```
+
+Auto window heuristic (default): uses a 1-year rolling window if the ticker has <5 years of history, else 3-year.
+Override per ticker:
+```
+./.venv/bin/options-helper technicals extension-stats --symbol RIVN --cache-dir data/candles --percentile-window-years 1 --print
+```
+
 ## 6) Configuration
 
 See `config/technical_backtesting.yaml` → `extension_percentiles`:
@@ -75,6 +86,12 @@ See `config/technical_backtesting.yaml` → `extension_percentiles`:
 - `forward_days`: forward windows (base list; used for weekly unless overridden)
 - `forward_days_daily`: optional override for daily forward windows
 - `forward_days_weekly`: optional override for weekly forward windows
+
+CLI override:
+- `technicals extension-stats --tail-pct X` sets `tail_low_pct=X` and `tail_high_pct=100-X` for that run.
+  This affects both tail-event selection and the default extension-percentile gates used by RSI divergence.
+- `technicals extension-stats --percentile-window-years N` sets the rolling percentile window to `N` years for that run.
+  If omitted, `extension-stats` uses the auto heuristic (1y if <5y history, else 3y).
 
 ---
 

@@ -2644,6 +2644,16 @@ def technicals_extension_stats(
     config_path: Path = typer.Option(
         Path("config/technical_backtesting.yaml"), "--config", help="Config path."
     ),
+    tail_pct: float | None = typer.Option(
+        None,
+        "--tail-pct",
+        help="Symmetric tail threshold percentile (e.g. 5 => low<=5, high>=95). Overrides config tail_high_pct/tail_low_pct.",
+    ),
+    percentile_window_years: int | None = typer.Option(
+        None,
+        "--percentile-window-years",
+        help="Rolling window (years) for extension percentiles + tail events. Default: auto (1y if <5y history, else 3y).",
+    ),
     out: Path | None = typer.Option(
         Path("data/reports/technicals/extension"),
         "--out",
@@ -2711,6 +2721,43 @@ def technicals_extension_stats(
         raise typer.BadParameter(f"Missing extension column: {ext_col}")
 
     ext_cfg = cfg.get("extension_percentiles", {})
+    days_per_year = int(ext_cfg.get("days_per_year", 252))
+
+    # Tail thresholds:
+    # - Used to select tail events
+    # - Used as default extension gating for RSI divergence (unless explicitly overridden)
+    tail_high_cfg = float(ext_cfg.get("tail_high_pct", 97.5))
+    tail_low_cfg = float(ext_cfg.get("tail_low_pct", 2.5))
+    if tail_pct is None:
+        tail_high_pct = tail_high_cfg
+        tail_low_pct = tail_low_cfg
+    else:
+        tp = float(tail_pct)
+        if tp < 0.0 or tp >= 50.0:
+            raise typer.BadParameter("--tail-pct must be >= 0 and < 50")
+        tail_low_pct = tp
+        tail_high_pct = 100.0 - tp
+
+    if tail_low_pct >= tail_high_pct:
+        raise typer.BadParameter("Tail thresholds must satisfy low < high")
+
+    # Rolling window selection for extension percentiles:
+    # - If the ticker has <5 years of history, use a 1-year rolling window.
+    # - Otherwise, use a 3-year rolling window.
+    # Rationale: if window bars >= history bars, percentiles are only defined at the last bar (min_periods=window),
+    # which yields very few tail events and weak divergence gating.
+    available_bars = int(features[ext_col].dropna().shape[0])
+    if percentile_window_years is None:
+        history_years = (float(available_bars) / float(days_per_year)) if days_per_year > 0 else 0.0
+        window_years = 1 if history_years < 5.0 else 3
+    else:
+        window_years = int(percentile_window_years)
+
+    if window_years <= 0:
+        raise typer.BadParameter("--percentile-window-years must be >= 1")
+
+    windows_years = [window_years]
+
     forward_days_base = [int(d) for d in (ext_cfg.get("forward_days", [1, 3, 5, 10]) or [])]
     forward_days_daily = [
         int(d)
@@ -2726,10 +2773,10 @@ def technicals_extension_stats(
     report_daily = compute_extension_percentiles(
         extension_series=features[ext_col],
         close_series=features["Close"],
-        windows_years=ext_cfg.get("windows_years", [3]),
-        days_per_year=int(ext_cfg.get("days_per_year", 252)),
-        tail_high_pct=float(ext_cfg.get("tail_high_pct", 95)),
-        tail_low_pct=float(ext_cfg.get("tail_low_pct", 5)),
+        windows_years=windows_years,
+        days_per_year=days_per_year,
+        tail_high_pct=float(tail_high_pct),
+        tail_low_pct=float(tail_low_pct),
         forward_days=forward_days_daily,
         include_tail_events=True,
     )
@@ -2743,10 +2790,10 @@ def technicals_extension_stats(
     report_weekly = compute_extension_percentiles(
         extension_series=weekly_ext,
         close_series=weekly_close,
-        windows_years=ext_cfg.get("windows_years", [3]),
-        days_per_year=int(ext_cfg.get("days_per_year", 252) / 5),
-        tail_high_pct=float(ext_cfg.get("tail_high_pct", 95)),
-        tail_low_pct=float(ext_cfg.get("tail_low_pct", 5)),
+        windows_years=windows_years,
+        days_per_year=int(days_per_year / 5),
+        tail_high_pct=float(tail_high_pct),
+        tail_low_pct=float(tail_low_pct),
         forward_days=forward_days_weekly,
         include_tail_events=True,
     )
@@ -2810,12 +2857,12 @@ def technicals_extension_stats(
     min_ext_pct = (
         float(divergence_min_extension_percentile)
         if divergence_min_extension_percentile is not None
-        else float(ext_cfg.get("tail_high_pct", 95))
+        else float(tail_high_pct)
     )
     max_ext_pct = (
         float(divergence_max_extension_percentile)
         if divergence_max_extension_percentile is not None
-        else float(ext_cfg.get("tail_low_pct", 5))
+        else float(tail_low_pct)
     )
 
     if rsi_window is not None:
@@ -2994,6 +3041,9 @@ def technicals_extension_stats(
         rsi_divergence_weekly = None
 
     ext_cfg_effective = dict(ext_cfg or {})
+    ext_cfg_effective["windows_years"] = windows_years
+    ext_cfg_effective["tail_high_pct"] = float(tail_high_pct)
+    ext_cfg_effective["tail_low_pct"] = float(tail_low_pct)
     ext_cfg_effective["forward_days_daily"] = forward_days_daily
     ext_cfg_effective["forward_days_weekly"] = forward_days_weekly
 
