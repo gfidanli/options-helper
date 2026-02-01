@@ -1508,6 +1508,7 @@ def briefing(
         raise typer.Exit(1)
     report_date = max(resolved_to_dates).isoformat()
     portfolio_rows: list[dict[str, str]] = []
+    portfolio_rows_with_pnl: list[tuple[float, dict[str, str]]] = []
     for p in portfolio.positions:
         sym = p.symbol.upper()
         to_date, df_to = day_cache.get(sym, (None, pd.DataFrame()))
@@ -1552,15 +1553,19 @@ def briefing(
                 "as_of": "-" if to_date is None else to_date.isoformat(),
             }
         )
+        pnl_sort = float(pnl_pct) if pnl_pct is not None else float("-inf")
+        portfolio_rows_with_pnl.append((pnl_sort, portfolio_rows[-1]))
 
     portfolio_table_md = None
     if portfolio_rows:
+        # Sort by pnl% descending; rows without pnl% go last.
+        portfolio_rows_sorted = [row for _, row in sorted(portfolio_rows_with_pnl, key=lambda r: r[0], reverse=True)]
         headers = ["ID", "Sym", "Type", "Exp", "Strike", "Ct", "Cost", "Mark", "PnL $", "PnL %", "As-of"]
         lines = [
             "| " + " | ".join(headers) + " |",
             "|---|---|---|---|---:|---:|---:|---:|---:|---:|---|",
         ]
-        for r in portfolio_rows:
+        for r in portfolio_rows_sorted:
             lines.append(
                 "| "
                 + " | ".join(
