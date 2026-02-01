@@ -17,6 +17,7 @@ It is intentionally biased toward **offline, repeatable analysis** using the loc
 | Rank | ID    | Feature | Why it matters | Primary dependencies |
 |------|-------|---------|----------------|----------------------|
 | 1 | F-007 | Extension percentiles + regime drift | Adds per-ticker percentile context for extension and checks whether tails mean‑revert; supports adaptive thresholds. | technicals_backtesting + derived stats |
+| 2 | F-008 | RSI divergence enrichment for extension | Adds a momentum-confirmation layer: elevated extension + bearish RSI divergence can flag “take profit / reversal risk” zones; symmetric bullish divergence helps with “capitulation” context. | technicals_backtesting + extension percentiles |
 
 ## Completed (implemented)
 - F-001 `chain-report`
@@ -36,6 +37,14 @@ It is intentionally biased toward **offline, repeatable analysis** using the loc
 Deliverables:
 - F-007 MVP: compute extension percentiles from technicals_backtesting and add to briefing JSON + derived stats.
 - F-007 v1: tail‑event forward‑window analysis (1/3/5/10 day percentiles) + rolling 1y/3y/5y distribution comparisons.
+
+### Milestone M7 — RSI divergence enrichment for extension
+**Goal:** enrich extension “tail context” with RSI(14) divergence detection so reports can distinguish
+“strong trend (momentum confirms)” from “fragile extension (momentum diverges)”.
+
+Deliverables:
+- F-008 MVP: compute bearish/bullish RSI divergence flags on cached candles and surface them in `technicals extension-stats` artifacts.
+- F-008 v1: conditional forward-return / forward-percentile tables for tail events **with** vs **without** divergence; add a concise “current divergence” callout to the daily briefing.
 
 ---
 
@@ -94,6 +103,110 @@ with rolling 1y/3y/5y distribution comparisons to detect regime drift.
 
 ### Testing
 - Fixture snapshots with known diffs and golden expected outputs.
+
+---
+
+## F-008 — RSI divergence enrichment for extension
+
+### Summary
+Add RSI(14) divergence detection as an enrichment layer to extension percentile reports, so “extended” conditions can be
+qualified by whether momentum is confirming (no divergence) or weakening (bearish divergence).
+
+This project is **not financial advice**. These signals are descriptive context for position management workflows.
+
+### Problem
+Extension tails are common in trending markets. What’s missing is a lightweight way to identify “extension is still high,
+but momentum is weakening” (classic divergence), which often corresponds to “take profit / tighten risk” regions.
+
+### Goals
+- Detect **bearish RSI divergence** during elevated extension:
+  - within a rolling lookback window (default 14 trading days),
+  - Close makes a **higher high** (closing basis),
+  - RSI(14) makes a **lower high**.
+- Detect **bullish RSI divergence** during depressed extension:
+  - Close makes a **lower low** while RSI makes a **higher low**.
+- Flag whether a divergence occurs at **overbought/oversold** RSI conditions (configurable thresholds), since
+  divergences at RSI extremes are often treated differently than divergences in the middle of the range.
+- Quantify whether divergence changes the typical tail outcomes:
+  - forward returns (1/3/5/10D),
+  - forward extension percentile reversion.
+
+### Non-goals
+- “Best” swing-point detection or complex pattern libraries (keep logic simple + explainable).
+- Intraday divergence; daily candles only (weekly can be added later).
+- Predictive claims; this is research context only.
+
+### Definitions (v1)
+- RSI: RSI(14) computed on Close (Wilder/EMA smoothing; consistent with existing indicator tooling).
+- Lookback window: `divergence_window_days` (default 14).
+- RSI regime thresholds:
+  - `rsi_overbought` (default 70)
+  - `rsi_oversold` (default 30)
+  - A divergence is tagged as:
+    - `overbought` if the newer swing RSI >= `rsi_overbought`
+    - `oversold` if the newer swing RSI <= `rsi_oversold`
+    - otherwise `neutral`
+- Swing highs/lows (simple, deterministic):
+  - A swing high at index `i` if `Close[i] >= Close[i-1]` and `Close[i] >= Close[i+1]` (same for RSI if needed).
+  - Use the **two most recent** swing highs (or lows) within the window; require a minimum separation (e.g., 2 bars)
+    to avoid duplicates.
+- Bearish divergence event (daily):
+  - Close swing high #2 > Close swing high #1 (optionally by `min_price_delta_pct`),
+  - RSI at swing high #2 < RSI at swing high #1 (optionally by `min_rsi_delta`),
+  - Extension is “elevated” over the window (choose one):
+    - percentile-based: extension percentile >= `min_extension_percentile` for at least `min_extension_days`, OR
+    - level-based: extension_atr >= `min_extension_atr` for at least `min_extension_days`.
+- Bullish divergence event (daily):
+  - Close swing low #2 < Close swing low #1 (optionally by `min_price_delta_pct`),
+  - RSI at swing low #2 > RSI at swing low #1 (optionally by `min_rsi_delta`),
+  - Extension is “depressed” over the window (choose one):
+    - percentile-based: extension percentile <= `max_extension_percentile` for at least `min_extension_days`, OR
+    - level-based: extension_atr <= `max_extension_atr` for at least `min_extension_days`.
+
+### Outputs
+- Extend `technicals extension-stats` report artifacts (`.json` + `.md`) with a new section:
+  - “Current divergence status” (present/absent, dates of the two swing points, price/RSI deltas).
+  - “Tail-event table enrichment” (per tail event day, include `bearish_divergence_14d` / `bullish_divergence_14d`).
+  - “RSI regime tag” for each divergence (`overbought` / `oversold` / `neutral`) based on the newer swing RSI.
+  - Conditional summary stats:
+    - tail events with divergence vs without divergence: median fwd returns (1/3/5/10D),
+      median forward extension percentile, and hit-rate-style counts (e.g., reversion below p95 by +10D).
+- Briefing (v1): if extension percentile is in the high tail (or low tail), add a one-liner:
+  - “RSI divergence: bearish (14D)” or “RSI divergence: none”.
+
+### CLI / UX
+- Reuse existing command, no new command needed initially:
+  - `options-helper technicals extension-stats --symbol CVX ...`
+- Add flags/config (either CLI or config file) to control:
+  - `--divergence-window-days` (default 14)
+  - `--min-extension-percentile` (default 95 for high, 5 for low; aligned to tail thresholds)
+  - `--min-extension-days` (default 5)
+  - `--min-price-delta-pct` (default 0)
+  - `--min-rsi-delta` (default 0)
+  - `--rsi-overbought` (default 70)
+  - `--rsi-oversold` (default 30)
+  - Optional: `--require-rsi-extreme` (default false). If true, only emit divergences tagged `overbought`/`oversold`.
+
+### Implementation notes
+- Keep divergence logic pure and testable (no network calls); compute from cached candles + indicator series.
+- Prefer percentile-based “extended” gating so it is per-ticker normalized.
+- Make output schema explicit and stable (add `schema_version` bump for extension-stats artifacts).
+
+### Testing
+- Unit tests with synthetic Close/RSI series:
+  - detects bearish divergence correctly,
+  - does not false-positive on flat/noisy series,
+  - handles missing RSI early-window NaNs gracefully.
+- Golden tests for `extension-stats` artifact JSON keys (ensure deterministic ordering and stable schema).
+
+### Dependencies
+- F-007 extension percentiles (percentile series + tail-event framing).
+- Existing RSI computation (indicator provider or `options_helper/analysis/indicators.py`), plus shared date alignment.
+
+### Acceptance criteria
+- `technicals extension-stats --symbol CVX` produces artifacts that include divergence fields and conditional summaries.
+- Divergence artifacts include an RSI regime tag (`overbought`/`oversold`/`neutral`) and can be gated by RSI extremes.
+- Offline tests pass; no new network dependency added.
 
 ---
 
