@@ -42,7 +42,11 @@ from options_helper.reporting_chain import (
     render_chain_report_markdown,
     render_compare_report_console,
 )
-from options_helper.reporting_briefing import BriefingSymbolSection, render_briefing_markdown
+from options_helper.reporting_briefing import (
+    BriefingSymbolSection,
+    build_briefing_payload,
+    render_briefing_markdown,
+)
 from options_helper.reporting_roll import render_roll_plan_console
 from options_helper.storage import load_portfolio, save_portfolio, write_template
 from options_helper.watchlists import build_default_watchlists, load_watchlists, save_watchlists
@@ -1329,6 +1333,16 @@ def briefing(
         "--out",
         help="Output path (Markdown) or directory. Default: data/reports/daily/{ASOF}.md",
     ),
+    print_to_console: bool = typer.Option(
+        False,
+        "--print/--no-print",
+        help="Print the briefing to the console (in addition to writing files).",
+    ),
+    write_json: bool = typer.Option(
+        True,
+        "--write-json/--no-write-json",
+        help="Write a JSON version of the briefing alongside the Markdown (LLM-friendly).",
+    ),
     update_derived: bool = typer.Option(
         True,
         "--update-derived/--no-update-derived",
@@ -1586,6 +1600,28 @@ def briefing(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(md, encoding="utf-8")
     console.print(f"Saved: {out_path}")
+
+    if write_json:
+        payload = build_briefing_payload(
+            report_date=report_date,
+            portfolio_path=str(portfolio_path),
+            symbol_sections=sections,
+            top=top,
+            technicals_config=str(technicals_config),
+        )
+        json_path = out_path.with_suffix(".json")
+        json_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True, allow_nan=False), encoding="utf-8"
+        )
+        console.print(f"Saved: {json_path}")
+
+    if print_to_console:
+        try:
+            from rich.markdown import Markdown
+
+            console.print(Markdown(md))
+        except Exception:  # noqa: BLE001
+            console.print(md)
 
 
 @app.command("roll-plan")

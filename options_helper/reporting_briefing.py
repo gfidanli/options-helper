@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
+from typing import Any
 
 import pandas as pd
 
@@ -235,6 +238,78 @@ def strike_map_takeaways(
         for _, row in unwinding.iterrows():
             out.append(f"- {_fmt_flow_row(row)}")
     return out
+
+
+def _jsonable(val: Any) -> Any:
+    if val is None:
+        return None
+    if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+        return None
+    try:
+        import numpy as np
+
+        if isinstance(val, np.generic):
+            return _jsonable(val.item())
+        if isinstance(val, np.ndarray):
+            return [_jsonable(v) for v in val.tolist()]
+    except Exception:  # noqa: BLE001
+        pass
+    if isinstance(val, (datetime, pd.Timestamp, date)):
+        return val.isoformat()
+    if isinstance(val, (str, int, float, bool)):
+        return val
+    if isinstance(val, dict):
+        return {str(k): _jsonable(v) for k, v in val.items()}
+    if isinstance(val, (list, tuple)):
+        return [_jsonable(v) for v in val]
+    if isinstance(val, pd.Series):
+        return {str(k): _jsonable(v) for k, v in val.to_dict().items()}
+    if isinstance(val, pd.DataFrame):
+        return [_jsonable(r) for r in val.to_dict(orient="records")]
+    if isinstance(val, ChainReport):
+        return _jsonable(val.model_dump())
+    if isinstance(val, CompareReport):
+        return _jsonable(val.model_dump())
+    if isinstance(val, TechnicalSnapshot):
+        return _jsonable(val.__dict__)
+    return str(val)
+
+
+def build_briefing_payload(
+    *,
+    report_date: str,
+    portfolio_path: str,
+    symbol_sections: list["BriefingSymbolSection"],
+    top: int = 3,
+    technicals_config: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "disclaimer": "Not financial advice. For informational/educational use only.",
+        "report_date": report_date,
+        "portfolio_path": portfolio_path,
+        "symbols": [s.symbol for s in symbol_sections],
+        "top": int(top),
+        "technicals": {
+            "source": "technicals_backtesting",
+            "config_path": technicals_config,
+        },
+        "sections": [
+            {
+                "symbol": sec.symbol,
+                "as_of": sec.as_of,
+                "errors": list(sec.errors),
+                "warnings": list(sec.warnings),
+                "derived_updated": bool(sec.derived_updated),
+                "technicals": _jsonable(sec.technicals),
+                "chain": _jsonable(sec.chain),
+                "compare": _jsonable(sec.compare),
+                "flow_net": _jsonable(sec.flow_net),
+            }
+            for sec in symbol_sections
+        ],
+    }
 
 
 @dataclass(frozen=True)

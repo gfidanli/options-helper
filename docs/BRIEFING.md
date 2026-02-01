@@ -44,10 +44,12 @@ options-helper briefing portfolio.json --as-of latest --no-update-derived
 
 By default it writes:
 - `data/reports/daily/{YYYY-MM-DD}.md`
+- `data/reports/daily/{YYYY-MM-DD}.json` (LLM-friendly)
 
 The report includes:
 - Portfolio table (best-effort marks/PnL from the same snapshot day)
 - Per symbol:
+  - Technical context (from cached candles; canonical indicator source is `technicals_backtesting`)
   - Chain highlights (walls, near-term EM/IV, gamma peak)
   - Compare highlights (spot + key deltas), if `--compare` is enabled and snapshots exist
   - Flow zones (net, aggregated by strike), if compare snapshots exist
@@ -63,15 +65,24 @@ Notes:
 - `--as-of latest` is resolved **per symbol**.
 - Relative `--compare` offsets (e.g., `-1`) are resolved **per symbol** relative to that symbol’s `--as-of`.
 
+## Inputs (candles)
+
+The technical section uses cached daily candles:
+- `data/candles/{SYMBOL}.csv`
+
 ## CLI flags
 
 - `--as-of YYYY-MM-DD|latest`: snapshot date (default `latest`)
 - `--compare -1|-5|YYYY-MM-DD|none`: include compare/flow sections (default `-1`)
 - `--cache-dir PATH`: snapshots root (default `data/options_snapshots`)
+- `--candle-cache-dir PATH`: candle cache root (default `data/candles`)
+- `--technicals-config PATH`: technical indicator config (default `config/technical_backtesting.yaml`)
 - `--watchlists-path PATH`: watchlists store path (default `data/watchlists.json`)
 - `--watchlist NAME`: include symbols from a watchlist (repeatable)
 - `--symbol TICKER`: only include a single symbol (overrides selection)
 - `--out PATH`: output Markdown path or directory (default `data/reports/daily/{ASOF}.md`)
+- `--print/--no-print`: print the report to the console (default off; use `--print` for interactive runs)
+- `--write-json/--no-write-json`: write the JSON artifact (default on)
 - `--update-derived/--no-update-derived`: update `data/derived/{SYMBOL}.csv` per symbol (default on)
 - `--derived-dir PATH`: derived store directory (default `data/derived`)
 - `--top N`: include top N rows in compare/flow sections (default `3`)
