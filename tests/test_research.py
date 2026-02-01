@@ -112,13 +112,15 @@ def test_research_cli_saves_report_and_omits_spreads(tmp_path: Path, monkeypatch
     candle_day = today - timedelta(days=1)
     run_dt_1 = __import__("datetime").datetime(today.year, today.month, today.day, 11, 59, 3)
     run_dt_2 = __import__("datetime").datetime(today.year, today.month, today.day, 12, 0, 0)
-    candle_dt_stamp = f"{candle_day.isoformat()}_000000"
     short_exp = today + timedelta(days=60)
     long_exp = today + timedelta(days=540)
     expiry_strs = [short_exp.isoformat(), long_exp.isoformat()]
 
     # 60+ weeks so weekly EMA50 is computable (required by analyze_underlying).
     idx = pd.date_range(end=pd.Timestamp(candle_day), periods=300, freq="B")
+    # If `candle_day` lands on a weekend/holiday, the last business-day candle will be earlier.
+    last_candle_day = idx.max().date()
+    candle_dt_stamp = f"{last_candle_day.isoformat()}_000000"
     close = pd.Series(range(len(idx)), index=idx, dtype="float64") + 100.0
     history = pd.DataFrame({"Close": close, "High": close + 1.0, "Low": close - 1.0})
 
@@ -193,14 +195,14 @@ def test_research_cli_saves_report_and_omits_spreads(tmp_path: Path, monkeypatch
     assert f"Saved research report to {expected_run_path_1}" in res.output
 
     txt = expected_run_path_1.read_text(encoding="utf-8")
-    assert f"candles_through: {candle_day.isoformat()} 00:00:00" in txt
+    assert f"candles_through: {last_candle_day.isoformat()} 00:00:00" in txt
     assert "Suggested entry (underlying)" in txt
     assert "(+0.00%)" in txt
 
     ticker_path = tmp_path / "tickers" / "TEST.txt"
     assert ticker_path.exists()
     ticker_txt = ticker_path.read_text(encoding="utf-8")
-    assert f"=== {candle_day.isoformat()} ===" in ticker_txt
+    assert f"=== {last_candle_day.isoformat()} ===" in ticker_txt
     assert f"run_at: {run_dt_1.strftime('%Y-%m-%d %H:%M:%S')}" in ticker_txt
 
     # Re-run later in the same day: overwrite that day's ticker entry.
@@ -220,7 +222,7 @@ def test_research_cli_saves_report_and_omits_spreads(tmp_path: Path, monkeypatch
     assert (tmp_path / f"research-{candle_dt_stamp}-{run_dt_2.strftime('%Y-%m-%d_%H%M%S')}.txt").exists()
 
     ticker_txt2 = ticker_path.read_text(encoding="utf-8")
-    assert ticker_txt2.count(f"=== {candle_day.isoformat()} ===") == 1
+    assert ticker_txt2.count(f"=== {last_candle_day.isoformat()} ===") == 1
     assert f"run_at: {run_dt_2.strftime('%Y-%m-%d %H:%M:%S')}" in ticker_txt2
     assert f"run_at: {run_dt_1.strftime('%Y-%m-%d %H:%M:%S')}" not in ticker_txt2
 
