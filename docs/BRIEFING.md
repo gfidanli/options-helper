@@ -50,6 +50,7 @@ The report includes:
 - Portfolio table (best-effort marks/PnL from the same snapshot day)
 - Per symbol:
   - Technical context (from cached candles; canonical indicator source is `technicals_backtesting`)
+    - Includes extension percentiles + rolling quantiles (1y/3y/5y when available)
   - Chain highlights (walls, near-term EM/IV, gamma peak)
   - Compare highlights (spot + key deltas), if `--compare` is enabled and snapshots exist
   - Flow zones (net, aggregated by strike), if compare snapshots exist

@@ -12,6 +12,7 @@ This schema corresponds exactly to `config/technical_backtesting.yaml`. You can 
 |-----|------|----------|-------------|
 | `schema_version` | integer | Yes | Version of this configuration schema. |
 | `timezone` | string | Yes | Default timezone (IANA format) used for datetime handling. |
+| `extension_percentiles` | object | Yes | Extension percentile + tail-event settings. |
 
 ---
 
@@ -185,6 +186,16 @@ For each strategy (`TrendPullbackATR`, `MeanReversionBollinger`):
 | `log_dir` | string | Yes | Directory for logs. |
 
 ---
+
+## `extension_percentiles` Section
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `days_per_year` | int | Yes | Trading days per year (default 252). |
+| `windows_years` | list[int] | Yes | Rolling percentile windows (years). |
+| `tail_high_pct` | number | Yes | Upper tail threshold (percentile). |
+| `tail_low_pct` | number | Yes | Lower tail threshold (percentile). |
+| `forward_days` | list[int] | Yes | Forward windows (trading-day offsets). |
 
 ### Notes
 

@@ -54,6 +54,9 @@ References:
 ### Run all strategies for multiple tickers
 - `./.venv/bin/options-helper technicals run-all --tickers AAPL,MSFT,SPY --cache-dir data/candles`
 
+### Extension percentile stats (tail events + drift table)
+- `./.venv/bin/options-helper technicals extension-stats --symbol AAPL --cache-dir data/candles --out data/reports/technicals/extension --print`
+
 ### Re-run without overwriting old artifacts
 By default, `config/technical_backtesting.yaml` sets `artifacts.overwrite: false`.
 
