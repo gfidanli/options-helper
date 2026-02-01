@@ -63,7 +63,7 @@ def test_extension_stats_cli_writes_schema_v3_and_max_upside_section(tmp_path: P
     assert payload["schema_version"] == 3
     assert 15 in payload["config"]["extension_percentiles"]["forward_days_daily"]
     assert "max_upside_summary_daily" in payload
+    assert payload["max_upside_summary_daily"]["buckets"], "expected non-empty max-upside buckets"
 
     md = md_paths[0].read_text(encoding="utf-8")
     assert "## Max Upside (Daily, High-based)" in md
-

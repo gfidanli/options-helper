@@ -8,6 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import cast
 
+import numpy as np
 import pandas as pd
 import typer
 from rich.console import Console
@@ -3397,9 +3398,7 @@ def technicals_extension_stats(
 
     md_lines.append("")
     md_lines.append("## Max Upside (Daily, High-based)")
-    md_lines.append(
-        "- Metric: max(High) within horizon / entry Close − 1. Descriptive (not financial advice)."
-    )
+    md_lines.append("Metric: max(High) within horizon / entry Close - 1. Descriptive (not financial advice).")
     max_up = payload.get("max_upside_summary_daily", {}) if isinstance(payload, dict) else {}
     buckets = max_up.get("buckets", []) if isinstance(max_up, dict) else []
     if buckets:
