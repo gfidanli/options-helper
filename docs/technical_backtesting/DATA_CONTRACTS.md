@@ -26,6 +26,8 @@ yfinance can adjust OHLC for corporate actions depending on settings.
 **Policy for this project:**
 - Always set `auto_adjust` and `back_adjust` explicitly in the upstream fetch code.
 - Persist those settings in backtest artifact metadata.
+ - If cached candles include `Adj Close`, the technicals pipeline applies the configured adjustment locally so
+   indicators/backtests operate on the intended price series even with legacy/unadjusted caches.
 
 Recommended defaults for technical backtests:
 - `auto_adjust=True`, `back_adjust=False` (robust long-history continuity)

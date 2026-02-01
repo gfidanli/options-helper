@@ -21,9 +21,17 @@ By default the cache is stored relative to the current working directory:
 
 - `data/candles/`
   - `{SYMBOL}.csv`
+  - `{SYMBOL}.meta.json` (cache metadata: interval + yfinance adjustment settings)
 
 Each file contains a date-time index and the OHLCV columns returned by `yfinance` (commonly: `Open`, `High`, `Low`,
-`Close`, `Volume`, and sometimes `Dividends`, `Stock Splits`).
+`Close`, `Volume`, and sometimes `Dividends`, `Stock Splits`, `Capital Gains`).
+
+By default this project uses **adjusted OHLC** when pulling candles from Yahoo via `yfinance`:
+- `auto_adjust=True`
+- `back_adjust=False`
+
+In this mode, `yfinance` typically omits the `Adj Close` column because `Close` is already the adjusted series.
+(Legacy caches may still include `Adj Close`; the cache can be upgraded on refresh.)
 
 You can override the cache directory with the CLI option:
 
