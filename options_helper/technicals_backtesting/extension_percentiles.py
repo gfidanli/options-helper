@@ -37,6 +37,12 @@ class ExtensionPercentileReport:
     tail_events: list[ExtensionTailEvent]
 
 
+@dataclass(frozen=True)
+class ExtensionPercentilesBundle:
+    daily: ExtensionPercentileReport
+    weekly: ExtensionPercentileReport
+
+
 def _percentile_rank(values: np.ndarray, value: float) -> float:
     """
     Percentile rank (0-100) using the "average rank" method.
@@ -120,7 +126,8 @@ def compute_extension_percentiles(
     quantiles_by_window: dict[int, ExtensionQuantiles] = {}
 
     for years, bars in window_bars.items():
-        if len(extension_series) < bars:
+        bars = bars if len(extension_series) >= bars else len(extension_series)
+        if bars <= 1:
             continue
         pct_series = rolling_percentile_rank(extension_series, bars)
         pct_val = pct_series.iloc[-1]
@@ -141,6 +148,7 @@ def compute_extension_percentiles(
     if include_tail_events and current_percentiles:
         tail_window_years = max(current_percentiles.keys())
         bars = window_bars[tail_window_years]
+        bars = bars if len(extension_series) >= bars else len(extension_series)
         pct_series = rolling_percentile_rank(extension_series, bars)
         for i, (idx, pct) in enumerate(pct_series.items()):
             if np.isnan(pct):
@@ -188,3 +196,27 @@ def compute_extension_percentiles(
         tail_window_years=tail_window_years,
         tail_events=tail_events,
     )
+
+
+def build_weekly_extension_series(
+    df_ohlc: pd.DataFrame, *, sma_window: int, atr_window: int, resample_rule: str
+) -> tuple[pd.Series, pd.Series]:
+    weekly = (
+        df_ohlc[["Open", "High", "Low", "Close"]]
+        .resample(resample_rule)
+        .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
+        .dropna()
+    )
+    close = weekly["Close"]
+    sma = close.rolling(window=sma_window).mean()
+    tr = pd.concat(
+        [
+            weekly["High"] - weekly["Low"],
+            (weekly["High"] - close.shift(1)).abs(),
+            (weekly["Low"] - close.shift(1)).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    atr = tr.rolling(window=atr_window).mean()
+    extension = (close - sma) / atr
+    return extension, close

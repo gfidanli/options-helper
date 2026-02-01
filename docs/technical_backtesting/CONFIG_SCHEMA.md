@@ -196,6 +196,7 @@ For each strategy (`TrendPullbackATR`, `MeanReversionBollinger`):
 | `tail_high_pct` | number | Yes | Upper tail threshold (percentile). |
 | `tail_low_pct` | number | Yes | Lower tail threshold (percentile). |
 | `forward_days` | list[int] | Yes | Forward windows (trading-day offsets). |
+| `windows_years` | list[int] | Yes | Rolling windows in years (default [3]). |
 
 ### Notes
 

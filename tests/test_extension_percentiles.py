@@ -43,3 +43,21 @@ def test_extension_percentiles_tail_events_toggle() -> None:
         include_tail_events=False,
     )
     assert report_no_tail.tail_events == []
+
+
+def test_extension_percentiles_fallback_to_full_history() -> None:
+    idx = pd.date_range("2024-01-01", periods=20, freq="B")
+    ext = pd.Series(range(1, 21), index=idx, dtype="float64")
+    close = pd.Series(range(100, 120), index=idx, dtype="float64")
+
+    report = compute_extension_percentiles(
+        extension_series=ext,
+        close_series=close,
+        windows_years=[3],
+        days_per_year=252,
+        tail_high_pct=97.5,
+        tail_low_pct=2.5,
+        forward_days=[1],
+        include_tail_events=False,
+    )
+    assert report.current_percentiles

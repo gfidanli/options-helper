@@ -53,7 +53,10 @@ from options_helper.storage import load_portfolio, save_portfolio, write_templat
 from options_helper.watchlists import build_default_watchlists, load_watchlists, save_watchlists
 from options_helper.technicals_backtesting.backtest.optimizer import optimize_params
 from options_helper.technicals_backtesting.backtest.walk_forward import walk_forward_optimize
-from options_helper.technicals_backtesting.extension_percentiles import compute_extension_percentiles
+from options_helper.technicals_backtesting.extension_percentiles import (
+    build_weekly_extension_series,
+    compute_extension_percentiles,
+)
 from options_helper.technicals_backtesting.feature_selection import required_feature_columns_for_strategy
 from options_helper.technicals_backtesting.pipeline import compute_features, warmup_bars
 from options_helper.technicals_backtesting.snapshot import compute_technical_snapshot
@@ -2666,11 +2669,28 @@ def technicals_extension_stats(
         raise typer.BadParameter(f"Missing extension column: {ext_col}")
 
     ext_cfg = cfg.get("extension_percentiles", {})
-    report = compute_extension_percentiles(
+    report_daily = compute_extension_percentiles(
         extension_series=features[ext_col],
         close_series=features["Close"],
         windows_years=ext_cfg.get("windows_years", [1, 3, 5]),
         days_per_year=int(ext_cfg.get("days_per_year", 252)),
+        tail_high_pct=float(ext_cfg.get("tail_high_pct", 95)),
+        tail_low_pct=float(ext_cfg.get("tail_low_pct", 5)),
+        forward_days=ext_cfg.get("forward_days", [1, 3, 5, 10]),
+        include_tail_events=True,
+    )
+    weekly_rule = cfg["weekly_regime"].get("resample_rule", "W-FRI")
+    weekly_ext, weekly_close = build_weekly_extension_series(
+        df[["Open", "High", "Low", "Close"]],
+        sma_window=sma_window,
+        atr_window=atr_window,
+        resample_rule=weekly_rule,
+    )
+    report_weekly = compute_extension_percentiles(
+        extension_series=weekly_ext,
+        close_series=weekly_close,
+        windows_years=ext_cfg.get("windows_years", [1, 3, 5]),
+        days_per_year=int(ext_cfg.get("days_per_year", 252) / 5),
         tail_high_pct=float(ext_cfg.get("tail_high_pct", 95)),
         tail_low_pct=float(ext_cfg.get("tail_low_pct", 5)),
         forward_days=ext_cfg.get("forward_days", [1, 3, 5, 10]),
@@ -2682,34 +2702,35 @@ def technicals_extension_stats(
     payload = {
         "schema_version": 1,
         "symbol": sym_label,
-        "asof": asof,
+        "asof": report_daily.asof,
         "config": {
             "extension_percentiles": ext_cfg,
             "atr_window": atr_window,
             "sma_window": sma_window,
             "extension_column": ext_col,
         },
-        "report": asdict(report),
+        "report_daily": asdict(report_daily),
+        "report_weekly": asdict(report_weekly),
     }
 
     md_lines: list[str] = [
         f"# {sym_label} — Extension Percentile Stats",
         "",
-        f"- As-of: `{asof}`",
-        f"- Extension (ATR units): `{'-' if report.extension_atr is None else f'{report.extension_atr:+.2f}'}`",
+        f"- As-of (daily): `{report_daily.asof}`",
+        f"- Extension (daily, ATR units): `{'-' if report_daily.extension_atr is None else f'{report_daily.extension_atr:+.2f}'}`",
         "",
         "## Current Percentiles",
     ]
-    if report.current_percentiles:
-        for years, pct in sorted(report.current_percentiles.items()):
+    if report_daily.current_percentiles:
+        for years, pct in sorted(report_daily.current_percentiles.items()):
             md_lines.append(f"- {years}y: `{pct:.1f}`")
     else:
         md_lines.append("- No percentile windows available (insufficient history).")
 
     md_lines.append("")
-    md_lines.append("## Rolling Quantiles (p5 / p50 / p95)")
-    if report.quantiles_by_window:
-        for years, q in sorted(report.quantiles_by_window.items()):
+    md_lines.append("## Rolling Quantiles (Daily p5 / p50 / p95)")
+    if report_daily.quantiles_by_window:
+        for years, q in sorted(report_daily.quantiles_by_window.items()):
             if q.p5 is None or q.p50 is None or q.p95 is None:
                 continue
             md_lines.append(f"- {years}y: `{q.p5:+.2f} / {q.p50:+.2f} / {q.p95:+.2f}`")
@@ -2717,12 +2738,39 @@ def technicals_extension_stats(
         md_lines.append("- Not available.")
 
     md_lines.append("")
-    md_lines.append("## Tail Events (all)")
-    if report.tail_events:
+    md_lines.append("## Tail Events (Daily, all)")
+    if report_daily.tail_events:
         md_lines.append("| Date | Tail | Ext | Pctl | Fwd pctl (1/3/5/10) | Fwd ret% (1/3/5/10) |")
         md_lines.append("|---|---|---:|---:|---|---|")
         fwd_days = [str(d) for d in ext_cfg.get("forward_days", [1, 3, 5, 10])]
-        for ev in report.tail_events:
+        for ev in report_daily.tail_events:
+            pcts = [ev.forward_extension_percentiles.get(int(d)) for d in fwd_days]
+            rets = [ev.forward_returns.get(int(d)) for d in fwd_days]
+            pcts_str = ", ".join("-" if v is None else f"{v:.1f}" for v in pcts)
+            rets_str = ", ".join("-" if v is None else f"{v*100.0:+.1f}%" for v in rets)
+            md_lines.append(
+                f"| {ev.date} | {ev.direction} | {ev.extension_atr:+.2f} | {ev.percentile:.1f} | {pcts_str} | {rets_str} |"
+            )
+    else:
+        md_lines.append("- No tail events found.")
+
+    md_lines.append("")
+    md_lines.append("## Rolling Quantiles (Weekly p5 / p50 / p95)")
+    if report_weekly.quantiles_by_window:
+        for years, q in sorted(report_weekly.quantiles_by_window.items()):
+            if q.p5 is None or q.p50 is None or q.p95 is None:
+                continue
+            md_lines.append(f"- {years}y: `{q.p5:+.2f} / {q.p50:+.2f} / {q.p95:+.2f}`")
+    else:
+        md_lines.append("- Not available.")
+
+    md_lines.append("")
+    md_lines.append("## Tail Events (Weekly, all)")
+    if report_weekly.tail_events:
+        md_lines.append("| Date | Tail | Ext | Pctl | Fwd pctl (1/3/5/10) | Fwd ret% (1/3/5/10) |")
+        md_lines.append("|---|---|---:|---:|---|---|")
+        fwd_days = [str(d) for d in ext_cfg.get("forward_days", [1, 3, 5, 10])]
+        for ev in report_weekly.tail_events:
             pcts = [ev.forward_extension_percentiles.get(int(d)) for d in fwd_days]
             rets = [ev.forward_returns.get(int(d)) for d in fwd_days]
             pcts_str = ", ".join("-" if v is None else f"{v:.1f}" for v in pcts)

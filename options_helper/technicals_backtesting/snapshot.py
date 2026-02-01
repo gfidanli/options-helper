@@ -7,6 +7,8 @@ import pandas as pd
 
 from options_helper.technicals_backtesting.extension_percentiles import (
     ExtensionPercentileReport,
+    ExtensionPercentilesBundle,
+    build_weekly_extension_series,
     compute_extension_percentiles,
 )
 from options_helper.technicals_backtesting.pipeline import compute_features, warmup_bars
@@ -36,7 +38,7 @@ class TechnicalSnapshot:
     rsi_window: int | None
     rsi: float | None
 
-    extension_percentiles: ExtensionPercentileReport | None
+    extension_percentiles: ExtensionPercentilesBundle | None
 
 
 def _format_dev(dev: float) -> str:
@@ -126,12 +128,12 @@ def compute_technical_snapshot(df_ohlc: pd.DataFrame, cfg: dict) -> TechnicalSna
     if rsi_window is not None:
         rsi_val = _as_float(row.get(f"rsi_{rsi_window}"))
 
-    extension_report = None
+    extension_report: ExtensionPercentilesBundle | None = None
     try:
         ext_series = features[f"extension_atr_{sma_window}_{atr_window}"]
         close_series = features["Close"]
         ext_cfg = cfg.get("extension_percentiles", {})
-        extension_report = compute_extension_percentiles(
+        daily_report = compute_extension_percentiles(
             extension_series=ext_series,
             close_series=close_series,
             windows_years=ext_cfg.get("windows_years", [1, 3, 5]),
@@ -141,6 +143,21 @@ def compute_technical_snapshot(df_ohlc: pd.DataFrame, cfg: dict) -> TechnicalSna
             forward_days=ext_cfg.get("forward_days", [1, 3, 5, 10]),
             include_tail_events=False,
         )
+        weekly_rule = cfg["weekly_regime"].get("resample_rule", "W-FRI")
+        weekly_ext, weekly_close = build_weekly_extension_series(
+            candles, sma_window=sma_window, atr_window=atr_window, resample_rule=weekly_rule
+        )
+        weekly_report = compute_extension_percentiles(
+            extension_series=weekly_ext,
+            close_series=weekly_close,
+            windows_years=ext_cfg.get("windows_years", [1, 3, 5]),
+            days_per_year=int(ext_cfg.get("days_per_year", 252) / 5),
+            tail_high_pct=float(ext_cfg.get("tail_high_pct", 95)),
+            tail_low_pct=float(ext_cfg.get("tail_low_pct", 5)),
+            forward_days=ext_cfg.get("forward_days", [1, 3, 5, 10]),
+            include_tail_events=False,
+        )
+        extension_report = ExtensionPercentilesBundle(daily=daily_report, weekly=weekly_report)
     except Exception:  # noqa: BLE001
         extension_report = None
 

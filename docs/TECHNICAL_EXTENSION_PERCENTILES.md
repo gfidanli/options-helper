@@ -27,8 +27,8 @@ Examples:
 ## 3) Rolling windows (1y / 3y / 5y)
 
 Percentiles are computed over rolling windows (trading‑day offsets, default 252 days/year):
-- 1y: most recent regime
-- 3y/5y: longer‑term behavior
+- 3y: default window
+- If < 3y of data, the percentile window falls back to **all available history**.
 
 The report outputs **p5 / p50 / p95** for each window so you can see if distributions drift.
 
@@ -47,10 +47,11 @@ This helps answer questions like:
 
 ## 5) Where this appears
 
-- **Briefing (Markdown + JSON):** current extension percentiles + rolling quantiles.
+- **Briefing (Markdown + JSON):** current extension percentiles + rolling quantiles (daily + weekly).
 - **Extension stats report (`technicals extension-stats`):**
-  - Full tail‑event table
-  - Rolling quantile table
+  - Daily tail‑event table
+  - Weekly tail‑event table
+  - Rolling quantile tables (daily + weekly)
 
 Example:
 ```
