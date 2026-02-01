@@ -60,7 +60,10 @@ from options_helper.technicals_backtesting.extension_percentiles import (
     rolling_percentile_rank,
 )
 from options_helper.technicals_backtesting.feature_selection import required_feature_columns_for_strategy
-from options_helper.technicals_backtesting.max_forward_returns import forward_max_up_return
+from options_helper.technicals_backtesting.max_forward_returns import (
+    forward_max_down_move,
+    forward_max_up_move,
+)
 from options_helper.technicals_backtesting.pipeline import compute_features, warmup_bars
 from options_helper.technicals_backtesting.rsi_divergence import compute_rsi_divergence_flags, rsi_regime_tag
 from options_helper.technicals_backtesting.snapshot import compute_technical_snapshot
@@ -2777,6 +2780,7 @@ def technicals_extension_stats(
     ext_series_daily = features[ext_col].dropna()
     close_series_daily = features["Close"].reindex(ext_series_daily.index)
     high_series_daily = features["High"].reindex(ext_series_daily.index) if "High" in features.columns else None
+    low_series_daily = features["Low"].reindex(ext_series_daily.index) if "Low" in features.columns else None
     rsi_series_daily = (
         features[rsi_col].reindex(ext_series_daily.index) if rsi_col and rsi_col in features.columns else None
     )
@@ -2791,6 +2795,7 @@ def technicals_extension_stats(
 
     weekly_close_series = weekly_candles["Close"]
     weekly_high_series = weekly_candles["High"]
+    weekly_low_series = weekly_candles["Low"]
 
     weekly_rsi_series = None
     if rsi_window is not None and not weekly_close_series.empty:
@@ -2992,10 +2997,10 @@ def technicals_extension_stats(
     ext_cfg_effective["forward_days_daily"] = forward_days_daily
     ext_cfg_effective["forward_days_weekly"] = forward_days_weekly
 
-    max_return_horizons_days = {"1w": 5, "4w": 20, "3m": 63, "6m": 126, "1y": 252}
+    max_return_horizons_days = {"1w": 5, "4w": 20, "3m": 63, "6m": 126, "9m": 189, "1y": 252}
 
     payload = {
-        "schema_version": 3,
+        "schema_version": 4,
         "symbol": sym_label,
         "asof": report_daily.asof,
         "config": {
@@ -3005,7 +3010,7 @@ def technicals_extension_stats(
             "extension_column": ext_col,
             "rsi_divergence": rsi_divergence_cfg,
             "max_forward_returns": {
-                "method": "high_mfe",  # max-upside within horizon using High vs entry Close
+                "method": "directional_mfe",  # low-tail uses High (up move), high-tail uses Low (down move)
                 "horizons_days": max_return_horizons_days,
             },
         },
@@ -3112,22 +3117,69 @@ def technicals_extension_stats(
             except Exception:  # noqa: BLE001
                 ev["rsi_regime"] = None
 
-        # Max-upside returns using High vs entry Close (fractional, e.g. 0.10 = +10%).
-        max_short: dict[int, float | None] = {int(h): None for h in forward_days_daily}
-        max_long: dict[str, float | None] = {k: None for k in max_return_horizons_days.keys()}
-        if i is not None and high_series_daily is not None:
-            for h in forward_days_daily:
-                r = forward_max_up_return(
-                    close_series=close_series_daily, high_series=high_series_daily, start_iloc=i, horizon_bars=int(h)
-                )
-                max_short[int(h)] = None if r is None else float(r)
-            for label, h in max_return_horizons_days.items():
-                r = forward_max_up_return(
-                    close_series=close_series_daily, high_series=high_series_daily, start_iloc=i, horizon_bars=int(h)
-                )
-                max_long[str(label)] = None if r is None else float(r)
-        ev["forward_max_up_returns"] = max_short
-        ev["max_up_returns"] = max_long
+        # Max favorable move (directional):
+        # - low tail: max upside move using High (call framing)
+        # - high tail: max downside move using Low (put / pullback framing)
+        max_up_short: dict[int, float | None] = {int(h): None for h in forward_days_daily}
+        max_down_short: dict[int, float | None] = {int(h): None for h in forward_days_daily}
+        max_up_long: dict[str, float | None] = {k: None for k in max_return_horizons_days.keys()}
+        max_down_long: dict[str, float | None] = {k: None for k in max_return_horizons_days.keys()}
+
+        if i is not None:
+            if high_series_daily is not None:
+                for h in forward_days_daily:
+                    r = forward_max_up_move(
+                        close_series=close_series_daily,
+                        high_series=high_series_daily,
+                        start_iloc=i,
+                        horizon_bars=int(h),
+                    )
+                    max_up_short[int(h)] = None if r is None else float(r)
+                for label, h in max_return_horizons_days.items():
+                    r = forward_max_up_move(
+                        close_series=close_series_daily,
+                        high_series=high_series_daily,
+                        start_iloc=i,
+                        horizon_bars=int(h),
+                    )
+                    max_up_long[str(label)] = None if r is None else float(r)
+
+            if low_series_daily is not None:
+                for h in forward_days_daily:
+                    r = forward_max_down_move(
+                        close_series=close_series_daily,
+                        low_series=low_series_daily,
+                        start_iloc=i,
+                        horizon_bars=int(h),
+                    )
+                    max_down_short[int(h)] = None if r is None else float(r)
+                for label, h in max_return_horizons_days.items():
+                    r = forward_max_down_move(
+                        close_series=close_series_daily,
+                        low_series=low_series_daily,
+                        start_iloc=i,
+                        horizon_bars=int(h),
+                    )
+                    max_down_long[str(label)] = None if r is None else float(r)
+
+        direction = ev.get("direction")
+        if direction == "low":
+            max_fav_short = dict(max_up_short)
+            max_fav_long = dict(max_up_long)
+        elif direction == "high":
+            max_fav_short = dict(max_down_short)
+            max_fav_long = dict(max_down_long)
+        else:
+            max_fav_short = {int(h): None for h in forward_days_daily}
+            max_fav_long = {k: None for k in max_return_horizons_days.keys()}
+
+        # Retain up/down maps for debugging, but prefer *favorable* maps in displays/summaries.
+        ev["forward_max_up_returns"] = max_up_short
+        ev["forward_max_down_returns"] = max_down_short
+        ev["forward_max_fav_returns"] = max_fav_short
+        ev["max_up_returns"] = max_up_long
+        ev["max_down_returns"] = max_down_long
+        ev["max_fav_returns"] = max_fav_long
 
         # Weekly context (ffill weekly values onto daily dates).
         wctx: dict[str, object] = {
@@ -3176,20 +3228,41 @@ def technicals_extension_stats(
             except Exception:  # noqa: BLE001
                 ev["rsi_regime"] = None
 
-        max_short: dict[int, float | None] = {int(h): None for h in forward_days_weekly}
+        max_up_short: dict[int, float | None] = {int(h): None for h in forward_days_weekly}
+        max_down_short: dict[int, float | None] = {int(h): None for h in forward_days_weekly}
         if i is not None:
             for h in forward_days_weekly:
-                r = forward_max_up_return(
+                r_up = forward_max_up_move(
                     close_series=weekly_close_series,
                     high_series=weekly_high_series,
                     start_iloc=i,
                     horizon_bars=int(h),
                 )
-                max_short[int(h)] = None if r is None else float(r)
-        ev["forward_max_up_returns"] = max_short
+                r_dn = forward_max_down_move(
+                    close_series=weekly_close_series,
+                    low_series=weekly_low_series,
+                    start_iloc=i,
+                    horizon_bars=int(h),
+                )
+                max_up_short[int(h)] = None if r_up is None else float(r_up)
+                max_down_short[int(h)] = None if r_dn is None else float(r_dn)
 
-    # Store max-upside summaries (JSON) for the core bullish-entry framing (downside extension).
-    max_up_summary_daily: dict[str, object] = {"horizons_days": max_return_horizons_days, "buckets": []}
+        direction = ev.get("direction")
+        if direction == "low":
+            max_fav_short = dict(max_up_short)
+        elif direction == "high":
+            max_fav_short = dict(max_down_short)
+        else:
+            max_fav_short = {int(h): None for h in forward_days_weekly}
+
+        ev["forward_max_up_returns"] = max_up_short
+        ev["forward_max_down_returns"] = max_down_short
+        ev["forward_max_fav_returns"] = max_fav_short
+
+    # Store max favorable-move summaries (JSON) for both tails:
+    # - low tail: bounce (max-up move using High)
+    # - high tail: pullback (max-down move using Low)
+    max_move_summary_daily: dict[str, object] = {"horizons_days": max_return_horizons_days, "buckets": []}
     try:
         def _quantile(values: list[float], q: float) -> float | None:
             vals = [float(v) for v in values if v is not None]
@@ -3219,6 +3292,27 @@ def technicals_extension_stats(
                 and isinstance(ev.get("rsi_divergence"), dict)
                 and (ev.get("rsi_divergence") or {}).get("divergence") == "bullish",
             ),
+            ("high_tail_all", "High tail (all)", lambda ev: ev.get("direction") == "high"),
+            (
+                "high_tail_rsi_overbought",
+                "High tail + RSI overbought (event)",
+                lambda ev: ev.get("direction") == "high" and ev.get("rsi_regime") == "overbought",
+            ),
+            (
+                "high_tail_bear_div",
+                "High tail + bearish divergence",
+                lambda ev: ev.get("direction") == "high"
+                and isinstance(ev.get("rsi_divergence"), dict)
+                and (ev.get("rsi_divergence") or {}).get("divergence") == "bearish",
+            ),
+            (
+                "high_tail_bear_div_rsi_overbought",
+                "High tail + bearish divergence + RSI overbought (event)",
+                lambda ev: ev.get("direction") == "high"
+                and ev.get("rsi_regime") == "overbought"
+                and isinstance(ev.get("rsi_divergence"), dict)
+                and (ev.get("rsi_divergence") or {}).get("divergence") == "bearish",
+            ),
         ]
         for key, label, fn in buckets:
             rows = [ev for ev in daily_tail_events if fn(ev)]
@@ -3226,18 +3320,20 @@ def technicals_extension_stats(
             for h_label in max_return_horizons_days.keys():
                 vals = []
                 for ev in rows:
-                    v = (ev.get("max_up_returns") or {}).get(h_label)
+                    v = (ev.get("max_fav_returns") or {}).get(h_label)
                     if v is not None and not pd.isna(v):
                         vals.append(float(v) * 100.0)
                 bucket_out["stats"][h_label] = {
                     "median": _quantile(vals, 0.50),
                     "p75": _quantile(vals, 0.75),
                 }
-            max_up_summary_daily["buckets"].append(bucket_out)
+            max_move_summary_daily["buckets"].append(bucket_out)
     except Exception:  # noqa: BLE001
-        max_up_summary_daily = {"horizons_days": max_return_horizons_days, "buckets": []}
+        max_move_summary_daily = {"horizons_days": max_return_horizons_days, "buckets": []}
 
-    payload["max_upside_summary_daily"] = max_up_summary_daily
+    payload["max_move_summary_daily"] = max_move_summary_daily
+    # Backward-compatible alias (schema v3 called this "max_upside_summary_daily").
+    payload["max_upside_summary_daily"] = max_move_summary_daily
 
     # Divergence-conditioned summaries (daily): tail events with divergence vs without, using max-up returns.
     if rsi_divergence_daily is not None:
@@ -3280,13 +3376,13 @@ def technicals_extension_stats(
                     maxrets = []
                     pcts = []
                     for ev in rows:
-                        r = _get_forward(ev.get("forward_max_up_returns") or {}, d)
+                        r = _get_forward(ev.get("forward_max_fav_returns") or {}, d)
                         p = _get_forward(ev.get("forward_extension_percentiles") or {}, d)
                         if r is not None and not pd.isna(r):
                             maxrets.append(float(r) * 100.0)
                         if p is not None and not pd.isna(p):
                             pcts.append(float(p))
-                    out[f"median_fwd_max_up_return_pct_{d}d"] = _median(maxrets)
+                    out[f"median_fwd_max_fav_move_pct_{d}d"] = _median(maxrets)
                     out[f"median_fwd_extension_percentile_{d}d"] = _median(pcts)
                 return out
 
@@ -3368,7 +3464,7 @@ def technicals_extension_stats(
         if isinstance(summ, dict):
             md_lines.append("")
             md_lines.append("### Tail Outcomes With vs Without Divergence (Daily)")
-            md_lines.append("| Tail | Divergence | N | Med max ret (5d/15d) | Med fwd pctl (5d/15d) |")
+            md_lines.append("| Tail | Divergence | N | Med max move (5d/15d) | Med fwd pctl (5d/15d) |")
             md_lines.append("|---|---|---:|---|---|")
             for tail, want in (("high", "bearish"), ("low", "bullish")):
                 for bucket_name, label in (("with_divergence", f"with {want}"), ("without_divergence", f"without {want}")):
@@ -3376,8 +3472,8 @@ def technicals_extension_stats(
                     if not isinstance(b, dict):
                         continue
                     n = b.get("n", 0)
-                    r5 = b.get("median_fwd_max_up_return_pct_5d")
-                    r15 = b.get("median_fwd_max_up_return_pct_15d")
+                    r5 = b.get("median_fwd_max_fav_move_pct_5d")
+                    r15 = b.get("median_fwd_max_fav_move_pct_15d")
                     p5 = b.get("median_fwd_extension_percentile_5d")
                     p15 = b.get("median_fwd_extension_percentile_15d")
                     def _fmt_ret(v: object) -> str:
@@ -3397,13 +3493,16 @@ def technicals_extension_stats(
                     md_lines.append(f"| {tail} | {label} | {n} | {r_str} | {p_str} |")
 
     md_lines.append("")
-    md_lines.append("## Max Upside (Daily, High-based)")
-    md_lines.append("Metric: max(High) within horizon / entry Close - 1. Descriptive (not financial advice).")
-    max_up = payload.get("max_upside_summary_daily", {}) if isinstance(payload, dict) else {}
+    md_lines.append("## Max Favorable Move (Daily)")
+    md_lines.append(
+        "Metric (directional): low tail uses max(High)/Close - 1 (bounce); high tail uses -(min(Low)/Close - 1) (pullback)."
+    )
+    md_lines.append("Descriptive (not financial advice).")
+    max_up = payload.get("max_move_summary_daily", {}) if isinstance(payload, dict) else {}
     buckets = max_up.get("buckets", []) if isinstance(max_up, dict) else []
     if buckets:
-        md_lines.append("| Bucket | N | 1w (med/p75) | 4w | 3m | 6m | 1y |")
-        md_lines.append("|---|---:|---|---|---|---|---|")
+        md_lines.append("| Bucket | N | 1w (med/p75) | 4w | 3m | 6m | 9m | 1y |")
+        md_lines.append("|---|---:|---|---|---|---|---|---|")
 
         def _fmt_cell(med: object, p75: object) -> str:
             try:
@@ -3423,7 +3522,7 @@ def technicals_extension_stats(
                 return _fmt_cell(s.get("median"), s.get("p75"))
 
             md_lines.append(
-                f"| {b.get('label', '-')} | {n} | {_get('1w')} | {_get('4w')} | {_get('3m')} | {_get('6m')} | {_get('1y')} |"
+                f"| {b.get('label', '-')} | {n} | {_get('1w')} | {_get('4w')} | {_get('3m')} | {_get('6m')} | {_get('9m')} | {_get('1y')} |"
             )
     else:
         md_lines.append("- Not available (insufficient history).")
@@ -3432,13 +3531,14 @@ def technicals_extension_stats(
     md_lines.append("## Tail Events (Daily, all)")
     if daily_tail_events:
         horiz = "/".join(str(int(d)) for d in forward_days_daily)
+        max_horiz = "/".join(max_return_horizons_days.keys())
         md_lines.append(
-            f"| Date | Tail | Ext | Pctl | RSI | Div | Div RSI | W pctl | W RSI | W div | Fwd pctl ({horiz}) | Max ret% ({horiz}) |"
+            f"| Date | Tail | Ext | Pctl | RSI | Div | Div RSI | W pctl | W RSI | W div | Fwd pctl ({horiz}) | Max ret% ({max_horiz}) |"
         )
         md_lines.append("|---|---|---:|---:|---|---|---|---:|---|---|---|---|")
         for ev in daily_tail_events:
             pcts = [(ev.get("forward_extension_percentiles") or {}).get(int(d)) for d in forward_days_daily]
-            maxrets = [(ev.get("forward_max_up_returns") or {}).get(int(d)) for d in forward_days_daily]
+            maxrets = [(ev.get("max_fav_returns") or {}).get(str(lbl)) for lbl in max_return_horizons_days.keys()]
             pcts_str = ", ".join("-" if v is None else f"{float(v):.1f}" for v in pcts)
             maxrets_str = ", ".join("-" if v is None else f"{float(v)*100.0:+.1f}%" for v in maxrets)
 
@@ -3535,12 +3635,12 @@ def technicals_extension_stats(
     if weekly_tail_events:
         horiz = "/".join(str(int(d)) for d in forward_days_weekly)
         md_lines.append(
-            f"| Date | Tail | Ext | Pctl | RSI | Div | Div RSI | Fwd pctl ({horiz}) | Max ret% ({horiz}) |"
+            f"| Date | Tail | Ext | Pctl | RSI | Div | Div RSI | Fwd pctl ({horiz}) | Max move% ({horiz}) |"
         )
         md_lines.append("|---|---|---:|---:|---|---|---|---|---|")
         for ev in weekly_tail_events:
             pcts = [(ev.get("forward_extension_percentiles") or {}).get(int(d)) for d in forward_days_weekly]
-            maxrets = [(ev.get("forward_max_up_returns") or {}).get(int(d)) for d in forward_days_weekly]
+            maxrets = [(ev.get("forward_max_fav_returns") or {}).get(int(d)) for d in forward_days_weekly]
             pcts_str = ", ".join("-" if v is None else f"{float(v):.1f}" for v in pcts)
             maxrets_str = ", ".join("-" if v is None else f"{float(v)*100.0:+.1f}%" for v in maxrets)
 

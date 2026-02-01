@@ -9,7 +9,7 @@ from typer.testing import CliRunner
 from options_helper.cli import app
 
 
-def test_extension_stats_cli_writes_schema_v3_and_max_upside_section(tmp_path: Path) -> None:
+def test_extension_stats_cli_writes_schema_v4_and_max_move_section(tmp_path: Path) -> None:
     # Synthetic OHLC: gentle uptrend with tight ranges to create extended readings.
     idx = pd.date_range("2024-01-01", periods=160, freq="B")
     close = pd.Series([100.0 + i * 0.15 for i in range(len(idx))], index=idx, dtype="float64")
@@ -60,10 +60,12 @@ def test_extension_stats_cli_writes_schema_v3_and_max_upside_section(tmp_path: P
     assert md_paths, "expected extension-stats Markdown artifact"
 
     payload = json.loads(json_paths[0].read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
     assert 15 in payload["config"]["extension_percentiles"]["forward_days_daily"]
     assert "max_upside_summary_daily" in payload
+    assert "max_move_summary_daily" in payload
     assert payload["max_upside_summary_daily"]["buckets"], "expected non-empty max-upside buckets"
+    assert "9m" in payload["config"]["max_forward_returns"]["horizons_days"]
 
     md = md_paths[0].read_text(encoding="utf-8")
-    assert "## Max Upside (Daily, High-based)" in md
+    assert "## Max Favorable Move (Daily)" in md

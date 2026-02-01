@@ -53,3 +53,75 @@ def forward_max_up_return(
 
     return hi_f / c0_f - 1.0
 
+
+def forward_max_up_move(
+    *,
+    close_series: pd.Series,
+    high_series: pd.Series,
+    start_iloc: int,
+    horizon_bars: int,
+) -> float | None:
+    """
+    Max *favorable* upside move within the next `horizon_bars` bars (non-negative), using High.
+
+    This is `max(0, forward_max_up_return(...))`.
+    """
+    r = forward_max_up_return(
+        close_series=close_series,
+        high_series=high_series,
+        start_iloc=start_iloc,
+        horizon_bars=horizon_bars,
+    )
+    if r is None:
+        return None
+    return max(0.0, float(r))
+
+
+def forward_max_down_move(
+    *,
+    close_series: pd.Series,
+    low_series: pd.Series,
+    start_iloc: int,
+    horizon_bars: int,
+) -> float | None:
+    """
+    Max *favorable* downside move within the next `horizon_bars` bars (non-negative), using Low.
+
+    Definition (anchored on entry close at bar i):
+    - min_low = min(Low[i+1 : i+horizon])
+    - down_move = max(0, -(min_low / Close[i] - 1))
+
+    This returns a positive number for pullbacks (e.g., 0.10 = 10% drop) and 0 when
+    price never traded below the entry close in the lookahead window.
+    """
+    horizon_bars = int(horizon_bars)
+    start_iloc = int(start_iloc)
+    if horizon_bars <= 0:
+        return None
+    if start_iloc < 0 or start_iloc >= len(close_series):
+        return None
+    end_iloc = start_iloc + horizon_bars
+    if end_iloc >= len(low_series):
+        return None
+
+    c0 = close_series.iloc[start_iloc]
+    try:
+        if c0 is None or pd.isna(c0) or float(c0) == 0.0:
+            return None
+        c0_f = float(c0)
+    except Exception:  # noqa: BLE001
+        return None
+
+    window = low_series.iloc[start_iloc + 1 : end_iloc + 1]
+    if window.empty:
+        return None
+    lo = window.min()
+    try:
+        if lo is None or pd.isna(lo):
+            return None
+        lo_f = float(lo)
+    except Exception:  # noqa: BLE001
+        return None
+
+    r = lo_f / c0_f - 1.0
+    return max(0.0, -float(r))
