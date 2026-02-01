@@ -56,9 +56,11 @@ from options_helper.technicals_backtesting.backtest.walk_forward import walk_for
 from options_helper.technicals_backtesting.extension_percentiles import (
     build_weekly_extension_series,
     compute_extension_percentiles,
+    rolling_percentile_rank,
 )
 from options_helper.technicals_backtesting.feature_selection import required_feature_columns_for_strategy
 from options_helper.technicals_backtesting.pipeline import compute_features, warmup_bars
+from options_helper.technicals_backtesting.rsi_divergence import compute_rsi_divergence_flags
 from options_helper.technicals_backtesting.snapshot import compute_technical_snapshot
 from options_helper.technicals_backtesting.strategies.registry import get_strategy
 
@@ -2645,6 +2647,41 @@ def technicals_extension_stats(
     write_json: bool = typer.Option(True, "--write-json/--no-write-json", help="Write JSON artifact."),
     write_md: bool = typer.Option(True, "--write-md/--no-write-md", help="Write Markdown artifact."),
     print_to_console: bool = typer.Option(False, "--print/--no-print", help="Print Markdown to console."),
+    divergence_window_days: int = typer.Option(
+        14, "--divergence-window-days", help="Lookback window (trading bars) for RSI divergence detection."
+    ),
+    divergence_min_extension_days: int = typer.Option(
+        5,
+        "--divergence-min-extension-days",
+        help="Minimum days in the window where extension percentile is elevated/depressed to qualify.",
+    ),
+    divergence_min_extension_percentile: float | None = typer.Option(
+        None,
+        "--divergence-min-extension-percentile",
+        help="High extension percentile threshold for bearish divergence gating (default: tail_high_pct).",
+    ),
+    divergence_max_extension_percentile: float | None = typer.Option(
+        None,
+        "--divergence-max-extension-percentile",
+        help="Low extension percentile threshold for bullish divergence gating (default: tail_low_pct).",
+    ),
+    divergence_min_price_delta_pct: float = typer.Option(
+        0.0,
+        "--divergence-min-price-delta-pct",
+        help="Minimum % move between swing points (in the divergence direction).",
+    ),
+    divergence_min_rsi_delta: float = typer.Option(
+        0.0,
+        "--divergence-min-rsi-delta",
+        help="Minimum RSI difference between swing points.",
+    ),
+    rsi_overbought: float = typer.Option(70.0, "--rsi-overbought", help="RSI threshold for overbought tagging."),
+    rsi_oversold: float = typer.Option(30.0, "--rsi-oversold", help="RSI threshold for oversold tagging."),
+    require_rsi_extreme: bool = typer.Option(
+        False,
+        "--require-rsi-extreme/--allow-rsi-neutral",
+        help="If set, only keep bearish divergences at overbought RSI and bullish divergences at oversold RSI.",
+    ),
 ) -> None:
     """Compute extension percentile stats (tail events + rolling windows) from cached candles."""
     console = Console(width=200)
@@ -2698,8 +2735,125 @@ def technicals_extension_stats(
     )
 
     sym_label = symbol.upper() if symbol else "UNKNOWN"
+
+    def _none_if_nan(val: object) -> object | None:
+        try:
+            if val is None:
+                return None
+            if isinstance(val, (float, int)) and pd.isna(val):
+                return None
+            if pd.isna(val):
+                return None
+            return val
+        except Exception:  # noqa: BLE001
+            return None
+
+    # Optional enrichment: RSI divergence (daily only, anchored on swing points).
+    rsi_divergence_cfg: dict | None = None
+    rsi_divergence_daily: dict | None = None
+    try:
+        rsi_cfg = (cfg.get("indicators", {}) or {}).get("rsi", {}) or {}
+        rsi_enabled = bool(rsi_cfg.get("enabled", False))
+        rsi_window = int(rsi_cfg.get("window_default", 14)) if rsi_enabled else None
+        rsi_col = f"rsi_{rsi_window}" if rsi_window is not None else None
+
+        tail_years = report_daily.tail_window_years or (max(report_daily.current_percentiles.keys()) if report_daily.current_percentiles else None)
+        bars = int(tail_years * int(ext_cfg.get("days_per_year", 252))) if tail_years else None
+
+        if rsi_col and rsi_col in features.columns and bars and bars > 1:
+            ext_series = features[ext_col].dropna()
+            aligned = pd.concat(
+                [
+                    ext_series.rename("ext"),
+                    features["Close"].reindex(ext_series.index).rename("close"),
+                    features[rsi_col].reindex(ext_series.index).rename("rsi"),
+                ],
+                axis=1,
+            ).dropna()
+            if not aligned.empty:
+                ext_series = aligned["ext"]
+                close_series = aligned["close"]
+                rsi_series = aligned["rsi"]
+
+                bars = bars if len(ext_series) >= bars else len(ext_series)
+                ext_pct = rolling_percentile_rank(ext_series, bars)
+
+                min_ext_pct = float(divergence_min_extension_percentile) if divergence_min_extension_percentile is not None else float(ext_cfg.get("tail_high_pct", 95))
+                max_ext_pct = float(divergence_max_extension_percentile) if divergence_max_extension_percentile is not None else float(ext_cfg.get("tail_low_pct", 5))
+
+                flags = compute_rsi_divergence_flags(
+                    close_series=close_series,
+                    rsi_series=rsi_series,
+                    extension_percentile_series=ext_pct,
+                    window_days=divergence_window_days,
+                    min_extension_days=divergence_min_extension_days,
+                    min_extension_percentile=min_ext_pct,
+                    max_extension_percentile=max_ext_pct,
+                    min_price_delta_pct=divergence_min_price_delta_pct,
+                    min_rsi_delta=divergence_min_rsi_delta,
+                    rsi_overbought=rsi_overbought,
+                    rsi_oversold=rsi_oversold,
+                    require_rsi_extreme=require_rsi_extreme,
+                )
+
+                events = flags[(flags["bearish_divergence"]) | (flags["bullish_divergence"])]
+                events_by_date: dict[str, dict] = {}
+                for idx, row in events.iterrows():
+                    d = idx.date().isoformat() if isinstance(idx, pd.Timestamp) else str(idx)
+                    events_by_date[d] = {
+                        "date": d,
+                        "divergence": _none_if_nan(row.get("divergence")),
+                        "rsi_regime": _none_if_nan(row.get("rsi_regime")),
+                        "swing1_date": _none_if_nan(row.get("swing1_date")),
+                        "swing2_date": _none_if_nan(row.get("swing2_date")),
+                        "close1": _none_if_nan(row.get("close1")),
+                        "close2": _none_if_nan(row.get("close2")),
+                        "rsi1": _none_if_nan(row.get("rsi1")),
+                        "rsi2": _none_if_nan(row.get("rsi2")),
+                        "price_delta_pct": _none_if_nan(row.get("price_delta_pct")),
+                        "rsi_delta": _none_if_nan(row.get("rsi_delta")),
+                    }
+
+                recent = flags.tail(max(1, int(divergence_window_days) + 2))
+                last_bearish = None
+                last_bullish = None
+                for idx, row in reversed(list(recent.iterrows())):
+                    if last_bearish is None and bool(row.get("bearish_divergence")):
+                        d = idx.date().isoformat() if isinstance(idx, pd.Timestamp) else str(idx)
+                        last_bearish = events_by_date.get(d)
+                    if last_bullish is None and bool(row.get("bullish_divergence")):
+                        d = idx.date().isoformat() if isinstance(idx, pd.Timestamp) else str(idx)
+                        last_bullish = events_by_date.get(d)
+                    if last_bearish is not None and last_bullish is not None:
+                        break
+
+                rsi_divergence_cfg = {
+                    "window_days": int(divergence_window_days),
+                    "min_extension_days": int(divergence_min_extension_days),
+                    "min_extension_percentile": min_ext_pct,
+                    "max_extension_percentile": max_ext_pct,
+                    "min_price_delta_pct": float(divergence_min_price_delta_pct),
+                    "min_rsi_delta": float(divergence_min_rsi_delta),
+                    "rsi_overbought": float(rsi_overbought),
+                    "rsi_oversold": float(rsi_oversold),
+                    "require_rsi_extreme": bool(require_rsi_extreme),
+                    "rsi_window": rsi_window,
+                }
+
+                rsi_divergence_daily = {
+                    "asof": report_daily.asof,
+                    "current": {
+                        "bearish": last_bearish,
+                        "bullish": last_bullish,
+                    },
+                    "events_by_date": events_by_date,
+                }
+    except Exception:  # noqa: BLE001
+        rsi_divergence_cfg = None
+        rsi_divergence_daily = None
+
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "symbol": sym_label,
         "asof": report_daily.asof,
         "config": {
@@ -2707,10 +2861,78 @@ def technicals_extension_stats(
             "atr_window": atr_window,
             "sma_window": sma_window,
             "extension_column": ext_col,
+            "rsi_divergence": rsi_divergence_cfg,
         },
         "report_daily": asdict(report_daily),
         "report_weekly": asdict(report_weekly),
+        "rsi_divergence_daily": rsi_divergence_daily,
     }
+
+    # Enrich daily tail events with divergence flags/details (JSON only; the core percentile report stays unchanged).
+    if rsi_divergence_daily is not None:
+        by_date = rsi_divergence_daily.get("events_by_date", {}) or {}
+        daily = payload.get("report_daily", {}) or {}
+        tail_events = daily.get("tail_events", []) or []
+        for ev in tail_events:
+            d = ev.get("date")
+            ev["rsi_divergence"] = by_date.get(d)
+
+        # Conditional summaries: tail events with divergence vs without.
+        def _median(values: list[float]) -> float | None:
+            vals = [float(v) for v in values if v is not None]
+            if not vals:
+                return None
+            vals.sort()
+            m = len(vals) // 2
+            if len(vals) % 2:
+                return float(vals[m])
+            return float((vals[m - 1] + vals[m]) / 2.0)
+
+        def _get_forward(dct: dict, day: int) -> object | None:
+            if not dct:
+                return None
+            if day in dct:
+                return dct.get(day)
+            return dct.get(str(day))
+
+        fwd_days_int = [int(d) for d in ext_cfg.get("forward_days", [1, 3, 5, 10])]
+        summary: dict[str, dict[str, dict]] = {"high": {}, "low": {}}
+        for tail in ("high", "low"):
+            if tail == "high":
+                want = "bearish"
+            else:
+                want = "bullish"
+
+            def _bucket(has_div: bool) -> dict[str, object]:
+                rows = []
+                for ev in tail_events:
+                    if ev.get("direction") != tail:
+                        continue
+                    div = ev.get("rsi_divergence") or None
+                    match = bool(div) and div.get("divergence") == want
+                    if match != has_div:
+                        continue
+                    rows.append(ev)
+
+                out: dict[str, object] = {"n": len(rows)}
+                for d in fwd_days_int:
+                    rets = []
+                    pcts = []
+                    for ev in rows:
+                        r = _get_forward(ev.get("forward_returns") or {}, d)
+                        p = _get_forward(ev.get("forward_extension_percentiles") or {}, d)
+                        if r is not None and not pd.isna(r):
+                            rets.append(float(r) * 100.0)
+                        if p is not None and not pd.isna(p):
+                            pcts.append(float(p))
+                    out[f"median_fwd_return_pct_{d}d"] = _median(rets)
+                    out[f"median_fwd_extension_percentile_{d}d"] = _median(pcts)
+                return out
+
+            summary[tail]["with_divergence"] = _bucket(True)
+            summary[tail]["without_divergence"] = _bucket(False)
+
+        rsi_divergence_daily["tail_event_summary"] = summary
 
     md_lines: list[str] = [
         f"# {sym_label} — Extension Percentile Stats",
@@ -2737,18 +2959,99 @@ def technicals_extension_stats(
         md_lines.append("- Not available.")
 
     md_lines.append("")
+    md_lines.append("## RSI Divergence (Daily)")
+    if rsi_divergence_daily is None:
+        md_lines.append("- Not available (RSI disabled/missing or insufficient history).")
+    else:
+        cfg_line = (
+            f"- Window: `{rsi_divergence_cfg.get('window_days')}d` "
+            f"(min ext days `{rsi_divergence_cfg.get('min_extension_days')}`, "
+            f"ext pct gates `{rsi_divergence_cfg.get('min_extension_percentile'):.1f}` / `{rsi_divergence_cfg.get('max_extension_percentile'):.1f}`, "
+            f"RSI `{rsi_divergence_cfg.get('rsi_overbought'):.0f}`/`{rsi_divergence_cfg.get('rsi_oversold'):.0f}`)"
+        )
+        md_lines.append(cfg_line)
+        cur = (rsi_divergence_daily.get("current") or {}) if isinstance(rsi_divergence_daily, dict) else {}
+        cur_bear = cur.get("bearish")
+        cur_bull = cur.get("bullish")
+        if cur_bear is None and cur_bull is None:
+            md_lines.append("- No divergences detected in the most recent window.")
+        if cur_bear is not None:
+            try:
+                drsi = "-" if cur_bear.get("rsi_delta") is None else f"{float(cur_bear.get('rsi_delta')):+.2f}"
+            except Exception:  # noqa: BLE001
+                drsi = "-"
+            try:
+                dpct = "-" if cur_bear.get("price_delta_pct") is None else f"{float(cur_bear.get('price_delta_pct')):+.2f}%"
+            except Exception:  # noqa: BLE001
+                dpct = "-"
+            md_lines.append(
+                f"- Current bearish divergence: `{cur_bear.get('swing1_date')} → {cur_bear.get('swing2_date')}` "
+                f"(RSI tag `{cur_bear.get('rsi_regime')}`, ΔRSI `{drsi}`, ΔClose% `{dpct}`)"
+            )
+        if cur_bull is not None:
+            try:
+                drsi = "-" if cur_bull.get("rsi_delta") is None else f"{float(cur_bull.get('rsi_delta')):+.2f}"
+            except Exception:  # noqa: BLE001
+                drsi = "-"
+            try:
+                dpct = "-" if cur_bull.get("price_delta_pct") is None else f"{float(cur_bull.get('price_delta_pct')):+.2f}%"
+            except Exception:  # noqa: BLE001
+                dpct = "-"
+            md_lines.append(
+                f"- Current bullish divergence: `{cur_bull.get('swing1_date')} → {cur_bull.get('swing2_date')}` "
+                f"(RSI tag `{cur_bull.get('rsi_regime')}`, ΔRSI `{drsi}`, ΔClose% `{dpct}`)"
+            )
+
+        # Compact conditional summary table (focus on the most commonly used horizons).
+        summ = rsi_divergence_daily.get("tail_event_summary") if isinstance(rsi_divergence_daily, dict) else None
+        if isinstance(summ, dict):
+            md_lines.append("")
+            md_lines.append("### Tail Outcomes With vs Without Divergence (Daily)")
+            md_lines.append("| Tail | Divergence | N | Med fwd ret (5d/10d) | Med fwd pctl (5d/10d) |")
+            md_lines.append("|---|---|---:|---|---|")
+            for tail, want in (("high", "bearish"), ("low", "bullish")):
+                for bucket_name, label in (("with_divergence", f"with {want}"), ("without_divergence", f"without {want}")):
+                    b = (summ.get(tail) or {}).get(bucket_name) if isinstance(summ.get(tail), dict) else None
+                    if not isinstance(b, dict):
+                        continue
+                    n = b.get("n", 0)
+                    r5 = b.get("median_fwd_return_pct_5d")
+                    r10 = b.get("median_fwd_return_pct_10d")
+                    p5 = b.get("median_fwd_extension_percentile_5d")
+                    p10 = b.get("median_fwd_extension_percentile_10d")
+                    def _fmt_ret(v: object) -> str:
+                        try:
+                            return "-" if v is None else f"{float(v):+.1f}%"
+                        except Exception:  # noqa: BLE001
+                            return "-"
+
+                    def _fmt_pct(v: object) -> str:
+                        try:
+                            return "-" if v is None else f"{float(v):.1f}"
+                        except Exception:  # noqa: BLE001
+                            return "-"
+
+                    r_str = f"{_fmt_ret(r5)} / {_fmt_ret(r10)}"
+                    p_str = f"{_fmt_pct(p5)} / {_fmt_pct(p10)}"
+                    md_lines.append(f"| {tail} | {label} | {n} | {r_str} | {p_str} |")
+
+    md_lines.append("")
     md_lines.append("## Tail Events (Daily, all)")
     if report_daily.tail_events:
-        md_lines.append("| Date | Tail | Ext | Pctl | Fwd pctl (1/3/5/10) | Fwd ret% (1/3/5/10) |")
-        md_lines.append("|---|---|---:|---:|---|---|")
+        md_lines.append("| Date | Tail | Ext | Pctl | RSI div | RSI tag | Fwd pctl (1/3/5/10) | Fwd ret% (1/3/5/10) |")
+        md_lines.append("|---|---|---:|---:|---|---|---|---|")
         fwd_days = [str(d) for d in ext_cfg.get("forward_days", [1, 3, 5, 10])]
+        div_by_date = (rsi_divergence_daily or {}).get("events_by_date", {}) if isinstance(rsi_divergence_daily, dict) else {}
         for ev in report_daily.tail_events:
             pcts = [ev.forward_extension_percentiles.get(int(d)) for d in fwd_days]
             rets = [ev.forward_returns.get(int(d)) for d in fwd_days]
             pcts_str = ", ".join("-" if v is None else f"{v:.1f}" for v in pcts)
             rets_str = ", ".join("-" if v is None else f"{v*100.0:+.1f}%" for v in rets)
+            div = div_by_date.get(ev.date) if isinstance(div_by_date, dict) else None
+            div_type = "-" if not div else (div.get("divergence") or "-")
+            div_tag = "-" if not div else (div.get("rsi_regime") or "-")
             md_lines.append(
-                f"| {ev.date} | {ev.direction} | {ev.extension_atr:+.2f} | {ev.percentile:.1f} | {pcts_str} | {rets_str} |"
+                f"| {ev.date} | {ev.direction} | {ev.extension_atr:+.2f} | {ev.percentile:.1f} | {div_type} | {div_tag} | {pcts_str} | {rets_str} |"
             )
     else:
         md_lines.append("- No tail events found.")
