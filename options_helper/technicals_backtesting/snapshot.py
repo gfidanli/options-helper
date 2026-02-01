@@ -136,7 +136,7 @@ def compute_technical_snapshot(df_ohlc: pd.DataFrame, cfg: dict) -> TechnicalSna
         daily_report = compute_extension_percentiles(
             extension_series=ext_series,
             close_series=close_series,
-            windows_years=ext_cfg.get("windows_years", [1, 3, 5]),
+            windows_years=ext_cfg.get("windows_years", [3]),
             days_per_year=int(ext_cfg.get("days_per_year", 252)),
             tail_high_pct=float(ext_cfg.get("tail_high_pct", 95)),
             tail_low_pct=float(ext_cfg.get("tail_low_pct", 5)),
@@ -150,7 +150,7 @@ def compute_technical_snapshot(df_ohlc: pd.DataFrame, cfg: dict) -> TechnicalSna
         weekly_report = compute_extension_percentiles(
             extension_series=weekly_ext,
             close_series=weekly_close,
-            windows_years=ext_cfg.get("windows_years", [1, 3, 5]),
+            windows_years=ext_cfg.get("windows_years", [3]),
             days_per_year=int(ext_cfg.get("days_per_year", 252) / 5),
             tail_high_pct=float(ext_cfg.get("tail_high_pct", 95)),
             tail_low_pct=float(ext_cfg.get("tail_low_pct", 5)),
