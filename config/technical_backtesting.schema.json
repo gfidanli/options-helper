@@ -295,6 +295,24 @@
         "level": { "type": "string" },
         "log_dir": { "type": "string" }
       }
+    },
+    "extension_percentiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "days_per_year": { "type": "integer", "minimum": 1 },
+        "windows_years": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 }
+        },
+        "tail_high_pct": { "type": "number", "minimum": 50, "maximum": 100 },
+        "tail_low_pct": { "type": "number", "minimum": 0, "maximum": 50 },
+        "forward_days": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "required": ["days_per_year", "windows_years", "tail_high_pct", "tail_low_pct", "forward_days"]
     }
   }
 }

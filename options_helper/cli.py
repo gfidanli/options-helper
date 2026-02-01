@@ -4,6 +4,7 @@ import json
 import logging
 import time
 from datetime import date, datetime, timezone
+from dataclasses import asdict
 from pathlib import Path
 from typing import cast
 
@@ -52,6 +53,7 @@ from options_helper.storage import load_portfolio, save_portfolio, write_templat
 from options_helper.watchlists import build_default_watchlists, load_watchlists, save_watchlists
 from options_helper.technicals_backtesting.backtest.optimizer import optimize_params
 from options_helper.technicals_backtesting.backtest.walk_forward import walk_forward_optimize
+from options_helper.technicals_backtesting.extension_percentiles import compute_extension_percentiles
 from options_helper.technicals_backtesting.feature_selection import required_feature_columns_for_strategy
 from options_helper.technicals_backtesting.pipeline import compute_features, warmup_bars
 from options_helper.technicals_backtesting.snapshot import compute_technical_snapshot
@@ -2622,6 +2624,136 @@ def technicals_compute_indicators(
         else:
             features.to_csv(output)
         console.print(f"Wrote features to {output}")
+
+
+@technicals_app.command("extension-stats")
+def technicals_extension_stats(
+    symbol: str | None = typer.Option(None, "--symbol", help="Symbol to load from cache."),
+    ohlc_path: Path | None = typer.Option(None, "--ohlc-path", help="CSV/parquet OHLC path."),
+    cache_dir: Path = typer.Option(Path("data/candles"), "--cache-dir", help="Candle cache dir."),
+    config_path: Path = typer.Option(
+        Path("config/technical_backtesting.yaml"), "--config", help="Config path."
+    ),
+    out: Path | None = typer.Option(
+        Path("data/reports/technicals/extension"),
+        "--out",
+        help="Output root for extension stats artifacts.",
+    ),
+    write_json: bool = typer.Option(True, "--write-json/--no-write-json", help="Write JSON artifact."),
+    write_md: bool = typer.Option(True, "--write-md/--no-write-md", help="Write Markdown artifact."),
+    print_to_console: bool = typer.Option(False, "--print/--no-print", help="Print Markdown to console."),
+) -> None:
+    """Compute extension percentile stats (tail events + rolling windows) from cached candles."""
+    console = Console(width=200)
+    cfg = load_technical_backtesting_config(config_path)
+    _setup_technicals_logging(cfg)
+
+    df = _load_ohlc_df(ohlc_path=ohlc_path, symbol=symbol, cache_dir=cache_dir)
+    if df.empty:
+        raise typer.BadParameter("No OHLC data found for extension stats.")
+
+    features = compute_features(df, cfg)
+    w = warmup_bars(cfg)
+    if w > 0:
+        features = features.iloc[w:]
+    if features.empty:
+        raise typer.BadParameter("No features after warmup; check candle history.")
+
+    atr_window = int(cfg["indicators"]["atr"]["window_default"])
+    sma_window = int(cfg["indicators"]["sma"]["window_default"])
+    ext_col = f"extension_atr_{sma_window}_{atr_window}"
+    if ext_col not in features.columns:
+        raise typer.BadParameter(f"Missing extension column: {ext_col}")
+
+    ext_cfg = cfg.get("extension_percentiles", {})
+    report = compute_extension_percentiles(
+        extension_series=features[ext_col],
+        close_series=features["Close"],
+        windows_years=ext_cfg.get("windows_years", [1, 3, 5]),
+        days_per_year=int(ext_cfg.get("days_per_year", 252)),
+        tail_high_pct=float(ext_cfg.get("tail_high_pct", 95)),
+        tail_low_pct=float(ext_cfg.get("tail_low_pct", 5)),
+        forward_days=ext_cfg.get("forward_days", [1, 3, 5, 10]),
+        include_tail_events=True,
+    )
+
+    sym_label = symbol.upper() if symbol else "UNKNOWN"
+    asof = report.asof
+    payload = {
+        "schema_version": 1,
+        "symbol": sym_label,
+        "asof": asof,
+        "config": {
+            "extension_percentiles": ext_cfg,
+            "atr_window": atr_window,
+            "sma_window": sma_window,
+            "extension_column": ext_col,
+        },
+        "report": asdict(report),
+    }
+
+    md_lines: list[str] = [
+        f"# {sym_label} — Extension Percentile Stats",
+        "",
+        f"- As-of: `{asof}`",
+        f"- Extension (ATR units): `{'-' if report.extension_atr is None else f'{report.extension_atr:+.2f}'}`",
+        "",
+        "## Current Percentiles",
+    ]
+    if report.current_percentiles:
+        for years, pct in sorted(report.current_percentiles.items()):
+            md_lines.append(f"- {years}y: `{pct:.1f}`")
+    else:
+        md_lines.append("- No percentile windows available (insufficient history).")
+
+    md_lines.append("")
+    md_lines.append("## Rolling Quantiles (p5 / p50 / p95)")
+    if report.quantiles_by_window:
+        for years, q in sorted(report.quantiles_by_window.items()):
+            if q.p5 is None or q.p50 is None or q.p95 is None:
+                continue
+            md_lines.append(f"- {years}y: `{q.p5:+.2f} / {q.p50:+.2f} / {q.p95:+.2f}`")
+    else:
+        md_lines.append("- Not available.")
+
+    md_lines.append("")
+    md_lines.append("## Tail Events (all)")
+    if report.tail_events:
+        md_lines.append("| Date | Tail | Ext | Pctl | Fwd pctl (1/3/5/10) | Fwd ret% (1/3/5/10) |")
+        md_lines.append("|---|---|---:|---:|---|---|")
+        fwd_days = [str(d) for d in ext_cfg.get("forward_days", [1, 3, 5, 10])]
+        for ev in report.tail_events:
+            pcts = [ev.forward_extension_percentiles.get(int(d)) for d in fwd_days]
+            rets = [ev.forward_returns.get(int(d)) for d in fwd_days]
+            pcts_str = ", ".join("-" if v is None else f"{v:.1f}" for v in pcts)
+            rets_str = ", ".join("-" if v is None else f"{v*100.0:+.1f}%" for v in rets)
+            md_lines.append(
+                f"| {ev.date} | {ev.direction} | {ev.extension_atr:+.2f} | {ev.percentile:.1f} | {pcts_str} | {rets_str} |"
+            )
+    else:
+        md_lines.append("- No tail events found.")
+
+    md = "\n".join(md_lines).rstrip() + "\n"
+
+    if out:
+        base = out / sym_label
+        base.mkdir(parents=True, exist_ok=True)
+        json_path = base / f"{asof}.json"
+        md_path = base / f"{asof}.md"
+        if write_json:
+            json_path.write_text(json.dumps(payload, indent=2, sort_keys=True, allow_nan=False), encoding="utf-8")
+            console.print(f"Wrote JSON: {json_path}")
+        if write_md:
+            md_path.write_text(md, encoding="utf-8")
+            console.print(f"Wrote Markdown: {md_path}")
+
+    if print_to_console:
+        try:
+            from rich.markdown import Markdown
+
+            console.print(Markdown(md))
+        except Exception:  # noqa: BLE001
+            console.print(md)
 
 
 @technicals_app.command("optimize")

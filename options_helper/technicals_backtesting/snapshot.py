@@ -5,6 +5,10 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from options_helper.technicals_backtesting.extension_percentiles import (
+    ExtensionPercentileReport,
+    compute_extension_percentiles,
+)
 from options_helper.technicals_backtesting.pipeline import compute_features, warmup_bars
 
 
@@ -31,6 +35,8 @@ class TechnicalSnapshot:
 
     rsi_window: int | None
     rsi: float | None
+
+    extension_percentiles: ExtensionPercentileReport | None
 
 
 def _format_dev(dev: float) -> str:
@@ -120,6 +126,24 @@ def compute_technical_snapshot(df_ohlc: pd.DataFrame, cfg: dict) -> TechnicalSna
     if rsi_window is not None:
         rsi_val = _as_float(row.get(f"rsi_{rsi_window}"))
 
+    extension_report = None
+    try:
+        ext_series = features[f"extension_atr_{sma_window}_{atr_window}"]
+        close_series = features["Close"]
+        ext_cfg = cfg.get("extension_percentiles", {})
+        extension_report = compute_extension_percentiles(
+            extension_series=ext_series,
+            close_series=close_series,
+            windows_years=ext_cfg.get("windows_years", [1, 3, 5]),
+            days_per_year=int(ext_cfg.get("days_per_year", 252)),
+            tail_high_pct=float(ext_cfg.get("tail_high_pct", 95)),
+            tail_low_pct=float(ext_cfg.get("tail_low_pct", 5)),
+            forward_days=ext_cfg.get("forward_days", [1, 3, 5, 10]),
+            include_tail_events=False,
+        )
+    except Exception:  # noqa: BLE001
+        extension_report = None
+
     return TechnicalSnapshot(
         asof=asof,
         close=_as_float(row.get("Close")),
@@ -137,5 +161,5 @@ def compute_technical_snapshot(df_ohlc: pd.DataFrame, cfg: dict) -> TechnicalSna
         bb_wband=_as_float(row.get(f"bb_wband_{bb_window}_{dev_label}")),
         rsi_window=rsi_window,
         rsi=rsi_val,
+        extension_percentiles=extension_report,
     )
-

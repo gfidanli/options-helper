@@ -56,6 +56,7 @@ def _light_validate(cfg: dict) -> None:
         "strategies",
         "artifacts",
         "logging",
+        "extension_percentiles",
     ]
     missing = [k for k in required_sections if k not in cfg]
     if missing:
@@ -73,3 +74,18 @@ def _light_validate(cfg: dict) -> None:
     if provider not in {"ta", "talib"}:
         raise ConfigError("indicators.provider must be 'ta' or 'talib'")
 
+    ext_cfg = cfg.get("extension_percentiles", {})
+    if ext_cfg:
+        high = float(ext_cfg.get("tail_high_pct", 95))
+        low = float(ext_cfg.get("tail_low_pct", 5))
+        if low >= high:
+            raise ConfigError("extension_percentiles.tail_low_pct must be < tail_high_pct")
+        days_per_year = int(ext_cfg.get("days_per_year", 252))
+        if days_per_year <= 0:
+            raise ConfigError("extension_percentiles.days_per_year must be > 0")
+        windows_years = ext_cfg.get("windows_years", [])
+        if not windows_years:
+            raise ConfigError("extension_percentiles.windows_years must be non-empty")
+        forward_days = ext_cfg.get("forward_days", [])
+        if not forward_days:
+            raise ConfigError("extension_percentiles.forward_days must be non-empty")

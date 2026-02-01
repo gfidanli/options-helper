@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, is_dataclass, asdict
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -174,6 +174,19 @@ def technicals_takeaways(snapshot: TechnicalSnapshot) -> list[str]:
         out.append(f"BB{snapshot.bb_window} dev={snapshot.bb_dev:g}: pband `{pband}`, wband `{wband}`")
     if snapshot.rsi_window is not None and snapshot.rsi is not None:
         out.append(f"RSI{snapshot.rsi_window}: `{snapshot.rsi:.0f}`")
+    if snapshot.extension_percentiles is not None:
+        ext = snapshot.extension_percentiles
+        if ext.current_percentiles:
+            parts = [f"{years}y `{pct:.1f}`" for years, pct in sorted(ext.current_percentiles.items())]
+            out.append("Extension percentile: " + ", ".join(parts))
+        if ext.quantiles_by_window:
+            rows = []
+            for years, q in sorted(ext.quantiles_by_window.items()):
+                if q.p5 is None or q.p50 is None or q.p95 is None:
+                    continue
+                rows.append(f"{years}y p5/p50/p95: `{q.p5:+.2f}/{q.p50:+.2f}/{q.p95:+.2f}`")
+            if rows:
+                out.append("Extension quantiles: " + " | ".join(rows))
     return out
 
 
@@ -266,12 +279,12 @@ def _jsonable(val: Any) -> Any:
         return {str(k): _jsonable(v) for k, v in val.to_dict().items()}
     if isinstance(val, pd.DataFrame):
         return [_jsonable(r) for r in val.to_dict(orient="records")]
+    if is_dataclass(val):
+        return _jsonable(asdict(val))
     if isinstance(val, ChainReport):
         return _jsonable(val.model_dump())
     if isinstance(val, CompareReport):
         return _jsonable(val.model_dump())
-    if isinstance(val, TechnicalSnapshot):
-        return _jsonable(val.__dict__)
     return str(val)
 
 
