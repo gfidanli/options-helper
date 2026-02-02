@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import json
+import logging
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone, timedelta
-import json
 from pathlib import Path
 from typing import Callable, ClassVar
 
 import pandas as pd
 import yfinance as yf
+
+logger = logging.getLogger(__name__)
 
 
 class CandleCacheError(RuntimeError):
@@ -130,6 +134,8 @@ class CandleStore:
     fetcher: HistoryFetcher | None = None
     backfill_days: int = 5
     interval: str = "1d"
+    max_fetch_attempts: int = 3
+    retry_backoff_seconds: float = 2.0
 
     # yfinance adjustments materially impact indicators/backtests.
     # Defaults follow the repo's technical_backtesting.yaml recommendation.
@@ -210,6 +216,37 @@ class CandleStore:
             back_adjust=self.back_adjust,
         )
 
+    def _is_rate_limit_error(self, exc: Exception) -> bool:
+        name = exc.__class__.__name__
+        msg = str(exc).lower()
+        return (
+            name == "YFRateLimitError"
+            or "rate limit" in msg
+            or "too many requests" in msg
+            or "429" in msg
+        )
+
+    def _fetch_with_retry(self, symbol: str, start: date | None, end: date | None) -> pd.DataFrame:
+        attempt = 1
+        while True:
+            try:
+                return self._fetch(symbol, start, end)
+            except Exception as exc:  # noqa: BLE001
+                if not self._is_rate_limit_error(exc) or attempt >= self.max_fetch_attempts:
+                    raise
+                delay = float(self.retry_backoff_seconds) * (2 ** (attempt - 1))
+                if delay < 0:
+                    delay = 0.0
+                logger.warning(
+                    "Rate limited fetching %s; retrying in %.1fs (%d/%d)",
+                    symbol,
+                    delay,
+                    attempt,
+                    self.max_fetch_attempts,
+                )
+                time.sleep(delay)
+                attempt += 1
+
     def load(self, symbol: str) -> pd.DataFrame:
         path = self._path_for_symbol(symbol)
         if not path.exists():
@@ -271,16 +308,16 @@ class CandleStore:
         # Backfill earlier history if required.
         if merged.empty:
             if wants_max:
-                merged = _normalize_history(self._fetch(symbol, None, None))
+                merged = _normalize_history(self._fetch_with_retry(symbol, None, None))
                 did_full_fetch = True
             elif desired_start is None:
-                merged = _normalize_history(self._fetch(symbol, None, None))
+                merged = _normalize_history(self._fetch_with_retry(symbol, None, None))
                 did_full_fetch = True
             else:
-                merged = _normalize_history(self._fetch(symbol, desired_start, None))
+                merged = _normalize_history(self._fetch_with_retry(symbol, desired_start, None))
         elif wants_max:
             first_cached = merged.index.min().date()
-            fetched = self._fetch(symbol, self._MAX_BACKFILL_START, first_cached)
+            fetched = self._fetch_with_retry(symbol, self._MAX_BACKFILL_START, first_cached)
             fetched = _normalize_history(fetched)
             if not fetched.empty:
                 merged = pd.concat([fetched, merged])
@@ -288,7 +325,7 @@ class CandleStore:
         elif desired_start is not None:
             first_cached = merged.index.min().date()
             if desired_start < first_cached:
-                fetched = self._fetch(symbol, desired_start, first_cached)
+                fetched = self._fetch_with_retry(symbol, desired_start, first_cached)
                 fetched = _normalize_history(fetched)
                 merged = pd.concat([fetched, merged])
                 merged = merged[~merged.index.duplicated(keep="last")].sort_index()
@@ -297,7 +334,7 @@ class CandleStore:
         if not did_full_fetch and not merged.empty and self.backfill_days > 0:
             last_cached_dt = merged.index.max()
             refresh_start = (last_cached_dt.date() - timedelta(days=self.backfill_days))
-            fetched = self._fetch(symbol, refresh_start, None)
+            fetched = self._fetch_with_retry(symbol, refresh_start, None)
             fetched = _normalize_history(fetched)
             if not fetched.empty:
                 # If we are pulling adjusted candles and Yahoo reports a corporate action in the
@@ -314,9 +351,9 @@ class CandleStore:
 
                 if has_action and (bool(self.auto_adjust) or bool(self.back_adjust)):
                     if wants_max or desired_start is None:
-                        merged = _normalize_history(self._fetch(symbol, None, None))
+                        merged = _normalize_history(self._fetch_with_retry(symbol, None, None))
                     else:
-                        merged = _normalize_history(self._fetch(symbol, desired_start, None))
+                        merged = _normalize_history(self._fetch_with_retry(symbol, desired_start, None))
                     did_full_fetch = True
                 else:
                     merged = pd.concat([merged, fetched])

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
 
 import pandas as pd
 
-from options_helper.data.candles import CandleStore
+from options_helper.data.candles import CandleCacheError, CandleStore
+
+logger = logging.getLogger(__name__)
 
 
 def load_ohlc_from_path(path: Path) -> pd.DataFrame:
@@ -18,7 +21,22 @@ def load_ohlc_from_path(path: Path) -> pd.DataFrame:
     raise ValueError("Unsupported OHLC file format (use .csv or .parquet)")
 
 
-def load_ohlc_from_cache(symbol: str, cache_dir: Path) -> pd.DataFrame:
+def load_ohlc_from_cache(
+    symbol: str,
+    cache_dir: Path,
+    *,
+    backfill_if_missing: bool = False,
+    period: str = "max",
+    raise_on_backfill_error: bool = False,
+) -> pd.DataFrame:
     store = CandleStore(cache_dir)
-    return store.load(symbol)
-
+    history = store.load(symbol)
+    if history.empty and backfill_if_missing:
+        try:
+            history = store.get_daily_history(symbol, period=period)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to backfill OHLC for %s: %s", symbol, exc)
+            if raise_on_backfill_error:
+                raise CandleCacheError(str(exc)) from exc
+            return pd.DataFrame()
+    return history

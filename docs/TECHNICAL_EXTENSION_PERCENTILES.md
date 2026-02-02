@@ -65,6 +65,9 @@ Example:
 ./.venv/bin/options-helper technicals extension-stats --symbol CVX --cache-dir data/candles --out data/reports/technicals/extension --print
 ```
 
+If the symbol has **no cached candles**, `extension-stats` will **download and backfill** daily history from
+`yfinance` (best effort) and write the cache under `--cache-dir` before computing the report.
+
 Relax tails (per run / per ticker) with a symmetric threshold override:
 ```
 ./.venv/bin/options-helper technicals extension-stats --symbol LYFT --cache-dir data/candles --tail-pct 5 --print
