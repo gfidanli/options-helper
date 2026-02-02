@@ -4,7 +4,7 @@ import json
 import logging
 import time
 from datetime import date, datetime, timezone
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import cast
 
@@ -2499,7 +2499,7 @@ def scanner_run(
         console.print(f"Loaded {len(exclude_symbols)} excluded symbol(s) from {exclude_path}")
 
     scanned_symbols: set[str] = set()
-    if skip_scanned and scanned_path:
+    if scanned_path and (skip_scanned or write_scanned):
         scanned_symbols = read_scanned_symbols(scanned_path)
         if scanned_symbols:
             console.print(f"Loaded {len(scanned_symbols)} scanned symbol(s) from {scanned_path}")
@@ -3171,8 +3171,10 @@ def technicals_extension_stats(
 
     features = compute_features(df, cfg)
     w = warmup_bars(cfg)
-    if w > 0:
+    if w > 0 and len(features) > w:
         features = features.iloc[w:]
+    elif w > 0 and len(features) <= w:
+        console.print("[yellow]Warning:[/yellow] insufficient history for warmup; using full history.")
     if features.empty:
         raise typer.BadParameter("No features after warmup; check candle history.")
 
@@ -3259,6 +3261,26 @@ def technicals_extension_stats(
         forward_days=forward_days_weekly,
         include_tail_events=True,
     )
+
+    if report_daily.asof == "-":
+        fallback_daily = None
+        if isinstance(df.index, pd.DatetimeIndex) and not df.empty:
+            try:
+                fallback_daily = df.index.max().date().isoformat()
+            except Exception:  # noqa: BLE001
+                fallback_daily = None
+        if fallback_daily:
+            report_daily = replace(report_daily, asof=fallback_daily)
+
+    if report_weekly.asof == "-":
+        fallback_weekly = None
+        if weekly_close is not None and not weekly_close.empty:
+            try:
+                fallback_weekly = weekly_close.index.max().date().isoformat()
+            except Exception:  # noqa: BLE001
+                fallback_weekly = None
+        if fallback_weekly:
+            report_weekly = replace(report_weekly, asof=fallback_weekly)
 
     sym_label = symbol.upper() if symbol else "UNKNOWN"
 

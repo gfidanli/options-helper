@@ -89,3 +89,14 @@ def test_weekly_regime_logic_close_above_fast_is_more_permissive() -> None:
     last_day = df.index.max()
     assert bool(feat_relaxed.loc[last_day, "weekly_trend_up"]) is True
     assert bool(feat_strict.loc[last_day, "weekly_trend_up"]) is False
+
+
+def test_compute_features_handles_short_history() -> None:
+    cfg = load_technical_backtesting_config()
+    df = make_synthetic_ohlc(rows=7, seed=11)
+
+    features = compute_features(df, cfg)
+
+    assert not features.empty
+    assert "atr_14" in features.columns
+    assert features["atr_14"].isna().all()

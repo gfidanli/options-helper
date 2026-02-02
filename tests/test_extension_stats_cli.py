@@ -235,6 +235,53 @@ def test_extension_stats_cli_auto_window_years_short_history_uses_1y(tmp_path: P
     assert payload["config"]["extension_percentiles"]["windows_years"] == [1]
 
 
+def test_extension_stats_cli_short_history_uses_last_date_filename(tmp_path: Path) -> None:
+    idx = pd.date_range("2024-01-02", periods=7, freq="B")
+    close = pd.Series([50.0 + i * 0.1 for i in range(len(idx))], index=idx, dtype="float64")
+    ohlc = pd.DataFrame(
+        {
+            "Open": close.shift(1).fillna(close.iloc[0]),
+            "High": close * 1.01,
+            "Low": close * 0.99,
+            "Close": close,
+        },
+        index=idx,
+    )
+
+    ohlc_path = tmp_path / "ohlc_short.csv"
+    ohlc.to_csv(ohlc_path)
+
+    cfg_src = Path("config/technical_backtesting.yaml").read_text(encoding="utf-8")
+    cfg_mod = cfg_src.replace("warmup_bars: 200", "warmup_bars: 0")
+    cfg_path = tmp_path / "cfg.yaml"
+    cfg_path.write_text(cfg_mod, encoding="utf-8")
+
+    out_dir = tmp_path / "reports"
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "technicals",
+            "extension-stats",
+            "--ohlc-path",
+            str(ohlc_path),
+            "--config",
+            str(cfg_path),
+            "--out",
+            str(out_dir),
+        ],
+    )
+    assert res.exit_code == 0, res.output
+
+    last_date = idx.max().date().isoformat()
+    json_path = out_dir / "UNKNOWN" / f"{last_date}.json"
+    md_path = out_dir / "UNKNOWN" / f"{last_date}.md"
+    assert json_path.exists()
+    assert md_path.exists()
+    assert not (out_dir / "UNKNOWN" / "-.json").exists()
+
+
 def test_extension_stats_cli_auto_window_years_long_history_uses_3y(tmp_path: Path) -> None:
     idx = pd.date_range("2018-01-02", periods=1600, freq="B")
     close = pd.Series([100.0 + i * 0.10 for i in range(len(idx))], index=idx, dtype="float64")

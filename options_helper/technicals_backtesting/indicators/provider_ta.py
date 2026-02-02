@@ -44,9 +44,16 @@ class TaIndicatorProvider:
             return df.copy()
 
         out = df.copy()
-        close = out["Close"]
-        high = out["High"]
-        low = out["Low"]
+        close = pd.to_numeric(out["Close"], errors="coerce")
+        high = pd.to_numeric(out["High"], errors="coerce")
+        low = pd.to_numeric(out["Low"], errors="coerce")
+        out["Close"] = close
+        out["High"] = high
+        out["Low"] = low
+        if "Open" in out.columns:
+            out["Open"] = pd.to_numeric(out["Open"], errors="coerce")
+        if "Volume" in out.columns:
+            out["Volume"] = pd.to_numeric(out["Volume"], errors="coerce")
 
         atr_values = set(cfg["indicators"]["atr"]["window_grid"])
         atr_values.add(cfg["indicators"]["atr"]["window_default"])
@@ -84,9 +91,17 @@ class TaIndicatorProvider:
 
         # ATR + ATR%
         for window in atr_windows:
-            atr = AverageTrueRange(high=high, low=low, close=close, window=window).average_true_range()
-            out[f"atr_{window}"] = atr
-            out[f"atrp_{window}"] = atr / close
+            if len(close) < window:
+                out[f"atr_{window}"] = pd.Series(np.nan, index=out.index)
+                out[f"atrp_{window}"] = pd.Series(np.nan, index=out.index)
+                continue
+            try:
+                atr = AverageTrueRange(high=high, low=low, close=close, window=window).average_true_range()
+                out[f"atr_{window}"] = atr
+                out[f"atrp_{window}"] = atr / close
+            except Exception:  # noqa: BLE001
+                out[f"atr_{window}"] = pd.Series(np.nan, index=out.index)
+                out[f"atrp_{window}"] = pd.Series(np.nan, index=out.index)
 
         # SMA
         for window in sma_windows:
@@ -102,19 +117,39 @@ class TaIndicatorProvider:
         # Bollinger Bands
         for window in bb_window_vals:
             for dev in bb_dev_vals:
-                bb = BollingerBands(close=close, window=window, window_dev=dev)
                 dev_label = _format_dev(dev)
-                out[f"bb_mavg_{window}"] = bb.bollinger_mavg()
-                out[f"bb_hband_{window}_{dev_label}"] = bb.bollinger_hband()
-                out[f"bb_lband_{window}_{dev_label}"] = bb.bollinger_lband()
-                out[f"bb_pband_{window}_{dev_label}"] = bb.bollinger_pband()
-                out[f"bb_wband_{window}_{dev_label}"] = bb.bollinger_wband()
+                if len(close) < window:
+                    out[f"bb_mavg_{window}"] = pd.Series(np.nan, index=out.index)
+                    out[f"bb_hband_{window}_{dev_label}"] = pd.Series(np.nan, index=out.index)
+                    out[f"bb_lband_{window}_{dev_label}"] = pd.Series(np.nan, index=out.index)
+                    out[f"bb_pband_{window}_{dev_label}"] = pd.Series(np.nan, index=out.index)
+                    out[f"bb_wband_{window}_{dev_label}"] = pd.Series(np.nan, index=out.index)
+                    continue
+                try:
+                    bb = BollingerBands(close=close, window=window, window_dev=dev)
+                    out[f"bb_mavg_{window}"] = bb.bollinger_mavg()
+                    out[f"bb_hband_{window}_{dev_label}"] = bb.bollinger_hband()
+                    out[f"bb_lband_{window}_{dev_label}"] = bb.bollinger_lband()
+                    out[f"bb_pband_{window}_{dev_label}"] = bb.bollinger_pband()
+                    out[f"bb_wband_{window}_{dev_label}"] = bb.bollinger_wband()
+                except Exception:  # noqa: BLE001
+                    out[f"bb_mavg_{window}"] = pd.Series(np.nan, index=out.index)
+                    out[f"bb_hband_{window}_{dev_label}"] = pd.Series(np.nan, index=out.index)
+                    out[f"bb_lband_{window}_{dev_label}"] = pd.Series(np.nan, index=out.index)
+                    out[f"bb_pband_{window}_{dev_label}"] = pd.Series(np.nan, index=out.index)
+                    out[f"bb_wband_{window}_{dev_label}"] = pd.Series(np.nan, index=out.index)
 
         # RSI
         if rsi_enabled:
             for window in rsi_windows:
-                rsi = RSIIndicator(close=close, window=window).rsi()
-                out[f"rsi_{window}"] = rsi
+                if len(close) < window:
+                    out[f"rsi_{window}"] = pd.Series(np.nan, index=out.index)
+                    continue
+                try:
+                    rsi = RSIIndicator(close=close, window=window).rsi()
+                    out[f"rsi_{window}"] = rsi
+                except Exception:  # noqa: BLE001
+                    out[f"rsi_{window}"] = pd.Series(np.nan, index=out.index)
 
         # Extension in ATR units.
         for sma_window in sma_windows:
