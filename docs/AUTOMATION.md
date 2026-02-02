@@ -90,9 +90,31 @@ flow/chain reports work for them too.
 - **Logs:** `data/logs/scanner_full_YYYY-MM-DD.log`
 - **Status:** `data/logs/scanner_full_status.json`
 
+### 6) Daily offline report pack (offline-first, depends on snapshots/candles)
+
+Generates per-symbol saved artifacts (JSON/Markdown) for offline review.
+
+- **When:** Weekdays at **23:15 CST**
+- **Script:** `scripts/cron_offline_report_pack.sh`
+- **Installs via:** `scripts/install_cron_offline_report_pack.sh`
+- **What it does:**
+  - Runs `options-helper report-pack portfolio.json` over watchlists:
+    - `positions`
+    - `monitor`
+    - `Scanner - Shortlist` (only included when today's scanner run succeeded)
+- **Writes:**
+  - chain dashboards: `data/reports/chains/{SYMBOL}/{YYYY-MM-DD}.json` + `.md`
+  - snapshot diffs: `data/reports/compare/{SYMBOL}/{FROM}_to_{TO}.json`
+  - flow deltas: `data/reports/flow/{SYMBOL}/{FROM}_to_{TO}_w1_*.json`
+  - derived stats: `data/reports/derived/{SYMBOL}/{ASOF}_w{N}_tw{M}.json`
+  - technicals extension-stats: `data/reports/technicals/extension/{SYMBOL}/{YYYY-MM-DD}.json` + `.md`
+- **Depends on:**
+  - snapshots and candle cache being current for the day
+- **Logs:** `data/logs/report_pack.log`
+
 ## Dependency order (recommended)
 
-- **Daily:** portfolio snapshot (16:00) → monitor snapshot (17:30) → briefing (18:00) → scanner (19:30)
+- **Daily:** portfolio snapshot (16:00) → monitor snapshot (17:30) → briefing (18:00) → scanner (19:30) → report pack (23:15)
 - **Weekly:** earnings refresh is independent; schedule it whenever (it’s just a cache).
 - **Scanner:** full scanner run is independent but heavy; consider running after markets close.
 
@@ -112,6 +134,7 @@ Install/update a job (each installer is idempotent; re-running updates the tagge
 ./scripts/install_cron_daily_briefing.sh --install
 ./scripts/install_cron_weekly_refresh_earnings.sh --install
 ./scripts/install_cron_daily_scanner_full.sh --install
+./scripts/install_cron_offline_report_pack.sh --install
 ```
 
 ## Operational notes (macOS cron)
