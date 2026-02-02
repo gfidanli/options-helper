@@ -5,6 +5,11 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_BIN="${REPO_DIR}/.venv/bin"
 PORTFOLIO="${REPO_DIR}/portfolio.json"
 WATCHLISTS="${REPO_DIR}/data/watchlists.json"
+WAIT_SCRIPT="${REPO_DIR}/scripts/wait_for_daily_candle_date.py"
+DATA_TZ="${DATA_TZ:-America/Chicago}"
+CANARY_SYMBOLS="${CANARY_SYMBOLS:-SPY,QQQ}"
+WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-7200}"   # 2h
+WAIT_POLL_SECONDS="${WAIT_POLL_SECONDS:-300}"          # 5m
 
 LOG_DIR="${REPO_DIR}/data/logs"
 mkdir -p "${LOG_DIR}"
@@ -14,7 +19,7 @@ LOCK_PATH="${LOCKS_DIR}/options_helper_cron.lock"
 mkdir -p "${LOCKS_DIR}"
 
 # Wait briefly for the daily snapshot job to finish (avoid concurrent cache writes).
-WAIT_SECONDS="${WAIT_SECONDS:-3600}"
+WAIT_SECONDS="${WAIT_SECONDS:-14400}"
 start_ts="$(date +%s)"
 while ! mkdir "${LOCK_PATH}" 2>/dev/null; do
   now_ts="$(date +%s)"
@@ -53,22 +58,40 @@ except Exception:
     sys.exit(1)
 
 watchlists = raw.get("watchlists") or {}
-symbols = watchlists.get("monitor") or []
-clean = [s.strip().upper() for s in symbols if isinstance(s, str) and s.strip()]
+symbols = []
+for name in ("monitor", "positions"):
+    symbols.extend(watchlists.get(name) or [])
+clean = {s.strip().upper() for s in symbols if isinstance(s, str) and s.strip()}
 sys.exit(0 if clean else 1)
 PY
 then
-  echo "[$(date)] Watchlist 'monitor' missing/empty in ${WATCHLISTS}; skipping monitor snapshot." >> "${LOG_DIR}/monitor_snapshot.log"
+  echo "[$(date)] Watchlists 'monitor'/'positions' missing/empty in ${WATCHLISTS}; skipping watchlist snapshot." >> "${LOG_DIR}/monitor_snapshot.log"
   exit 0
 fi
 
-echo "[$(date)] Running monitor watchlist options snapshot..." >> "${LOG_DIR}/monitor_snapshot.log"
+echo "[$(date)] Running watchlist options snapshot (monitor + positions)..." >> "${LOG_DIR}/monitor_snapshot.log"
+
+if ! "${VENV_BIN}/python" "${WAIT_SCRIPT}" \
+  --symbols "${CANARY_SYMBOLS}" \
+  --tz "${DATA_TZ}" \
+  --expected-date today \
+  --timeout-seconds "${WAIT_TIMEOUT_SECONDS}" \
+  --poll-seconds "${WAIT_POLL_SECONDS}" \
+  >> "${LOG_DIR}/monitor_snapshot.log" 2>&1
+then
+  echo "[$(date)] Timed out waiting for daily candle update; skipping watchlist snapshot to avoid mis-dating." \
+    >> "${LOG_DIR}/monitor_snapshot.log"
+  exit 0
+fi
 
 "${VENV_BIN}/options-helper" snapshot-options "${PORTFOLIO}" \
   --cache-dir "${REPO_DIR}/data/options_snapshots" \
   --candle-cache-dir "${REPO_DIR}/data/candles" \
   --watchlists-path "${WATCHLISTS}" \
   --watchlist monitor \
+  --watchlist positions \
   --max-expiries 2 \
+  --require-data-date today \
+  --require-data-tz "${DATA_TZ}" \
   --window-pct 1.0 \
   >> "${LOG_DIR}/monitor_snapshot.log" 2>&1

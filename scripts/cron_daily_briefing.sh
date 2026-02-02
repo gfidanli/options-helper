@@ -5,6 +5,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_BIN="${REPO_DIR}/.venv/bin"
 PORTFOLIO="${REPO_DIR}/portfolio.json"
 WATCHLISTS="${REPO_DIR}/data/watchlists.json"
+DATA_TZ="${DATA_TZ:-America/Chicago}"
 
 LOG_DIR="${REPO_DIR}/data/logs"
 mkdir -p "${LOG_DIR}"
@@ -14,7 +15,7 @@ LOCK_PATH="${LOCKS_DIR}/options_helper_cron.lock"
 mkdir -p "${LOCKS_DIR}"
 
 # Wait for snapshot jobs to finish (avoid concurrent cache writes).
-WAIT_SECONDS="${WAIT_SECONDS:-3600}"
+WAIT_SECONDS="${WAIT_SECONDS:-14400}"
 start_ts="$(date +%s)"
 while ! mkdir "${LOCK_PATH}" 2>/dev/null; do
   now_ts="$(date +%s)"
@@ -36,9 +37,25 @@ cd "${REPO_DIR}"
 
 echo "[$(date)] Running daily briefing..." >> "${LOG_DIR}/briefing.log"
 
+EXPECTED_DATE="$(TZ="${DATA_TZ}" date +%F)"
+SNAPSHOT_ROOT="${REPO_DIR}/data/options_snapshots"
+if [[ ! -d "${SNAPSHOT_ROOT}" ]]; then
+  echo "[$(date)] No snapshot directory at ${SNAPSHOT_ROOT}; skipping briefing." >> "${LOG_DIR}/briefing.log"
+  exit 0
+fi
+
+if ! find "${SNAPSHOT_ROOT}" -mindepth 2 -maxdepth 2 -type d -name "${EXPECTED_DATE}" -print -quit \
+  | grep -q .
+then
+  echo "[$(date)] No snapshot folders found for ${EXPECTED_DATE}; skipping briefing to avoid overwriting an older report." \
+    >> "${LOG_DIR}/briefing.log"
+  exit 0
+fi
+
 if [[ -f "${WATCHLISTS}" ]]; then
   "${VENV_BIN}/options-helper" briefing "${PORTFOLIO}" \
     --watchlists-path "${WATCHLISTS}" \
+    --watchlist positions \
     --watchlist monitor \
     --as-of latest \
     --compare -1 \
@@ -51,4 +68,3 @@ else
     --out "${REPO_DIR}/data/reports/daily" \
     >> "${LOG_DIR}/briefing.log" 2>&1
 fi
-

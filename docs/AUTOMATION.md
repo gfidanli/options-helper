@@ -12,11 +12,11 @@ This tool is for informational/educational use only and is not financial advice.
 
 ## Current recurring jobs (defaults)
 
-All times are **local time**.
+All times below are **America/Chicago** time (the installers write `CRON_TZ=America/Chicago`).
 
 ### 1) Weekly earnings cache refresh (network)
 
-- **When:** Mondays at **17:50**
+- **When:** Mondays at **15:20**
 - **Script:** `scripts/cron_weekly_refresh_earnings.sh`
 - **Installs via:** `scripts/install_cron_weekly_refresh_earnings.sh`
 - **What it does:**
@@ -29,12 +29,13 @@ All times are **local time**.
 
 ### 2) Daily portfolio candles + options snapshots (network)
 
-- **When:** Weekdays at **18:15**
+- **When:** Weekdays at **16:00** (market close + 60m)
 - **Script:** `scripts/cron_daily_options_snapshot.sh`
 - **Installs via:** `scripts/install_cron_daily_options_snapshot.sh`
 - **What it does:**
   - `options-helper refresh-candles portfolio.json` (portfolio + watchlists)
   - `options-helper snapshot-options portfolio.json` (portfolio symbols, position expiries)
+  - waits for the current day's daily candle to be published (canary check) so snapshots don't get written under the prior date
 - **Writes:**
   - candles: `data/candles/{SYMBOL}.csv`
   - snapshots: `data/options_snapshots/{SYMBOL}/{YYYY-MM-DD}/{EXPIRY}.csv` + `meta.json`
@@ -48,23 +49,23 @@ All times are **local time**.
 If you maintain a watchlist named `monitor` in `data/watchlists.json`, this job snapshots those symbols so offline
 flow/chain reports work for them too.
 
-- **When:** Weekdays at **18:35**
+- **When:** Weekdays at **17:30**
 - **Script:** `scripts/cron_daily_monitor_options_snapshot.sh`
 - **Installs via:** `scripts/install_cron_daily_monitor_options_snapshot.sh`
-- **What it does:** `options-helper snapshot-options portfolio.json --watchlist monitor --max-expiries 2`
+- **What it does:** `options-helper snapshot-options portfolio.json --watchlist monitor --watchlist positions --max-expiries 2`
 - **Depends on:**
-  - `data/watchlists.json` existing and containing a non-empty `monitor` list (otherwise it skips)
+  - `data/watchlists.json` existing and containing a non-empty `monitor` and/or `positions` list (otherwise it skips)
   - network access (Yahoo via `yfinance`)
 - **Logs:** `data/logs/monitor_snapshot.log`
 
 ### 4) Daily briefing report (offline-first, depends on snapshots)
 
-- **When:** Weekdays at **19:00**
+- **When:** Weekdays at **18:00**
 - **Script:** `scripts/cron_daily_briefing.sh`
 - **Installs via:** `scripts/install_cron_daily_briefing.sh`
 - **What it does:**
   - `options-helper briefing portfolio.json --as-of latest --compare -1`
-  - includes `--watchlist monitor` if `data/watchlists.json` exists
+  - includes `--watchlist positions` + `--watchlist monitor` if `data/watchlists.json` exists
   - updates derived history (`data/derived/`) by default
 - **Writes:**
   - daily report: `data/reports/daily/{YYYY-MM-DD}.md`
@@ -75,12 +76,13 @@ flow/chain reports work for them too.
 
 ### 5) Daily full scanner + completion checks (network, heavy)
 
-- **When:** Daily at **17:00 CST**, with checks at **19:00/20:00/21:00 CST**
+- **When:** Weekdays at **19:30 CST**, with checks at **21:00/22:00/23:00 CST**
 - **Script:** `scripts/cron_daily_scanner_full.sh`
 - **Checks:** `scripts/cron_check_scanner_full.sh`
 - **Installs via:** `scripts/install_cron_daily_scanner_full.sh`
 - **What it does:**
   - full `options-helper scanner run` over the SEC universe (backfill + options snapshots + liquidity + reports)
+  - skips if the current day's daily candle isn't published yet (to avoid mis-dated overwrites)
   - writes a status marker so the hourly checks only retry if the run didn’t finish
 - **Depends on:**
   - `.venv/bin/options-helper` installed
@@ -90,7 +92,7 @@ flow/chain reports work for them too.
 
 ## Dependency order (recommended)
 
-- **Daily:** portfolio snapshot (18:15) → monitor snapshot (18:35) → briefing (19:00)
+- **Daily:** portfolio snapshot (16:00) → monitor snapshot (17:30) → briefing (18:00) → scanner (19:30)
 - **Weekly:** earnings refresh is independent; schedule it whenever (it’s just a cache).
 - **Scanner:** full scanner run is independent but heavy; consider running after markets close.
 

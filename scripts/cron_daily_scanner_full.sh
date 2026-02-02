@@ -3,6 +3,11 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_BIN="${REPO_DIR}/.venv/bin"
+WAIT_SCRIPT="${REPO_DIR}/scripts/wait_for_daily_candle_date.py"
+DATA_TZ="${DATA_TZ:-America/Chicago}"
+CANARY_SYMBOLS="${CANARY_SYMBOLS:-SPY,QQQ}"
+WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-3600}"  # 1h
+WAIT_POLL_SECONDS="${WAIT_POLL_SECONDS:-300}"         # 5m
 
 LOG_DIR="${REPO_DIR}/data/logs"
 mkdir -p "${LOG_DIR}"
@@ -10,11 +15,6 @@ mkdir -p "${LOG_DIR}"
 LOCKS_DIR="${REPO_DIR}/data/locks"
 LOCK_PATH="${LOCKS_DIR}/options_helper_cron.lock"
 mkdir -p "${LOCKS_DIR}"
-if ! mkdir "${LOCK_PATH}" 2>/dev/null; then
-  echo "[$(date)] Lock already held (${LOCK_PATH}); skipping full scanner run." >> "${LOG_DIR}/scanner_full.log"
-  exit 0
-fi
-trap 'rmdir "${LOCK_PATH}" 2>/dev/null || true' EXIT
 
 if [[ ! -x "${VENV_BIN}/options-helper" ]]; then
   echo "options-helper not found at ${VENV_BIN}/options-helper"
@@ -22,11 +22,29 @@ if [[ ! -x "${VENV_BIN}/options-helper" ]]; then
   exit 1
 fi
 
-RUN_DATE="$(TZ=America/Chicago date +%F)"
+RUN_DATE="$(TZ="${DATA_TZ}" date +%F)"
 RUN_ID="scanner-full-${RUN_DATE}"
 LOG_PATH="${LOG_DIR}/scanner_full_${RUN_DATE}.log"
 STATUS_PATH="${LOG_DIR}/scanner_full_status.json"
-START_TS="$(TZ=America/Chicago date -Iseconds)"
+START_TS="$(TZ="${DATA_TZ}" date -Iseconds)"
+
+if ! "${VENV_BIN}/python" "${WAIT_SCRIPT}" \
+  --symbols "${CANARY_SYMBOLS}" \
+  --tz "${DATA_TZ}" \
+  --expected-date today \
+  --timeout-seconds "${WAIT_TIMEOUT_SECONDS}" \
+  --poll-seconds "${WAIT_POLL_SECONDS}" \
+  >> "${LOG_PATH}" 2>&1
+then
+  echo "[$(date)] Daily candle not ready; skipping scanner run for ${RUN_ID}." >> "${LOG_PATH}"
+  exit 0
+fi
+
+if ! mkdir "${LOCK_PATH}" 2>/dev/null; then
+  echo "[$(date)] Lock already held (${LOCK_PATH}); skipping full scanner run." >> "${LOG_PATH}"
+  exit 0
+fi
+trap 'rmdir "${LOCK_PATH}" 2>/dev/null || true' EXIT
 
 write_status() {
   STATUS="${1}"
@@ -83,7 +101,7 @@ set +e
 EXIT_CODE=$?
 set -e
 
-FINISH_TS="$(TZ=America/Chicago date -Iseconds)"
+FINISH_TS="$(TZ="${DATA_TZ}" date -Iseconds)"
 if [[ "${EXIT_CODE}" -eq 0 ]]; then
   echo "[$(date)] Full scanner run completed successfully." >> "${LOG_PATH}"
   write_status "success" "${FINISH_TS}" "${EXIT_CODE}"

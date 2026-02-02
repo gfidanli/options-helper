@@ -114,5 +114,5 @@ Install automatically:
 ```
 
 Defaults:
-- Runs at **19:00 local time**, Monday–Friday.
+- Runs at **18:00 America/Chicago time**, Monday–Friday.
 - Logs to `data/logs/briefing.log`.

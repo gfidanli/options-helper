@@ -167,7 +167,7 @@ Install (adds/updates a tagged entry in your crontab):
 ```
 
 Defaults:
-- Runs at **18:15 local time**, Monday–Friday.
+- Runs at **16:00 America/Chicago time**, Monday–Friday (close + 60m).
 - Logs to `data/logs/options_snapshot.log`.
 
 To automatically install (attempts `crontab` update with a timeout):
@@ -178,13 +178,13 @@ To automatically install (attempts `crontab` update with a timeout):
 
 You can edit the schedule in `scripts/install_cron_daily_options_snapshot.sh`.
 
-### Optional: snapshot watchlists (monitor)
-If you maintain a watchlist like `monitor` and want offline flow/chain reports for it, schedule a separate
-watchlist snapshot job:
+### Optional: snapshot watchlists (monitor + positions)
+If you maintain watchlists like `monitor` (and/or `positions`) and want offline flow/chain reports for them, schedule a
+separate watchlist snapshot job:
 
 - `scripts/cron_daily_monitor_options_snapshot.sh`
 - `scripts/install_cron_daily_monitor_options_snapshot.sh`
 
 Defaults:
-- Runs at **18:35 local time**, Monday–Friday.
+- Runs at **17:30 America/Chicago time**, Monday–Friday.
 - Logs to `data/logs/monitor_snapshot.log`.

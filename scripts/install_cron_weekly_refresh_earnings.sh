@@ -4,8 +4,9 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CRON_CMD="${REPO_DIR}/scripts/cron_weekly_refresh_earnings.sh"
 
-# Default: Mondays at 17:50 local time.
-SCHEDULE="50 17 * * 1"
+# Default: Mondays at 15:20 America/Chicago time (after market close).
+CRON_TZ="America/Chicago"
+SCHEDULE="20 15 * * 1"
 
 BEGIN_MARK="# options-helper: weekly earnings refresh"
 END_MARK="# end options-helper: weekly earnings refresh"
@@ -19,6 +20,7 @@ if [[ "${INSTALL}" -eq 0 ]]; then
   echo "Add the following block to your crontab (crontab -e), or re-run with --install:"
   echo
   echo "${BEGIN_MARK}"
+  echo "CRON_TZ=${CRON_TZ}"
   echo "${SCHEDULE} ${CRON_CMD}"
   echo "${END_MARK}"
   echo
@@ -28,6 +30,7 @@ fi
 
 REPO_DIR="${REPO_DIR}" \
 CRON_CMD="${CRON_CMD}" \
+CRON_TZ="${CRON_TZ}" \
 SCHEDULE="${SCHEDULE}" \
 BEGIN_MARK="${BEGIN_MARK}" \
 END_MARK="${END_MARK}" \
@@ -40,6 +43,7 @@ import tempfile
 
 repo_dir = os.environ["REPO_DIR"]
 cron_cmd = os.environ["CRON_CMD"]
+cron_tz = os.environ["CRON_TZ"]
 schedule = os.environ["SCHEDULE"]
 begin = os.environ["BEGIN_MARK"]
 end = os.environ["END_MARK"]
@@ -62,7 +66,7 @@ for line in lines:
     if not skip:
         filtered.append(line)
 
-filtered += ["", begin, f"{schedule} {cron_cmd}", end, ""]
+filtered += ["", begin, f"CRON_TZ={cron_tz}", f"{schedule} {cron_cmd}", end, ""]
 payload = "\n".join(filtered).lstrip("\n")
 
 with tempfile.NamedTemporaryFile("w", delete=False) as f:
@@ -71,7 +75,7 @@ with tempfile.NamedTemporaryFile("w", delete=False) as f:
 
 subprocess.run(["crontab", tmp_path], check=True, timeout=10)
 print("Installed cron job:")
+print(f"  CRON_TZ={cron_tz}")
 print(f"  {schedule} {cron_cmd}")
 print(f"Logs: {repo_dir}/data/logs/earnings_refresh.log")
 PY
-

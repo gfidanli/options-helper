@@ -7,6 +7,7 @@ from datetime import date, datetime, timezone
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import cast
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -580,6 +581,19 @@ def snapshot_options(
         "--spot-period",
         help="Candle period used to estimate spot price from daily candles.",
     ),
+    require_data_date: str | None = typer.Option(
+        None,
+        "--require-data-date",
+        help=(
+            "Require each symbol's latest daily candle date to match this before snapshotting "
+            "(YYYY-MM-DD or 'today'). If not met, the symbol is skipped to avoid mis-dated overwrites."
+        ),
+    ),
+    require_data_tz: str = typer.Option(
+        "America/Chicago",
+        "--require-data-tz",
+        help="Timezone used to interpret 'today' for --require-data-date (default: America/Chicago).",
+    ),
     watchlists_path: Path = typer.Option(
         Path("data/watchlists.json"),
         "--watchlists-path",
@@ -667,6 +681,20 @@ def snapshot_options(
     # daily candle is still yesterday's close.
     dates_used: set[date] = set()
 
+    required_date: date | None = None
+    if require_data_date is not None:
+        spec = require_data_date.strip().lower()
+        try:
+            if spec in {"today", "now"}:
+                required_date = datetime.now(ZoneInfo(require_data_tz)).date()
+            else:
+                required_date = date.fromisoformat(spec)
+        except Exception as exc:  # noqa: BLE001
+            raise typer.BadParameter(
+                f"Invalid --require-data-date/--require-data-tz: {exc}",
+                param_hint="--require-data-date",
+            ) from exc
+
     mode = "watchlists" if use_watchlists else "portfolio"
     console.print(
         f"Snapshotting options chains for {len(symbols)} symbol(s) "
@@ -697,6 +725,14 @@ def snapshot_options(
 
         if spot is None or spot <= 0:
             console.print(f"[yellow]Warning:[/yellow] {symbol}: missing spot price; skipping snapshot.")
+            continue
+
+        if required_date is not None and data_date != required_date:
+            got = "-" if data_date is None else data_date.isoformat()
+            console.print(
+                f"[yellow]Warning:[/yellow] {symbol}: candle date {got} != required {required_date.isoformat()}; "
+                "skipping snapshot to avoid mis-dated overwrite."
+            )
             continue
 
         effective_snapshot_date = data_date or date.today()
