@@ -1352,6 +1352,326 @@ def compare_snapshots(
         raise typer.Exit(1)
 
 
+@app.command("report-pack")
+def report_pack(
+    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON (used for default paths)."),
+    watchlists_path: Path = typer.Option(
+        Path("data/watchlists.json"),
+        "--watchlists-path",
+        help="Path to watchlists JSON store (symbol source).",
+    ),
+    watchlist: list[str] = typer.Option(
+        [],
+        "--watchlist",
+        help="Watchlist name(s) to include (repeatable). Default: positions, monitor, Scanner - Shortlist.",
+    ),
+    cache_dir: Path = typer.Option(
+        Path("data/options_snapshots"),
+        "--cache-dir",
+        help="Directory for options chain snapshots.",
+    ),
+    candle_cache_dir: Path = typer.Option(
+        Path("data/candles"),
+        "--candle-cache-dir",
+        help="Directory for cached daily candles (used for technicals artifacts).",
+    ),
+    derived_dir: Path = typer.Option(
+        Path("data/derived"),
+        "--derived-dir",
+        help="Directory for derived metric files (writes {derived_dir}/{SYMBOL}.csv).",
+    ),
+    out: Path = typer.Option(
+        Path("data/reports"),
+        "--out",
+        help="Output root for saved artifacts (writes under chains/compare/flow/derived/technicals).",
+    ),
+    as_of: str = typer.Option("latest", "--as-of", help="Snapshot date (YYYY-MM-DD) or 'latest' (per-symbol)."),
+    compare_from: str = typer.Option(
+        "-1",
+        "--compare-from",
+        help="Compare spec: -1|-5|YYYY-MM-DD|none (relative offsets are per-symbol).",
+    ),
+    require_snapshot_date: str | None = typer.Option(
+        None,
+        "--require-snapshot-date",
+        help="Only include symbols whose resolved --as-of snapshot date matches this (YYYY-MM-DD or 'today').",
+    ),
+    require_snapshot_tz: str = typer.Option(
+        "America/Chicago",
+        "--require-snapshot-tz",
+        help="Timezone used to interpret 'today' for --require-snapshot-date (default: America/Chicago).",
+    ),
+    chain: bool = typer.Option(True, "--chain/--no-chain", help="Generate chain-report artifacts."),
+    compare: bool = typer.Option(True, "--compare/--no-compare", help="Generate compare artifacts."),
+    flow: bool = typer.Option(True, "--flow/--no-flow", help="Generate flow artifacts (contract + expiry-strike)."),
+    derived: bool = typer.Option(True, "--derived/--no-derived", help="Upsert derived rows + write derived stats artifacts."),
+    technicals: bool = typer.Option(
+        True,
+        "--technicals/--no-technicals",
+        help="Generate technicals extension-stats artifacts (offline, from candle cache).",
+    ),
+    technicals_config: Path = typer.Option(
+        Path("config/technical_backtesting.yaml"),
+        "--technicals-config",
+        help="Technical backtesting config (used for extension-stats artifacts).",
+    ),
+    top: int = typer.Option(10, "--top", min=1, max=100, help="Top rows/strikes to include in reports."),
+    derived_window: int = typer.Option(60, "--derived-window", min=1, max=3650, help="Derived stats lookback window."),
+    derived_trend_window: int = typer.Option(
+        5, "--derived-trend-window", min=1, max=3650, help="Derived stats trend lookback window."
+    ),
+    tail_pct: float | None = typer.Option(
+        None,
+        "--tail-pct",
+        help="Optional symmetric tail threshold for technicals extension-stats (e.g. 5 => low<=5, high>=95).",
+    ),
+    percentile_window_years: int | None = typer.Option(
+        None,
+        "--percentile-window-years",
+        help="Optional rolling window (years) for extension percentiles in technicals extension-stats.",
+    ),
+) -> None:
+    """
+    Offline report pack from local snapshots/candles.
+
+    Generates per-symbol artifacts under `--out`:
+    - chains/{SYMBOL}/{YYYY-MM-DD}.json + .md
+    - compare/{SYMBOL}/{FROM}_to_{TO}.json
+    - flow/{SYMBOL}/{FROM}_to_{TO}_w1_{group_by}.json
+    - derived/{SYMBOL}/{ASOF}_w{N}_tw{M}.json
+    - technicals/extension/{SYMBOL}/{ASOF}.json + .md
+    """
+    console = Console(width=200)
+    _ = load_portfolio(portfolio_path)  # validates the file exists/loads; used by cron scripts.
+
+    wl = load_watchlists(watchlists_path)
+    watchlists_used = watchlist[:] if watchlist else ["positions", "monitor", "Scanner - Shortlist"]
+    symbols: set[str] = set()
+    for name in watchlists_used:
+        syms = wl.get(name)
+        if not syms:
+            console.print(f"[yellow]Warning:[/yellow] watchlist '{name}' missing/empty in {watchlists_path}")
+            continue
+        symbols.update(syms)
+
+    symbols = {s.strip().upper() for s in symbols if s and s.strip()}
+    if not symbols:
+        console.print("[yellow]No symbols selected (empty watchlists).[/yellow]")
+        raise typer.Exit(0)
+
+    store = OptionsSnapshotStore(cache_dir)
+    derived_store = DerivedStore(derived_dir)
+
+    required_date: date | None = None
+    if require_snapshot_date is not None:
+        spec = require_snapshot_date.strip().lower()
+        try:
+            if spec in {"today", "now"}:
+                required_date = datetime.now(ZoneInfo(require_snapshot_tz)).date()
+            else:
+                required_date = date.fromisoformat(spec)
+        except Exception as exc:  # noqa: BLE001
+            raise typer.BadParameter(
+                f"Invalid --require-snapshot-date/--require-snapshot-tz: {exc}",
+                param_hint="--require-snapshot-date",
+            ) from exc
+
+    compare_norm = compare_from.strip().lower()
+    compare_enabled = compare_norm not in {"none", "off", "false", "0"}
+
+    out = out.expanduser()
+    (out / "chains").mkdir(parents=True, exist_ok=True)
+    (out / "compare").mkdir(parents=True, exist_ok=True)
+    (out / "flow").mkdir(parents=True, exist_ok=True)
+    (out / "derived").mkdir(parents=True, exist_ok=True)
+    (out / "technicals" / "extension").mkdir(parents=True, exist_ok=True)
+
+    console.print(
+        "Running offline report pack for "
+        f"{len(symbols)} symbol(s) from watchlists: {', '.join([repr(x) for x in watchlists_used])}"
+    )
+
+    counts = {
+        "symbols_total": len(symbols),
+        "symbols_ok": 0,
+        "chain_ok": 0,
+        "compare_ok": 0,
+        "flow_ok": 0,
+        "derived_ok": 0,
+        "technicals_ok": 0,
+        "skipped_required_date": 0,
+    }
+
+    for sym in sorted(symbols):
+        try:
+            to_date = store.resolve_date(sym, as_of)
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[yellow]Warning:[/yellow] {sym}: no snapshots ({exc})")
+            continue
+
+        if required_date is not None and to_date != required_date:
+            counts["skipped_required_date"] += 1
+            continue
+
+        df_to = store.load_day(sym, to_date)
+        meta_to = store.load_meta(sym, to_date)
+        spot_to = _spot_from_meta(meta_to)
+        if spot_to is None:
+            console.print(f"[yellow]Warning:[/yellow] {sym}: missing spot in meta.json for {to_date.isoformat()}")
+            continue
+
+        # 1) Chain report (and derived update/stats based on it)
+        chain_report_model = None
+        if chain or derived:
+            try:
+                chain_report_model = compute_chain_report(
+                    df_to,
+                    symbol=sym,
+                    as_of=to_date,
+                    spot=spot_to,
+                    expiries_mode="near",
+                    top=top,
+                    best_effort=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"[yellow]Warning:[/yellow] {sym}: chain-report failed: {exc}")
+                chain_report_model = None
+
+        if chain and chain_report_model is not None:
+            try:
+                base = out / "chains" / sym.upper()
+                base.mkdir(parents=True, exist_ok=True)
+                json_path = base / f"{to_date.isoformat()}.json"
+                md_path = base / f"{to_date.isoformat()}.md"
+                json_path.write_text(chain_report_model.model_dump_json(indent=2), encoding="utf-8")
+                md_path.write_text(render_chain_report_markdown(chain_report_model), encoding="utf-8")
+                counts["chain_ok"] += 1
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"[yellow]Warning:[/yellow] {sym}: failed writing chain artifacts: {exc}")
+
+        if derived and chain_report_model is not None:
+            try:
+                row = DerivedRow.from_chain_report(chain_report_model)
+                derived_store.upsert(sym, row)
+                df_derived = derived_store.load(sym)
+                if not df_derived.empty:
+                    stats = compute_derived_stats(
+                        df_derived,
+                        symbol=sym,
+                        as_of="latest",
+                        window=derived_window,
+                        trend_window=derived_trend_window,
+                        metric_columns=[c for c in DERIVED_COLUMNS_V1 if c != "date"],
+                    )
+                    base = out / "derived" / sym.upper()
+                    base.mkdir(parents=True, exist_ok=True)
+                    stats_path = base / f"{stats.as_of}_w{derived_window}_tw{derived_trend_window}.json"
+                    stats_path.write_text(stats.model_dump_json(indent=2), encoding="utf-8")
+                    counts["derived_ok"] += 1
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"[yellow]Warning:[/yellow] {sym}: derived update/stats failed: {exc}")
+
+        # 2) Compare + flow (requires previous snapshot)
+        if compare_enabled and (compare or flow):
+            try:
+                from_date: date
+                if compare_norm.startswith("-") and compare_norm[1:].isdigit():
+                    from_date = store.resolve_relative_date(sym, to_date=to_date, offset=int(compare_norm))
+                else:
+                    from_date = store.resolve_date(sym, compare_norm)
+
+                df_from = store.load_day(sym, from_date)
+                meta_from = store.load_meta(sym, from_date)
+                spot_from = _spot_from_meta(meta_from)
+                if spot_from is None:
+                    raise ValueError("missing spot in from-date meta.json")
+
+                if compare:
+                    diff, report_from, report_to = compute_compare_report(
+                        symbol=sym,
+                        from_date=from_date,
+                        to_date=to_date,
+                        from_df=df_from,
+                        to_df=df_to,
+                        spot_from=spot_from,
+                        spot_to=spot_to,
+                        top=top,
+                    )
+                    base = out / "compare" / sym.upper()
+                    base.mkdir(parents=True, exist_ok=True)
+                    out_path = base / f"{from_date.isoformat()}_to_{to_date.isoformat()}.json"
+                    payload = {
+                        "schema_version": 1,
+                        "symbol": sym.upper(),
+                        "from": report_from.model_dump(),
+                        "to": report_to.model_dump(),
+                        "diff": diff.model_dump(),
+                    }
+                    out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+                    counts["compare_ok"] += 1
+
+                if flow:
+                    pair_flow = compute_flow(df_to, df_from, spot=spot_to)
+                    if not pair_flow.empty:
+                        for group_by in ("contract", "expiry-strike"):
+                            net = aggregate_flow_window([pair_flow], group_by=cast(FlowGroupBy, group_by))
+                            base = out / "flow" / sym.upper()
+                            base.mkdir(parents=True, exist_ok=True)
+                            out_path = base / f"{from_date.isoformat()}_to_{to_date.isoformat()}_w1_{group_by}.json"
+                            artifact_net = net.rename(
+                                columns={
+                                    "contractSymbol": "contract_symbol",
+                                    "optionType": "option_type",
+                                    "deltaOI": "delta_oi",
+                                    "deltaOI_notional": "delta_oi_notional",
+                                    "size": "n_pairs",
+                                }
+                            )
+                            payload = {
+                                "schema_version": 1,
+                                "symbol": sym.upper(),
+                                "from_date": from_date.isoformat(),
+                                "to_date": to_date.isoformat(),
+                                "window": 1,
+                                "group_by": group_by,
+                                "snapshot_dates": [from_date.isoformat(), to_date.isoformat()],
+                                "net": artifact_net.where(pd.notna(artifact_net), None).to_dict(orient="records"),
+                            }
+                            out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+                        counts["flow_ok"] += 1
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"[yellow]Warning:[/yellow] {sym}: compare/flow skipped: {exc}")
+
+        # 3) Technicals extension stats artifacts (offline, candle cache)
+        if technicals:
+            try:
+                technicals_extension_stats(
+                    symbol=sym,
+                    ohlc_path=None,
+                    cache_dir=candle_cache_dir,
+                    config_path=technicals_config,
+                    tail_pct=tail_pct,
+                    percentile_window_years=percentile_window_years,
+                    out=out / "technicals" / "extension",
+                    write_json=True,
+                    write_md=True,
+                    print_to_console=False,
+                )
+                counts["technicals_ok"] += 1
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"[yellow]Warning:[/yellow] {sym}: technicals extension-stats failed: {exc}")
+
+        counts["symbols_ok"] += 1
+
+    console.print(
+        "Report pack complete: "
+        f"symbols ok={counts['symbols_ok']}/{counts['symbols_total']} | "
+        f"chain={counts['chain_ok']} compare={counts['compare_ok']} flow={counts['flow_ok']} "
+        f"derived={counts['derived_ok']} technicals={counts['technicals_ok']} | "
+        f"skipped(required_date)={counts['skipped_required_date']}"
+    )
+
+
 @app.command("briefing")
 def briefing(
     portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
