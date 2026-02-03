@@ -21,7 +21,7 @@ These plans are written to be **LLM-agent friendly**: clear goals, bounded scope
 
 | Rank | ID | Plan | Status | Effort | Alpha potential |
 |---:|---|---|---|:---:|:---:|
-| 1 | IMP-001 | Spread-aware contract selection everywhere ([IMP-001](./IMP-001.md)) | ready | S | High |
+| 1 | IMP-001 | Spread-aware contract selection everywhere ([IMP-001](./IMP-001.md)) | done | S | High |
 | 2 | IMP-012 | Earnings-aware event risk warnings + DTE gating ([IMP-012](./IMP-012.md)) | ready | S | High |
 | 3 | IMP-013 | Quote staleness + data quality scoring ([IMP-013](./IMP-013.md)) | ready | S | High |
 | 4 | IMP-002 | IV vs Realized Vol + IV percentile + term structure in the daily loop ([IMP-002](./IMP-002.md)) | ready | M | High |
