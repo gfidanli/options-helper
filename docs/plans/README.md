@@ -36,7 +36,7 @@ These plans are written to be **LLM-agent friendly**: clear goals, bounded scope
 | 13 | IMP-020 | Canonical option contract IDs (OSI) + normalization layer ([IMP-020](./IMP-020.md)) | done | M | High |
 | 14 | IMP-010 | Multi-leg support (verticals/calendars/diagonals) + roll-plans ([IMP-010](./IMP-010.md)) | done | XL | Med–High |
 | 15 | IMP-017 | Engineering leverage: CI, pre-commit, type checks, perf/observability ([IMP-017](./IMP-017.md)) | done | S–M | Medium |
-| 16 | IMP-011 | Reporting UX (TUI dashboards / web UI) ([IMP-011](./IMP-011.md)) | draft | M–L | Low |
+| 16 | IMP-011 | Reporting UX (TUI dashboards / web UI) ([IMP-011](./IMP-011.md)) | done | M–L | Low |
 
 ## Workflow for agents
 

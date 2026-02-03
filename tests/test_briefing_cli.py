@@ -178,3 +178,9 @@ def test_briefing_writes_daily_md_and_updates_derived(tmp_path: Path, monkeypatc
     assert payload["portfolio"]["exposure"] is not None
     assert isinstance(payload["portfolio"]["stress"], list)
     assert "confluence" in payload["sections"][0]
+    assert payload["portfolio_rows"][0]["symbol"] == "AAA"
+    sources = {row["symbol"]: row["sources"] for row in payload["symbol_sources"]}
+    assert "portfolio" in sources["AAA"]
+    assert "watchlist:monitor" in sources["BBB"]
+    watchlists = {row["name"]: row["symbols"] for row in payload["watchlists"]}
+    assert watchlists["monitor"] == ["BBB"]

@@ -110,6 +110,7 @@ from options_helper.schemas.scanner_shortlist import (
 )
 from options_helper.storage import load_portfolio, save_portfolio, write_template
 from options_helper.watchlists import build_default_watchlists, load_watchlists, save_watchlists
+from options_helper.ui.dashboard import load_briefing_artifact, render_dashboard, resolve_briefing_paths
 from options_helper.technicals_backtesting.backtest.optimizer import optimize_params
 from options_helper.technicals_backtesting.backtest.walk_forward import walk_forward_optimize
 from options_helper.technicals_backtesting.extension_percentiles import (
@@ -2282,17 +2283,38 @@ def briefing(
 
     portfolio_symbols = sorted({p.symbol.upper() for p in portfolio.positions})
     watch_symbols: list[str] = []
+    watchlist_symbols_by_name: dict[str, list[str]] = {}
     if watchlist:
         try:
             wl = load_watchlists(watchlists_path)
             for name in watchlist:
-                watch_symbols.extend(wl.get(name))
+                wl_symbols = wl.get(name)
+                watch_symbols.extend(wl_symbols)
+                watchlist_symbols_by_name[name] = wl_symbols
         except Exception as exc:  # noqa: BLE001
             console.print(f"[yellow]Warning:[/yellow] failed to load watchlists: {exc}")
 
     symbols = sorted(set(portfolio_symbols).union({s.upper() for s in watch_symbols if s}))
     if symbol is not None:
         symbols = [symbol.upper().strip()]
+
+    symbol_sources_map: dict[str, set[str]] = {}
+    for sym in portfolio_symbols:
+        symbol_sources_map.setdefault(sym, set()).add("portfolio")
+    for name, syms in watchlist_symbols_by_name.items():
+        for sym in syms:
+            symbol_sources_map.setdefault(sym, set()).add(f"watchlist:{name}")
+    if symbol is not None:
+        symbol_sources_map.setdefault(symbols[0], set()).add("manual")
+
+    symbol_sources_payload = [
+        {"symbol": sym, "sources": sorted(symbol_sources_map.get(sym, set()))} for sym in symbols
+    ]
+    watchlists_payload = [
+        {"name": name, "symbols": watchlist_symbols_by_name.get(name, [])}
+        for name in watchlist
+        if name in watchlist_symbols_by_name
+    ]
 
     if not symbols:
         console.print("[red]Error:[/red] no symbols selected (empty portfolio and no watchlists)")
@@ -2533,6 +2555,7 @@ def briefing(
         raise typer.Exit(1)
     report_date = max(resolved_to_dates).isoformat()
     portfolio_rows: list[dict[str, str]] = []
+    portfolio_rows_payload: list[dict[str, object]] = []
     portfolio_rows_with_pnl: list[tuple[float, dict[str, str]]] = []
     portfolio_metrics: list[PositionMetrics] = []
     for p in portfolio.positions:
@@ -2608,6 +2631,22 @@ def briefing(
                 "as_of": "-" if to_date is None else to_date.isoformat(),
             }
         )
+        portfolio_rows_payload.append(
+            {
+                "id": p.id,
+                "symbol": sym,
+                "option_type": p.option_type,
+                "expiry": p.expiry.isoformat(),
+                "strike": float(p.strike),
+                "contracts": int(p.contracts),
+                "cost_basis": float(p.cost_basis),
+                "mark": None if mark is None else float(mark),
+                "pnl": None if pnl_abs is None else float(pnl_abs),
+                "pnl_pct": None if pnl_pct is None else float(pnl_pct),
+                "spr_pct": None if spr_pct is None else float(spr_pct),
+                "as_of": None if to_date is None else to_date.isoformat(),
+            }
+        )
         pnl_sort = float(pnl_pct) if pnl_pct is not None else float("-inf")
         portfolio_rows_with_pnl.append((pnl_sort, portfolio_rows[-1]))
 
@@ -2656,6 +2695,9 @@ def briefing(
             technicals_config=str(technicals_config),
             portfolio_exposure=portfolio_exposure,
             portfolio_stress=portfolio_stress,
+            portfolio_rows=portfolio_rows_payload,
+            symbol_sources=symbol_sources_payload,
+            watchlists=watchlists_payload,
         )
         if strict:
             BriefingArtifact.model_validate(payload)
@@ -2672,6 +2714,61 @@ def briefing(
             console.print(Markdown(md))
         except Exception:  # noqa: BLE001
             console.print(md)
+
+
+@app.command("dashboard")
+def dashboard(
+    report_date: str = typer.Option(
+        "latest",
+        "--date",
+        help="Briefing date (YYYY-MM-DD) or 'latest'.",
+    ),
+    reports_dir: Path = typer.Option(
+        Path("data/reports"),
+        "--reports-dir",
+        help="Reports root (expects {reports_dir}/daily/{DATE}.json).",
+    ),
+    scanner_run_dir: Path = typer.Option(
+        Path("data/scanner/runs"),
+        "--scanner-run-dir",
+        help="Scanner runs directory (for shortlist view).",
+    ),
+    scanner_run_id: str | None = typer.Option(
+        None,
+        "--scanner-run-id",
+        help="Specific scanner run id to display (defaults to latest for the date).",
+    ),
+    max_shortlist_rows: int = typer.Option(
+        20,
+        "--max-shortlist-rows",
+        min=1,
+        max=200,
+        help="Max rows to show in the scanner shortlist table.",
+    ),
+) -> None:
+    """Render a read-only daily dashboard from briefing JSON + artifacts."""
+    console = Console(width=200)
+    try:
+        paths = resolve_briefing_paths(reports_dir, report_date)
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    try:
+        artifact = load_briefing_artifact(paths.json_path)
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Error:[/red] failed to load briefing JSON: {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(f"Briefing JSON: {paths.json_path}")
+    render_dashboard(
+        artifact=artifact,
+        console=console,
+        reports_dir=reports_dir,
+        scanner_run_dir=scanner_run_dir,
+        scanner_run_id=scanner_run_id,
+        max_shortlist_rows=max_shortlist_rows,
+    )
 
 
 @app.command("roll-plan")

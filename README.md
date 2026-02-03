@@ -95,11 +95,12 @@ Builds repeatable chain dashboards and diffs using the local snapshot files unde
 - Commands: `chain-report`, `compare`, `roll-plan`
 - Design/usage: `docs/CHAIN_REPORT.md`, `docs/COMPARE.md`, `docs/ROLL_PLAN.md`
 
-### Daily briefing + derived history (from snapshots)
-Automates a daily Markdown artifact and maintains a compact per-symbol derived-metrics history.
+### Daily briefing + dashboard + derived history (from snapshots)
+Automates a daily Markdown artifact, provides a read-only dashboard, and maintains a compact
+per-symbol derived-metrics history.
 
-- Commands: `briefing`, `derived`
-- Design/usage: `docs/BRIEFING.md`, `docs/DERIVED.md`
+- Commands: `briefing`, `dashboard`, `derived`
+- Design/usage: `docs/BRIEFING.md`, `docs/DASHBOARD.md`, `docs/DERIVED.md`
 
 ## Roadmap
 - Ranked improvements: `docs/REPO_IMPROVEMENTS.md`

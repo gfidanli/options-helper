@@ -18,6 +18,31 @@ class BriefingPortfolio(ArtifactBase):
     stress: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class BriefingPortfolioRow(ArtifactBase):
+    id: str
+    symbol: str
+    option_type: str
+    expiry: str
+    strike: float
+    contracts: int
+    cost_basis: float
+    mark: float | None = None
+    pnl: float | None = None
+    pnl_pct: float | None = None
+    spr_pct: float | None = None
+    as_of: str | None = None
+
+
+class BriefingSymbolSource(ArtifactBase):
+    symbol: str
+    sources: list[str] = Field(default_factory=list)
+
+
+class BriefingWatchlist(ArtifactBase):
+    name: str
+    symbols: list[str] = Field(default_factory=list)
+
+
 class BriefingSection(ArtifactBase):
     symbol: str
     as_of: str
@@ -45,4 +70,7 @@ class BriefingArtifact(ArtifactBase):
     top: int
     technicals: BriefingTechnicals
     portfolio: BriefingPortfolio
+    portfolio_rows: list[BriefingPortfolioRow] = Field(default_factory=list)
+    symbol_sources: list[BriefingSymbolSource] = Field(default_factory=list)
+    watchlists: list[BriefingWatchlist] = Field(default_factory=list)
     sections: list[BriefingSection] = Field(default_factory=list)

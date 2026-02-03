@@ -356,6 +356,9 @@ def build_briefing_payload(
     technicals_config: str | None = None,
     portfolio_exposure: PortfolioExposure | None = None,
     portfolio_stress: list[StressResult] | None = None,
+    portfolio_rows: list[dict[str, Any]] | None = None,
+    symbol_sources: list[dict[str, Any]] | None = None,
+    watchlists: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     as_of_value = as_of or report_date
     artifact = BriefingArtifact(
@@ -375,6 +378,9 @@ def build_briefing_payload(
             exposure=_jsonable(portfolio_exposure),
             stress=_jsonable(portfolio_stress or []),
         ),
+        portfolio_rows=_jsonable(portfolio_rows or []),
+        symbol_sources=_jsonable(symbol_sources or []),
+        watchlists=_jsonable(watchlists or []),
         sections=[
             BriefingSection(
                 symbol=sec.symbol,
