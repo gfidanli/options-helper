@@ -29,7 +29,7 @@ def resolve_briefing_json(reports_dir: Path, date_spec: str) -> Path:
     if date_spec == "latest":
         if not daily_dir.exists():
             raise FileNotFoundError(f"No daily reports directory at {daily_dir}")
-        candidates = [p for p in daily_dir.glob("*.json") if p.is_file()]
+        candidates = [p for p in daily_dir.glob("*.json") if p.is_file() and _is_iso_date(p.stem)]
         if not candidates:
             raise FileNotFoundError(f"No daily briefing JSON files under {daily_dir}")
         return sorted(candidates, key=lambda p: p.stem)[-1]

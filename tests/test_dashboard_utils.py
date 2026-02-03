@@ -47,6 +47,7 @@ def test_resolve_briefing_json_latest(tmp_path: Path) -> None:
     daily_dir.mkdir(parents=True)
     _write_briefing(daily_dir / "2026-01-01.json", report_date="2026-01-01")
     _write_briefing(daily_dir / "2026-01-02.json", report_date="2026-01-02")
+    (daily_dir / "latest.json").write_text("{}", encoding="utf-8")
 
     latest = resolve_briefing_json(reports_dir, "latest")
     assert latest.name == "2026-01-02.json"
