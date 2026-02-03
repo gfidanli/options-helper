@@ -80,6 +80,23 @@ def test_load_briefing_artifact(tmp_path: Path) -> None:
     assert artifact.symbols == ["AAA"]
 
 
+def test_load_briefing_artifact_repairs_missing_fields(tmp_path: Path) -> None:
+    report_path = tmp_path / "2026-01-02.json"
+    payload = {
+        "schema_version": 1,
+        "generated_at": "2026-02-03T00:00:00+00:00",
+        "report_date": "2026-01-02",
+        "portfolio_path": "data/portfolio.json",
+        "sections": [
+            {"symbol": "AAA", "as_of": "2026-01-02"},
+        ],
+    }
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+    artifact = load_briefing_artifact(report_path)
+    assert artifact.as_of == "2026-01-02"
+    assert artifact.portfolio is not None
+
+
 def test_load_scanner_shortlist(tmp_path: Path) -> None:
     run_dir = tmp_path / "scanner"
     run_id = "2026-01-02_120000"

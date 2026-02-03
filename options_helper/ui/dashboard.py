@@ -59,7 +59,11 @@ def load_briefing_artifact(path: Path) -> BriefingArtifact:
     if not path.exists():
         raise FileNotFoundError(f"Briefing JSON not found: {path}")
     payload = json.loads(path.read_text(encoding="utf-8"))
-    return BriefingArtifact.model_validate(payload)
+    try:
+        return BriefingArtifact.model_validate(payload)
+    except Exception:  # noqa: BLE001
+        repaired = _repair_briefing_payload(payload)
+        return BriefingArtifact.model_validate(repaired)
 
 
 def load_scanner_shortlist(
@@ -344,3 +348,48 @@ def _safe_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _repair_briefing_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    report_date = payload.get("report_date")
+    if not report_date or not _is_iso_date(str(report_date)):
+        report_date = date.today().isoformat()
+
+    as_of = payload.get("as_of")
+    if not as_of:
+        as_of = report_date
+
+    portfolio = payload.get("portfolio")
+    if not isinstance(portfolio, dict):
+        portfolio = {"exposure": None, "stress": []}
+
+    technicals = payload.get("technicals")
+    if not isinstance(technicals, dict):
+        technicals = {"source": "technicals_backtesting", "config_path": None}
+    elif "source" not in technicals:
+        technicals = {"source": "technicals_backtesting", "config_path": technicals.get("config_path")}
+
+    symbols = payload.get("symbols")
+    if not isinstance(symbols, list):
+        sections = payload.get("sections")
+        if isinstance(sections, list):
+            symbols = [str(s.get("symbol")) for s in sections if isinstance(s, dict) and s.get("symbol")]
+        else:
+            symbols = []
+
+    repaired = dict(payload)
+    repaired["schema_version"] = int(repaired.get("schema_version") or 1)
+    repaired["generated_at"] = repaired.get("generated_at") or date.today().isoformat()
+    repaired["as_of"] = str(as_of)
+    repaired["disclaimer"] = repaired.get("disclaimer") or "Not financial advice."
+    repaired["report_date"] = str(report_date)
+    repaired["portfolio_path"] = repaired.get("portfolio_path") or "-"
+    repaired["symbols"] = symbols
+    repaired["top"] = int(repaired.get("top") or 3)
+    repaired["technicals"] = technicals
+    repaired["portfolio"] = portfolio
+    repaired["portfolio_rows"] = repaired.get("portfolio_rows") or []
+    repaired["symbol_sources"] = repaired.get("symbol_sources") or []
+    repaired["watchlists"] = repaired.get("watchlists") or []
+    repaired["sections"] = repaired.get("sections") or []
+    return repaired
