@@ -34,16 +34,15 @@ def test_snapshot_options_full_chain_from_all_watchlists(tmp_path: Path, monkeyp
 
     expiries = [date(2026, 2, 20), date(2026, 3, 20)]
 
-    class _StubTicker:
-        def __init__(self) -> None:
-            self.options = [d.isoformat() for d in expiries]
-
-    class _StubClient:
-        def ticker(self, symbol: str) -> _StubTicker:  # noqa: ARG002
-            return _StubTicker()
+    class _StubProvider:
+        name = "stub"
+        version = "0.0"
 
         def get_underlying(self, symbol: str, *, period: str = "10d", interval: str = "1d"):  # noqa: ARG002
             raise AssertionError("Candle history should provide spot in this test")
+
+        def list_option_expiries(self, symbol: str):  # noqa: ARG002
+            return expiries
 
         def get_options_chain_raw(self, symbol: str, expiry: date):  # noqa: ARG002
             return {
@@ -74,7 +73,7 @@ def test_snapshot_options_full_chain_from_all_watchlists(tmp_path: Path, monkeyp
                 ],
             }
 
-    monkeypatch.setattr("options_helper.cli.YFinanceClient", _StubClient)
+    monkeypatch.setattr("options_helper.cli.get_provider", lambda *_args, **_kwargs: _StubProvider())
 
     cache_dir = tmp_path / "snapshots"
 
@@ -152,16 +151,15 @@ def test_snapshot_options_defaults_to_full_chain_and_all_expiries(tmp_path: Path
 
     expiries = [date(2026, 2, 20), date(2026, 3, 20), date(2026, 4, 17)]
 
-    class _StubTicker:
-        def __init__(self) -> None:
-            self.options = [d.isoformat() for d in expiries]
-
-    class _StubClient:
-        def ticker(self, symbol: str) -> _StubTicker:  # noqa: ARG002
-            return _StubTicker()
+    class _StubProvider:
+        name = "stub"
+        version = "0.0"
 
         def get_underlying(self, symbol: str, *, period: str = "10d", interval: str = "1d"):  # noqa: ARG002
             raise AssertionError("Candle history should provide spot in this test")
+
+        def list_option_expiries(self, symbol: str):  # noqa: ARG002
+            return expiries
 
         def get_options_chain_raw(self, symbol: str, expiry: date):  # noqa: ARG002
             return {
@@ -191,7 +189,7 @@ def test_snapshot_options_defaults_to_full_chain_and_all_expiries(tmp_path: Path
                 ],
             }
 
-    monkeypatch.setattr("options_helper.cli.YFinanceClient", _StubClient)
+    monkeypatch.setattr("options_helper.cli.get_provider", lambda *_args, **_kwargs: _StubProvider())
 
     cache_dir = tmp_path / "snapshots"
 
@@ -247,16 +245,15 @@ def test_snapshot_options_position_expiries_caps_watchlists_by_default(tmp_path:
 
     expiries = [date(2026, 2, 20), date(2026, 3, 20), date(2026, 4, 17)]
 
-    class _StubTicker:
-        def __init__(self) -> None:
-            self.options = [d.isoformat() for d in expiries]
-
-    class _StubClient:
-        def ticker(self, symbol: str) -> _StubTicker:  # noqa: ARG002
-            return _StubTicker()
+    class _StubProvider:
+        name = "stub"
+        version = "0.0"
 
         def get_underlying(self, symbol: str, *, period: str = "10d", interval: str = "1d"):  # noqa: ARG002
             raise AssertionError("Candle history should provide spot in this test")
+
+        def list_option_expiries(self, symbol: str):  # noqa: ARG002
+            return expiries
 
         def get_options_chain_raw(self, symbol: str, expiry: date):  # noqa: ARG002
             return {
@@ -286,7 +283,7 @@ def test_snapshot_options_position_expiries_caps_watchlists_by_default(tmp_path:
                 ],
             }
 
-    monkeypatch.setattr("options_helper.cli.YFinanceClient", _StubClient)
+    monkeypatch.setattr("options_helper.cli.get_provider", lambda *_args, **_kwargs: _StubProvider())
 
     cache_dir = tmp_path / "snapshots"
 

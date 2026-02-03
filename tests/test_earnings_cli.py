@@ -32,7 +32,7 @@ def test_earnings_cli_manual_set_writes_cache(tmp_path: Path) -> None:
 def test_earnings_cli_refresh_uses_client(tmp_path: Path, monkeypatch) -> None:
     cache_dir = tmp_path / "earnings"
 
-    class StubClient:
+    class StubProvider:
         def get_next_earnings_event(self, symbol: str):
             class Ev:
                 source = "stub"
@@ -43,7 +43,7 @@ def test_earnings_cli_refresh_uses_client(tmp_path: Path, monkeypatch) -> None:
 
             return Ev()
 
-    monkeypatch.setattr("options_helper.cli.YFinanceClient", StubClient)
+    monkeypatch.setattr("options_helper.cli.get_provider", lambda *_args, **_kwargs: StubProvider())
 
     runner = CliRunner()
     res = runner.invoke(app, ["earnings", "AAA", "--refresh", "--cache-dir", str(cache_dir)])
@@ -63,7 +63,7 @@ def test_refresh_earnings_uses_watchlists(tmp_path: Path, monkeypatch) -> None:
 
     cache_dir = tmp_path / "earnings"
 
-    class StubClient:
+    class StubProvider:
         def get_next_earnings_event(self, symbol: str):
             class Ev:
                 source = "stub"
@@ -74,7 +74,7 @@ def test_refresh_earnings_uses_watchlists(tmp_path: Path, monkeypatch) -> None:
 
             return Ev()
 
-    monkeypatch.setattr("options_helper.cli.YFinanceClient", StubClient)
+    monkeypatch.setattr("options_helper.cli.get_provider", lambda *_args, **_kwargs: StubProvider())
 
     runner = CliRunner()
     res = runner.invoke(

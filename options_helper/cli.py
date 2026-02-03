@@ -55,6 +55,7 @@ from options_helper.data.earnings import EarningsRecord, EarningsStore, safe_nex
 from options_helper.data.journal import JournalStore, SignalContext, SignalEvent
 from options_helper.data.options_snapshots import OptionsSnapshotStore, find_snapshot_row
 from options_helper.data.options_snapshotter import snapshot_full_chain_for_symbols
+from options_helper.data.providers import get_provider
 from options_helper.data.scanner import (
     evaluate_liquidity_for_symbols,
     prefilter_symbols,
@@ -977,7 +978,13 @@ def snapshot_options(
 
     store = OptionsSnapshotStore(cache_dir)
     candle_store = CandleStore(candle_cache_dir)
-    client = YFinanceClient()
+    provider = get_provider("yahoo")
+    provider_name = getattr(provider, "name", "unknown")
+    provider_version = (
+        getattr(provider, "version", None)
+        or getattr(provider, "provider_version", None)
+        or getattr(provider, "__version__", None)
+    )
 
     want_full_chain = full_chain
     want_all_expiries = all_expiries
@@ -1053,7 +1060,7 @@ def snapshot_options(
         data_date: date | None = history.index.max().date() if not history.empty else None
         if spot is None:
             try:
-                underlying = client.get_underlying(symbol, period=spot_period, interval="1d")
+                underlying = provider.get_underlying(symbol, period=spot_period, interval="1d")
                 spot = underlying.last_price
                 if data_date is None and underlying.history is not None and not underlying.history.empty:
                     try:
@@ -1098,24 +1105,26 @@ def snapshot_options(
             "snapshot_date": effective_snapshot_date.isoformat(),
             "symbol_source": mode,
             "watchlists": watchlists_used,
+            "provider": provider_name,
         }
+        if provider_version:
+            meta["provider_version"] = provider_version
 
         expiries: list[date]
         if not use_watchlists and not want_all_expiries:
             expiries = sorted(expiries_by_symbol.get(symbol, set()))
         else:
-            expiry_strs = list(client.ticker(symbol).options or [])
-            if not expiry_strs:
+            expiries = provider.list_option_expiries(symbol)
+            if not expiries:
                 console.print(f"[yellow]Warning:[/yellow] {symbol}: no listed option expiries; skipping snapshot.")
                 continue
             if effective_max_expiries is not None:
-                expiry_strs = expiry_strs[:effective_max_expiries]
-            expiries = [date.fromisoformat(s) for s in expiry_strs]
+                expiries = expiries[:effective_max_expiries]
 
         for exp in expiries:
             if want_full_chain:
                 try:
-                    raw = client.get_options_chain_raw(symbol, exp)
+                    raw = provider.get_options_chain_raw(symbol, exp)
                 except DataFetchError as exc:
                     console.print(
                         f"[yellow]Warning:[/yellow] {symbol} {exp.isoformat()}: {exc}; skipping snapshot."
@@ -1175,7 +1184,7 @@ def snapshot_options(
 
             # Default: windowed flow snapshot (compact columns).
             try:
-                chain = client.get_options_chain(symbol, exp)
+                chain = provider.get_options_chain(symbol, exp)
             except DataFetchError as exc:
                 console.print(
                     f"[yellow]Warning:[/yellow] {symbol} {exp.isoformat()}: {exc}; skipping snapshot."
@@ -2725,9 +2734,8 @@ def earnings(
     else:
         record = store.load(sym)
         if refresh or record is None:
-            client = YFinanceClient()
             try:
-                ev = client.get_next_earnings_event(sym)
+                ev = get_provider("yahoo").get_next_earnings_event(sym)
             except DataFetchError as exc:
                 console.print(f"[red]Data error:[/red] {exc}")
                 raise typer.Exit(1)
@@ -2804,7 +2812,7 @@ def refresh_earnings(
         raise typer.Exit(0)
 
     store = EarningsStore(cache_dir)
-    client = YFinanceClient()
+    provider = get_provider("yahoo")
 
     ok = 0
     err = 0
@@ -2813,7 +2821,7 @@ def refresh_earnings(
     console.print(f"Refreshing earnings for {len(symbols)} symbol(s)...")
     for sym in sorted(symbols):
         try:
-            ev = client.get_next_earnings_event(sym)
+            ev = provider.get_next_earnings_event(sym)
             record = EarningsRecord(
                 symbol=sym,
                 fetched_at=datetime.now(tz=timezone.utc),
