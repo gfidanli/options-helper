@@ -245,6 +245,8 @@ def test_research_cli_saves_report_and_includes_spreads(tmp_path: Path, monkeypa
             "TEST",
             "--output-dir",
             str(tmp_path),
+            "--derived-dir",
+            str(tmp_path / "derived"),
         ],
     )
     assert res.exit_code == 0, res.output
@@ -261,6 +263,8 @@ def test_research_cli_saves_report_and_includes_spreads(tmp_path: Path, monkeypa
     assert "Exec" in txt
     assert "Quality" in txt
     assert "Stale" in txt
+    assert "IV/RV20" in txt
+    assert "IV pct" in txt
     assert "(+0.00%)" in txt
 
     ticker_path = tmp_path / "tickers" / "TEST.txt"
@@ -280,6 +284,8 @@ def test_research_cli_saves_report_and_includes_spreads(tmp_path: Path, monkeypa
             "TEST",
             "--output-dir",
             str(tmp_path),
+            "--derived-dir",
+            str(tmp_path / "derived"),
         ],
     )
     assert res2.exit_code == 0, res2.output
@@ -351,7 +357,18 @@ def test_research_cli_includes_earnings_warnings(tmp_path: Path, monkeypatch) ->
     )
 
     runner = CliRunner()
-    res = runner.invoke(app, ["research", str(portfolio_path), "--symbol", "TEST", "--no-save"])
+    res = runner.invoke(
+        app,
+        [
+            "research",
+            str(portfolio_path),
+            "--symbol",
+            "TEST",
+            "--no-save",
+            "--derived-dir",
+            str(tmp_path / "derived"),
+        ],
+    )
     assert res.exit_code == 0, res.output
     assert "earnings_within_21d" in res.output
     assert "expiry_crosses_earnings" in res.output
@@ -415,7 +432,18 @@ def test_research_cli_excludes_candidates_when_avoid_days_set(tmp_path: Path, mo
     )
 
     runner = CliRunner()
-    res = runner.invoke(app, ["research", str(portfolio_path), "--symbol", "TEST", "--no-save"])
+    res = runner.invoke(
+        app,
+        [
+            "research",
+            str(portfolio_path),
+            "--symbol",
+            "TEST",
+            "--no-save",
+            "--derived-dir",
+            str(tmp_path / "derived"),
+        ],
+    )
     assert res.exit_code == 0, res.output
     assert "Excluded 30–90d candidate due to earnings_avoid_days" in res.output
     assert "Excluded LEAPS candidate due to earnings_avoid_days" in res.output

@@ -11,6 +11,7 @@ from options_helper.analysis.chain_metrics import execution_quality
 from options_helper.analysis.events import earnings_event_risk
 from options_helper.analysis.greeks import black_scholes_greeks
 from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, stoch_rsi
+from options_helper.analysis.volatility import realized_vol
 from options_helper.analysis.quote_quality import compute_quote_quality
 from options_helper.models import OptionType, RiskProfile
 
@@ -58,6 +59,14 @@ class OptionCandidate:
     quality_warnings: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     exclude: bool = False
+
+
+@dataclass(frozen=True)
+class VolatilityContext:
+    rv_20d: float | None
+    iv_rv_20d: float | None
+    iv_percentile: float | None
+    atm_iv: float | None
 
 
 @dataclass(frozen=True)
@@ -253,6 +262,82 @@ def _breakout_down_level(close: pd.Series, lookback: int) -> float | None:
     if lookback <= 1 or close.empty or len(close) < lookback + 1:
         return None
     return float(close.iloc[-(lookback + 1) : -1].min())
+
+
+def _select_close(history: pd.DataFrame) -> pd.Series:
+    if history is None or history.empty:
+        return pd.Series(dtype="float64")
+    if "Adj Close" in history.columns:
+        return pd.to_numeric(history["Adj Close"], errors="coerce")
+    if "Close" in history.columns:
+        return pd.to_numeric(history["Close"], errors="coerce")
+    return pd.Series(dtype="float64")
+
+
+def _atm_iv_from_chain(calls: pd.DataFrame | None, puts: pd.DataFrame | None, spot: float) -> float | None:
+    frames: list[pd.DataFrame] = []
+    for df in (calls, puts):
+        if df is None or df.empty:
+            continue
+        strike = pd.to_numeric(df.get("strike"), errors="coerce")
+        iv = pd.to_numeric(df.get("impliedVolatility"), errors="coerce")
+        sub = pd.DataFrame({"strike": strike, "iv": iv}).dropna(subset=["strike", "iv"])
+        if not sub.empty:
+            frames.append(sub)
+    if not frames:
+        return None
+
+    all_rows = pd.concat(frames, ignore_index=True)
+    all_rows["_dist"] = (all_rows["strike"] - spot).abs()
+    if all_rows.empty or all_rows["_dist"].isna().all():
+        return None
+    min_dist = all_rows["_dist"].min()
+    atm = all_rows[all_rows["_dist"] == min_dist]
+    if atm.empty:
+        return None
+    return float(atm["iv"].mean())
+
+
+def _percentile_rank_last(values: pd.Series) -> float | None:
+    values = pd.to_numeric(values, errors="coerce").dropna()
+    if values.empty:
+        return None
+    n = int(len(values))
+    if n == 1:
+        return 100.0
+    ranks = values.rank(method="average")
+    r = float(ranks.iloc[-1])
+    return float((r - 1.0) / (n - 1.0) * 100.0)
+
+
+def compute_volatility_context(
+    *,
+    history: pd.DataFrame,
+    spot: float,
+    calls: pd.DataFrame | None,
+    puts: pd.DataFrame | None,
+    derived_history: pd.DataFrame | None = None,
+) -> VolatilityContext:
+    close = _select_close(history)
+    rv_20d = None
+    if not close.empty:
+        rv_series = realized_vol(close, 20)
+        rv_clean = rv_series.dropna()
+        if not rv_clean.empty:
+            rv_20d = float(rv_clean.iloc[-1])
+
+    atm_iv = _atm_iv_from_chain(calls, puts, spot)
+    iv_rv_20d = None if (rv_20d is None or rv_20d <= 0 or atm_iv is None) else atm_iv / rv_20d
+
+    iv_percentile = None
+    if atm_iv is not None:
+        values = pd.Series(dtype="float64")
+        if derived_history is not None and not derived_history.empty and "atm_iv_near" in derived_history.columns:
+            values = pd.to_numeric(derived_history["atm_iv_near"], errors="coerce").dropna()
+        combined = pd.concat([values, pd.Series([atm_iv])], ignore_index=True)
+        iv_percentile = _percentile_rank_last(combined)
+
+    return VolatilityContext(rv_20d=rv_20d, iv_rv_20d=iv_rv_20d, iv_percentile=iv_percentile, atm_iv=atm_iv)
 
 
 def suggest_trade_levels(

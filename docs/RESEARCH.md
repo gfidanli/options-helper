@@ -80,6 +80,11 @@ Each contract includes:
 - `execution_quality`: `good` / `ok` / `bad` / `unknown`
 - `quality` label (`good` / `ok` / `bad` / `unknown`) + `stale` indicator (when last trade age is available)
 
+### Vol regime context (best-effort)
+Each recommendation also shows:
+- `IV/RV20`: near ATM IV vs 20D realized vol (from candle cache)
+- `IV pct`: near ATM IV percentile vs stored history (if available)
+
 By default, candidates with `quality == bad` are excluded. If all candidates are `bad`, the tool falls back
 to the best-effort pick and notes it in the “why” list. Use `--include-bad-quotes` to override.
 
@@ -110,6 +115,12 @@ Disable saving the report:
 
 ```bash
 options-helper research portfolio.json --symbol IREN --no-save
+```
+
+Use a custom derived store for IV percentile context:
+
+```bash
+options-helper research portfolio.json --symbol IREN --derived-dir data/derived
 ```
 
 ## Notes / limitations

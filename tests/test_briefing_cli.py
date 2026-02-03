@@ -155,6 +155,7 @@ def test_briefing_writes_daily_md_and_updates_derived(tmp_path: Path, monkeypatc
     assert "## AAA (2026-01-02)" in content
     assert "Next earnings: 2026-01-10 (in 8 day(s))" in content
     assert "Quote quality:" in content
+    assert "Vol regime:" in content
     assert "earnings_within_21d" in content
     assert "expiry_crosses_earnings" in content
     assert "### Chain" in content

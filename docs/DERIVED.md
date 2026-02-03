@@ -11,12 +11,16 @@ This tool is for informational/educational use only and is not financial advice.
 Per symbol:
 - `data/derived/{SYMBOL}.csv`
 
-Schema v1 columns:
-- `date,spot,pc_oi,pc_vol,call_wall,put_wall,gamma_peak_strike,atm_iv_near,em_near_pct,skew_near_pp`
+Schema v2 columns:
+- `date,spot,pc_oi,pc_vol,call_wall,put_wall,gamma_peak_strike,atm_iv_near,em_near_pct,skew_near_pp,rv_20d,rv_60d,iv_rv_20d,atm_iv_near_percentile,iv_term_slope`
 
 Notes:
 - `atm_iv_near` and `em_near_pct` are stored as ratios (e.g., `0.25` for 25%).
 - `skew_near_pp` is stored in percentage-points (pp).
+- `rv_20d`/`rv_60d` are annualized realized vol (daily log returns, `sqrt(252)`).
+- `iv_rv_20d` is a ratio of near ATM IV to 20D RV (null if RV unavailable).
+- `atm_iv_near_percentile` is the percentile rank of the near ATM IV vs stored history.
+- `iv_term_slope` is `atm_iv_next - atm_iv_near` (absolute IV), null if next expiry missing.
 
 ## Commands
 
@@ -47,6 +51,7 @@ options-helper derived stats --symbol CVX --as-of latest --window 60 --trend-win
 - `--as-of YYYY-MM-DD|latest`: snapshot date (default `latest`)
 - `--cache-dir PATH`: snapshots root (default `data/options_snapshots`)
 - `--derived-dir PATH`: derived store directory (default `data/derived`)
+- `--candle-cache-dir PATH`: candle cache root (default `data/candles`)
 
 ### `derived show`
 - `--symbol TICKER`: symbol to show (required)

@@ -54,6 +54,7 @@ The report includes:
     - Includes extension percentiles + rolling quantiles (1y/3y/5y when available)
   - Next earnings line (date + days until; or `unknown`)
   - Quote quality summary (missing bid/ask %, median/worst spread, stale count) when `meta.json` includes `quote_quality`
+  - Vol regime line (RV20/RV60, IV/RV20, IV percentile, term slope; best-effort)
   - Chain highlights (walls, near-term EM/IV, gamma peak)
   - Compare highlights (spot + key deltas), if `--compare` is enabled and snapshots exist
   - Flow zones (net, aggregated by strike), if compare snapshots exist

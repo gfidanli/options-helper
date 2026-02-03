@@ -6,6 +6,7 @@ import pandas as pd
 from pydantic import BaseModel, Field
 
 from options_helper.analysis.chain_metrics import ChainReport
+from options_helper.analysis.volatility import realized_vol
 
 
 class DerivedRow(BaseModel):
@@ -27,19 +28,49 @@ class DerivedRow(BaseModel):
     atm_iv_near: float | None = None
     em_near_pct: float | None = None
     skew_near_pp: float | None = None
+    rv_20d: float | None = None
+    rv_60d: float | None = None
+    iv_rv_20d: float | None = None
+    atm_iv_near_percentile: float | None = None
+    iv_term_slope: float | None = None
 
     warnings: list[str] = Field(default_factory=list)
 
     @classmethod
-    def from_chain_report(cls, report: ChainReport) -> "DerivedRow":
+    def from_chain_report(
+        cls,
+        report: ChainReport,
+        *,
+        candles: pd.DataFrame | None = None,
+        derived_history: pd.DataFrame | None = None,
+    ) -> "DerivedRow":
         warnings: list[str] = []
 
         call_wall = report.walls_overall.calls[0].strike if report.walls_overall.calls else None
         put_wall = report.walls_overall.puts[0].strike if report.walls_overall.puts else None
 
         near = report.expiries[0] if report.expiries else None
+        next_exp = report.expiries[1] if len(report.expiries) > 1 else None
         if near is None:
             warnings.append("missing_near_expiry")
+
+        rv_20d = _rv_at_asof(candles, as_of=report.as_of, window=20)
+        rv_60d = _rv_at_asof(candles, as_of=report.as_of, window=60)
+
+        atm_iv_near = None if near is None else near.atm_iv
+        atm_iv_next = None if next_exp is None else next_exp.atm_iv
+        iv_rv_20d = None if (atm_iv_near is None or rv_20d is None or rv_20d <= 0) else atm_iv_near / rv_20d
+
+        iv_term_slope = None
+        if atm_iv_near is not None and atm_iv_next is not None:
+            iv_term_slope = atm_iv_next - atm_iv_near
+
+        atm_iv_near_percentile = _percentile_from_history(
+            derived_history,
+            date_str=report.as_of,
+            value=atm_iv_near,
+            column="atm_iv_near",
+        )
 
         return cls(
             date=report.as_of,
@@ -49,9 +80,14 @@ class DerivedRow(BaseModel):
             call_wall=call_wall,
             put_wall=put_wall,
             gamma_peak_strike=report.gamma.peak_strike,
-            atm_iv_near=None if near is None else near.atm_iv,
+            atm_iv_near=atm_iv_near,
             em_near_pct=None if near is None else near.expected_move_pct,
             skew_near_pp=None if near is None else near.skew_25d_pp,
+            rv_20d=rv_20d,
+            rv_60d=rv_60d,
+            iv_rv_20d=iv_rv_20d,
+            atm_iv_near_percentile=atm_iv_near_percentile,
+            iv_term_slope=iv_term_slope,
             warnings=warnings + list(report.warnings),
         )
 
@@ -78,6 +114,62 @@ class DerivedStatsReport(BaseModel):
     trend_window: int
     metrics: list[DerivedMetricStat] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+
+def _select_close(history: pd.DataFrame | None) -> pd.Series:
+    if history is None or history.empty:
+        return pd.Series(dtype="float64")
+    if "Adj Close" in history.columns:
+        return pd.to_numeric(history["Adj Close"], errors="coerce")
+    if "Close" in history.columns:
+        return pd.to_numeric(history["Close"], errors="coerce")
+    return pd.Series(dtype="float64")
+
+
+def _rv_at_asof(history: pd.DataFrame | None, *, as_of: str, window: int) -> float | None:
+    close = _select_close(history)
+    if close.empty:
+        return None
+
+    try:
+        as_of_ts = pd.to_datetime(as_of, errors="coerce")
+    except Exception:  # noqa: BLE001
+        as_of_ts = pd.NaT
+
+    if not pd.isna(as_of_ts):
+        close = close.loc[close.index <= as_of_ts]
+        if close.empty:
+            return None
+
+    rv_series = realized_vol(close, window)
+    if rv_series.empty:
+        return None
+    rv_clean = rv_series.dropna()
+    if rv_clean.empty:
+        return None
+    return float(rv_clean.iloc[-1])
+
+
+def _percentile_from_history(
+    derived_history: pd.DataFrame | None,
+    *,
+    date_str: str,
+    value: float | None,
+    column: str,
+) -> float | None:
+    if value is None:
+        return None
+
+    values = pd.Series(dtype="float64")
+    if derived_history is not None and not derived_history.empty:
+        history = derived_history.copy()
+        if "date" in history.columns:
+            history = history[history["date"].astype(str) != str(date_str)]
+        if column in history.columns:
+            values = pd.to_numeric(history[column], errors="coerce").dropna()
+
+    combined = pd.concat([values, pd.Series([value])], ignore_index=True)
+    return _percentile_rank_last(combined)
 
 
 def _to_float(val: object) -> float | None:

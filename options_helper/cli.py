@@ -26,6 +26,7 @@ from options_helper.analysis.research import (
     Direction,
     analyze_underlying,
     choose_expiry,
+    compute_volatility_context,
     select_option_candidate,
     suggest_trade_levels,
 )
@@ -33,7 +34,7 @@ from options_helper.analysis.roll_plan import compute_roll_plan
 from options_helper.analysis.greeks import add_black_scholes_greeks_to_chain, black_scholes_greeks
 from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, sma
 from options_helper.data.candles import CandleCacheError, CandleStore, last_close
-from options_helper.data.derived import DERIVED_COLUMNS_V1, DERIVED_SCHEMA_VERSION, DerivedStore
+from options_helper.data.derived import DERIVED_COLUMNS, DERIVED_SCHEMA_VERSION, DerivedStore
 from options_helper.data.earnings import EarningsRecord, EarningsStore, safe_next_earnings_date
 from options_helper.data.options_snapshots import OptionsSnapshotStore
 from options_helper.data.options_snapshotter import snapshot_full_chain_for_symbols
@@ -184,11 +185,17 @@ def derived_update(
         "--derived-dir",
         help="Directory for derived metric files (writes {derived_dir}/{SYMBOL}.csv).",
     ),
+    candle_cache_dir: Path = typer.Option(
+        Path("data/candles"),
+        "--candle-cache-dir",
+        help="Directory for cached daily candles (used for realized volatility).",
+    ),
 ) -> None:
     """Append or upsert a derived-metrics row for a symbol/day (offline)."""
     console = Console(width=200)
     store = OptionsSnapshotStore(cache_dir)
     derived = DerivedStore(derived_dir)
+    candle_store = CandleStore(candle_cache_dir)
 
     try:
         as_of_date = store.resolve_date(symbol, as_of)
@@ -208,7 +215,9 @@ def derived_update(
             best_effort=True,
         )
 
-        row = DerivedRow.from_chain_report(report)
+        candles = candle_store.load(symbol)
+        history = derived.load(symbol)
+        row = DerivedRow.from_chain_report(report, candles=candles, derived_history=history)
         out_path = derived.upsert(symbol, row)
         console.print(f"Derived schema v{DERIVED_SCHEMA_VERSION} updated: {out_path}")
     except Exception as exc:  # noqa: BLE001
@@ -292,7 +301,7 @@ def derived_stats(
             as_of=as_of,
             window=window,
             trend_window=trend_window,
-            metric_columns=[c for c in DERIVED_COLUMNS_V1 if c != "date"],
+            metric_columns=[c for c in DERIVED_COLUMNS if c != "date"],
         )
 
         if fmt == "json":
@@ -1544,6 +1553,7 @@ def report_pack(
 
     store = OptionsSnapshotStore(cache_dir)
     derived_store = DerivedStore(derived_dir)
+    candle_store = CandleStore(candle_cache_dir)
 
     required_date: date | None = None
     if require_snapshot_date is not None:
@@ -1634,7 +1644,9 @@ def report_pack(
 
         if derived and chain_report_model is not None:
             try:
-                row = DerivedRow.from_chain_report(chain_report_model)
+                candles = candle_store.load(sym)
+                history = derived_store.load(sym)
+                row = DerivedRow.from_chain_report(chain_report_model, candles=candles, derived_history=history)
                 derived_store.upsert(sym, row)
                 df_derived = derived_store.load(sym)
                 if not df_derived.empty:
@@ -1644,7 +1656,7 @@ def report_pack(
                         as_of="latest",
                         window=derived_window,
                         trend_window=derived_trend_window,
-                        metric_columns=[c for c in DERIVED_COLUMNS_V1 if c != "date"],
+                        metric_columns=[c for c in DERIVED_COLUMNS if c != "date"],
                     )
                     base = out / "derived" / sym.upper()
                     base.mkdir(parents=True, exist_ok=True)
@@ -1875,7 +1887,9 @@ def briefing(
         compare_report = None
         flow_net = None
         technicals = None
+        candles = None
         derived_updated = False
+        derived_row = None
         quote_quality = None
         next_earnings_date = safe_next_earnings_date(earnings_store, sym)
 
@@ -1939,10 +1953,14 @@ def briefing(
             )
 
             if update_derived:
-                row = DerivedRow.from_chain_report(chain)
+                if candles is None:
+                    candles = candle_store.load(sym)
+                history = derived_store.load(sym)
+                row = DerivedRow.from_chain_report(chain, candles=candles, derived_history=history)
                 try:
                     derived_store.upsert(sym, row)
                     derived_updated = True
+                    derived_row = row
                 except Exception as exc:  # noqa: BLE001
                     warnings.append(f"derived update failed: {exc}")
 
@@ -1997,6 +2015,7 @@ def briefing(
                 warnings=warnings,
                 quote_quality=quote_quality,
                 derived_updated=derived_updated,
+                derived=derived_row,
                 next_earnings_date=next_earnings_date,
             )
         )
@@ -2415,6 +2434,11 @@ def research(
         "--include-bad-quotes",
         help="Include candidates with bad quote quality (best-effort).",
     ),
+    derived_dir: Path = typer.Option(
+        Path("data/derived"),
+        "--derived-dir",
+        help="Directory for derived metric files (used for IV percentile context).",
+    ),
 ) -> None:
     """Recommend short-dated (30-90d) and long-dated (LEAPS) contracts based on technicals."""
     portfolio = load_portfolio(portfolio_path)
@@ -2431,6 +2455,7 @@ def research(
     candle_store = CandleStore(candle_cache_dir)
     client = YFinanceClient()
     earnings_store = EarningsStore(Path("data/earnings"))
+    derived_store = DerivedStore(derived_dir)
     console = Console()
 
     from rich.table import Table
@@ -2536,6 +2561,8 @@ def research(
         opt_type: OptionType = "call" if setup.direction == Direction.BULLISH else "put"
         min_oi = rp.min_open_interest
         min_vol = rp.min_volume
+        derived_history = derived_store.load(sym)
+        vol_context = None
 
         table = Table(title=f"{sym} option ideas (best-effort)")
         table.add_column("Horizon")
@@ -2546,6 +2573,8 @@ def research(
         table.add_column("Entry", justify="right")
         table.add_column("Δ", justify="right")
         table.add_column("IV", justify="right")
+        table.add_column("IV/RV20", justify="right")
+        table.add_column("IV pct", justify="right")
         table.add_column("OI", justify="right")
         table.add_column("Vol", justify="right")
         table.add_column("Spr%", justify="right")
@@ -2560,8 +2589,26 @@ def research(
             age = int(age_days)
             return f"{age}d" if age > 5 else "-"
 
+        def _fmt_iv_rv(ctx) -> str:  # type: ignore[no-untyped-def]
+            if ctx is None or ctx.iv_rv_20d is None:
+                return "-"
+            return f"{ctx.iv_rv_20d:.2f}x"
+
+        def _fmt_iv_pct(ctx) -> str:  # type: ignore[no-untyped-def]
+            if ctx is None or ctx.iv_percentile is None:
+                return "-"
+            return f"{ctx.iv_percentile:.0f}"
+
         if short_exp is not None:
             chain = client.get_options_chain(sym, short_exp)
+            if vol_context is None:
+                vol_context = compute_volatility_context(
+                    history=history,
+                    spot=setup.spot,
+                    calls=chain.calls,
+                    puts=chain.puts,
+                    derived_history=derived_history,
+                )
             df = chain.calls if opt_type == "call" else chain.puts
             target_delta = 0.40 if opt_type == "call" else -0.40
             short_pick = select_option_candidate(
@@ -2597,6 +2644,8 @@ def research(
                         "-" if short_pick.mark is None else f"${short_pick.mark:.2f}",
                         "-" if short_pick.delta is None else f"{short_pick.delta:+.2f}",
                         "-" if short_pick.iv is None else f"{short_pick.iv:.1%}",
+                        _fmt_iv_rv(vol_context),
+                        _fmt_iv_pct(vol_context),
                         "-" if short_pick.open_interest is None else str(short_pick.open_interest),
                         "-" if short_pick.volume is None else str(short_pick.volume),
                         "-" if short_pick.spread_pct is None else f"{short_pick.spread_pct:.1%}",
@@ -2614,6 +2663,14 @@ def research(
 
         if long_exp is not None:
             chain = client.get_options_chain(sym, long_exp)
+            if vol_context is None:
+                vol_context = compute_volatility_context(
+                    history=history,
+                    spot=setup.spot,
+                    calls=chain.calls,
+                    puts=chain.puts,
+                    derived_history=derived_history,
+                )
             df = chain.calls if opt_type == "call" else chain.puts
             target_delta = 0.70 if opt_type == "call" else -0.70
             long_pick = select_option_candidate(
@@ -2649,6 +2706,8 @@ def research(
                         "-" if long_pick.mark is None else f"${long_pick.mark:.2f}",
                         "-" if long_pick.delta is None else f"{long_pick.delta:+.2f}",
                         "-" if long_pick.iv is None else f"{long_pick.iv:.1%}",
+                        _fmt_iv_rv(vol_context),
+                        _fmt_iv_pct(vol_context),
                         "-" if long_pick.open_interest is None else str(long_pick.open_interest),
                         "-" if long_pick.volume is None else str(long_pick.volume),
                         "-" if long_pick.spread_pct is None else f"{long_pick.spread_pct:.1%}",

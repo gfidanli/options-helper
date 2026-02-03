@@ -10,6 +10,7 @@ import pandas as pd
 from options_helper.analysis.chain_metrics import ChainReport
 from options_helper.analysis.compare_metrics import CompareReport
 from options_helper.analysis.events import format_next_earnings_line
+from options_helper.analysis.derived_metrics import DerivedRow
 from options_helper.technicals_backtesting.snapshot import TechnicalSnapshot
 
 
@@ -60,6 +61,16 @@ def chain_takeaways(report: ChainReport) -> list[str]:
         takeaways.append(f"Gamma peak strike: `{report.gamma.peak_strike:g}`")
 
     return takeaways
+
+
+def vol_regime_takeaway(row: DerivedRow | None) -> str:
+    rv20 = "-" if row is None else _fmt_pct_ratio(row.rv_20d)
+    rv60 = "-" if row is None else _fmt_pct_ratio(row.rv_60d)
+    iv_rv = "-" if row is None or row.iv_rv_20d is None else f"{row.iv_rv_20d:.2f}x"
+    iv_pct = "-" if row is None or row.atm_iv_near_percentile is None else f"{row.atm_iv_near_percentile:.0f}"
+    slope = "-" if row is None or row.iv_term_slope is None else _fmt_pp(row.iv_term_slope * 100.0)
+
+    return f"Vol regime: RV20 `{rv20}`, RV60 `{rv60}`, IV/RV20 `{iv_rv}`, IV pct `{iv_pct}`, Term slope `{slope}`"
 
 
 def _fmt_quote_quality(summary: dict[str, Any]) -> str:
@@ -314,6 +325,8 @@ def _jsonable(val: Any) -> Any:
         return _jsonable(val.model_dump())
     if isinstance(val, CompareReport):
         return _jsonable(val.model_dump())
+    if isinstance(val, DerivedRow):
+        return _jsonable(val.model_dump())
     return str(val)
 
 
@@ -349,6 +362,7 @@ def build_briefing_payload(
                 else sec.next_earnings_date.isoformat(),
                 "technicals": _jsonable(sec.technicals),
                 "chain": _jsonable(sec.chain),
+                "derived": _jsonable(sec.derived),
                 "compare": _jsonable(sec.compare),
                 "flow_net": _jsonable(sec.flow_net),
                 "quote_quality": _jsonable(sec.quote_quality),
@@ -370,6 +384,7 @@ class BriefingSymbolSection:
     warnings: list[str]
     quote_quality: dict[str, Any] | None = None
     derived_updated: bool = False
+    derived: DerivedRow | None = None
     next_earnings_date: date | None = None
 
 
@@ -454,6 +469,9 @@ def render_briefing_markdown(
         lines.append(f"- {format_next_earnings_line(as_of_date, sec.next_earnings_date)}")
         if sec.quote_quality:
             lines.append(f"- {_fmt_quote_quality(sec.quote_quality)}")
+        vol_line = vol_regime_takeaway(sec.derived)
+        if vol_line:
+            lines.append(f"- {vol_line}")
         lines.append("")
 
         if sec.errors and sec.chain is None and sec.technicals is None:

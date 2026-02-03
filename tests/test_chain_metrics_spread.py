@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import date
+
 import pandas as pd
 import pytest
 
-from options_helper.analysis.chain_metrics import compute_spread, compute_spread_pct, execution_quality
+from options_helper.analysis.chain_metrics import compute_chain_report, compute_spread, compute_spread_pct, execution_quality
 
 
 def test_compute_spread_and_pct_with_bid_ask() -> None:
@@ -40,3 +42,56 @@ def test_inverted_market_spread_is_negative_and_bad() -> None:
     assert spread < 0
     assert spread_pct < 0
     assert execution_quality(spread_pct) == "bad"
+
+
+def test_chain_report_includes_atm_iv_for_next_expiry() -> None:
+    df = pd.DataFrame(
+        [
+            {
+                "optionType": "call",
+                "expiry": "2026-02-20",
+                "strike": 100.0,
+                "bid": 2.0,
+                "ask": 2.2,
+                "impliedVolatility": 0.20,
+            },
+            {
+                "optionType": "put",
+                "expiry": "2026-02-20",
+                "strike": 100.0,
+                "bid": 1.8,
+                "ask": 2.0,
+                "impliedVolatility": 0.20,
+            },
+            {
+                "optionType": "call",
+                "expiry": "2026-03-20",
+                "strike": 100.0,
+                "bid": 3.0,
+                "ask": 3.2,
+                "impliedVolatility": 0.30,
+            },
+            {
+                "optionType": "put",
+                "expiry": "2026-03-20",
+                "strike": 100.0,
+                "bid": 2.8,
+                "ask": 3.0,
+                "impliedVolatility": 0.30,
+            },
+        ]
+    )
+
+    report = compute_chain_report(
+        df,
+        symbol="AAA",
+        as_of=date(2026, 1, 2),
+        spot=100.0,
+        expiries_mode="near",
+        top=5,
+        best_effort=True,
+    )
+
+    assert len(report.expiries) >= 2
+    assert report.expiries[0].atm_iv == 0.20
+    assert report.expiries[1].atm_iv == 0.30
