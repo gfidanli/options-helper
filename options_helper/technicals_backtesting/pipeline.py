@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Iterable
-
 import pandas as pd
 
 from options_helper.technicals_backtesting.adapter import apply_yfinance_price_adjustment, standardize_ohlc

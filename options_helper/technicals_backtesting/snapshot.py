@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 
 from options_helper.technicals_backtesting.extension_percentiles import (
-    ExtensionPercentileReport,
     ExtensionPercentilesBundle,
     build_weekly_extension_series,
     compute_extension_percentiles,
@@ -145,7 +144,7 @@ def compute_technical_snapshot(df_ohlc: pd.DataFrame, cfg: dict) -> TechnicalSna
         )
         weekly_rule = cfg["weekly_regime"].get("resample_rule", "W-FRI")
         weekly_ext, weekly_close = build_weekly_extension_series(
-            candles, sma_window=sma_window, atr_window=atr_window, resample_rule=weekly_rule
+            features, sma_window=sma_window, atr_window=atr_window, resample_rule=weekly_rule
         )
         weekly_report = compute_extension_percentiles(
             extension_series=weekly_ext,

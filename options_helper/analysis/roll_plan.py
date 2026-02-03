@@ -329,9 +329,6 @@ def compute_roll_plan(
     cur_quality_label = cur_row.get("_quality_label")
     cur_last_trade_age_days = _as_int(cur_row.get("_last_trade_age_days"))
     cur_quality_warnings = cur_row.get("_quality_warnings")
-    cur_spread_ok = None
-    if cur_spread_pct is not None:
-        cur_spread_ok = (cur_spread_pct >= 0) and (cur_spread_pct <= max_spread_pct)
     cur_delta, cur_theta = _best_effort_delta_theta(cur_row, option_type=option_type, spot=spot, as_of=as_of)
 
     current = RollContract(
