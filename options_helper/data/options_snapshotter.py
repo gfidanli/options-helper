@@ -66,7 +66,7 @@ def snapshot_full_chain_for_symbols(
     watchlists: list[str] | None = None,
     provider: MarketDataProvider | None = None,
 ) -> list[SnapshotSymbolResult]:
-    provider = provider or get_provider("yahoo")
+    provider = provider or get_provider()
     store = OptionsSnapshotStore(cache_dir)
     candle_store = CandleStore(candle_cache_dir)
     provider_name = getattr(provider, "name", "unknown")

@@ -56,6 +56,7 @@ from options_helper.data.journal import JournalStore, SignalContext, SignalEvent
 from options_helper.data.options_snapshots import OptionsSnapshotStore, find_snapshot_row
 from options_helper.data.options_snapshotter import snapshot_full_chain_for_symbols
 from options_helper.data.providers import get_provider
+from options_helper.data.providers.runtime import reset_default_provider_name, set_default_provider_name
 from options_helper.data.scanner import (
     evaluate_liquidity_for_symbols,
     prefilter_symbols,
@@ -143,18 +144,27 @@ def main(
         "--log-dir",
         help="Directory to write per-command logs.",
     ),
+    provider: str = typer.Option(
+        "yahoo",
+        "--provider",
+        help="Market data provider (default: yahoo).",
+    ),
 ) -> None:
     command_name = ctx.info_name or "options-helper"
     if ctx.invoked_subcommand:
         command_name = f"{command_name} {ctx.invoked_subcommand}"
     run_logger = setup_run_logger(log_dir, command_name)
-    if run_logger is None:
-        return
+    provider_token = set_default_provider_name(provider)
 
     def _on_close() -> None:
-        finalize_run_logger(run_logger)
+        reset_default_provider_name(provider_token)
+        if run_logger is not None:
+            finalize_run_logger(run_logger)
 
     ctx.call_on_close(_on_close)
+
+    if run_logger is None:
+        return
 
 
 def _parse_date(value: str) -> date:
@@ -978,7 +988,7 @@ def snapshot_options(
 
     store = OptionsSnapshotStore(cache_dir)
     candle_store = CandleStore(candle_cache_dir)
-    provider = get_provider("yahoo")
+    provider = get_provider()
     provider_name = getattr(provider, "name", "unknown")
     provider_version = (
         getattr(provider, "version", None)
@@ -2735,7 +2745,7 @@ def earnings(
         record = store.load(sym)
         if refresh or record is None:
             try:
-                ev = get_provider("yahoo").get_next_earnings_event(sym)
+                ev = get_provider().get_next_earnings_event(sym)
             except DataFetchError as exc:
                 console.print(f"[red]Data error:[/red] {exc}")
                 raise typer.Exit(1)
@@ -2812,7 +2822,7 @@ def refresh_earnings(
         raise typer.Exit(0)
 
     store = EarningsStore(cache_dir)
-    provider = get_provider("yahoo")
+    provider = get_provider()
 
     ok = 0
     err = 0
