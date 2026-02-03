@@ -13,9 +13,9 @@ from options_helper.analysis.osi import format_osi, parse_contract_symbol
 from options_helper.analysis.quote_quality import compute_quote_quality
 from options_helper.data.candles import CandleStore, last_close
 from options_helper.data.options_snapshots import OptionsSnapshotStore
+from options_helper.data.market_types import DataFetchError
 from options_helper.data.providers import get_provider
 from options_helper.data.providers.base import MarketDataProvider
-from options_helper.data.yf_client import DataFetchError
 
 
 logger = logging.getLogger(__name__)

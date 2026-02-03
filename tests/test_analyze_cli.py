@@ -7,7 +7,7 @@ import pandas as pd
 from typer.testing import CliRunner
 
 from options_helper.cli import app
-from options_helper.data.yf_client import OptionsChain
+from options_helper.data.market_types import OptionsChain
 
 
 def test_analyze_help_includes_offline_flags() -> None:

@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 
 import options_helper.cli as cli
 from options_helper.data.journal import JournalStore, SignalContext
-from options_helper.data.yf_client import OptionsChain
+from options_helper.data.market_types import OptionsChain
 
 
 def _write_offline_fixtures(tmp_path: Path) -> tuple[Path, Path, Path]:

@@ -5,10 +5,9 @@ from datetime import date
 
 import pandas as pd
 
-from options_helper.data.providers import get_provider
-from options_helper.data.providers import MockProvider
+from options_helper.data.market_types import EarningsEvent, OptionsChain, UnderlyingData
+from options_helper.data.providers import MockProvider, get_provider
 from options_helper.data.providers.base import OPTION_CHAIN_REQUIRED_COLUMNS, normalize_option_chain
-from options_helper.data.yf_client import EarningsEvent, OptionsChain, UnderlyingData
 
 
 @dataclass(frozen=True)

@@ -34,7 +34,7 @@ def get_provider(
     provider_name = (name if name is not None else get_default_provider_name()).strip().lower()
     provider_name = _ALIASES.get(provider_name, provider_name)
     if provider_name not in _PROVIDERS:
-        raise ValueError(f"Unknown provider: {name}. Available: {', '.join(available_providers())}")
+        raise ValueError(f"Unknown provider: {provider_name}. Available: {', '.join(available_providers())}")
     if provider_name == "yahoo":
         return YahooProvider(client=client)
     return _PROVIDERS[provider_name]()

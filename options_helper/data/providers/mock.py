@@ -5,8 +5,8 @@ from typing import Any
 
 import pandas as pd
 
+from options_helper.data.market_types import DataFetchError, EarningsEvent, OptionsChain, UnderlyingData
 from options_helper.data.providers.base import MarketDataProvider
-from options_helper.data.yf_client import DataFetchError, EarningsEvent, OptionsChain, UnderlyingData
 
 
 class MockProvider(MarketDataProvider):
@@ -117,4 +117,3 @@ class MockProvider(MarketDataProvider):
         if ev is not None:
             return ev
         return EarningsEvent(symbol=sym, next_date=None, source="mock")
-

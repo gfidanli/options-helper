@@ -283,7 +283,8 @@ class CandleStore:
 
     def get_daily_history(self, symbol: str, *, period: str = "2y", today: date | None = None) -> pd.DataFrame:
         """
-        Returns a locally cached daily OHLCV DataFrame, updating it incrementally from yfinance.
+        Returns a locally cached daily OHLCV DataFrame, updating it incrementally from the provider
+        (default: Yahoo via yfinance).
 
         Behavior:
         - Ensures the cache covers at least the requested `period` (best-effort).

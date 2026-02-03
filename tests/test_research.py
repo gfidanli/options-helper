@@ -15,7 +15,7 @@ from options_helper.analysis.research import (
     suggest_trade_levels,
 )
 from options_helper.cli import app
-from options_helper.data.yf_client import OptionsChain
+from options_helper.data.market_types import OptionsChain
 from options_helper.models import RiskProfile
 
 

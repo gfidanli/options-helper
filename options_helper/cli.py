@@ -80,7 +80,8 @@ from options_helper.data.technical_backtesting_config import (
 )
 from options_helper.data.technical_backtesting_io import load_ohlc_from_cache, load_ohlc_from_path
 from options_helper.data.universe import UniverseError, load_universe_symbols
-from options_helper.data.yf_client import DataFetchError, contract_row_by_strike
+from options_helper.data.market_types import DataFetchError
+from options_helper.data.yf_client import contract_row_by_strike
 from options_helper.models import OptionType, Position, RiskProfile
 from options_helper.observability import finalize_run_logger, setup_run_logger
 from options_helper.reporting import render_positions, render_summary

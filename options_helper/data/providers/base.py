@@ -5,7 +5,7 @@ from typing import Any, Protocol
 
 import pandas as pd
 
-from options_helper.data.yf_client import EarningsEvent, OptionsChain, UnderlyingData
+from options_helper.data.market_types import EarningsEvent, OptionsChain, UnderlyingData
 
 OPTION_CHAIN_REQUIRED_COLUMNS = (
     "contractSymbol",

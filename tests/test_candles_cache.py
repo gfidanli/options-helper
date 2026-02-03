@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import pandas as pd
 
 from options_helper.data.candles import CandleStore
-from options_helper.data.yf_client import DataFetchError
+from options_helper.data.market_types import DataFetchError
 
 
 def _df(d0: date, days: int) -> pd.DataFrame:
