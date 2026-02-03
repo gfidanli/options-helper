@@ -47,6 +47,45 @@ class YFinanceClient:
             self._ticker_cache[symbol] = yf.Ticker(symbol)
         return self._ticker_cache[symbol]
 
+    def list_option_expiries(self, symbol: str) -> list[date]:
+        try:
+            ticker = self.ticker(symbol)
+            expiry_strs = list(ticker.options or [])
+            expiries: list[date] = []
+            for exp_str in expiry_strs:
+                try:
+                    expiries.append(date.fromisoformat(exp_str))
+                except ValueError:
+                    continue
+            return sorted(set(expiries))
+        except Exception as exc:  # noqa: BLE001
+            raise DataFetchError(f"Failed to fetch option expiries for {symbol}") from exc
+
+    def get_quote(self, symbol: str) -> float | None:
+        sym = symbol.upper()
+        try:
+            ticker = self.ticker(sym)
+            fast_info = getattr(ticker, "fast_info", None)
+            if isinstance(fast_info, dict):
+                for key in ("last_price", "lastPrice", "regularMarketPrice", "last"):
+                    val = fast_info.get(key)
+                    if val is not None:
+                        return float(val)
+
+            info = getattr(ticker, "info", None)
+            if isinstance(info, dict):
+                for key in ("regularMarketPrice", "previousClose", "lastPrice"):
+                    val = info.get(key)
+                    if val is not None:
+                        return float(val)
+
+            history = ticker.history(period="5d", interval="1d", auto_adjust=False, back_adjust=False)
+            if not history.empty and "Close" in history.columns:
+                return float(history["Close"].iloc[-1])
+            return None
+        except Exception as exc:  # noqa: BLE001
+            raise DataFetchError(f"Failed to fetch quote for {sym}") from exc
+
     def get_underlying(self, symbol: str, *, period: str = "6mo", interval: str = "1d") -> UnderlyingData:
         try:
             ticker = self.ticker(symbol)
