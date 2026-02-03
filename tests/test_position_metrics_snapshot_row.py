@@ -9,7 +9,7 @@ from options_helper.cli import _position_metrics
 from options_helper.models import Position, RiskProfile
 
 
-def test_position_metrics_accepts_snapshot_row_without_client() -> None:
+def test_position_metrics_accepts_snapshot_row_without_provider() -> None:
     position = Position(
         id="a",
         symbol="AAA",
@@ -47,7 +47,7 @@ def test_position_metrics_accepts_snapshot_row_without_client() -> None:
     assert metrics.volume == 20
 
 
-def test_position_metrics_requires_client_when_snapshot_row_missing() -> None:
+def test_position_metrics_requires_provider_when_snapshot_row_missing() -> None:
     position = Position(
         id="a",
         symbol="AAA",
@@ -58,7 +58,7 @@ def test_position_metrics_requires_client_when_snapshot_row_missing() -> None:
         cost_basis=1.0,
     )
 
-    with pytest.raises(ValueError, match="client is required"):
+    with pytest.raises(ValueError, match="provider is required"):
         _position_metrics(
             None,
             position,
