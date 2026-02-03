@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, is_dataclass, asdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from typing import Any
 
 import pandas as pd
@@ -14,6 +14,13 @@ from options_helper.analysis.events import format_next_earnings_line
 from options_helper.analysis.derived_metrics import DerivedRow
 from options_helper.analysis.portfolio_risk import PortfolioExposure, StressResult
 from options_helper.technicals_backtesting.snapshot import TechnicalSnapshot
+from options_helper.schemas.briefing import (
+    BriefingArtifact,
+    BriefingPortfolio,
+    BriefingSection,
+    BriefingTechnicals,
+)
+from options_helper.schemas.common import utc_now
 
 
 def _fmt_pct_ratio(val: float | None, *, digits: int = 1) -> str:
@@ -342,6 +349,7 @@ def _jsonable(val: Any) -> Any:
 def build_briefing_payload(
     *,
     report_date: str,
+    as_of: str | None = None,
     portfolio_path: str,
     symbol_sections: list["BriefingSymbolSection"],
     top: int = 3,
@@ -349,43 +357,46 @@ def build_briefing_payload(
     portfolio_exposure: PortfolioExposure | None = None,
     portfolio_stress: list[StressResult] | None = None,
 ) -> dict[str, Any]:
-    return {
-        "schema_version": 1,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "disclaimer": "Not financial advice. For informational/educational use only.",
-        "report_date": report_date,
-        "portfolio_path": portfolio_path,
-        "symbols": [s.symbol for s in symbol_sections],
-        "top": int(top),
-        "technicals": {
-            "source": "technicals_backtesting",
-            "config_path": technicals_config,
-        },
-        "portfolio": {
-            "exposure": _jsonable(portfolio_exposure),
-            "stress": _jsonable(portfolio_stress or []),
-        },
-        "sections": [
-            {
-                "symbol": sec.symbol,
-                "as_of": sec.as_of,
-                "errors": list(sec.errors),
-                "warnings": list(sec.warnings),
-                "derived_updated": bool(sec.derived_updated),
-                "next_earnings_date": None
+    as_of_value = as_of or report_date
+    artifact = BriefingArtifact(
+        schema_version=1,
+        generated_at=utc_now(),
+        as_of=as_of_value,
+        disclaimer="Not financial advice. For informational/educational use only.",
+        report_date=report_date,
+        portfolio_path=portfolio_path,
+        symbols=[s.symbol for s in symbol_sections],
+        top=int(top),
+        technicals=BriefingTechnicals(
+            source="technicals_backtesting",
+            config_path=technicals_config,
+        ),
+        portfolio=BriefingPortfolio(
+            exposure=_jsonable(portfolio_exposure),
+            stress=_jsonable(portfolio_stress or []),
+        ),
+        sections=[
+            BriefingSection(
+                symbol=sec.symbol,
+                as_of=sec.as_of,
+                errors=list(sec.errors),
+                warnings=list(sec.warnings),
+                derived_updated=bool(sec.derived_updated),
+                next_earnings_date=None
                 if sec.next_earnings_date is None
                 else sec.next_earnings_date.isoformat(),
-                "technicals": _jsonable(sec.technicals),
-                "confluence": _jsonable(sec.confluence),
-                "chain": _jsonable(sec.chain),
-                "derived": _jsonable(sec.derived),
-                "compare": _jsonable(sec.compare),
-                "flow_net": _jsonable(sec.flow_net),
-                "quote_quality": _jsonable(sec.quote_quality),
-            }
+                technicals=_jsonable(sec.technicals),
+                confluence=_jsonable(sec.confluence),
+                chain=_jsonable(sec.chain),
+                derived=_jsonable(sec.derived),
+                compare=_jsonable(sec.compare),
+                flow_net=_jsonable(sec.flow_net),
+                quote_quality=_jsonable(sec.quote_quality),
+            )
             for sec in symbol_sections
         ],
-    }
+    )
+    return artifact.to_dict()
 
 
 @dataclass(frozen=True)

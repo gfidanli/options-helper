@@ -171,6 +171,9 @@ def test_briefing_writes_daily_md_and_updates_derived(tmp_path: Path, monkeypatc
 
     json_path = out_dir / "2026-01-02.json"
     payload = json.loads(json_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 1
+    assert payload["as_of"] == "2026-01-02"
+    assert "generated_at" in payload
     assert "portfolio" in payload
     assert payload["portfolio"]["exposure"] is not None
     assert isinstance(payload["portfolio"]["stress"], list)

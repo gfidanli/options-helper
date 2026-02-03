@@ -90,6 +90,9 @@ def test_flow_cli_windowed_groupby_writes_artifact(tmp_path: Path) -> None:
     assert out_path.exists()
 
     payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 1
+    assert payload["as_of"] == "2026-01-03"
+    assert "generated_at" in payload
     assert payload["symbol"] == "AAA"
     assert payload["window"] == 2
     assert payload["group_by"] == "expiry-strike"

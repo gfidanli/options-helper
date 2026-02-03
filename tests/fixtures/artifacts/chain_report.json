@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-03T00:00:00+00:00",
+  "symbol": "AAA",
+  "as_of": "2026-02-02",
+  "spot": 100.0,
+  "available_expiries": [],
+  "included_expiries": [],
+  "totals": {
+    "calls_oi": 0.0,
+    "puts_oi": 0.0,
+    "pc_oi_ratio": null,
+    "calls_volume": 0.0,
+    "puts_volume": 0.0,
+    "pc_volume_ratio": null,
+    "calls_volume_notional": 0.0,
+    "puts_volume_notional": 0.0
+  },
+  "expiries": [],
+  "walls_overall": {
+    "calls": [],
+    "puts": []
+  },
+  "walls_by_expiry": [],
+  "gamma": {
+    "peak_strike": null,
+    "top": []
+  },
+  "warnings": []
+}

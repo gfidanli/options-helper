@@ -92,6 +92,15 @@ from options_helper.reporting_briefing import (
     render_portfolio_table_markdown,
 )
 from options_helper.reporting_roll import render_roll_plan_console
+from options_helper.schemas.briefing import BriefingArtifact
+from options_helper.schemas.common import utc_now
+from options_helper.schemas.chain_report import ChainReportArtifact
+from options_helper.schemas.compare import CompareArtifact
+from options_helper.schemas.flow import FlowArtifact
+from options_helper.schemas.scanner_shortlist import (
+    ScannerShortlistArtifact,
+    ScannerShortlistRow as ScannerShortlistRowSchema,
+)
 from options_helper.storage import load_portfolio, save_portfolio, write_template
 from options_helper.watchlists import build_default_watchlists, load_watchlists, save_watchlists
 from options_helper.technicals_backtesting.backtest.optimizer import optimize_params
@@ -1264,6 +1273,11 @@ def flow_report(
         "--out",
         help="Output root for saved artifacts (writes under {out}/flow/{SYMBOL}/).",
     ),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Validate JSON artifacts against schemas.",
+    ),
 ) -> None:
     """Report OI/volume deltas from locally captured snapshots (single-day or windowed)."""
     portfolio = load_portfolio(portfolio_path)
@@ -1410,16 +1424,20 @@ def flow_report(
                         "size": "n_pairs",
                     }
                 )
-                payload = {
-                    "schema_version": 1,
-                    "symbol": sym.upper(),
-                    "from_date": prev_date.isoformat(),
-                    "to_date": today_date.isoformat(),
-                    "window": 1,
-                    "group_by": "contract",
-                    "snapshot_dates": [prev_date.isoformat(), today_date.isoformat()],
-                    "net": artifact_net.where(pd.notna(artifact_net), None).to_dict(orient="records"),
-                }
+                payload = FlowArtifact(
+                    schema_version=1,
+                    generated_at=utc_now(),
+                    as_of=today_date.isoformat(),
+                    symbol=sym.upper(),
+                    from_date=prev_date.isoformat(),
+                    to_date=today_date.isoformat(),
+                    window=1,
+                    group_by="contract",
+                    snapshot_dates=[prev_date.isoformat(), today_date.isoformat()],
+                    net=artifact_net.where(pd.notna(artifact_net), None).to_dict(orient="records"),
+                ).to_dict()
+                if strict:
+                    FlowArtifact.model_validate(payload)
                 out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
                 console.print(f"\nSaved: {out_path}")
             continue
@@ -1516,16 +1534,20 @@ def flow_report(
                     "size": "n_pairs",
                 }
             )
-            payload = {
-                "schema_version": 1,
-                "symbol": sym.upper(),
-                "from_date": start_date.isoformat(),
-                "to_date": end_date.isoformat(),
-                "window": window,
-                "group_by": group_by_norm,
-                "snapshot_dates": [d.isoformat() for d in dates],
-                "net": artifact_net.where(pd.notna(artifact_net), None).to_dict(orient="records"),
-            }
+            payload = FlowArtifact(
+                schema_version=1,
+                generated_at=utc_now(),
+                as_of=end_date.isoformat(),
+                symbol=sym.upper(),
+                from_date=start_date.isoformat(),
+                to_date=end_date.isoformat(),
+                window=window,
+                group_by=group_by_norm,
+                snapshot_dates=[d.isoformat() for d in dates],
+                net=artifact_net.where(pd.notna(artifact_net), None).to_dict(orient="records"),
+            ).to_dict()
+            if strict:
+                FlowArtifact.model_validate(payload)
             out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
             console.print(f"\nSaved: {out_path}")
 
@@ -1548,6 +1570,11 @@ def chain_report(
         None,
         "--out",
         help="Output root for saved artifacts (writes under {out}/chains/{SYMBOL}/).",
+    ),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Validate JSON artifacts against schemas.",
     ),
     top: int = typer.Option(10, "--top", min=1, max=100, help="Top strikes to show for walls/gamma."),
     include_expiry: list[str] = typer.Option(
@@ -1598,19 +1625,25 @@ def chain_report(
             top=top,
             best_effort=best_effort,
         )
+        report_artifact = ChainReportArtifact(
+            generated_at=utc_now(),
+            **report.model_dump(),
+        )
+        if strict:
+            ChainReportArtifact.model_validate(report_artifact.to_dict())
 
         if fmt == "console":
             render_chain_report_console(console, report)
         elif fmt == "md":
             console.print(render_chain_report_markdown(report))
         else:
-            console.print(report.model_dump_json(indent=2))
+            console.print(report_artifact.model_dump_json(indent=2))
 
         if out is not None:
             base = out / "chains" / report.symbol
             base.mkdir(parents=True, exist_ok=True)
             json_path = base / f"{as_of_date.isoformat()}.json"
-            json_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+            json_path.write_text(report_artifact.model_dump_json(indent=2), encoding="utf-8")
 
             # Write Markdown alongside JSON (human-friendly artifact).
             md_path = base / f"{as_of_date.isoformat()}.md"
@@ -1642,6 +1675,11 @@ def compare_snapshots(
         None,
         "--out",
         help="Output root for saved artifacts (writes under {out}/compare/{SYMBOL}/).",
+    ),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Validate JSON artifacts against schemas.",
     ),
 ) -> None:
     """Diff two snapshot dates for a symbol (offline)."""
@@ -1684,13 +1722,17 @@ def compare_snapshots(
             base = out / "compare" / symbol.upper()
             base.mkdir(parents=True, exist_ok=True)
             out_path = base / f"{from_date.isoformat()}_to_{to_date.isoformat()}.json"
-            payload = {
-                "schema_version": 1,
-                "symbol": symbol.upper(),
-                "from": report_from.model_dump(),
-                "to": report_to.model_dump(),
-                "diff": diff.model_dump(),
-            }
+            payload = CompareArtifact(
+                schema_version=1,
+                generated_at=utc_now(),
+                as_of=to_date.isoformat(),
+                symbol=symbol.upper(),
+                from_report=report_from.model_dump(),
+                to_report=report_to.model_dump(),
+                diff=diff.model_dump(),
+            ).to_dict()
+            if strict:
+                CompareArtifact.model_validate(payload)
             out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
             console.print(f"\nSaved: {out_path}")
     except Exception as exc:  # noqa: BLE001
@@ -1730,6 +1772,11 @@ def report_pack(
         Path("data/reports"),
         "--out",
         help="Output root for saved artifacts (writes under chains/compare/flow/derived/technicals).",
+    ),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Validate JSON artifacts against schemas.",
     ),
     as_of: str = typer.Option("latest", "--as-of", help="Snapshot date (YYYY-MM-DD) or 'latest' (per-symbol)."),
     compare_from: str = typer.Option(
@@ -1890,7 +1937,13 @@ def report_pack(
                 base.mkdir(parents=True, exist_ok=True)
                 json_path = base / f"{to_date.isoformat()}.json"
                 md_path = base / f"{to_date.isoformat()}.md"
-                json_path.write_text(chain_report_model.model_dump_json(indent=2), encoding="utf-8")
+                chain_artifact = ChainReportArtifact(
+                    generated_at=utc_now(),
+                    **chain_report_model.model_dump(),
+                )
+                if strict:
+                    ChainReportArtifact.model_validate(chain_artifact.to_dict())
+                json_path.write_text(chain_artifact.model_dump_json(indent=2), encoding="utf-8")
                 md_path.write_text(render_chain_report_markdown(chain_report_model), encoding="utf-8")
                 counts["chain_ok"] += 1
             except Exception as exc:  # noqa: BLE001
@@ -1949,13 +2002,17 @@ def report_pack(
                     base = out / "compare" / sym.upper()
                     base.mkdir(parents=True, exist_ok=True)
                     out_path = base / f"{from_date.isoformat()}_to_{to_date.isoformat()}.json"
-                    payload = {
-                        "schema_version": 1,
-                        "symbol": sym.upper(),
-                        "from": report_from.model_dump(),
-                        "to": report_to.model_dump(),
-                        "diff": diff.model_dump(),
-                    }
+                    payload = CompareArtifact(
+                        schema_version=1,
+                        generated_at=utc_now(),
+                        as_of=to_date.isoformat(),
+                        symbol=sym.upper(),
+                        from_report=report_from.model_dump(),
+                        to_report=report_to.model_dump(),
+                        diff=diff.model_dump(),
+                    ).to_dict()
+                    if strict:
+                        CompareArtifact.model_validate(payload)
                     out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
                     counts["compare_ok"] += 1
 
@@ -1976,16 +2033,20 @@ def report_pack(
                                     "size": "n_pairs",
                                 }
                             )
-                            payload = {
-                                "schema_version": 1,
-                                "symbol": sym.upper(),
-                                "from_date": from_date.isoformat(),
-                                "to_date": to_date.isoformat(),
-                                "window": 1,
-                                "group_by": group_by,
-                                "snapshot_dates": [from_date.isoformat(), to_date.isoformat()],
-                                "net": artifact_net.where(pd.notna(artifact_net), None).to_dict(orient="records"),
-                            }
+                            payload = FlowArtifact(
+                                schema_version=1,
+                                generated_at=utc_now(),
+                                as_of=to_date.isoformat(),
+                                symbol=sym.upper(),
+                                from_date=from_date.isoformat(),
+                                to_date=to_date.isoformat(),
+                                window=1,
+                                group_by=group_by,
+                                snapshot_dates=[from_date.isoformat(), to_date.isoformat()],
+                                net=artifact_net.where(pd.notna(artifact_net), None).to_dict(orient="records"),
+                            ).to_dict()
+                            if strict:
+                                FlowArtifact.model_validate(payload)
                             out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
                         counts["flow_ok"] += 1
             except Exception as exc:  # noqa: BLE001
@@ -2074,6 +2135,11 @@ def briefing(
         True,
         "--write-json/--no-write-json",
         help="Write a JSON version of the briefing alongside the Markdown (LLM-friendly).",
+    ),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Validate JSON artifacts against schemas.",
     ),
     update_derived: bool = typer.Option(
         True,
@@ -2465,6 +2531,7 @@ def briefing(
     if write_json:
         payload = build_briefing_payload(
             report_date=report_date,
+            as_of=report_date,
             portfolio_path=str(portfolio_path),
             symbol_sections=sections,
             top=top,
@@ -2472,6 +2539,8 @@ def briefing(
             portfolio_exposure=portfolio_exposure,
             portfolio_stress=portfolio_stress,
         )
+        if strict:
+            BriefingArtifact.model_validate(payload)
         json_path = out_path.with_suffix(".json")
         json_path.write_text(
             json.dumps(payload, indent=2, sort_keys=True, allow_nan=False), encoding="utf-8"
@@ -3498,6 +3567,11 @@ def scanner_run(
         "--write-shortlist/--no-write-shortlist",
         help="Write shortlist CSV under the run directory.",
     ),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Validate JSON artifacts against schemas.",
+    ),
     config_path: Path = typer.Option(
         Path("config/technical_backtesting.yaml"),
         "--config",
@@ -3621,6 +3695,16 @@ def scanner_run(
         row_callback=_row_callback,
     )
 
+    scan_as_of_dates: list[date] = []
+    for row in scan_rows:
+        if not row.asof:
+            continue
+        try:
+            scan_as_of_dates.append(date.fromisoformat(row.asof))
+        except ValueError:
+            continue
+    scan_as_of = max(scan_as_of_dates).isoformat() if scan_as_of_dates else date.today().isoformat()
+
     if write_error_excludes and new_error_symbols and exclude_path is not None:
         write_exclude_symbols(exclude_path, exclude_symbols)
         console.print(f"Wrote {len(new_error_symbols)} new excluded symbol(s) to {exclude_path}")
@@ -3651,6 +3735,23 @@ def scanner_run(
             shortlist_csv = run_root / "shortlist.csv"
             write_shortlist_csv([], shortlist_csv)
             console.print(f"Wrote shortlist CSV: {shortlist_csv}")
+            shortlist_json = run_root / "shortlist.json"
+            payload = ScannerShortlistArtifact(
+                schema_version=1,
+                generated_at=utc_now(),
+                as_of=scan_as_of,
+                run_id=run_stamp,
+                universe=universe,
+                tail_low_pct=float(tail_low_pct),
+                tail_high_pct=float(tail_high_pct),
+                all_watchlist_name=all_watchlist_name,
+                shortlist_watchlist_name=shortlist_watchlist_name,
+                rows=[],
+            ).to_dict()
+            if strict:
+                ScannerShortlistArtifact.model_validate(payload)
+            shortlist_json.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+            console.print(f"Wrote shortlist JSON: {shortlist_json}")
         shortlist_md = run_root / "shortlist.md"
         lines = [
             f"# Scanner Shortlist — {run_stamp}",
@@ -3753,6 +3854,7 @@ def scanner_run(
     if write_shortlist:
         shortlist_csv = run_root / "shortlist.csv"
         rows: list[ScannerShortlistRow] = []
+        schema_rows: list[ScannerShortlistRowSchema] = []
         for sym in shortlist_symbols:
             rank = rank_results.get(sym)
             reasons = "; ".join(rank.top_reasons) if rank is not None else ""
@@ -3764,8 +3866,33 @@ def scanner_run(
                     top_reasons=reasons,
                 )
             )
+            schema_rows.append(
+                ScannerShortlistRowSchema(
+                    symbol=sym,
+                    score=rank.score if rank is not None else None,
+                    coverage=rank.coverage if rank is not None else None,
+                    top_reasons=reasons or None,
+                )
+            )
         write_shortlist_csv(rows, shortlist_csv)
         console.print(f"Wrote shortlist CSV: {shortlist_csv}")
+        shortlist_json = run_root / "shortlist.json"
+        payload = ScannerShortlistArtifact(
+            schema_version=1,
+            generated_at=utc_now(),
+            as_of=scan_as_of,
+            run_id=run_stamp,
+            universe=universe,
+            tail_low_pct=float(tail_low_pct),
+            tail_high_pct=float(tail_high_pct),
+            all_watchlist_name=all_watchlist_name,
+            shortlist_watchlist_name=shortlist_watchlist_name,
+            rows=schema_rows,
+        ).to_dict()
+        if strict:
+            ScannerShortlistArtifact.model_validate(payload)
+        shortlist_json.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        console.print(f"Wrote shortlist JSON: {shortlist_json}")
 
     wl.set(shortlist_watchlist_name, shortlist_symbols)
     save_watchlists(watchlists_path, wl)

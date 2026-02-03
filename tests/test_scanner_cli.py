@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -108,9 +109,16 @@ def test_scanner_run_updates_watchlists_and_writes_run_files(tmp_path: Path, mon
     assert (run_root / "scan.csv").exists()
     assert (run_root / "liquidity.csv").exists()
     assert (run_root / "shortlist.csv").exists()
+    assert (run_root / "shortlist.json").exists()
     assert (run_root / "shortlist.md").exists()
     shortlist_txt = (run_root / "shortlist.md").read_text(encoding="utf-8")
     assert "scanner" in shortlist_txt
+
+    payload = json.loads((run_root / "shortlist.json").read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 1
+    assert payload["as_of"] == "2026-01-31"
+    assert payload["run_id"] == "test-run"
+    assert payload["rows"][0]["symbol"] == "AAA"
 
 
 def test_scanner_run_preserves_scanned_file_when_no_skip(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

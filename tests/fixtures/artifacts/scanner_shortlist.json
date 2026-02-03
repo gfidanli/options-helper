@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-03T00:00:00+00:00",
+  "as_of": "2026-02-02",
+  "run_id": "example-run",
+  "universe": "default",
+  "tail_low_pct": 2.5,
+  "tail_high_pct": 97.5,
+  "all_watchlist_name": "Scanner - All",
+  "shortlist_watchlist_name": "Scanner - Shortlist",
+  "rows": [
+    {
+      "symbol": "AAA",
+      "score": 85.0,
+      "coverage": 0.5,
+      "top_reasons": "Extension tail high (pct=98.0)."
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-03T00:00:00+00:00",
+  "as_of": "2026-02-02",
+  "disclaimer": "Not financial advice. For informational/educational use only.",
+  "report_date": "2026-02-02",
+  "portfolio_path": "data/portfolio.json",
+  "symbols": ["AAA"],
+  "top": 3,
+  "technicals": {
+    "source": "technicals_backtesting",
+    "config_path": "config/technical_backtesting.yaml"
+  },
+  "portfolio": {
+    "exposure": null,
+    "stress": []
+  },
+  "sections": [
+    {
+      "symbol": "AAA",
+      "as_of": "2026-02-02",
+      "errors": [],
+      "warnings": [],
+      "derived_updated": false,
+      "next_earnings_date": null,
+      "technicals": null,
+      "confluence": null,
+      "chain": null,
+      "derived": null,
+      "compare": null,
+      "flow_net": null,
+      "quote_quality": null
+    }
+  ]
+}

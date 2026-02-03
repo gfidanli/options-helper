@@ -100,6 +100,9 @@ def test_compare_cli_outputs_and_writes_json(tmp_path: Path) -> None:
     assert out_path.exists()
 
     payload = json.loads(out_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 1
+    assert payload["as_of"] == "2026-01-02"
+    assert "generated_at" in payload
     assert payload["symbol"] == "AAA"
     assert payload["diff"]["spot_change"] == 2.0
 
@@ -154,4 +157,3 @@ def test_compare_cli_relative_from_latest(tmp_path: Path) -> None:
     )
     assert res.exit_code == 0, res.output
     assert "AAA compare 2026-01-01 \u2192 2026-01-02" in res.output
-

@@ -30,7 +30,7 @@ These plans are written to be **LLM-agent friendly**: clear goals, bounded scope
 | 7 | IMP-003 | Explainable confluence/conviction score ([IMP-003](./IMP-003.md)) | done | M | Med–High |
 | 8 | IMP-008 | Multi-factor scanner ranking ([IMP-008](./IMP-008.md)) | done | M–L | Med–High |
 | 9 | IMP-006 | Signal journal + outcome tracking ([IMP-006](./IMP-006.md)) | done | M | High |
-| 10 | IMP-014 | Artifact data contracts (schema-versioned JSON + validation) ([IMP-014](./IMP-014.md)) | ready | M | Medium |
+| 10 | IMP-014 | Artifact data contracts (schema-versioned JSON + validation) ([IMP-014](./IMP-014.md)) | done | M | Medium |
 | 11 | IMP-007 | Options backtester using snapshot history (daily) ([IMP-007](./IMP-007.md)) | draft (large) | L | Very High |
 | 12 | IMP-009 | Data-provider abstraction (swap Yahoo for better data) ([IMP-009](./IMP-009.md)) | draft | L | Very High |
 | 13 | IMP-020 | Canonical option contract IDs (OSI) + normalization layer ([IMP-020](./IMP-020.md)) | ready | M | High |

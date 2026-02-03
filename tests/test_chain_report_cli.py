@@ -102,6 +102,8 @@ def test_chain_report_json_from_snapshot(tmp_path: Path) -> None:
     assert res.exit_code == 0, res.output
     payload = json.loads(res.output)
 
+    assert payload["schema_version"] == 1
+    assert "generated_at" in payload
     assert payload["symbol"] == "AAA"
     assert payload["as_of"] == "2026-01-02"
     assert payload["spot"] == 100.0
@@ -177,3 +179,5 @@ def test_chain_report_writes_artifacts(tmp_path: Path) -> None:
     assert (out_dir / "chains" / "AAA" / "2026-01-02.json").exists()
     assert (out_dir / "chains" / "AAA" / "2026-01-02.md").exists()
 
+    payload = json.loads((out_dir / "chains" / "AAA" / "2026-01-02.json").read_text(encoding="utf-8"))
+    assert "generated_at" in payload
