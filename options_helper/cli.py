@@ -33,10 +33,10 @@ from options_helper.analysis.research import (
 from options_helper.analysis.roll_plan import compute_roll_plan
 from options_helper.analysis.greeks import add_black_scholes_greeks_to_chain, black_scholes_greeks
 from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, sma
-from options_helper.data.candles import CandleCacheError, CandleStore, last_close
+from options_helper.data.candles import CandleCacheError, CandleStore, close_asof, last_close
 from options_helper.data.derived import DERIVED_COLUMNS, DERIVED_SCHEMA_VERSION, DerivedStore
 from options_helper.data.earnings import EarningsRecord, EarningsStore, safe_next_earnings_date
-from options_helper.data.options_snapshots import OptionsSnapshotStore
+from options_helper.data.options_snapshots import OptionsSnapshotStore, find_snapshot_row
 from options_helper.data.options_snapshotter import snapshot_full_chain_for_symbols
 from options_helper.data.scanner import (
     evaluate_liquidity_for_symbols,
@@ -3570,7 +3570,7 @@ def analyze(
     if offline:
         snapshot_store = OptionsSnapshotStore(snapshots_dir)
 
-    client = YFinanceClient()
+    client = None if offline else YFinanceClient()
     candle_store = CandleStore(cache_dir)
     earnings_store = EarningsStore(Path("data/earnings"))
 
@@ -3578,20 +3578,64 @@ def analyze(
     last_price_by_symbol: dict[str, float | None] = {}
     as_of_by_symbol: dict[str, date | None] = {}
     next_earnings_by_symbol: dict[str, date | None] = {}
+    snapshot_day_by_symbol: dict[str, pd.DataFrame] = {}
     for sym in sorted({p.symbol for p in portfolio.positions}):
-        try:
-            history = candle_store.get_daily_history(sym, period=period)
-        except Exception as exc:  # noqa: BLE001
-            console.print(f"[red]Candle cache error:[/red] {sym}: {exc}")
-            history = pd.DataFrame()
+        history = pd.DataFrame()
+        snapshot_date: date | None = None
+
+        if offline:
+            try:
+                history = candle_store.load(sym)
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"[yellow]Warning:[/yellow] candle cache read failed for {sym}: {exc}")
+                history = pd.DataFrame()
+
+            if snapshot_store is not None:
+                try:
+                    snapshot_date = snapshot_store.resolve_date(sym, as_of)
+                except Exception as exc:  # noqa: BLE001
+                    console.print(f"[yellow]Warning:[/yellow] snapshot date resolve failed for {sym}: {exc}")
+                    snapshot_date = None
+
+            if snapshot_date is None and not history.empty and isinstance(history.index, pd.DatetimeIndex):
+                last_ts = history.index.max()
+                if last_ts is not None and not pd.isna(last_ts):
+                    snapshot_date = last_ts.date()
+
+            if snapshot_date is not None and not history.empty and isinstance(history.index, pd.DatetimeIndex):
+                history = history.loc[history.index <= pd.Timestamp(snapshot_date)]
+
+            snap_df = pd.DataFrame()
+            if snapshot_store is not None and snapshot_date is not None:
+                try:
+                    snap_df = snapshot_store.load_day(sym, snapshot_date)
+                except Exception as exc:  # noqa: BLE001
+                    console.print(f"[yellow]Warning:[/yellow] snapshot load failed for {sym}: {exc}")
+                    snap_df = pd.DataFrame()
+            snapshot_day_by_symbol[sym] = snap_df
+        else:
+            try:
+                history = candle_store.get_daily_history(sym, period=period)
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"[red]Candle cache error:[/red] {sym}: {exc}")
+                history = pd.DataFrame()
+
         history_by_symbol[sym] = history
-        last_price_by_symbol[sym] = last_close(history)
-        as_of_date = None
-        if not history.empty and isinstance(history.index, pd.DatetimeIndex):
-            last_ts = history.index.max()
-            if last_ts is not None and not pd.isna(last_ts):
-                as_of_date = last_ts.date()
-        as_of_by_symbol[sym] = as_of_date
+
+        if offline:
+            as_of_by_symbol[sym] = snapshot_date
+            last_price_by_symbol[sym] = (
+                close_asof(history, snapshot_date) if snapshot_date is not None else last_close(history)
+            )
+        else:
+            last_price_by_symbol[sym] = last_close(history)
+            as_of_date = None
+            if not history.empty and isinstance(history.index, pd.DatetimeIndex):
+                last_ts = history.index.max()
+                if last_ts is not None and not pd.isna(last_ts):
+                    as_of_date = last_ts.date()
+            as_of_by_symbol[sym] = as_of_date
+
         next_earnings_by_symbol[sym] = safe_next_earnings_date(earnings_store, sym)
 
     metrics_list: list[PositionMetrics] = []
@@ -3599,6 +3643,17 @@ def analyze(
 
     for p in portfolio.positions:
         try:
+            snapshot_row = None
+            if offline:
+                df_snap = snapshot_day_by_symbol.get(p.symbol, pd.DataFrame())
+                row = None if df_snap.empty else find_snapshot_row(
+                    df_snap,
+                    expiry=p.expiry,
+                    strike=p.strike,
+                    option_type=p.option_type,
+                )
+                snapshot_row = row if row is not None else {}
+
             metrics = _position_metrics(
                 client,
                 p,
@@ -3607,6 +3662,7 @@ def analyze(
                 underlying_last_price=last_price_by_symbol.get(p.symbol),
                 as_of=as_of_by_symbol.get(p.symbol),
                 next_earnings_date=next_earnings_by_symbol.get(p.symbol),
+                snapshot_row=snapshot_row,
             )
             metrics_list.append(metrics)
             advice_by_id[p.id] = advise(metrics, portfolio)
