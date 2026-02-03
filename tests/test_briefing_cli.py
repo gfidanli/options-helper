@@ -168,3 +168,9 @@ def test_briefing_writes_daily_md_and_updates_derived(tmp_path: Path, monkeypatc
 
     assert (derived_dir / "AAA.csv").exists()
     assert (derived_dir / "BBB.csv").exists()
+
+    json_path = out_dir / "2026-01-02.json"
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    assert "portfolio" in payload
+    assert payload["portfolio"]["exposure"] is not None
+    assert isinstance(payload["portfolio"]["stress"], list)

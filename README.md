@@ -41,6 +41,7 @@ python3 -m options_helper init portfolio.json
 - Uses daily candles resampled into 3-business-day and weekly bars.
 - Computes RSI + EMA trend state across timeframes and provides rule-based suggestions.
 - Command: `analyze`
+- Also prints portfolio-level Greeks + stress scenarios (spot/vol/time). Flags: `--stress-spot-pct`, `--stress-vol-pp`, `--stress-days`.
 
 ### Watchlists
 Maintain multiple named symbol lists for research workflows.

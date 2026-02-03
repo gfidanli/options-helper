@@ -18,6 +18,9 @@ def test_analyze_help_includes_offline_flags() -> None:
     assert "--as-of" in res.output
     assert "--offline-strict" in res.output
     assert "--snapshots-dir" in res.output
+    assert "--stress-spot-pct" in res.output
+    assert "--stress-vol-pp" in res.output
+    assert "--stress-days" in res.output
 
 
 def test_analyze_online_path_stubs_still_runs(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

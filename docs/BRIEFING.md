@@ -55,6 +55,9 @@ By default it writes:
 The report includes:
 - Portfolio table (best-effort marks/PnL from the same snapshot day)
   - Includes `Spr%` when bid/ask quotes are available
+- Portfolio exposure + stress summary in the JSON payload (best-effort)
+  - Exposure: aggregate delta/theta/vega
+  - Stress defaults: spot ±5%, IV ±5pp, time +7 days
 - Per symbol:
   - Technical context (from cached candles; canonical indicator source is `technicals_backtesting`)
     - Includes extension percentiles + rolling quantiles (1y/3y/5y when available)

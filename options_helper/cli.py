@@ -21,6 +21,12 @@ from options_helper.analysis.derived_metrics import DerivedRow, compute_derived_
 from options_helper.analysis.events import earnings_event_risk
 from options_helper.analysis.flow import FlowGroupBy, aggregate_flow_window, compute_flow, summarize_flow
 from options_helper.analysis.performance import compute_daily_performance_quote
+from options_helper.analysis.portfolio_risk import (
+    PortfolioExposure,
+    StressScenario,
+    compute_portfolio_exposure,
+    run_stress,
+)
 from options_helper.analysis.quote_quality import compute_quote_quality
 from options_helper.analysis.research import (
     Direction,
@@ -1886,6 +1892,8 @@ def briefing(
 
     # Cache day snapshots for portfolio marks (best-effort).
     day_cache: dict[str, tuple[date, pd.DataFrame]] = {}
+    candles_by_symbol: dict[str, pd.DataFrame] = {}
+    next_earnings_by_symbol: dict[str, date | None] = {}
 
     sections: list[BriefingSymbolSection] = []
     resolved_to_dates: list[date] = []
@@ -1904,6 +1912,7 @@ def briefing(
         derived_row = None
         quote_quality = None
         next_earnings_date = safe_next_earnings_date(earnings_store, sym)
+        next_earnings_by_symbol[sym] = next_earnings_date
 
         try:
             to_date = store.resolve_date(sym, as_of)
@@ -1953,6 +1962,10 @@ def briefing(
                             warnings.append("technicals unavailable: insufficient candle history / warmup")
                 except Exception as exc:  # noqa: BLE001
                     warnings.append(f"technicals unavailable: {exc}")
+
+            if candles is None:
+                candles = pd.DataFrame()
+            candles_by_symbol[sym] = candles
 
             chain = compute_chain_report(
                 df_to,
@@ -2038,12 +2051,14 @@ def briefing(
     report_date = max(resolved_to_dates).isoformat()
     portfolio_rows: list[dict[str, str]] = []
     portfolio_rows_with_pnl: list[tuple[float, dict[str, str]]] = []
+    portfolio_metrics: list[PositionMetrics] = []
     for p in portfolio.positions:
         sym = p.symbol.upper()
         to_date, df_to = day_cache.get(sym, (None, pd.DataFrame()))
 
         mark = None
         spr_pct = None
+        snapshot_row = None
         if not df_to.empty:
             sub = df_to.copy()
             if "expiry" in sub.columns:
@@ -2055,14 +2070,38 @@ def briefing(
                 sub = sub.assign(_strike=strike)
                 sub = sub[(sub["_strike"] - float(p.strike)).abs() < 1e-9]
             if not sub.empty:
-                row = sub.iloc[0]
-                bid = _extract_float(row, "bid")
-                ask = _extract_float(row, "ask")
-                mark = _mark_price(bid=bid, ask=ask, last=_extract_float(row, "lastPrice"))
+                snapshot_row = sub.iloc[0]
+                bid = _extract_float(snapshot_row, "bid")
+                ask = _extract_float(snapshot_row, "ask")
+                mark = _mark_price(bid=bid, ask=ask, last=_extract_float(snapshot_row, "lastPrice"))
                 if bid is not None and ask is not None and bid > 0 and ask > 0:
                     mid = (bid + ask) / 2.0
                     if mid > 0:
                         spr_pct = (ask - bid) / mid
+
+        history = candles_by_symbol.get(sym)
+        if history is None or history.empty:
+            try:
+                history = candle_store.load(sym)
+            except Exception:  # noqa: BLE001
+                history = pd.DataFrame()
+            candles_by_symbol[sym] = history
+
+        try:
+            last_price = close_asof(history, to_date) if to_date is not None else last_close(history)
+            metrics = _position_metrics(
+                None,
+                p,
+                risk_profile=rp,
+                underlying_history=history,
+                underlying_last_price=last_price,
+                as_of=to_date,
+                next_earnings_date=next_earnings_by_symbol.get(sym),
+                snapshot_row=snapshot_row if snapshot_row is not None else {},
+            )
+            portfolio_metrics.append(metrics)
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[yellow]Warning:[/yellow] portfolio exposure skipped for {p.id}: {exc}")
 
         pnl_abs = None
         pnl_pct = None
@@ -2096,6 +2135,15 @@ def briefing(
         include_spread = any(r.get("spr_%") not in (None, "-") for r in portfolio_rows_sorted)
         portfolio_table_md = render_portfolio_table_markdown(portfolio_rows_sorted, include_spread=include_spread)
 
+    portfolio_exposure = None
+    portfolio_stress = None
+    if portfolio_metrics:
+        portfolio_exposure = compute_portfolio_exposure(portfolio_metrics)
+        portfolio_stress = run_stress(
+            portfolio_exposure,
+            _build_stress_scenarios(stress_spot_pct=[], stress_vol_pp=5.0, stress_days=7),
+        )
+
     md = render_briefing_markdown(
         report_date=report_date,
         portfolio_path=str(portfolio_path),
@@ -2122,6 +2170,8 @@ def briefing(
             symbol_sections=sections,
             top=top,
             technicals_config=str(technicals_config),
+            portfolio_exposure=portfolio_exposure,
+            portfolio_stress=portfolio_stress,
         )
         json_path = out_path.with_suffix(".json")
         json_path.write_text(
@@ -3559,6 +3609,21 @@ def analyze(
         "--cache-dir",
         help="Directory for locally cached daily candles.",
     ),
+    stress_spot_pct: list[float] = typer.Option(
+        [],
+        "--stress-spot-pct",
+        help="Spot shock percent (repeatable). Use 5 for 5%% or 0.05 for 5%%.",
+    ),
+    stress_vol_pp: float = typer.Option(
+        5.0,
+        "--stress-vol-pp",
+        help="Volatility shock in IV points (e.g. 5 = 5pp). Set to 0 to disable.",
+    ),
+    stress_days: int = typer.Option(
+        7,
+        "--stress-days",
+        help="Time decay stress in days. Set to 0 to disable.",
+    ),
 ) -> None:
     """Fetch data and print metrics + rule-based advice."""
     if interval != "1d":
@@ -3699,6 +3764,15 @@ def analyze(
 
     render_positions(console, portfolio, metrics_list, advice_by_id)
 
+    exposure = compute_portfolio_exposure(metrics_list)
+    _render_portfolio_risk(
+        console,
+        exposure,
+        stress_spot_pct=stress_spot_pct,
+        stress_vol_pp=stress_vol_pp,
+        stress_days=stress_days,
+    )
+
     if offline_missing:
         for msg in offline_missing:
             console.print(f"[yellow]Warning:[/yellow] {msg}")
@@ -3770,6 +3844,120 @@ def _stats_to_dict(stats: object | None) -> dict | None:
     if isinstance(stats, dict):
         return {k: v for k, v in stats.items() if not str(k).startswith("_")}
     return {"value": stats}
+
+
+def _normalize_pct(val: float) -> float:
+    try:
+        val_f = float(val)
+    except Exception:  # noqa: BLE001
+        return 0.0
+    return val_f / 100.0 if abs(val_f) > 1.0 else val_f
+
+
+def _normalize_pp(val: float) -> float:
+    try:
+        val_f = float(val)
+    except Exception:  # noqa: BLE001
+        return 0.0
+    return val_f / 100.0 if abs(val_f) > 1.0 else val_f
+
+
+def _build_stress_scenarios(
+    *,
+    stress_spot_pct: list[float],
+    stress_vol_pp: float,
+    stress_days: int,
+) -> list[StressScenario]:
+    scenarios: list[StressScenario] = []
+    spot_values = stress_spot_pct or [0.05]
+    seen_spot: set[float] = set()
+    for raw in spot_values:
+        pct = abs(_normalize_pct(raw))
+        if pct <= 0 or pct in seen_spot:
+            continue
+        seen_spot.add(pct)
+        scenarios.append(StressScenario(name=f"Spot {pct:+.0%}", spot_pct=pct))
+        scenarios.append(StressScenario(name=f"Spot {-pct:+.0%}", spot_pct=-pct))
+
+    vol_pp = _normalize_pp(stress_vol_pp)
+    if vol_pp != 0:
+        pp_label = vol_pp * 100.0
+        scenarios.append(StressScenario(name=f"IV {pp_label:+.1f}pp", vol_pp=vol_pp))
+        scenarios.append(StressScenario(name=f"IV {-pp_label:+.1f}pp", vol_pp=-vol_pp))
+
+    if stress_days > 0:
+        scenarios.append(StressScenario(name=f"Time +{stress_days}d", days=stress_days))
+
+    return scenarios
+
+
+def _render_portfolio_risk(
+    console: Console,
+    exposure: PortfolioExposure,
+    *,
+    stress_spot_pct: list[float],
+    stress_vol_pp: float,
+    stress_days: int,
+) -> None:
+    from rich.table import Table
+
+    def _fmt_num(val: float | None, *, digits: int = 2) -> str:
+        if val is None:
+            return "-"
+        return f"{val:,.{digits}f}"
+
+    def _fmt_money(val: float | None) -> str:
+        if val is None:
+            return "-"
+        return f"${val:,.2f}"
+
+    def _fmt_pct(val: float | None) -> str:
+        if val is None:
+            return "-"
+        return f"{val:.1%}"
+
+    table = Table(title="Portfolio Greeks (best-effort)")
+    table.add_column("As-of")
+    table.add_column("Delta (shares)", justify="right")
+    table.add_column("Theta/day ($)", justify="right")
+    table.add_column("Vega ($/IV)", justify="right")
+    table.add_row(
+        "-" if exposure.as_of is None else exposure.as_of.isoformat(),
+        _fmt_num(exposure.total_delta_shares),
+        _fmt_money(exposure.total_theta_dollars_per_day),
+        _fmt_money(exposure.total_vega_dollars_per_iv),
+    )
+    console.print(table)
+
+    if exposure.assumptions:
+        console.print("Assumptions: " + "; ".join(exposure.assumptions))
+    if exposure.warnings:
+        console.print("[yellow]Warnings:[/yellow] " + "; ".join(exposure.warnings))
+
+    scenarios = _build_stress_scenarios(
+        stress_spot_pct=stress_spot_pct,
+        stress_vol_pp=stress_vol_pp,
+        stress_days=stress_days,
+    )
+    if not scenarios:
+        return
+
+    stress_results = run_stress(exposure, scenarios)
+    stress_table = Table(title="Portfolio Stress (best-effort)")
+    stress_table.add_column("Scenario")
+    stress_table.add_column("PnL $", justify="right")
+    stress_table.add_column("PnL %", justify="right")
+    stress_table.add_column("Notes")
+
+    for result in stress_results:
+        notes = ", ".join(result.warnings) if result.warnings else "-"
+        stress_table.add_row(
+            result.name,
+            _fmt_money(result.pnl),
+            _fmt_pct(result.pnl_pct),
+            notes,
+        )
+    console.print(stress_table)
 
 
 @technicals_app.command("compute-indicators")

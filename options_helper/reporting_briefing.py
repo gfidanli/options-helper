@@ -11,6 +11,7 @@ from options_helper.analysis.chain_metrics import ChainReport
 from options_helper.analysis.compare_metrics import CompareReport
 from options_helper.analysis.events import format_next_earnings_line
 from options_helper.analysis.derived_metrics import DerivedRow
+from options_helper.analysis.portfolio_risk import PortfolioExposure, StressResult
 from options_helper.technicals_backtesting.snapshot import TechnicalSnapshot
 
 
@@ -337,6 +338,8 @@ def build_briefing_payload(
     symbol_sections: list["BriefingSymbolSection"],
     top: int = 3,
     technicals_config: str | None = None,
+    portfolio_exposure: PortfolioExposure | None = None,
+    portfolio_stress: list[StressResult] | None = None,
 ) -> dict[str, Any]:
     return {
         "schema_version": 1,
@@ -349,6 +352,10 @@ def build_briefing_payload(
         "technicals": {
             "source": "technicals_backtesting",
             "config_path": technicals_config,
+        },
+        "portfolio": {
+            "exposure": _jsonable(portfolio_exposure),
+            "stress": _jsonable(portfolio_stress or []),
         },
         "sections": [
             {
