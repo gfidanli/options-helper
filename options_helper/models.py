@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, model_validator
 
 OptionType = Literal["call", "put"]
 RiskTolerance = Literal["low", "medium", "high"]
+LegSide = Literal["long", "short"]
 
 
 class RiskProfile(BaseModel):
@@ -38,6 +39,19 @@ class RiskProfile(BaseModel):
     min_volume: int = Field(default=10, ge=0)
 
 
+class Leg(BaseModel):
+    side: LegSide
+    option_type: OptionType
+    expiry: date
+    strike: float = Field(gt=0.0)
+    contracts: int = Field(gt=0)
+    ratio: float | None = Field(default=None, gt=0.0)
+
+    @property
+    def signed_contracts(self) -> int:
+        return self.contracts if self.side == "long" else -self.contracts
+
+
 class Position(BaseModel):
     id: str
     symbol: str
@@ -53,11 +67,55 @@ class Position(BaseModel):
         return self.cost_basis * 100.0 * self.contracts
 
 
+class MultiLegPosition(BaseModel):
+    id: str
+    symbol: str
+    legs: list[Leg] = Field(default_factory=list)
+    net_debit: float | None = None
+    opened_at: date | None = None
+
+    @model_validator(mode="after")
+    def _validate_legs(self) -> "MultiLegPosition":
+        if len(self.legs) < 2:
+            raise ValueError("multi-leg positions require at least 2 legs")
+        return self
+
+    @property
+    def premium_paid(self) -> float:
+        if self.net_debit is None:
+            return 0.0
+        return max(0.0, float(self.net_debit))
+
+
+PositionLike = MultiLegPosition | Position
+
+
 class Portfolio(BaseModel):
     base_currency: str = "USD"
     cash: float = Field(default=0.0)
     risk_profile: RiskProfile = Field(default_factory=RiskProfile)
-    positions: list[Position] = Field(default_factory=list)
+    positions: list[PositionLike] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_multi_leg_positions(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        raw_positions = data.get("positions")
+        if not isinstance(raw_positions, list):
+            return data
+        coerced: list[object] = []
+        for item in raw_positions:
+            if isinstance(item, (Position, MultiLegPosition)):
+                coerced.append(item)
+                continue
+            if isinstance(item, dict) and "legs" in item:
+                coerced.append(MultiLegPosition.model_validate(item))
+                continue
+            coerced.append(item)
+        updated = dict(data)
+        updated["positions"] = coerced
+        return updated
 
     @model_validator(mode="after")
     def _validate_unique_position_ids(self) -> "Portfolio":
