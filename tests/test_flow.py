@@ -61,3 +61,33 @@ def test_compute_flow_merges_and_calculates() -> None:
     assert row["deltaOI_notional"] == 50 * 2.0 * 100.0
     assert row["volume_notional"] == 100 * 2.0 * 100.0
 
+
+def test_compute_flow_prefers_osi_join_when_available() -> None:
+    today = pd.DataFrame(
+        [
+            {
+                "contractSymbol": "ABC_NEW",
+                "osi": "ABC   240119C00010000",
+                "optionType": "call",
+                "expiry": "2024-01-19",
+                "strike": 10.0,
+                "lastPrice": 2.0,
+                "volume": 100,
+                "openInterest": 150,
+            }
+        ]
+    )
+    prev = pd.DataFrame(
+        [
+            {
+                "contractSymbol": "ABC_OLD",
+                "osi": "ABC   240119C00010000",
+                "openInterest": 100,
+            }
+        ]
+    )
+
+    out = compute_flow(today, prev)
+    assert len(out) == 1
+    row = out.iloc[0]
+    assert row["deltaOI"] == 50

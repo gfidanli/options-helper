@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from options_helper.analysis.greeks import add_black_scholes_greeks_to_chain
+from options_helper.analysis.osi import format_osi, parse_contract_symbol
 from options_helper.analysis.quote_quality import compute_quote_quality
 from options_helper.data.candles import CandleStore, last_close
 from options_helper.data.options_snapshots import OptionsSnapshotStore
@@ -25,6 +26,30 @@ class SnapshotSymbolResult:
     expiries: int
     status: str
     error: str | None
+
+
+def _add_osi_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty or "contractSymbol" not in df.columns:
+        return df
+
+    def _parse(raw: object) -> tuple[str | None, str | None]:
+        parsed = parse_contract_symbol(raw)
+        if parsed is None:
+            return (None, None)
+        try:
+            osi = format_osi(parsed)
+        except ValueError:
+            osi = None
+        return (osi, parsed.underlying_norm or None)
+
+    parsed = df["contractSymbol"].map(_parse)
+    osi_values = parsed.map(lambda item: item[0])
+    underlying_values = parsed.map(lambda item: item[1])
+
+    out = df.copy()
+    out["osi"] = osi_values
+    out["underlying_norm"] = underlying_values
+    return out
 
 
 def snapshot_full_chain_for_symbols(
@@ -143,6 +168,7 @@ def snapshot_full_chain_for_symbols(
                 puts["expiry"] = exp.isoformat()
 
                 df = pd.concat([calls, puts], ignore_index=True)
+                df = _add_osi_columns(df)
                 df = add_black_scholes_greeks_to_chain(
                     df,
                     spot=spot,

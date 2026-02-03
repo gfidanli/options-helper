@@ -70,6 +70,7 @@ class ExpiryCompare(BaseModel):
 
 class FlowContract(BaseModel):
     contract_symbol: str
+    osi: str | None = None
     expiry: str | None = None
     option_type: str | None = None
     strike: float | None = None
@@ -266,6 +267,10 @@ def compute_compare_report(
             for _, row in flow.head(top).iterrows():
                 strike = row.get("strike")
                 strike_val = float(strike) if strike is not None and not pd.isna(strike) else None
+                osi_raw = row.get("osi")
+                osi_val = None
+                if osi_raw is not None and not pd.isna(osi_raw):
+                    osi_val = str(osi_raw).strip() or None
                 delta_oi = row.get("deltaOI")
                 delta_oi_val = float(delta_oi) if delta_oi is not None and not pd.isna(delta_oi) else None
                 delta_notional = row.get("deltaOI_notional")
@@ -275,6 +280,7 @@ def compute_compare_report(
                 flow_top_contracts.append(
                     FlowContract(
                         contract_symbol=str(row.get("contractSymbol")),
+                        osi=osi_val,
                         expiry=str(row.get("expiry")) if row.get("expiry") is not None else None,
                         option_type=str(row.get("optionType")) if row.get("optionType") is not None else None,
                         strike=strike_val,
@@ -315,4 +321,3 @@ def compute_compare_report(
         warnings=warnings,
     )
     return report, report_from, report_to
-

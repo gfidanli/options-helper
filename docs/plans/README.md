@@ -33,7 +33,7 @@ These plans are written to be **LLM-agent friendly**: clear goals, bounded scope
 | 10 | IMP-014 | Artifact data contracts (schema-versioned JSON + validation) ([IMP-014](./IMP-014.md)) | done | M | Medium |
 | 11 | IMP-007 | Options backtester using snapshot history (daily) ([IMP-007](./IMP-007.md)) | draft (large) | L | Very High |
 | 12 | IMP-009 | Data-provider abstraction (swap Yahoo for better data) ([IMP-009](./IMP-009.md)) | draft | L | Very High |
-| 13 | IMP-020 | Canonical option contract IDs (OSI) + normalization layer ([IMP-020](./IMP-020.md)) | ready | M | High |
+| 13 | IMP-020 | Canonical option contract IDs (OSI) + normalization layer ([IMP-020](./IMP-020.md)) | done | M | High |
 | 14 | IMP-010 | Multi-leg support (verticals/calendars/diagonals) + roll-plans ([IMP-010](./IMP-010.md)) | draft (large) | XL | Med–High |
 | 15 | IMP-017 | Engineering leverage: CI, pre-commit, type checks, perf/observability ([IMP-017](./IMP-017.md)) | ready | S–M | Medium |
 | 16 | IMP-011 | Reporting UX (TUI dashboards / web UI) ([IMP-011](./IMP-011.md)) | draft | M–L | Low |

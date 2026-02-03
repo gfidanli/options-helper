@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from options_helper.analysis.chain_metrics import compute_mark_price, execution_quality
 from options_helper.analysis.events import earnings_event_risk
 from options_helper.analysis.greeks import black_scholes_greeks
+from options_helper.analysis.osi import format_osi, parse_contract_symbol
 from options_helper.analysis.quote_quality import compute_quote_quality
 from options_helper.models import OptionType, Position
 
@@ -59,6 +60,25 @@ def _parse_iso_date(val) -> date | None:
         return None
 
 
+def _osi_from_row(row: dict) -> str | None:
+    if row is None:
+        return None
+    if "osi" in row:
+        value = row.get("osi")
+        if value is not None and not pd.isna(value):
+            text = str(value).strip()
+            if text:
+                return text
+    raw = row.get("contractSymbol")
+    parsed = parse_contract_symbol(raw)
+    if parsed is None:
+        return None
+    try:
+        return format_osi(parsed)
+    except ValueError:
+        return None
+
+
 def _months_to_target_dte(horizon_months: int) -> int:
     # Use 365/12 to avoid overly coarse 30-day months.
     return int(round(horizon_months * (365.0 / 12.0)))
@@ -96,6 +116,7 @@ def _best_effort_delta_theta(
 
 class RollContract(BaseModel):
     contract_symbol: str | None = None
+    osi: str | None = None
     option_type: OptionType
     expiry: str
     dte: int = Field(ge=0)
@@ -315,6 +336,7 @@ def compute_roll_plan(
 
     current = RollContract(
         contract_symbol=str(cur_row.get("contractSymbol")) if cur_row.get("contractSymbol") is not None else None,
+        osi=_osi_from_row(cur_row),
         option_type=option_type,
         expiry=current_exp.isoformat(),
         dte=current_dte,
@@ -494,6 +516,7 @@ def compute_roll_plan(
 
         contract = RollContract(
             contract_symbol=str(row.get("contractSymbol")) if row.get("contractSymbol") is not None else None,
+            osi=_osi_from_row(row),
             option_type=option_type,
             expiry=cr.expiry.isoformat(),
             dte=int(cr.dte),

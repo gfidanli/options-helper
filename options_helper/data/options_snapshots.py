@@ -169,10 +169,39 @@ class OptionsSnapshotStore:
             return pd.DataFrame()
 
         out = pd.concat(frames, ignore_index=True)
-        # De-dupe contracts if present; keep last occurrence.
-        if "contractSymbol" in out.columns:
-            out = out.drop_duplicates(subset=["contractSymbol"], keep="last")
-        return out
+        return _dedupe_contracts(out)
+
+
+def _dedupe_contracts(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+
+    if "osi" not in df.columns:
+        if "contractSymbol" in df.columns:
+            return df.drop_duplicates(subset=["contractSymbol"], keep="last")
+        return df
+
+    def _has_osi(value: object) -> bool:
+        if value is None:
+            return False
+        try:
+            if pd.isna(value):
+                return False
+        except Exception:  # noqa: BLE001
+            return False
+        return bool(str(value).strip())
+
+    mask = df["osi"].map(_has_osi)
+    if mask.any():
+        with_osi = df[mask].drop_duplicates(subset=["osi"], keep="last")
+        without_osi = df[~mask]
+        if "contractSymbol" in without_osi.columns:
+            without_osi = without_osi.drop_duplicates(subset=["contractSymbol"], keep="last")
+        return pd.concat([with_osi, without_osi], ignore_index=True)
+
+    if "contractSymbol" in df.columns:
+        return df.drop_duplicates(subset=["contractSymbol"], keep="last")
+    return df
 
 
 def _infer_option_type_from_contract_symbol(contract_symbol: str | None) -> str | None:

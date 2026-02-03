@@ -22,6 +22,8 @@ Snapshots are stored under a root directory (default `data/options_snapshots`):
 - `data/options_snapshots/{SYMBOL}/{YYYY-MM-DD}/{EXPIRY}.raw.json` (full-chain mode; default)
 
 Each `{EXPIRY}.csv` file includes both calls and puts in one table with an `optionType` column.
+When available, snapshots also include a canonical `osi` (Options Symbology Initiative) contract ID and `underlying_norm`
+to provide a stable join key across days/providers.
 
 **Important:** `{YYYY-MM-DD}` is the **data date** (latest available daily candle date used to estimate spot), not the
 wall-clock time you ran the snapshot. This avoids pre-market runs being labeled as “today” when the latest daily candle

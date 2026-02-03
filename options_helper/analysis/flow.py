@@ -45,6 +45,21 @@ def _as_float(x) -> float | None:
         return None
 
 
+def _clean_key_series(series: pd.Series) -> pd.Series:
+    def _clean(value: object) -> str | None:
+        if value is None:
+            return None
+        try:
+            if pd.isna(value):
+                return None
+        except Exception:  # noqa: BLE001
+            return None
+        text = str(value).strip()
+        return text or None
+
+    return series.map(_clean)
+
+
 def classify_flow(
     *,
     oi_prev: float | None,
@@ -89,9 +104,10 @@ def compute_flow(today: pd.DataFrame, prev: pd.DataFrame, *, spot: float | None 
 
     Required columns in `today`:
     - contractSymbol, optionType, expiry, lastPrice, volume, openInterest, strike (optional)
+    - osi (optional, used as join key when available)
 
     Required columns in `prev`:
-    - contractSymbol, openInterest
+    - contractSymbol, openInterest (or osi + openInterest if available)
     """
     if today.empty:
         return pd.DataFrame()
@@ -101,14 +117,27 @@ def compute_flow(today: pd.DataFrame, prev: pd.DataFrame, *, spot: float | None 
     if missing:
         raise ValueError(f"today snapshot missing columns: {sorted(missing)}")
 
-    if "contractSymbol" not in prev.columns or "openInterest" not in prev.columns:
-        raise ValueError("prev snapshot missing required columns: contractSymbol, openInterest")
+    if "openInterest" not in prev.columns:
+        raise ValueError("prev snapshot missing required columns: openInterest")
+    if "contractSymbol" not in prev.columns and "osi" not in prev.columns:
+        raise ValueError("prev snapshot missing required columns: contractSymbol or osi")
 
     t = today.copy()
-    p = prev[["contractSymbol", "openInterest"]].copy()
+    t["_join_key"] = _clean_key_series(t["contractSymbol"])
+    if "osi" in t.columns:
+        osi_key = _clean_key_series(t["osi"])
+        t["_join_key"] = osi_key.where(osi_key.notna(), t["_join_key"])
+
+    p = prev.copy()
+    base_key = _clean_key_series(p["contractSymbol"]) if "contractSymbol" in p.columns else pd.Series([None] * len(p), index=p.index)
+    if "osi" in p.columns:
+        osi_key = _clean_key_series(p["osi"])
+        base_key = osi_key.where(osi_key.notna(), base_key)
+    p = p.assign(_join_key=base_key)[["_join_key", "openInterest"]].copy()
     p = p.rename(columns={"openInterest": "openInterest_prev"})
 
-    merged = t.merge(p, on="contractSymbol", how="left")
+    merged = t.merge(p, on="_join_key", how="left")
+    merged = merged.drop(columns=["_join_key"])
 
     # Normalize types (prefer numeric dtype + NaN for missing)
     merged["lastPrice"] = (
@@ -188,7 +217,15 @@ def aggregate_flow_window(flows: list[pd.DataFrame], *, group_by: FlowGroupBy) -
 
     group_cols: list[str]
     if group_by == "contract":
-        group_cols = ["contractSymbol", "expiry", "optionType", "strike"]
+        if "contractSymbol" not in df.columns:
+            raise ValueError("flow missing contractSymbol column for group_by=contract")
+        df = df.copy()
+        contract_key = _clean_key_series(df["contractSymbol"])
+        if "osi" in df.columns:
+            osi_key = _clean_key_series(df["osi"])
+            contract_key = osi_key.where(osi_key.notna(), contract_key)
+        df["_contract_key"] = contract_key
+        group_cols = ["_contract_key", "expiry", "optionType", "strike"]
     elif group_by == "strike":
         group_cols = ["optionType", "strike"]
     elif group_by == "expiry":
@@ -214,4 +251,6 @@ def aggregate_flow_window(flows: list[pd.DataFrame], *, group_by: FlowGroupBy) -
     agg = {c: "sum" for c in metric_cols}
     grouped = sub.groupby(group_cols, as_index=False, sort=True).agg(agg)
     grouped = grouped.merge(sub.groupby(group_cols, as_index=False, sort=True).size(), on=group_cols, how="left")
+    if group_by == "contract" and "_contract_key" in grouped.columns:
+        grouped = grouped.rename(columns={"_contract_key": "contractSymbol"})
     return grouped
