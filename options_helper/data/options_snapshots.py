@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -172,3 +173,81 @@ class OptionsSnapshotStore:
         if "contractSymbol" in out.columns:
             out = out.drop_duplicates(subset=["contractSymbol"], keep="last")
         return out
+
+
+def _infer_option_type_from_contract_symbol(contract_symbol: str | None) -> str | None:
+    if contract_symbol is None:
+        return None
+    s = str(contract_symbol).strip().upper()
+    if not s:
+        return None
+    m = re.search(r"\d{6}([CP])\d{8}$", s)
+    if not m:
+        return None
+    return "call" if m.group(1) == "C" else "put"
+
+
+def find_snapshot_row(
+    df: pd.DataFrame,
+    *,
+    expiry: date,
+    strike: float,
+    option_type: str,
+    contract_symbol: str | None = None,
+    strike_tol: float = 1e-6,
+) -> pd.Series | None:
+    """
+    Best-effort lookup for a single contract row inside a snapshot day DataFrame.
+
+    Matching order:
+    1) contractSymbol (when provided)
+    2) (expiry, strike, option type) best-effort
+    """
+    if df is None or df.empty:
+        return None
+
+    if contract_symbol and "contractSymbol" in df.columns:
+        mask = df["contractSymbol"].astype(str) == str(contract_symbol)
+        if mask.any():
+            return df.loc[mask].iloc[0]
+
+    sub = df
+
+    expiry_str = expiry.isoformat()
+    if "expiry" in sub.columns:
+        sub = sub[sub["expiry"].astype(str) == expiry_str]
+        if sub.empty:
+            return None
+
+    opt_norm = str(option_type).strip().lower()
+    if "optionType" in sub.columns:
+        sub = sub[sub["optionType"].astype(str).str.lower() == opt_norm]
+        if sub.empty:
+            return None
+    elif "contractSymbol" in sub.columns and opt_norm in {"call", "put"}:
+        inferred = sub["contractSymbol"].map(_infer_option_type_from_contract_symbol)
+        sub = sub[inferred == opt_norm]
+        if sub.empty:
+            return None
+
+    if "strike" not in sub.columns:
+        return None
+
+    strike_series = pd.to_numeric(sub["strike"], errors="coerce")
+    if strike_series.isna().all():
+        return None
+
+    target = float(strike)
+    diff = (strike_series.astype(float) - target).abs()
+    match = diff < float(strike_tol)
+    if match.any():
+        return sub.loc[match].iloc[0]
+
+    # Fallback: closest strike among remaining candidates.
+    try:
+        idx = diff.idxmin()
+    except Exception:  # noqa: BLE001
+        return None
+    if pd.isna(idx):
+        return None
+    return sub.loc[idx]

@@ -376,3 +376,26 @@ def last_close(history: pd.DataFrame) -> float | None:
     if val.empty:
         return None
     return float(val.iloc[-1])
+
+
+def close_asof(history: pd.DataFrame, as_of: date) -> float | None:
+    """
+    Return the most recent close at or before `as_of` (date).
+
+    Intended for offline/deterministic workflows where an "as-of" snapshot date
+    should align to the candle cache.
+    """
+    if history is None or history.empty or "Close" not in history.columns:
+        return None
+
+    close = pd.to_numeric(history["Close"], errors="coerce").dropna()
+    if close.empty:
+        return None
+
+    if isinstance(close.index, pd.DatetimeIndex):
+        cutoff = pd.Timestamp(as_of)
+        close = close.loc[close.index <= cutoff]
+        if close.empty:
+            return None
+
+    return float(close.iloc[-1])
