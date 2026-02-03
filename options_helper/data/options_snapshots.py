@@ -242,12 +242,4 @@ def find_snapshot_row(
     match = diff < float(strike_tol)
     if match.any():
         return sub.loc[match].iloc[0]
-
-    # Fallback: closest strike among remaining candidates.
-    try:
-        idx = diff.idxmin()
-    except Exception:  # noqa: BLE001
-        return None
-    if pd.isna(idx):
-        return None
-    return sub.loc[idx]
+    return None

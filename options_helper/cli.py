@@ -3640,18 +3640,35 @@ def analyze(
 
     metrics_list: list[PositionMetrics] = []
     advice_by_id: dict[str, Advice] = {}
+    offline_missing: list[str] = []
 
     for p in portfolio.positions:
         try:
             snapshot_row = None
             if offline:
+                snap_date = as_of_by_symbol.get(p.symbol)
                 df_snap = snapshot_day_by_symbol.get(p.symbol, pd.DataFrame())
-                row = None if df_snap.empty else find_snapshot_row(
-                    df_snap,
-                    expiry=p.expiry,
-                    strike=p.strike,
-                    option_type=p.option_type,
-                )
+                row = None
+
+                if snap_date is None:
+                    offline_missing.append(f"{p.id}: missing offline as-of date for {p.symbol}")
+                elif df_snap.empty:
+                    offline_missing.append(
+                        f"{p.id}: missing snapshot day data for {p.symbol} (as-of {snap_date.isoformat()})"
+                    )
+                else:
+                    row = find_snapshot_row(
+                        df_snap,
+                        expiry=p.expiry,
+                        strike=p.strike,
+                        option_type=p.option_type,
+                    )
+                    if row is None:
+                        offline_missing.append(
+                            f"{p.id}: missing snapshot row for {p.symbol} {p.expiry.isoformat()} "
+                            f"{p.option_type} {p.strike:g} (as-of {snap_date.isoformat()})"
+                        )
+
                 snapshot_row = row if row is not None else {}
 
             metrics = _position_metrics(
@@ -3675,6 +3692,12 @@ def analyze(
         raise typer.Exit(1)
 
     render_positions(console, portfolio, metrics_list, advice_by_id)
+
+    if offline_missing:
+        for msg in offline_missing:
+            console.print(f"[yellow]Warning:[/yellow] {msg}")
+        if offline_strict:
+            raise typer.Exit(1)
 
 
 @app.command()
