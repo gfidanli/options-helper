@@ -34,13 +34,12 @@ fi
 
 echo "[$(date)] Syncing positions watchlist + refreshing earnings..." >> "${LOG_DIR}/earnings_refresh.log"
 
-"${VENV_BIN}/options-helper" watchlists sync-positions "${PORTFOLIO}" \
+"${VENV_BIN}/options-helper" --log-dir "${LOG_DIR}" watchlists sync-positions "${PORTFOLIO}" \
   --path "${WATCHLISTS}" \
   --name positions \
   >> "${LOG_DIR}/earnings_refresh.log" 2>&1
 
-"${VENV_BIN}/options-helper" refresh-earnings \
+"${VENV_BIN}/options-helper" --log-dir "${LOG_DIR}" refresh-earnings \
   --watchlists-path "${WATCHLISTS}" \
   --cache-dir "${REPO_DIR}/data/earnings" \
   >> "${LOG_DIR}/earnings_refresh.log" 2>&1
-

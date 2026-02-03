@@ -9,6 +9,7 @@ This tool is for informational/educational use only and is not financial advice.
 - **Data first, reports second:** `briefing` (and most offline reports) depend on snapshot files under `data/`.
 - **Idempotent by design:** re-running jobs should update/overwrite the latest day rather than creating duplicates.
 - **Non-overlap:** cron jobs use a shared lock directory under `data/locks/` to avoid concurrent writes to caches.
+- **Per-command logs:** every CLI command accepts `--log-dir` (default `data/logs/`) and writes a timestamped log file.
 
 ## Current recurring jobs (defaults)
 

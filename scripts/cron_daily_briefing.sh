@@ -53,7 +53,7 @@ then
 fi
 
 if [[ -f "${WATCHLISTS}" ]]; then
-  "${VENV_BIN}/options-helper" briefing "${PORTFOLIO}" \
+  "${VENV_BIN}/options-helper" --log-dir "${LOG_DIR}" briefing "${PORTFOLIO}" \
     --watchlists-path "${WATCHLISTS}" \
     --watchlist positions \
     --watchlist monitor \
@@ -62,7 +62,7 @@ if [[ -f "${WATCHLISTS}" ]]; then
     --out "${REPO_DIR}/data/reports/daily" \
     >> "${LOG_DIR}/briefing.log" 2>&1
 else
-  "${VENV_BIN}/options-helper" briefing "${PORTFOLIO}" \
+  "${VENV_BIN}/options-helper" --log-dir "${LOG_DIR}" briefing "${PORTFOLIO}" \
     --as-of latest \
     --compare -1 \
     --out "${REPO_DIR}/data/reports/daily" \

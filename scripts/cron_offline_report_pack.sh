@@ -79,6 +79,7 @@ echo "[$(date)] Running offline report pack for ${RUN_DATE} (include_scanner=${I
   >> "${LOG_DIR}/report_pack.log"
 
 args=(
+  --log-dir "${LOG_DIR}"
   report-pack
   "${PORTFOLIO}"
   --watchlists-path "${WATCHLISTS}"
@@ -99,4 +100,3 @@ if [[ "${INCLUDE_SCANNER}" -eq 1 ]]; then
 fi
 
 "${VENV_BIN}/options-helper" "${args[@]}" >> "${LOG_DIR}/report_pack.log" 2>&1
-

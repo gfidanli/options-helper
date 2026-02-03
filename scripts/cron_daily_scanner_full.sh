@@ -87,7 +87,7 @@ echo "[$(date)] Starting full scanner run (run_id=${RUN_ID})..." >> "${LOG_PATH}
 write_status "running" "" ""
 
 set +e
-"${VENV_BIN}/options-helper" scanner run \
+"${VENV_BIN}/options-helper" --log-dir "${LOG_DIR}" scanner run \
   --universe "file:${REPO_DIR}/data/universe/sec_company_tickers.json" \
   --no-skip-scanned \
   --no-write-scanned \

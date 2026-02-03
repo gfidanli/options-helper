@@ -79,6 +79,7 @@ from options_helper.data.technical_backtesting_io import load_ohlc_from_cache, l
 from options_helper.data.universe import UniverseError, load_universe_symbols
 from options_helper.data.yf_client import DataFetchError, YFinanceClient, contract_row_by_strike
 from options_helper.models import OptionType, Position, RiskProfile
+from options_helper.observability import finalize_run_logger, setup_run_logger
 from options_helper.reporting import render_positions, render_summary
 from options_helper.reporting_chain import (
     render_chain_report_console,
@@ -131,6 +132,28 @@ scanner_app = typer.Typer(help="Market opportunity scanner (not financial advice
 app.add_typer(scanner_app, name="scanner")
 journal_app = typer.Typer(help="Signal journal + outcome tracking.")
 app.add_typer(journal_app, name="journal")
+
+
+@app.callback()
+def main(
+    ctx: typer.Context,
+    log_dir: Path = typer.Option(
+        Path("data/logs"),
+        "--log-dir",
+        help="Directory to write per-command logs.",
+    ),
+) -> None:
+    command_name = ctx.info_name or "options-helper"
+    if ctx.invoked_subcommand:
+        command_name = f"{command_name} {ctx.invoked_subcommand}"
+    run_logger = setup_run_logger(log_dir, command_name)
+    if run_logger is None:
+        return
+
+    def _on_close() -> None:
+        finalize_run_logger(run_logger)
+
+    ctx.call_on_close(_on_close)
 
 
 def _parse_date(value: str) -> date:

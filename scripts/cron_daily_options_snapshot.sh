@@ -31,12 +31,12 @@ fi
 cd "${REPO_DIR}"
 
 echo "[$(date)] Running daily options snapshot..."
-"${VENV_BIN}/options-helper" watchlists sync-positions "${PORTFOLIO}" \
+"${VENV_BIN}/options-helper" --log-dir "${LOG_DIR}" watchlists sync-positions "${PORTFOLIO}" \
   --path "${REPO_DIR}/data/watchlists.json" \
   --name positions \
   >> "${LOG_DIR}/options_snapshot.log" 2>&1 || true
 
-"${VENV_BIN}/options-helper" refresh-candles "${PORTFOLIO}" \
+"${VENV_BIN}/options-helper" --log-dir "${LOG_DIR}" refresh-candles "${PORTFOLIO}" \
   --watchlists-path "${REPO_DIR}/data/watchlists.json" \
   --candle-cache-dir "${REPO_DIR}/data/candles" \
   --period 5y \
@@ -56,13 +56,13 @@ then
 fi
 
 # Re-run the candle refresh once Yahoo's daily candle is published.
-"${VENV_BIN}/options-helper" refresh-candles "${PORTFOLIO}" \
+"${VENV_BIN}/options-helper" --log-dir "${LOG_DIR}" refresh-candles "${PORTFOLIO}" \
   --watchlists-path "${REPO_DIR}/data/watchlists.json" \
   --candle-cache-dir "${REPO_DIR}/data/candles" \
   --period 5y \
   >> "${LOG_DIR}/options_snapshot.log" 2>&1
 
-"${VENV_BIN}/options-helper" snapshot-options "${PORTFOLIO}" \
+"${VENV_BIN}/options-helper" --log-dir "${LOG_DIR}" snapshot-options "${PORTFOLIO}" \
   --cache-dir "${REPO_DIR}/data/options_snapshots" \
   --candle-cache-dir "${REPO_DIR}/data/candles" \
   --require-data-date today \

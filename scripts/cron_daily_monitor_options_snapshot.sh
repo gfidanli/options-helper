@@ -84,7 +84,7 @@ then
   exit 0
 fi
 
-"${VENV_BIN}/options-helper" snapshot-options "${PORTFOLIO}" \
+"${VENV_BIN}/options-helper" --log-dir "${LOG_DIR}" snapshot-options "${PORTFOLIO}" \
   --cache-dir "${REPO_DIR}/data/options_snapshots" \
   --candle-cache-dir "${REPO_DIR}/data/candles" \
   --watchlists-path "${WATCHLISTS}" \
