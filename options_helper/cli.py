@@ -343,7 +343,7 @@ def derived_stats(
 
 
 def _position_metrics(
-    client: YFinanceClient,
+    client: YFinanceClient | None,
     position: Position,
     *,
     risk_profile: RiskProfile,
@@ -351,11 +351,17 @@ def _position_metrics(
     underlying_last_price: float | None,
     as_of: date | None = None,
     next_earnings_date: date | None = None,
+    snapshot_row: pd.Series | dict | None = None,
 ) -> PositionMetrics:
     today = as_of or date.today()
-    chain = client.get_options_chain(position.symbol, position.expiry)
-    df = chain.calls if position.option_type == "call" else chain.puts
-    row = contract_row_by_strike(df, position.strike)
+
+    row = snapshot_row
+    if row is None:
+        if client is None:
+            raise ValueError("client is required when snapshot_row is not provided")
+        chain = client.get_options_chain(position.symbol, position.expiry)
+        df = chain.calls if position.option_type == "call" else chain.puts
+        row = contract_row_by_strike(df, position.strike)
 
     bid = ask = last = iv = None
     oi = vol = None
