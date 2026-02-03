@@ -29,7 +29,7 @@ These plans are written to be **LLM-agent friendly**: clear goals, bounded scope
 | 6 | IMP-004 | Portfolio-level Greeks + scenario stress ([IMP-004](./IMP-004.md)) | done | M | Med–High |
 | 7 | IMP-003 | Explainable confluence/conviction score ([IMP-003](./IMP-003.md)) | done | M | Med–High |
 | 8 | IMP-008 | Multi-factor scanner ranking ([IMP-008](./IMP-008.md)) | done | M–L | Med–High |
-| 9 | IMP-006 | Signal journal + outcome tracking ([IMP-006](./IMP-006.md)) | ready | M | High |
+| 9 | IMP-006 | Signal journal + outcome tracking ([IMP-006](./IMP-006.md)) | done | M | High |
 | 10 | IMP-014 | Artifact data contracts (schema-versioned JSON + validation) ([IMP-014](./IMP-014.md)) | ready | M | Medium |
 | 11 | IMP-007 | Options backtester using snapshot history (daily) ([IMP-007](./IMP-007.md)) | draft (large) | L | Very High |
 | 12 | IMP-009 | Data-provider abstraction (swap Yahoo for better data) ([IMP-009](./IMP-009.md)) | draft | L | Very High |
