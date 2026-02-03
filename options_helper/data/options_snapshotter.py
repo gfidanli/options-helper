@@ -13,7 +13,9 @@ from options_helper.analysis.osi import format_osi, parse_contract_symbol
 from options_helper.analysis.quote_quality import compute_quote_quality
 from options_helper.data.candles import CandleStore, last_close
 from options_helper.data.options_snapshots import OptionsSnapshotStore
-from options_helper.data.yf_client import DataFetchError, YFinanceClient
+from options_helper.data.providers import get_provider
+from options_helper.data.providers.base import MarketDataProvider
+from options_helper.data.yf_client import DataFetchError
 
 
 logger = logging.getLogger(__name__)
@@ -62,10 +64,17 @@ def snapshot_full_chain_for_symbols(
     risk_free_rate: float = 0.0,
     symbol_source: str = "scanner",
     watchlists: list[str] | None = None,
+    provider: MarketDataProvider | None = None,
 ) -> list[SnapshotSymbolResult]:
-    client = YFinanceClient()
+    provider = provider or get_provider("yahoo")
     store = OptionsSnapshotStore(cache_dir)
     candle_store = CandleStore(candle_cache_dir)
+    provider_name = getattr(provider, "name", "unknown")
+    provider_version = (
+        getattr(provider, "version", None)
+        or getattr(provider, "provider_version", None)
+        or getattr(provider, "__version__", None)
+    )
 
     results: list[SnapshotSymbolResult] = []
     for symbol in symbols:
@@ -79,7 +88,7 @@ def snapshot_full_chain_for_symbols(
 
             if spot is None or spot <= 0:
                 try:
-                    underlying = client.get_underlying(sym, period=spot_period, interval="1d")
+                    underlying = provider.get_underlying(sym, period=spot_period, interval="1d")
                     spot = underlying.last_price
                     if data_date is None and underlying.history is not None and not underlying.history.empty:
                         try:
@@ -111,8 +120,8 @@ def snapshot_full_chain_for_symbols(
                 continue
 
             snapshot_date = data_date or date.today()
-            expiry_strs = list(client.ticker(sym).options or [])
-            if not expiry_strs:
+            expiries = provider.list_option_expiries(sym)
+            if not expiries:
                 results.append(
                     SnapshotSymbolResult(
                         symbol=sym,
@@ -124,7 +133,7 @@ def snapshot_full_chain_for_symbols(
                 )
                 continue
             if max_expiries is not None:
-                expiry_strs = expiry_strs[:max_expiries]
+                expiries = expiries[:max_expiries]
 
             meta = {
                 "spot": spot,
@@ -138,21 +147,19 @@ def snapshot_full_chain_for_symbols(
                 "snapshot_date": snapshot_date.isoformat(),
                 "symbol_source": symbol_source,
                 "watchlists": watchlists or [],
+                "provider": provider_name,
             }
+            if provider_version:
+                meta["provider_version"] = provider_version
 
             ok_expiries = 0
             total_contracts = 0
             missing_bid_ask = 0
             stale_quotes = 0
             spread_pcts: list[float] = []
-            for exp_str in expiry_strs:
+            for exp in expiries:
                 try:
-                    exp = date.fromisoformat(exp_str)
-                except ValueError:
-                    logger.warning("Invalid expiry format for %s: %s", sym, exp_str)
-                    continue
-                try:
-                    raw = client.get_options_chain_raw(sym, exp)
+                    raw = provider.get_options_chain_raw(sym, exp)
                 except DataFetchError as exc:
                     logger.warning("%s %s: %s", sym, exp.isoformat(), exc)
                     continue
