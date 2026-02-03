@@ -4448,6 +4448,7 @@ def analyze(
     as_of_by_symbol: dict[str, date | None] = {}
     next_earnings_by_symbol: dict[str, date | None] = {}
     snapshot_day_by_symbol: dict[str, pd.DataFrame] = {}
+    chain_cache: dict[tuple[str, date], OptionsChain] = {}
     for sym in sorted({p.symbol for p in portfolio.positions}):
         history = pd.DataFrame()
         snapshot_date: date | None = None
@@ -4525,6 +4526,8 @@ def analyze(
                 low_vol = False
                 bad_spread = False
                 quote_flags = False
+                missing_as_of_warned = False
+                missing_day_warned = False
 
                 for idx, leg in enumerate(p.legs, start=1):
                     snapshot_row = None
@@ -4534,11 +4537,15 @@ def analyze(
                         row = None
 
                         if snap_date is None:
-                            offline_missing.append(f"{p.id}: missing offline as-of date for {p.symbol}")
+                            if not missing_as_of_warned:
+                                offline_missing.append(f"{p.id}: missing offline as-of date for {p.symbol}")
+                                missing_as_of_warned = True
                         elif df_snap.empty:
-                            offline_missing.append(
-                                f"{p.id}: missing snapshot day data for {p.symbol} (as-of {snap_date.isoformat()})"
-                            )
+                            if not missing_day_warned:
+                                offline_missing.append(
+                                    f"{p.id}: missing snapshot day data for {p.symbol} (as-of {snap_date.isoformat()})"
+                                )
+                                missing_day_warned = True
                         else:
                             row = find_snapshot_row(
                                 df_snap,
@@ -4552,6 +4559,17 @@ def analyze(
                                     f"{leg.option_type} {leg.strike:g} (as-of {snap_date.isoformat()})"
                                 )
 
+                        snapshot_row = row if row is not None else {}
+                    else:
+                        row = None
+                        if provider is not None:
+                            key = (p.symbol, leg.expiry)
+                            chain = chain_cache.get(key)
+                            if chain is None:
+                                chain = provider.get_options_chain(p.symbol, leg.expiry)
+                                chain_cache[key] = chain
+                            df_chain = chain.calls if leg.option_type == "call" else chain.puts
+                            row = contract_row_by_strike(df_chain, leg.strike)
                         snapshot_row = row if row is not None else {}
 
                     leg_position = Position(
