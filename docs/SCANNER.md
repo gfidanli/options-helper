@@ -10,7 +10,8 @@ This is **decision support only** and **not financial advice**.
 - **Backfill:** ensure max candle history for tail symbols.
 - **Options snapshot:** full chain + all expiries for tail symbols.
 - **Liquidity filter:** DTE >= 60, `volume >= 10`, `openInterest >= 500` → **Scanner - Shortlist** (replaced each run).
-- **Confluence rank:** shortlist is ordered by coverage → confluence score (best-effort).
+- **Scanner rank:** shortlist is ordered by scanner score (multi-factor, best-effort).
+- **Confluence score:** still computed for context in the shortlist markdown.
 - **Reports:** Extension Percentile Stats reports for shortlist symbols.
 
 ## Command
@@ -26,6 +27,7 @@ Common flags:
   --exclude-path data/universe/exclude_symbols.txt \
   --scanned-path data/scanner/scanned_symbols.txt \
   --tail-pct 2.5 \
+  --derived-dir data/derived \
   --run-id 2026-02-01 \
   --run-dir data/scanner/runs
 ```
@@ -34,8 +36,9 @@ Common flags:
 - Run artifacts:
   - `data/scanner/runs/<run_id>/scan.csv`
   - `data/scanner/runs/<run_id>/liquidity.csv`
+  - `data/scanner/runs/<run_id>/shortlist.csv`
   - `data/scanner/runs/<run_id>/shortlist.md`
-    - includes confluence score + coverage per symbol
+    - includes scanner score + coverage and confluence score + coverage per symbol
 - Watchlists:
   - `data/watchlists.json` → **Scanner - All** and **Scanner - Shortlist**
 - Options snapshots (full chain, all expiries):
@@ -48,6 +51,7 @@ Common flags:
 - Nasdaq Trader symbol directory is still supported and required for the `us-etfs` universe (SEC list has no ETF flag).
 - `yfinance` is best-effort: missing fields, stale quotes, or absent option chains can occur.
 - Snapshot folders use the **latest candle date**, not the wall-clock run time.
+- Scanner ranking uses derived IV/RV when available (`data/derived/{SYMBOL}.csv`); if missing, coverage is reduced.
 - This tool is **not** financial advice.
 
 ## Performance & API etiquette
@@ -57,6 +61,7 @@ Common flags:
 - Symbols that error during the scan are appended to `data/universe/exclude_symbols.txt` (disable with `--no-write-error-excludes`).
 - Use `--exclude-statuses` to control which scan outcomes are excluded (default: `error,no_candles`).
 - Scanned symbols are persisted to `data/scanner/scanned_symbols.txt` and skipped on future runs (disable with `--no-skip-scanned` or `--no-write-scanned`).
+- Shortlist CSV writing can be disabled with `--no-write-shortlist`.
 
 ## Automation (cron)
 - Full daily scanner (CST) + completion checks:

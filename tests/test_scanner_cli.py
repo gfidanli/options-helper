@@ -5,6 +5,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from options_helper.analysis.confluence import ConfluenceInputs, score_confluence
+from options_helper.analysis.scanner_rank import ScannerRankResult
 from options_helper.cli import app
 from options_helper.data.scanner import ScannerLiquidityRow, ScannerScanRow
 
@@ -60,10 +61,22 @@ def test_scanner_run_updates_watchlists_and_writes_run_files(tmp_path: Path, mon
     def _stub_confluence(symbols, **kwargs):  # noqa: ANN001, ARG001
         return {"AAA": score_confluence(ConfluenceInputs(weekly_trend="up"))}
 
+    def _stub_rank(symbols, **kwargs):  # noqa: ANN001, ARG001
+        return {
+            "AAA": ScannerRankResult(
+                score=85.0,
+                coverage=0.5,
+                components=[],
+                warnings=[],
+                top_reasons=["Extension tail low (pct=98.0)."],
+            )
+        }
+
     monkeypatch.setattr("options_helper.cli.load_universe_symbols", _stub_universe)
     monkeypatch.setattr("options_helper.cli.scan_symbols", _stub_scan)
     monkeypatch.setattr("options_helper.cli.evaluate_liquidity_for_symbols", _stub_liquidity)
     monkeypatch.setattr("options_helper.cli.score_shortlist_confluence", _stub_confluence)
+    monkeypatch.setattr("options_helper.cli.rank_shortlist_candidates", _stub_rank)
 
     runner = CliRunner()
     res = runner.invoke(
@@ -94,9 +107,10 @@ def test_scanner_run_updates_watchlists_and_writes_run_files(tmp_path: Path, mon
     run_root = tmp_path / "runs" / "test-run"
     assert (run_root / "scan.csv").exists()
     assert (run_root / "liquidity.csv").exists()
+    assert (run_root / "shortlist.csv").exists()
     assert (run_root / "shortlist.md").exists()
     shortlist_txt = (run_root / "shortlist.md").read_text(encoding="utf-8")
-    assert "score" in shortlist_txt
+    assert "scanner" in shortlist_txt
 
 
 def test_scanner_run_preserves_scanned_file_when_no_skip(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -145,10 +159,22 @@ def test_scanner_run_preserves_scanned_file_when_no_skip(tmp_path: Path, monkeyp
     def _stub_confluence(symbols, **kwargs):  # noqa: ANN001, ARG001
         return {"AAA": score_confluence(ConfluenceInputs(weekly_trend="up"))}
 
+    def _stub_rank(symbols, **kwargs):  # noqa: ANN001, ARG001
+        return {
+            "AAA": ScannerRankResult(
+                score=85.0,
+                coverage=0.5,
+                components=[],
+                warnings=[],
+                top_reasons=["Extension tail low (pct=98.0)."],
+            )
+        }
+
     monkeypatch.setattr("options_helper.cli.load_universe_symbols", _stub_universe)
     monkeypatch.setattr("options_helper.cli.scan_symbols", _stub_scan)
     monkeypatch.setattr("options_helper.cli.evaluate_liquidity_for_symbols", _stub_liquidity)
     monkeypatch.setattr("options_helper.cli.score_shortlist_confluence", _stub_confluence)
+    monkeypatch.setattr("options_helper.cli.rank_shortlist_candidates", _stub_rank)
 
     runner = CliRunner()
     res = runner.invoke(

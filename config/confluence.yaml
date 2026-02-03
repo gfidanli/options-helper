@@ -20,3 +20,23 @@ rsi_divergence:
 iv_regime:
   low: 0.8
   high: 1.2
+
+scanner_rank:
+  weights:
+    extension: 40.0
+    weekly_trend: 15.0
+    rsi_divergence: 10.0
+    liquidity: 15.0
+    iv_regime: 10.0
+    flow: 10.0
+  extension:
+    tail_low: 5.0
+    tail_high: 95.0
+  flow:
+    min_abs_notional: 1000000.0
+  rsi_divergence:
+    favor_factor: 0.5
+  iv_regime:
+    low: 0.8
+    high: 1.2
+  top_reasons: 3

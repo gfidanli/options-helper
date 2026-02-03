@@ -8,3 +8,5 @@ def test_load_confluence_config_defaults() -> None:
     assert cfg["schema_version"] == 1
     assert cfg["weights"]["weekly_trend"] > 0
     assert cfg["extension"]["tail_low"] < cfg["extension"]["tail_high"]
+    assert cfg["scanner_rank"]["weights"]["extension"] > 0
+    assert cfg["scanner_rank"]["extension"]["tail_low"] < cfg["scanner_rank"]["extension"]["tail_high"]

@@ -76,3 +76,35 @@ def _light_validate(cfg: dict) -> None:
     high = float(iv_cfg.get("high", 0.0))
     if low >= high:
         raise ConfigError("iv_regime.low must be < iv_regime.high")
+
+    scanner_cfg = cfg.get("scanner_rank") or {}
+    if scanner_cfg:
+        rank_weights = scanner_cfg.get("weights", {})
+        if any(float(rank_weights.get(k, 0.0)) < 0 for k in rank_weights.keys()):
+            raise ConfigError("scanner_rank.weights must be >= 0")
+
+        rank_ext = scanner_cfg.get("extension", {}) or {}
+        rank_low = float(rank_ext.get("tail_low", 0.0))
+        rank_high = float(rank_ext.get("tail_high", 100.0))
+        if rank_low >= rank_high:
+            raise ConfigError("scanner_rank.extension.tail_low must be < tail_high")
+
+        rank_flow = scanner_cfg.get("flow", {}) or {}
+        rank_min_abs = float(rank_flow.get("min_abs_notional", 0.0))
+        if rank_min_abs < 0:
+            raise ConfigError("scanner_rank.flow.min_abs_notional must be >= 0")
+
+        rank_rsi = scanner_cfg.get("rsi_divergence", {}) or {}
+        rank_favor = float(rank_rsi.get("favor_factor", 0.5))
+        if not (0.0 <= rank_favor <= 1.0):
+            raise ConfigError("scanner_rank.rsi_divergence.favor_factor must be between 0 and 1")
+
+        rank_iv = scanner_cfg.get("iv_regime", {}) or {}
+        rank_iv_low = float(rank_iv.get("low", 0.0))
+        rank_iv_high = float(rank_iv.get("high", 0.0))
+        if rank_iv_low >= rank_iv_high:
+            raise ConfigError("scanner_rank.iv_regime.low must be < iv_regime.high")
+
+        top_reasons = int(scanner_cfg.get("top_reasons", 0))
+        if top_reasons < 0:
+            raise ConfigError("scanner_rank.top_reasons must be >= 0")

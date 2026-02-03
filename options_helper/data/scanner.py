@@ -8,11 +8,15 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
+import pandas as pd
+
 from options_helper.analysis.confluence import ConfluenceScore, score_confluence
 from options_helper.analysis.extension_scan import ExtensionScanResult, compute_current_extension_percentile
 from options_helper.analysis.options_liquidity import LiquidityResult, evaluate_liquidity
-from options_helper.analysis.research import analyze_underlying, build_confluence_inputs
+from options_helper.analysis.research import Direction, analyze_underlying, build_confluence_inputs
+from options_helper.analysis.scanner_rank import ScannerRankInputs, ScannerRankResult, rank_scanner_candidate
 from options_helper.data.candles import CandleStore
+from options_helper.data.derived import DerivedStore
 from options_helper.data.options_snapshots import OptionsSnapshotStore
 from options_helper.models import RiskProfile
 
@@ -39,6 +43,14 @@ class ScannerLiquidityRow:
     is_liquid: bool
     status: str
     error: str | None
+
+
+@dataclass(frozen=True)
+class ScannerShortlistRow:
+    symbol: str
+    score: float | None
+    coverage: float | None
+    top_reasons: str
 
 
 _HYPHEN_SUFFIXES_DEFAULT = {
@@ -414,6 +426,44 @@ def score_shortlist_confluence(
     return results
 
 
+def rank_shortlist_candidates(
+    symbols: list[str],
+    *,
+    candle_store: CandleStore,
+    rank_cfg: dict | None,
+    scan_rows: list[ScannerScanRow] | None = None,
+    liquidity_rows: list[ScannerLiquidityRow] | None = None,
+    derived_store: DerivedStore | None = None,
+    period: str = "5y",
+    risk_profile: RiskProfile | None = None,
+) -> dict[str, ScannerRankResult]:
+    results: dict[str, ScannerRankResult] = {}
+    rp = risk_profile or RiskProfile()
+    extension_percentiles = _extension_percentile_map(scan_rows)
+    liquidity_scores = _liquidity_score_map(liquidity_rows)
+    iv_rv = _iv_rv_map(symbols, derived_store)
+    for symbol in symbols:
+        sym = (symbol or "").strip().upper()
+        if not sym:
+            continue
+        try:
+            history = candle_store.get_daily_history(sym, period=period)
+            setup = analyze_underlying(sym, history=history, risk_profile=rp)
+            trend = _map_trend(setup.direction)
+            inputs = ScannerRankInputs(
+                extension_percentile=extension_percentiles.get(sym),
+                weekly_trend=trend,
+                rsi_divergence=None,
+                iv_rv_20d=iv_rv.get(sym),
+                liquidity_score=liquidity_scores.get(sym),
+                flow_delta_oi_notional=None,
+            )
+            results[sym] = rank_scanner_candidate(inputs, cfg=rank_cfg)
+        except Exception:  # noqa: BLE001
+            continue
+    return results
+
+
 def write_liquidity_csv(rows: list[ScannerLiquidityRow], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -432,3 +482,85 @@ def write_liquidity_csv(rows: list[ScannerLiquidityRow], path: Path) -> None:
         writer.writeheader()
         for row in rows:
             writer.writerow(asdict(row))
+
+
+def write_shortlist_csv(rows: list[ScannerShortlistRow], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "symbol",
+                "score",
+                "coverage",
+                "top_reasons",
+            ],
+        )
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(asdict(row))
+
+
+def _extension_percentile_map(rows: list[ScannerScanRow] | None) -> dict[str, float | None]:
+    if not rows:
+        return {}
+    return {row.symbol.upper(): row.percentile for row in rows}
+
+
+def _liquidity_score_map(rows: list[ScannerLiquidityRow] | None) -> dict[str, float]:
+    if not rows:
+        return {}
+    max_contracts = max((int(row.eligible_contracts) for row in rows), default=0)
+    max_expiries = max((_count_expiries(row.eligible_expiries) for row in rows), default=0)
+    scores: dict[str, float] = {}
+    for row in rows:
+        sym = (row.symbol or "").strip().upper()
+        if not sym:
+            continue
+        parts: list[float] = []
+        if max_contracts > 0:
+            parts.append(max(0.0, float(row.eligible_contracts)) / float(max_contracts))
+        if max_expiries > 0:
+            parts.append(float(_count_expiries(row.eligible_expiries)) / float(max_expiries))
+        if not parts:
+            continue
+        score = sum(parts) / float(len(parts))
+        scores[sym] = max(0.0, min(1.0, score))
+    return scores
+
+
+def _count_expiries(value: str) -> int:
+    if not value:
+        return 0
+    parts = [v.strip() for v in str(value).split(",") if v.strip()]
+    return len(parts)
+
+
+def _iv_rv_map(symbols: list[str], store: DerivedStore | None) -> dict[str, float | None]:
+    if store is None:
+        return {}
+    results: dict[str, float | None] = {}
+    for symbol in symbols:
+        sym = (symbol or "").strip().upper()
+        if not sym:
+            continue
+        try:
+            df = store.load(sym)
+            if df.empty or "iv_rv_20d" not in df.columns:
+                results[sym] = None
+                continue
+            series = pd.to_numeric(df["iv_rv_20d"], errors="coerce").dropna()
+            results[sym] = float(series.iloc[-1]) if not series.empty else None
+        except Exception:  # noqa: BLE001
+            results[sym] = None
+    return results
+
+
+def _map_trend(direction: Direction | None) -> str | None:
+    if direction == Direction.BULLISH:
+        return "up"
+    if direction == Direction.BEARISH:
+        return "down"
+    if direction == Direction.NEUTRAL:
+        return "flat"
+    return None

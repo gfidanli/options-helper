@@ -52,14 +52,17 @@ from options_helper.data.options_snapshotter import snapshot_full_chain_for_symb
 from options_helper.data.scanner import (
     evaluate_liquidity_for_symbols,
     prefilter_symbols,
+    rank_shortlist_candidates,
     read_exclude_symbols,
     read_scanned_symbols,
     scan_symbols,
     score_shortlist_confluence,
     write_liquidity_csv,
     write_scan_csv,
+    write_shortlist_csv,
     write_exclude_symbols,
     write_scanned_symbols,
+    ScannerShortlistRow,
 )
 from options_helper.data.technical_backtesting_artifacts import write_artifacts
 from options_helper.data.technical_backtesting_config import (
@@ -3178,6 +3181,11 @@ def scanner_run(
         "--options-cache-dir",
         help="Directory for options chain snapshots.",
     ),
+    derived_dir: Path = typer.Option(
+        Path("data/derived"),
+        "--derived-dir",
+        help="Directory for derived metric files (reads {derived_dir}/{SYMBOL}.csv).",
+    ),
     spot_period: str = typer.Option(
         "10d",
         "--spot-period",
@@ -3260,6 +3268,11 @@ def scanner_run(
         True,
         "--write-liquidity/--no-write-liquidity",
         help="Write liquidity CSV under the run directory.",
+    ),
+    write_shortlist: bool = typer.Option(
+        True,
+        "--write-shortlist/--no-write-shortlist",
+        help="Write shortlist CSV under the run directory.",
     ),
     config_path: Path = typer.Option(
         Path("config/technical_backtesting.yaml"),
@@ -3410,6 +3423,10 @@ def scanner_run(
             liquidity_path = run_root / "liquidity.csv"
             write_liquidity_csv([], liquidity_path)
             console.print(f"Wrote liquidity CSV: {liquidity_path}")
+        if write_shortlist:
+            shortlist_csv = run_root / "shortlist.csv"
+            write_shortlist_csv([], shortlist_csv)
+            console.print(f"Wrote shortlist CSV: {shortlist_csv}")
         shortlist_md = run_root / "shortlist.md"
         lines = [
             f"# Scanner Shortlist — {run_stamp}",
@@ -3418,6 +3435,7 @@ def scanner_run(
             f"- Tail threshold: `{tail_low_pct:.1f}` / `{tail_high_pct:.1f}`",
             f"- Tail watchlist: `{all_watchlist_name}`",
             f"- Shortlist watchlist: `{shortlist_watchlist_name}`",
+            "- Ranking: `scanner score` (desc)",
             "- Symbols: `0`",
             "",
             "Not financial advice.",
@@ -3462,6 +3480,22 @@ def scanner_run(
         min_open_interest=liquidity_min_oi,
     )
 
+    rank_results = {}
+    if shortlist_symbols:
+        rank_cfg = None
+        if confluence_cfg is not None and isinstance(confluence_cfg, dict):
+            rank_cfg = confluence_cfg.get("scanner_rank")
+        derived_store = DerivedStore(derived_dir)
+        rank_results = rank_shortlist_candidates(
+            shortlist_symbols,
+            candle_store=candle_store,
+            rank_cfg=rank_cfg,
+            scan_rows=scan_rows,
+            liquidity_rows=liquidity_rows,
+            derived_store=derived_store,
+            period=scan_period,
+        )
+
     scan_percentiles = {row.symbol.upper(): row.percentile for row in scan_rows}
     confluence_scores = score_shortlist_confluence(
         shortlist_symbols,
@@ -3470,7 +3504,15 @@ def scanner_run(
         extension_percentiles=scan_percentiles,
         period=scan_period,
     )
-    if confluence_scores:
+    if rank_results:
+        def _shortlist_rank_key(sym: str) -> tuple[float, float, str]:
+            score = rank_results.get(sym)
+            total = score.score if score is not None else -1.0
+            coverage = score.coverage if score is not None else -1.0
+            return (-total, -coverage, sym)
+
+        shortlist_symbols = sorted(shortlist_symbols, key=_shortlist_rank_key)
+    elif confluence_scores:
         def _shortlist_sort_key(sym: str) -> tuple[float, float, str]:
             score = confluence_scores.get(sym)
             coverage = score.coverage if score is not None else -1.0
@@ -3483,6 +3525,23 @@ def scanner_run(
         liquidity_path = run_root / "liquidity.csv"
         write_liquidity_csv(liquidity_rows, liquidity_path)
         console.print(f"Wrote liquidity CSV: {liquidity_path}")
+
+    if write_shortlist:
+        shortlist_csv = run_root / "shortlist.csv"
+        rows: list[ScannerShortlistRow] = []
+        for sym in shortlist_symbols:
+            rank = rank_results.get(sym)
+            reasons = "; ".join(rank.top_reasons) if rank is not None else ""
+            rows.append(
+                ScannerShortlistRow(
+                    symbol=sym,
+                    score=rank.score if rank is not None else None,
+                    coverage=rank.coverage if rank is not None else None,
+                    top_reasons=reasons,
+                )
+            )
+        write_shortlist_csv(rows, shortlist_csv)
+        console.print(f"Wrote shortlist CSV: {shortlist_csv}")
 
     wl.set(shortlist_watchlist_name, shortlist_symbols)
     save_watchlists(watchlists_path, wl)
@@ -3515,6 +3574,7 @@ def scanner_run(
         f"- Tail threshold: `{tail_low_pct:.1f}` / `{tail_high_pct:.1f}`",
         f"- Tail watchlist: `{all_watchlist_name}`",
         f"- Shortlist watchlist: `{shortlist_watchlist_name}`",
+        "- Ranking: `scanner score` (desc)",
         f"- Symbols: `{len(shortlist_symbols)}`",
         "",
         "Not financial advice.",
@@ -3523,13 +3583,17 @@ def scanner_run(
     ]
     if shortlist_symbols:
         for sym in shortlist_symbols:
+            parts: list[str] = []
+            rank = rank_results.get(sym)
+            if rank is not None:
+                parts.append(f"scanner {rank.score:.0f}, cov {rank.coverage * 100.0:.0f}%")
             score = confluence_scores.get(sym)
-            if score is None:
+            if score is not None:
+                parts.append(f"confluence {score.total:.0f}, cov {score.coverage * 100.0:.0f}%")
+            if parts:
+                lines.append(f"- `{sym}` ({'; '.join(parts)}) → `{reports_out / sym}`")
+            else:
                 lines.append(f"- `{sym}` → `{reports_out / sym}`")
-                continue
-            total = f"{score.total:.0f}"
-            coverage = f"{score.coverage * 100.0:.0f}%"
-            lines.append(f"- `{sym}` (score {total}, coverage {coverage}) → `{reports_out / sym}`")
     else:
         lines.append("- (empty)")
     shortlist_md.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
