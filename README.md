@@ -60,6 +60,11 @@ Recommends short-dated (30–90 DTE) and long-dated (LEAPS) contracts to conside
 
 - Design/usage: `docs/CANDLE_CACHE.md`
 
+### Market data providers
+All commands accept a global `--provider` option (currently only `yahoo` is implemented).
+
+- Design/usage: `docs/PROVIDERS.md`
+
 ### Daily performance (best-effort)
 Computes day’s P&L from options-chain `change` * contracts * 100 (best-effort; can be stale on illiquid chains).
 
