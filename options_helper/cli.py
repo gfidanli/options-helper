@@ -17,8 +17,10 @@ from rich.console import Console
 from options_helper.analysis.advice import Advice, PositionMetrics, advise
 from options_helper.analysis.chain_metrics import compute_chain_report, execution_quality
 from options_helper.analysis.compare_metrics import compute_compare_report
+from options_helper.analysis.confluence import ConfluenceInputs, ConfluenceScore, score_confluence
 from options_helper.analysis.derived_metrics import DerivedRow, compute_derived_stats
 from options_helper.analysis.events import earnings_event_risk
+from options_helper.analysis.extension_scan import compute_current_extension_percentile
 from options_helper.analysis.flow import FlowGroupBy, aggregate_flow_window, compute_flow, summarize_flow
 from options_helper.analysis.performance import compute_daily_performance_quote
 from options_helper.analysis.portfolio_risk import (
@@ -30,7 +32,9 @@ from options_helper.analysis.portfolio_risk import (
 from options_helper.analysis.quote_quality import compute_quote_quality
 from options_helper.analysis.research import (
     Direction,
+    UnderlyingSetup,
     analyze_underlying,
+    build_confluence_inputs,
     choose_expiry,
     compute_volatility_context,
     select_option_candidate,
@@ -40,6 +44,7 @@ from options_helper.analysis.roll_plan import compute_roll_plan
 from options_helper.analysis.greeks import add_black_scholes_greeks_to_chain, black_scholes_greeks
 from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, sma
 from options_helper.data.candles import CandleCacheError, CandleStore, close_asof, last_close
+from options_helper.data.confluence_config import ConfigError as ConfluenceConfigError, load_confluence_config
 from options_helper.data.derived import DERIVED_COLUMNS, DERIVED_SCHEMA_VERSION, DerivedStore
 from options_helper.data.earnings import EarningsRecord, EarningsStore, safe_next_earnings_date
 from options_helper.data.options_snapshots import OptionsSnapshotStore, find_snapshot_row
@@ -50,13 +55,17 @@ from options_helper.data.scanner import (
     read_exclude_symbols,
     read_scanned_symbols,
     scan_symbols,
+    score_shortlist_confluence,
     write_liquidity_csv,
     write_scan_csv,
     write_exclude_symbols,
     write_scanned_symbols,
 )
 from options_helper.data.technical_backtesting_artifacts import write_artifacts
-from options_helper.data.technical_backtesting_config import load_technical_backtesting_config
+from options_helper.data.technical_backtesting_config import (
+    ConfigError as TechnicalConfigError,
+    load_technical_backtesting_config,
+)
 from options_helper.data.technical_backtesting_io import load_ohlc_from_cache, load_ohlc_from_path
 from options_helper.data.universe import UniverseError, load_universe_symbols
 from options_helper.data.yf_client import DataFetchError, YFinanceClient, contract_row_by_strike
@@ -90,7 +99,7 @@ from options_helper.technicals_backtesting.max_forward_returns import (
 )
 from options_helper.technicals_backtesting.pipeline import compute_features, warmup_bars
 from options_helper.technicals_backtesting.rsi_divergence import compute_rsi_divergence_flags, rsi_regime_tag
-from options_helper.technicals_backtesting.snapshot import compute_technical_snapshot
+from options_helper.technicals_backtesting.snapshot import TechnicalSnapshot, compute_technical_snapshot
 from options_helper.technicals_backtesting.strategies.registry import get_strategy
 
 app = typer.Typer(add_completion=False)
@@ -1889,6 +1898,14 @@ def briefing(
         technicals_cfg = load_technical_backtesting_config(technicals_config)
     except Exception as exc:  # noqa: BLE001
         technicals_cfg_error = str(exc)
+    confluence_cfg = None
+    confluence_cfg_error = None
+    try:
+        confluence_cfg = load_confluence_config()
+    except ConfluenceConfigError as exc:
+        confluence_cfg_error = str(exc)
+    if confluence_cfg_error:
+        console.print(f"[yellow]Warning:[/yellow] confluence config unavailable: {confluence_cfg_error}")
 
     # Cache day snapshots for portfolio marks (best-effort).
     day_cache: dict[str, tuple[date, pd.DataFrame]] = {}
@@ -1900,6 +1917,43 @@ def briefing(
     compare_norm = compare.strip().lower()
     compare_enabled = compare_norm not in {"none", "off", "false", "0"}
 
+    def _trend_from_weekly_flag(flag: bool | None) -> str | None:
+        if flag is True:
+            return "up"
+        if flag is False:
+            return "down"
+        return None
+
+    def _extension_percentile_from_snapshot(snapshot: TechnicalSnapshot | None) -> float | None:
+        if snapshot is None or snapshot.extension_percentiles is None:
+            return None
+        daily = snapshot.extension_percentiles.daily
+        if daily is None or not daily.current_percentiles:
+            return None
+        items: list[tuple[float, float]] = []
+        for key, value in daily.current_percentiles.items():
+            try:
+                items.append((float(key), float(value)))
+            except Exception:  # noqa: BLE001
+                continue
+        if not items:
+            return None
+        return sorted(items, key=lambda t: t[0])[-1][1]
+
+    def _net_flow_delta_oi_notional(flow_net: pd.DataFrame | None) -> float | None:
+        if flow_net is None or flow_net.empty:
+            return None
+        if "deltaOI_notional" not in flow_net.columns or "optionType" not in flow_net.columns:
+            return None
+        df = flow_net.copy()
+        df["deltaOI_notional"] = pd.to_numeric(df["deltaOI_notional"], errors="coerce")
+        df["optionType"] = df["optionType"].astype(str).str.lower()
+        calls = df[df["optionType"] == "call"]["deltaOI_notional"].dropna()
+        puts = df[df["optionType"] == "put"]["deltaOI_notional"].dropna()
+        if calls.empty and puts.empty:
+            return None
+        return float(calls.sum()) - float(puts.sum())
+
     for sym in symbols:
         errors: list[str] = []
         warnings: list[str] = []
@@ -1910,6 +1964,7 @@ def briefing(
         candles = None
         derived_updated = False
         derived_row = None
+        confluence_score = None
         quote_quality = None
         next_earnings_date = safe_next_earnings_date(earnings_store, sym)
         next_earnings_by_symbol[sym] = next_earnings_date
@@ -2024,6 +2079,22 @@ def briefing(
                             flow_net = aggregate_flow_window([flow], group_by="strike")
                         except Exception:  # noqa: BLE001
                             warnings.append("flow unavailable: compute failed")
+
+            try:
+                trend = _trend_from_weekly_flag(technicals.weekly_trend_up if technicals is not None else None)
+                ext_pct = _extension_percentile_from_snapshot(technicals)
+                flow_notional = _net_flow_delta_oi_notional(flow_net)
+                iv_rv = derived_row.iv_rv_20d if derived_row is not None else None
+                inputs = ConfluenceInputs(
+                    weekly_trend=trend,
+                    extension_percentile=ext_pct,
+                    rsi_divergence=None,
+                    flow_delta_oi_notional=flow_notional,
+                    iv_rv_20d=iv_rv,
+                )
+                confluence_score = score_confluence(inputs, cfg=confluence_cfg)
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(f"confluence unavailable: {exc}")
         except Exception as exc:  # noqa: BLE001
             errors.append(str(exc))
 
@@ -2036,6 +2107,7 @@ def briefing(
                 compare=compare_report,
                 flow_net=flow_net,
                 technicals=technicals,
+                confluence=confluence_score,
                 errors=errors,
                 warnings=warnings,
                 quote_quality=quote_quality,
@@ -2518,6 +2590,18 @@ def research(
     client = YFinanceClient()
     earnings_store = EarningsStore(Path("data/earnings"))
     derived_store = DerivedStore(derived_dir)
+    confluence_cfg = None
+    confluence_cfg_error = None
+    technicals_cfg = None
+    technicals_cfg_error = None
+    try:
+        confluence_cfg = load_confluence_config()
+    except ConfluenceConfigError as exc:
+        confluence_cfg_error = str(exc)
+    try:
+        technicals_cfg = load_technical_backtesting_config()
+    except TechnicalConfigError as exc:
+        technicals_cfg_error = str(exc)
     console = Console()
 
     from rich.table import Table
@@ -2542,6 +2626,56 @@ def research(
         if symbol_console is not None:
             symbol_console.print(*args, **kwargs)
 
+    def _format_confluence(score: ConfluenceScore) -> tuple[str, str, str]:
+        total = f"{score.total:.0f}"
+        coverage = f"{score.coverage * 100.0:.0f}%"
+        parts = []
+        for comp in score.components:
+            if comp.score is None:
+                continue
+            if abs(comp.score) < 1e-9:
+                continue
+            parts.append(f"{comp.name} {comp.score:+.0f}")
+        detail = ", ".join(parts) if parts else "neutral"
+        return total, coverage, detail
+
+    if confluence_cfg_error:
+        emit(f"[yellow]Warning:[/yellow] confluence config unavailable: {confluence_cfg_error}")
+    if technicals_cfg_error:
+        emit(f"[yellow]Warning:[/yellow] technicals config unavailable: {technicals_cfg_error}")
+
+    cached_history: dict[str, pd.DataFrame] = {}
+    cached_setup: dict[str, UnderlyingSetup] = {}
+    cached_extension_pct: dict[str, float | None] = {}
+    pre_confluence: dict[str, ConfluenceScore] = {}
+
+    for sym in symbols:
+        history = candle_store.get_daily_history(sym, period=period)
+        cached_history[sym] = history
+        setup = analyze_underlying(sym, history=history, risk_profile=rp)
+        cached_setup[sym] = setup
+
+        ext_pct = None
+        if technicals_cfg is not None and history is not None and not history.empty:
+            try:
+                ext_result = compute_current_extension_percentile(history, technicals_cfg)
+                ext_pct = ext_result.percentile
+            except Exception:  # noqa: BLE001
+                ext_pct = None
+        cached_extension_pct[sym] = ext_pct
+
+        inputs = build_confluence_inputs(setup, extension_percentile=ext_pct, vol_context=None)
+        pre_confluence[sym] = score_confluence(inputs, cfg=confluence_cfg)
+
+    if len(symbols) > 1:
+        def _sort_key(sym: str) -> tuple[float, float, str]:
+            score = pre_confluence.get(sym)
+            coverage = score.coverage if score is not None else -1.0
+            total = score.total if score is not None else -1.0
+            return (-coverage, -total, sym)
+
+        symbols = sorted(symbols, key=_sort_key)
+
     for sym in symbols:
         symbol_buffer = None
         symbol_console = None
@@ -2551,7 +2685,9 @@ def research(
             symbol_buffer = io.StringIO()
             symbol_console = Console(file=symbol_buffer, width=200, force_terminal=False)
 
-        history = candle_store.get_daily_history(sym, period=period)
+        history = cached_history.get(sym)
+        if history is None:
+            history = candle_store.get_daily_history(sym, period=period)
         if not history.empty:
             last_ts = history.index.max()
             # Candle store normalizes to tz-naive DatetimeIndex.
@@ -2559,7 +2695,10 @@ def research(
             symbol_candle_datetimes[sym] = last_ts.to_pydatetime() if hasattr(last_ts, "to_pydatetime") else last_ts
         as_of_date = symbol_candle_dates.get(sym)
         next_earnings_date = safe_next_earnings_date(earnings_store, sym)
-        setup = analyze_underlying(sym, history=history, risk_profile=rp)
+        setup = cached_setup.get(sym)
+        if setup is None:
+            setup = analyze_underlying(sym, history=history, risk_profile=rp)
+        ext_pct = cached_extension_pct.get(sym)
 
         emit(f"\n[bold]{sym}[/bold] — setup: {setup.direction.value}")
         for r in setup.reasons:
@@ -2617,6 +2756,19 @@ def research(
                 _, long_exp = max(parsed, key=lambda t: t[0])
 
         if setup.direction == Direction.NEUTRAL:
+            confluence_score = score_confluence(
+                build_confluence_inputs(
+                    setup,
+                    extension_percentile=ext_pct,
+                    vol_context=None,
+                ),
+                cfg=confluence_cfg,
+            )
+            total, coverage, detail = _format_confluence(confluence_score)
+            emit(f"  - Confluence score: {total} (coverage {coverage})")
+            emit(f"    - Components: {detail}")
+            if confluence_score.warnings:
+                emit(f"    - Confluence warnings: {', '.join(confluence_score.warnings)}")
             emit("  - No strong directional setup; skipping contract recommendations.")
             continue
 
@@ -2784,6 +2936,20 @@ def research(
                         emit(f"  - Quote warnings (LEAPS): {', '.join(long_pick.quality_warnings)}")
         else:
             emit(f"  - No expiries found in {long_min_dte}-{long_max_dte} DTE range.")
+
+        confluence_score = score_confluence(
+            build_confluence_inputs(
+                setup,
+                extension_percentile=ext_pct,
+                vol_context=vol_context,
+            ),
+            cfg=confluence_cfg,
+        )
+        total, coverage, detail = _format_confluence(confluence_score)
+        emit(f"  - Confluence score: {total} (coverage {coverage})")
+        emit(f"    - Components: {detail}")
+        if confluence_score.warnings:
+            emit(f"    - Confluence warnings: {', '.join(confluence_score.warnings)}")
 
         emit(table)
 
@@ -3105,6 +3271,14 @@ def scanner_run(
     console = Console(width=200)
     cfg = load_technical_backtesting_config(config_path)
     _setup_technicals_logging(cfg)
+    confluence_cfg = None
+    confluence_cfg_error = None
+    try:
+        confluence_cfg = load_confluence_config()
+    except ConfluenceConfigError as exc:
+        confluence_cfg_error = str(exc)
+    if confluence_cfg_error:
+        console.print(f"[yellow]Warning:[/yellow] confluence config unavailable: {confluence_cfg_error}")
 
     ext_cfg = cfg.get("extension_percentiles", {})
     tail_high_cfg = float(ext_cfg.get("tail_high_pct", 97.5))
@@ -3288,6 +3462,23 @@ def scanner_run(
         min_open_interest=liquidity_min_oi,
     )
 
+    scan_percentiles = {row.symbol.upper(): row.percentile for row in scan_rows}
+    confluence_scores = score_shortlist_confluence(
+        shortlist_symbols,
+        candle_store=candle_store,
+        confluence_cfg=confluence_cfg,
+        extension_percentiles=scan_percentiles,
+        period=scan_period,
+    )
+    if confluence_scores:
+        def _shortlist_sort_key(sym: str) -> tuple[float, float, str]:
+            score = confluence_scores.get(sym)
+            coverage = score.coverage if score is not None else -1.0
+            total = score.total if score is not None else -1.0
+            return (-coverage, -total, sym)
+
+        shortlist_symbols = sorted(shortlist_symbols, key=_shortlist_sort_key)
+
     if write_liquidity:
         liquidity_path = run_root / "liquidity.csv"
         write_liquidity_csv(liquidity_rows, liquidity_path)
@@ -3332,7 +3523,13 @@ def scanner_run(
     ]
     if shortlist_symbols:
         for sym in shortlist_symbols:
-            lines.append(f"- `{sym}` → `{reports_out / sym}`")
+            score = confluence_scores.get(sym)
+            if score is None:
+                lines.append(f"- `{sym}` → `{reports_out / sym}`")
+                continue
+            total = f"{score.total:.0f}"
+            coverage = f"{score.coverage * 100.0:.0f}%"
+            lines.append(f"- `{sym}` (score {total}, coverage {coverage}) → `{reports_out / sym}`")
     else:
         lines.append("- (empty)")
     shortlist_md.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")

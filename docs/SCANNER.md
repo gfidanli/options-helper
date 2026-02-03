@@ -10,6 +10,7 @@ This is **decision support only** and **not financial advice**.
 - **Backfill:** ensure max candle history for tail symbols.
 - **Options snapshot:** full chain + all expiries for tail symbols.
 - **Liquidity filter:** DTE >= 60, `volume >= 10`, `openInterest >= 500` → **Scanner - Shortlist** (replaced each run).
+- **Confluence rank:** shortlist is ordered by coverage → confluence score (best-effort).
 - **Reports:** Extension Percentile Stats reports for shortlist symbols.
 
 ## Command
@@ -34,6 +35,7 @@ Common flags:
   - `data/scanner/runs/<run_id>/scan.csv`
   - `data/scanner/runs/<run_id>/liquidity.csv`
   - `data/scanner/runs/<run_id>/shortlist.md`
+    - includes confluence score + coverage per symbol
 - Watchlists:
   - `data/watchlists.json` → **Scanner - All** and **Scanner - Shortlist**
 - Options snapshots (full chain, all expiries):

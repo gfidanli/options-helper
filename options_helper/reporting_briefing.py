@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 
 from options_helper.analysis.chain_metrics import ChainReport
+from options_helper.analysis.confluence import ConfluenceScore
 from options_helper.analysis.compare_metrics import CompareReport
 from options_helper.analysis.events import format_next_earnings_line
 from options_helper.analysis.derived_metrics import DerivedRow
@@ -308,6 +309,13 @@ def _jsonable(val: Any) -> Any:
             return [_jsonable(v) for v in val.tolist()]
     except Exception:  # noqa: BLE001
         pass
+    try:
+        from pydantic import BaseModel
+
+        if isinstance(val, BaseModel):
+            return _jsonable(val.model_dump())
+    except Exception:  # noqa: BLE001
+        pass
     if isinstance(val, (datetime, pd.Timestamp, date)):
         return val.isoformat()
     if isinstance(val, (str, int, float, bool)):
@@ -368,6 +376,7 @@ def build_briefing_payload(
                 if sec.next_earnings_date is None
                 else sec.next_earnings_date.isoformat(),
                 "technicals": _jsonable(sec.technicals),
+                "confluence": _jsonable(sec.confluence),
                 "chain": _jsonable(sec.chain),
                 "derived": _jsonable(sec.derived),
                 "compare": _jsonable(sec.compare),
@@ -389,6 +398,7 @@ class BriefingSymbolSection:
     technicals: TechnicalSnapshot | None
     errors: list[str]
     warnings: list[str]
+    confluence: ConfluenceScore | None = None
     quote_quality: dict[str, Any] | None = None
     derived_updated: bool = False
     derived: DerivedRow | None = None
@@ -479,6 +489,10 @@ def render_briefing_markdown(
         vol_line = vol_regime_takeaway(sec.derived)
         if vol_line:
             lines.append(f"- {vol_line}")
+        if sec.confluence is not None:
+            total = f"{sec.confluence.total:.0f}"
+            coverage = f"{sec.confluence.coverage * 100.0:.0f}%"
+            lines.append(f"- Confluence score: `{total}` (coverage `{coverage}`)")
         lines.append("")
 
         if sec.errors and sec.chain is None and sec.technicals is None:

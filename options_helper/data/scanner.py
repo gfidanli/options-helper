@@ -8,10 +8,13 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
+from options_helper.analysis.confluence import ConfluenceScore, score_confluence
 from options_helper.analysis.extension_scan import ExtensionScanResult, compute_current_extension_percentile
 from options_helper.analysis.options_liquidity import LiquidityResult, evaluate_liquidity
+from options_helper.analysis.research import analyze_underlying, build_confluence_inputs
 from options_helper.data.candles import CandleStore
 from options_helper.data.options_snapshots import OptionsSnapshotStore
+from options_helper.models import RiskProfile
 
 
 @dataclass(frozen=True)
@@ -377,6 +380,38 @@ def evaluate_liquidity_for_symbols(
             continue
 
     return rows, sorted(set(liquid_symbols))
+
+
+def score_shortlist_confluence(
+    symbols: list[str],
+    *,
+    candle_store: CandleStore,
+    confluence_cfg: dict | None,
+    extension_percentiles: dict[str, float | None] | None = None,
+    period: str = "5y",
+    risk_profile: RiskProfile | None = None,
+) -> dict[str, ConfluenceScore]:
+    results: dict[str, ConfluenceScore] = {}
+    rp = risk_profile or RiskProfile()
+    for symbol in symbols:
+        sym = (symbol or "").strip().upper()
+        if not sym:
+            continue
+        try:
+            history = candle_store.get_daily_history(sym, period=period)
+            setup = analyze_underlying(sym, history=history, risk_profile=rp)
+            ext_pct = None
+            if extension_percentiles is not None:
+                ext_pct = extension_percentiles.get(sym)
+            inputs = build_confluence_inputs(
+                setup,
+                extension_percentile=ext_pct,
+                vol_context=None,
+            )
+            results[sym] = score_confluence(inputs, cfg=confluence_cfg)
+        except Exception:  # noqa: BLE001
+            continue
+    return results
 
 
 def write_liquidity_csv(rows: list[ScannerLiquidityRow], path: Path) -> None:

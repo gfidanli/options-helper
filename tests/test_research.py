@@ -266,6 +266,8 @@ def test_research_cli_saves_report_and_includes_spreads(tmp_path: Path, monkeypa
     assert "IV/RV20" in txt
     assert "IV pct" in txt
     assert "(+0.00%)" in txt
+    assert "Confluence score" in txt
+    assert "Components" in txt
 
     ticker_path = tmp_path / "tickers" / "TEST.txt"
     assert ticker_path.exists()

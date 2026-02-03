@@ -93,6 +93,11 @@ Warnings (best-effort):
 - `quote_missing_bid_ask`
 - `quote_invalid`
 
+### Confluence score (best-effort)
+Each symbol includes a **Confluence score** with coverage and a short components breakdown.
+When multiple symbols are requested, the output is ordered by **coverage → score** (descending).
+See `docs/CONFLUENCE_SCORE.md` for details and config.
+
 ## CLI usage
 Run research on your default watchlist named `watchlist`:
 

@@ -64,11 +64,15 @@ The report includes:
   - Next earnings line (date + days until; or `unknown`)
   - Quote quality summary (missing bid/ask %, median/worst spread, stale count) when `meta.json` includes `quote_quality`
   - Vol regime line (RV20/RV60, IV/RV20, IV percentile, term slope; best-effort)
+  - Confluence score (coverage + total; best-effort)
   - Chain highlights (walls, near-term EM/IV, gamma peak)
   - Compare highlights (spot + key deltas), if `--compare` is enabled and snapshots exist
   - Flow zones (net, aggregated by strike), if compare snapshots exist
   - Warnings/errors when data is missing
     - Earnings warnings: `earnings_unknown`, `earnings_within_<N>d`, `expiry_crosses_earnings`
+
+JSON payload note:
+- `sections[].confluence` includes the full confluence object (total, coverage, components, warnings).
 
 ## Inputs (snapshots)
 

@@ -174,3 +174,4 @@ def test_briefing_writes_daily_md_and_updates_derived(tmp_path: Path, monkeypatc
     assert "portfolio" in payload
     assert payload["portfolio"]["exposure"] is not None
     assert isinstance(payload["portfolio"]["stress"], list)
+    assert "confluence" in payload["sections"][0]

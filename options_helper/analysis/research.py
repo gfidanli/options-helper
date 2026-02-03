@@ -8,6 +8,7 @@ from typing import cast
 import pandas as pd
 
 from options_helper.analysis.chain_metrics import execution_quality
+from options_helper.analysis.confluence import ConfluenceInputs
 from options_helper.analysis.events import earnings_event_risk
 from options_helper.analysis.greeks import black_scholes_greeks
 from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, stoch_rsi
@@ -87,6 +88,30 @@ class TradeLevels:
     pullback_entry: float | None
     stop: float | None
     notes: list[str]
+
+
+def build_confluence_inputs(
+    setup: UnderlyingSetup,
+    *,
+    extension_percentile: float | None = None,
+    vol_context: VolatilityContext | None = None,
+    flow_delta_oi_notional: float | None = None,
+    rsi_divergence: str | None = None,
+) -> ConfluenceInputs:
+    if setup.direction == Direction.BULLISH:
+        trend = "up"
+    elif setup.direction == Direction.BEARISH:
+        trend = "down"
+    else:
+        trend = "flat"
+
+    return ConfluenceInputs(
+        weekly_trend=trend,
+        extension_percentile=extension_percentile,
+        rsi_divergence=rsi_divergence,
+        flow_delta_oi_notional=flow_delta_oi_notional,
+        iv_rv_20d=None if vol_context is None else vol_context.iv_rv_20d,
+    )
 
 
 def _mark_price(*, bid: float | None, ask: float | None, last: float | None) -> float | None:
