@@ -1,6 +1,7 @@
 # `roll-plan` — Roll / Position Planner (Offline)
 
-`roll-plan` proposes and ranks roll candidates for a **single existing portfolio position** using locally stored
+`roll-plan` proposes and ranks roll candidates for a **single existing portfolio position** (including eligible
+multi-leg verticals) using locally stored
 snapshot files under `data/options_snapshots/`.
 
 It is designed to make “what should I roll into?” more systematic:
@@ -30,6 +31,12 @@ Constrain roll cost:
 options-helper roll-plan portfolio.json --id cvx-2026-06-18-190c --horizon-months 12 --max-debit 600
 ```
 
+Multi-leg verticals (2-leg, same-expiry):
+
+```bash
+options-helper roll-plan portfolio.json --id aapl-vertical-1 --horizon-months 12
+```
+
 ## Snapshot inputs
 
 `roll-plan` reads:
@@ -47,7 +54,7 @@ If longer-dated expiries are missing from your snapshots, re-run `snapshot-optio
 - `--cache-dir PATH`: snapshot root (default `data/options_snapshots`)
 - `--intent max-upside|reduce-theta|increase-delta|de-risk`: planning intent (default `max-upside`)
 - `--horizon-months INT`: thesis horizon in months (required)
-- `--shape out-same-strike|out-up|out-down`: strike direction constraint (default `out-same-strike`)
+- `--shape out-same-strike|out-up|out-down`: strike direction constraint (default `out-same-strike`; single-leg only)
 - `--top N`: number of candidates to display (default `10`)
 - `--max-debit FLOAT`: max roll debit in dollars (total for position size)
 - `--min-credit FLOAT`: min roll credit in dollars (total for position size)
@@ -62,3 +69,4 @@ If longer-dated expiries are missing from your snapshots, re-run `snapshot-optio
   - prefers `bs_delta` / `bs_theta_per_day` from snapshots (computed at snapshot time)
   - falls back to local Black–Scholes when enough fields exist (spot/IV/expiry/strike)
 - Windowed snapshots can omit candidate strikes/expiries (common for far-dated LEAPS).
+- Multi-leg roll planning (v1) supports only 2-leg same-expiry verticals and preserves strike width.
