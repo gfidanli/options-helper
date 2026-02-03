@@ -42,6 +42,39 @@ def test_initial_download_writes_cache(tmp_path) -> None:
     assert (tmp_path / "UROY.csv").exists()
 
 
+def test_provider_history_fetch_used(tmp_path) -> None:
+    calls: list[tuple[str, date | None, date | None, str, bool, bool]] = []
+
+    class StubProvider:
+        def get_history(
+            self,
+            symbol: str,
+            *,
+            start: date | None,
+            end: date | None,
+            interval: str,
+            auto_adjust: bool,
+            back_adjust: bool,
+        ) -> pd.DataFrame:
+            calls.append((symbol, start, end, interval, auto_adjust, back_adjust))
+            assert start is not None
+            return _df(start, 5)
+
+    store = CandleStore(tmp_path, provider=StubProvider(), backfill_days=0)
+    today = date(2026, 1, 27)
+    out = store.get_daily_history("UROY", period="5d", today=today)
+
+    assert len(calls) == 1
+    sym, start, end, interval, auto_adjust, back_adjust = calls[0]
+    assert sym == "UROY"
+    assert end is None
+    assert interval == "1d"
+    assert auto_adjust is True
+    assert back_adjust is False
+    assert start == today - timedelta(days=5)
+    assert not out.empty
+
+
 def test_refresh_tail_fetches_recent_window(tmp_path) -> None:
     # Seed cache with a few days of data.
     cached_start = date(2026, 1, 10)

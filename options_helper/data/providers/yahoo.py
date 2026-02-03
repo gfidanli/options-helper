@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pandas as pd
+
 from options_helper.data.providers.base import MarketDataProvider, normalize_option_chain
 from options_helper.data.yf_client import EarningsEvent, OptionsChain, UnderlyingData, YFinanceClient
 
@@ -11,6 +13,25 @@ class YahooProvider(MarketDataProvider):
 
     def __init__(self, client: YFinanceClient | None = None) -> None:
         self._client = client or YFinanceClient()
+
+    def get_history(
+        self,
+        symbol: str,
+        *,
+        start: date | None,
+        end: date | None,
+        interval: str,
+        auto_adjust: bool,
+        back_adjust: bool,
+    ) -> pd.DataFrame:
+        return self._client.get_history(
+            symbol,
+            start=start,
+            end=end,
+            interval=interval,
+            auto_adjust=auto_adjust,
+            back_adjust=back_adjust,
+        )
 
     def get_underlying(self, symbol: str, *, period: str = "6mo", interval: str = "1d") -> UnderlyingData:
         return self._client.get_underlying(symbol, period=period, interval=interval)

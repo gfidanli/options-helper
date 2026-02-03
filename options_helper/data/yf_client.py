@@ -47,6 +47,39 @@ class YFinanceClient:
             self._ticker_cache[symbol] = yf.Ticker(symbol)
         return self._ticker_cache[symbol]
 
+    def get_history(
+        self,
+        symbol: str,
+        *,
+        start: date | None,
+        end: date | None,
+        interval: str,
+        auto_adjust: bool,
+        back_adjust: bool,
+    ) -> pd.DataFrame:
+        try:
+            ticker = self.ticker(symbol)
+            if start is None and end is None:
+                return ticker.history(
+                    period="max",
+                    interval=interval,
+                    auto_adjust=auto_adjust,
+                    back_adjust=back_adjust,
+                )
+
+            kwargs: dict[str, object] = {
+                "interval": interval,
+                "auto_adjust": auto_adjust,
+                "back_adjust": back_adjust,
+            }
+            if start is not None:
+                kwargs["start"] = start.isoformat()
+            if end is not None:
+                kwargs["end"] = end.isoformat()
+            return ticker.history(**kwargs)
+        except Exception as exc:  # noqa: BLE001
+            raise DataFetchError(f"Failed to fetch history for {symbol}") from exc
+
     def list_option_expiries(self, symbol: str) -> list[date]:
         try:
             ticker = self.ticker(symbol)

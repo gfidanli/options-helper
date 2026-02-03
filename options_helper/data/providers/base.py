@@ -50,6 +50,17 @@ def normalize_option_chain(
 class MarketDataProvider(Protocol):
     name: str
 
+    def get_history(
+        self,
+        symbol: str,
+        *,
+        start: date | None,
+        end: date | None,
+        interval: str,
+        auto_adjust: bool,
+        back_adjust: bool,
+    ) -> pd.DataFrame: ...
+
     def get_underlying(self, symbol: str, *, period: str = "6mo", interval: str = "1d") -> UnderlyingData: ...
 
     def get_quote(self, symbol: str) -> float | None: ...

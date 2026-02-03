@@ -11,6 +11,8 @@ from typing import Callable, ClassVar
 import pandas as pd
 import yfinance as yf
 
+from options_helper.data.providers.base import MarketDataProvider
+
 logger = logging.getLogger(__name__)
 
 
@@ -132,6 +134,8 @@ class CandleStore:
     root_dir: Path
     # If provided, overrides yfinance fetching entirely (used for tests).
     fetcher: HistoryFetcher | None = None
+    # If provided, uses a market data provider abstraction for history fetches.
+    provider: MarketDataProvider | None = None
     backfill_days: int = 5
     interval: str = "1d"
     max_fetch_attempts: int = 3
@@ -207,6 +211,15 @@ class CandleStore:
     def _fetch(self, symbol: str, start: date | None, end: date | None) -> pd.DataFrame:
         if self.fetcher is not None:
             return self.fetcher(symbol, start, end)
+        if self.provider is not None:
+            return self.provider.get_history(
+                symbol,
+                start=start,
+                end=end,
+                interval=self.interval,
+                auto_adjust=self.auto_adjust,
+                back_adjust=self.back_adjust,
+            )
         return _yfinance_fetch(
             symbol,
             start,
