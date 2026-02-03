@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Confluence Score Configuration Schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Schema version for confluence config.",
+      "default": 1
+    },
+    "weights": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Component weights (points) for the confluence score.",
+      "properties": {
+        "weekly_trend": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Weight for weekly trend direction.",
+          "default": 25.0
+        },
+        "extension": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Weight for extension percentile alignment.",
+          "default": 10.0
+        },
+        "flow": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Weight for flow alignment (ΔOI notional).",
+          "default": 20.0
+        },
+        "rsi_divergence": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Weight for RSI divergence alignment.",
+          "default": 10.0
+        },
+        "iv_regime": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Weight for IV/RV regime context.",
+          "default": 5.0
+        }
+      },
+      "required": ["weekly_trend", "extension", "flow", "rsi_divergence", "iv_regime"]
+    },
+    "extension": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Extension percentile tail thresholds.",
+      "properties": {
+        "tail_low": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 50,
+          "description": "Low tail percentile threshold.",
+          "default": 5.0
+        },
+        "tail_high": {
+          "type": "number",
+          "minimum": 50,
+          "maximum": 100,
+          "description": "High tail percentile threshold.",
+          "default": 95.0
+        }
+      },
+      "required": ["tail_low", "tail_high"]
+    },
+    "flow": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Flow alignment thresholds.",
+      "properties": {
+        "min_abs_notional": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Minimum absolute ΔOI notional to treat flow as directional.",
+          "default": 1000000.0
+        }
+      },
+      "required": ["min_abs_notional"]
+    },
+    "rsi_divergence": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "RSI divergence scoring adjustments.",
+      "properties": {
+        "favor_factor": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Multiplier applied when divergence aligns with trend.",
+          "default": 0.5
+        }
+      },
+      "required": ["favor_factor"]
+    },
+    "iv_regime": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "IV/RV regime thresholds.",
+      "properties": {
+        "low": {
+          "type": "number",
+          "minimum": 0,
+          "description": "IV/RV threshold for low regime.",
+          "default": 0.8
+        },
+        "high": {
+          "type": "number",
+          "minimum": 0,
+          "description": "IV/RV threshold for high regime.",
+          "default": 1.2
+        }
+      },
+      "required": ["low", "high"]
+    }
+  },
+  "required": ["schema_version", "weights", "extension", "flow", "rsi_divergence", "iv_regime"]
+}

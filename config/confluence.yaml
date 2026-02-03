@@ -1,0 +1,22 @@
+schema_version: 1
+
+weights:
+  weekly_trend: 25.0
+  extension: 10.0
+  flow: 20.0
+  rsi_divergence: 10.0
+  iv_regime: 5.0
+
+extension:
+  tail_low: 5.0
+  tail_high: 95.0
+
+flow:
+  min_abs_notional: 1000000.0
+
+rsi_divergence:
+  favor_factor: 0.5
+
+iv_regime:
+  low: 0.8
+  high: 1.2
