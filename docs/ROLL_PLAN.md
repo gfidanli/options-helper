@@ -7,6 +7,7 @@ It is designed to make “what should I roll into?” more systematic:
 
 - aligns candidate DTE to a thesis horizon (`--horizon-months`)
 - shows roll debit/credit, delta/theta, and basic liquidity checks
+- includes quote quality labels + stale indicators (best-effort)
 - prints a short “why this is #1” rationale
 
 This command is **offline-first**: it does not call Yahoo.
@@ -52,6 +53,7 @@ If longer-dated expiries are missing from your snapshots, re-run `snapshot-optio
 - `--min-credit FLOAT`: min roll credit in dollars (total for position size)
 - `--min-open-interest INT`: override minimum OI liquidity gate (default from portfolio `risk_profile`)
 - `--min-volume INT`: override minimum volume liquidity gate (default from portfolio `risk_profile`)
+- `--include-bad-quotes`: include candidates with bad quote quality (best-effort)
 
 ## Caveats (best-effort)
 
@@ -60,4 +62,3 @@ If longer-dated expiries are missing from your snapshots, re-run `snapshot-optio
   - prefers `bs_delta` / `bs_theta_per_day` from snapshots (computed at snapshot time)
   - falls back to local Black–Scholes when enough fields exist (spot/IV/expiry/strike)
 - Windowed snapshots can omit candidate strikes/expiries (common for far-dated LEAPS).
-

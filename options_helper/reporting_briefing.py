@@ -62,6 +62,34 @@ def chain_takeaways(report: ChainReport) -> list[str]:
     return takeaways
 
 
+def _fmt_quote_quality(summary: dict[str, Any]) -> str:
+    contracts = summary.get("contracts")
+    missing_pct = summary.get("missing_bid_ask_pct")
+    missing_count = summary.get("missing_bid_ask_count")
+    spread_median = summary.get("spread_pct_median")
+    spread_worst = summary.get("spread_pct_worst")
+    stale_count = summary.get("stale_quotes")
+    stale_pct = summary.get("stale_pct")
+
+    def _pct(val: float | None) -> str:
+        if val is None:
+            return "-"
+        return f"{val * 100.0:.1f}%"
+
+    missing_ratio = "-" if contracts is None or missing_count is None else f"{missing_count}/{contracts}"
+    stale_ratio = "-" if stale_count is None else f"{stale_count}"
+    if stale_pct is not None:
+        stale_ratio = f"{stale_ratio} ({_pct(stale_pct)})"
+
+    return (
+        "Quote quality: "
+        f"missing bid/ask {_pct(missing_pct)} ({missing_ratio}); "
+        f"median spread {_pct(spread_median)}; "
+        f"worst spread {_pct(spread_worst)}; "
+        f"stale {stale_ratio}"
+    )
+
+
 def compare_takeaways(diff: CompareReport) -> list[str]:
     out: list[str] = []
 
@@ -323,6 +351,7 @@ def build_briefing_payload(
                 "chain": _jsonable(sec.chain),
                 "compare": _jsonable(sec.compare),
                 "flow_net": _jsonable(sec.flow_net),
+                "quote_quality": _jsonable(sec.quote_quality),
             }
             for sec in symbol_sections
         ],
@@ -339,6 +368,7 @@ class BriefingSymbolSection:
     technicals: TechnicalSnapshot | None
     errors: list[str]
     warnings: list[str]
+    quote_quality: dict[str, Any] | None = None
     derived_updated: bool = False
     next_earnings_date: date | None = None
 
@@ -422,6 +452,8 @@ def render_briefing_markdown(
         except Exception:  # noqa: BLE001
             as_of_date = date.today()
         lines.append(f"- {format_next_earnings_line(as_of_date, sec.next_earnings_date)}")
+        if sec.quote_quality:
+            lines.append(f"- {_fmt_quote_quality(sec.quote_quality)}")
         lines.append("")
 
         if sec.errors and sec.chain is None and sec.technicals is None:

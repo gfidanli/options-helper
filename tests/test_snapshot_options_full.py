@@ -105,6 +105,13 @@ def test_snapshot_options_full_chain_from_all_watchlists(tmp_path: Path, monkeyp
         assert meta["symbol_source"] == "watchlists"
         assert "underlying" in meta
         assert meta["risk_free_rate"] == 0.0
+        assert "quote_quality" in meta
+        quality = meta["quote_quality"]
+        assert quality["contracts"] > 0
+        assert "missing_bid_ask_pct" in quality
+        assert "spread_pct_median" in quality
+        assert "spread_pct_worst" in quality
+        assert "stale_quotes" in quality
 
         for exp in expiries:
             csv_path = day_dir / f"{exp.isoformat()}.csv"

@@ -43,6 +43,9 @@ class PositionMetrics:
     implied_vol: float | None
     open_interest: int | None
     volume: int | None
+    quality_label: str | None
+    last_trade_age_days: int | None
+    quality_warnings: list[str]
 
     dte: int | None
     moneyness: float | None
@@ -171,6 +174,10 @@ def advise(metrics: PositionMetrics, portfolio: Portfolio) -> Advice:
         warnings.append("Missing bid/ask quotes; quote quality low.")
     if metrics.execution_quality == "bad" and metrics.spread_pct is not None:
         warnings.append(f"Wide spread ({metrics.spread_pct:.1%}); fills may be poor.")
+    if metrics.quality_warnings:
+        for w in metrics.quality_warnings:
+            if w not in warnings:
+                warnings.append(w)
 
     if metrics.open_interest is not None and metrics.open_interest < rp.min_open_interest:
         warnings.append(f"Low open interest ({metrics.open_interest} < {rp.min_open_interest}).")
@@ -303,7 +310,12 @@ def advise(metrics: PositionMetrics, portfolio: Portfolio) -> Advice:
             action = Action.HOLD
             confidence = Confidence.LOW
 
-    if metrics.execution_quality == "bad":
+    if metrics.quality_label in {"bad", "unknown"}:
+        if confidence == Confidence.HIGH:
+            confidence = Confidence.MEDIUM
+        elif confidence == Confidence.MEDIUM:
+            confidence = Confidence.LOW
+    elif metrics.execution_quality == "bad":
         if confidence == Confidence.HIGH:
             confidence = Confidence.MEDIUM
         elif confidence == Confidence.MEDIUM:

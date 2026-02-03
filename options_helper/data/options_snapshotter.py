@@ -5,9 +5,11 @@ from datetime import date
 from pathlib import Path
 import logging
 
+import numpy as np
 import pandas as pd
 
 from options_helper.analysis.greeks import add_black_scholes_greeks_to_chain
+from options_helper.analysis.quote_quality import compute_quote_quality
 from options_helper.data.candles import CandleStore, last_close
 from options_helper.data.options_snapshots import OptionsSnapshotStore
 from options_helper.data.yf_client import DataFetchError, YFinanceClient
@@ -114,6 +116,10 @@ def snapshot_full_chain_for_symbols(
             }
 
             ok_expiries = 0
+            total_contracts = 0
+            missing_bid_ask = 0
+            stale_quotes = 0
+            spread_pcts: list[float] = []
             for exp_str in expiry_strs:
                 try:
                     exp = date.fromisoformat(exp_str)
@@ -145,6 +151,16 @@ def snapshot_full_chain_for_symbols(
                     r=risk_free_rate,
                 )
 
+                quality = compute_quote_quality(df, min_volume=0, min_open_interest=0, as_of=snapshot_date)
+                total_contracts += len(df)
+                if not quality.empty:
+                    warnings = quality["quality_warnings"].tolist()
+                    missing_bid_ask += sum("quote_missing_bid_ask" in w for w in warnings if isinstance(w, list))
+                    stale_quotes += sum("quote_stale" in w for w in warnings if isinstance(w, list))
+                    spread_series = pd.to_numeric(quality["spread_pct"], errors="coerce")
+                    spread_series = spread_series.where(spread_series >= 0)
+                    spread_pcts.extend(spread_series.dropna().tolist())
+
                 store.save_expiry_snapshot(
                     sym,
                     snapshot_date,
@@ -160,6 +176,24 @@ def snapshot_full_chain_for_symbols(
                     meta=meta_with_underlying,
                 )
                 ok_expiries += 1
+
+            if total_contracts > 0:
+                spread_median = float(np.nanmedian(spread_pcts)) if spread_pcts else None
+                spread_worst = float(np.nanmax(spread_pcts)) if spread_pcts else None
+                store._upsert_meta(
+                    store._day_dir(sym, snapshot_date),
+                    {
+                        "quote_quality": {
+                            "contracts": int(total_contracts),
+                            "missing_bid_ask_count": int(missing_bid_ask),
+                            "missing_bid_ask_pct": float(missing_bid_ask / total_contracts),
+                            "spread_pct_median": spread_median,
+                            "spread_pct_worst": spread_worst,
+                            "stale_quotes": int(stale_quotes),
+                            "stale_pct": float(stale_quotes / total_contracts),
+                        }
+                    },
+                )
 
             results.append(
                 SnapshotSymbolResult(

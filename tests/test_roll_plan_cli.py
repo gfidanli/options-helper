@@ -157,6 +157,8 @@ def test_roll_plan_cli_ranks_candidates_and_applies_liquidity_gates(tmp_path: Pa
     # Illiquid expiry should not appear in ranked candidates.
     assert "2027-02-19" not in res.output
     assert "Exec" in res.output
+    assert "Quality" in res.output
+    assert "Stale" in res.output
     assert "good" in res.output
     assert "earnings_within_21d" in res.output
     assert "expiry_crosses_earnings" in res.output

@@ -21,6 +21,7 @@ from options_helper.analysis.derived_metrics import DerivedRow, compute_derived_
 from options_helper.analysis.events import earnings_event_risk
 from options_helper.analysis.flow import FlowGroupBy, aggregate_flow_window, compute_flow, summarize_flow
 from options_helper.analysis.performance import compute_daily_performance_quote
+from options_helper.analysis.quote_quality import compute_quote_quality
 from options_helper.analysis.research import (
     Direction,
     analyze_underlying,
@@ -357,6 +358,31 @@ def _position_metrics(
         oi = _extract_int(row, "openInterest")
         vol = _extract_int(row, "volume")
 
+    quality_label = None
+    last_trade_age_days = None
+    quality_warnings: list[str] = []
+    if row is not None:
+        quality_df = compute_quote_quality(
+            pd.DataFrame([row]),
+            min_volume=risk_profile.min_volume,
+            min_open_interest=risk_profile.min_open_interest,
+            as_of=today,
+        )
+        if not quality_df.empty:
+            q = quality_df.iloc[0]
+            label = q.get("quality_label")
+            if label is not None and not pd.isna(label):
+                quality_label = str(label)
+            age = q.get("last_trade_age_days")
+            if age is not None and not pd.isna(age):
+                try:
+                    last_trade_age_days = int(age)
+                except Exception:  # noqa: BLE001
+                    last_trade_age_days = None
+            warnings_val = q.get("quality_warnings")
+            if isinstance(warnings_val, list):
+                quality_warnings = [str(w) for w in warnings_val if w]
+
     mark = _mark_price(bid=bid, ask=ask, last=last)
     spread = spread_pct = None
     if bid is not None and ask is not None and bid > 0 and ask > 0:
@@ -465,6 +491,9 @@ def _position_metrics(
         implied_vol=iv,
         open_interest=oi,
         volume=vol,
+        quality_label=quality_label,
+        last_trade_age_days=last_trade_age_days,
+        quality_warnings=quality_warnings,
         dte=dte_val,
         moneyness=moneyness,
         pnl_abs=pnl_abs,
@@ -757,6 +786,11 @@ def snapshot_options(
         strike_min = spot * (1.0 - window_pct)
         strike_max = spot * (1.0 + window_pct)
 
+        total_contracts = 0
+        missing_bid_ask = 0
+        stale_quotes = 0
+        spread_pcts: list[float] = []
+
         meta = {
             "spot": spot,
             "spot_period": spot_period,
@@ -812,6 +846,21 @@ def snapshot_options(
                     as_of=effective_snapshot_date,
                     r=risk_free_rate,
                 )
+
+                quality = compute_quote_quality(
+                    df,
+                    min_volume=0,
+                    min_open_interest=0,
+                    as_of=effective_snapshot_date,
+                )
+                total_contracts += len(df)
+                if not quality.empty:
+                    q_warn = quality["quality_warnings"].tolist()
+                    missing_bid_ask += sum("quote_missing_bid_ask" in w for w in q_warn if isinstance(w, list))
+                    stale_quotes += sum("quote_stale" in w for w in q_warn if isinstance(w, list))
+                    spread_series = pd.to_numeric(quality["spread_pct"], errors="coerce")
+                    spread_series = spread_series.where(spread_series >= 0)
+                    spread_pcts.extend(spread_series.dropna().tolist())
 
                 store.save_expiry_snapshot(
                     symbol,
@@ -882,6 +931,24 @@ def snapshot_options(
 
             store.save_expiry_snapshot(symbol, effective_snapshot_date, expiry=exp, snapshot=df, meta=meta)
             console.print(f"{symbol} {exp.isoformat()}: saved {len(df)} contracts")
+
+        if want_full_chain and total_contracts > 0:
+            spread_median = float(np.nanmedian(spread_pcts)) if spread_pcts else None
+            spread_worst = float(np.nanmax(spread_pcts)) if spread_pcts else None
+            store._upsert_meta(
+                store._day_dir(symbol, effective_snapshot_date),
+                {
+                    "quote_quality": {
+                        "contracts": int(total_contracts),
+                        "missing_bid_ask_count": int(missing_bid_ask),
+                        "missing_bid_ask_pct": float(missing_bid_ask / total_contracts),
+                        "spread_pct_median": spread_median,
+                        "spread_pct_worst": spread_worst,
+                        "stale_quotes": int(stale_quotes),
+                        "stale_pct": float(stale_quotes / total_contracts),
+                    }
+                },
+            )
 
     if dates_used:
         days = ", ".join(sorted({d.isoformat() for d in dates_used}))
@@ -1809,6 +1876,7 @@ def briefing(
         flow_net = None
         technicals = None
         derived_updated = False
+        quote_quality = None
         next_earnings_date = safe_next_earnings_date(earnings_store, sym)
 
         try:
@@ -1839,6 +1907,7 @@ def briefing(
             df_to = store.load_day(sym, to_date)
             meta_to = store.load_meta(sym, to_date)
             spot_to = _spot_from_meta(meta_to)
+            quote_quality = meta_to.get("quote_quality") if isinstance(meta_to, dict) else None
             if spot_to is None:
                 raise ValueError("missing spot price in meta.json (run snapshot-options first)")
 
@@ -1926,6 +1995,7 @@ def briefing(
                 technicals=technicals,
                 errors=errors,
                 warnings=warnings,
+                quote_quality=quote_quality,
                 derived_updated=derived_updated,
                 next_earnings_date=next_earnings_date,
             )
@@ -2079,6 +2149,11 @@ def roll_plan(
         "--min-volume",
         help="Override minimum volume liquidity gate (default from risk profile).",
     ),
+    include_bad_quotes: bool = typer.Option(
+        False,
+        "--include-bad-quotes",
+        help="Include candidates with bad quote quality (best-effort).",
+    ),
 ) -> None:
     """Propose and rank roll candidates for a single position using offline snapshots."""
     console = Console(width=200)
@@ -2132,6 +2207,7 @@ def roll_plan(
             next_earnings_date=next_earnings_date,
             earnings_warn_days=rp.earnings_warn_days,
             earnings_avoid_days=rp.earnings_avoid_days,
+            include_bad_quotes=include_bad_quotes,
         )
 
         render_roll_plan_console(console, report)
@@ -2334,6 +2410,11 @@ def research(
         "--output-dir",
         help="Directory for saved research reports (ignored when --no-save).",
     ),
+    include_bad_quotes: bool = typer.Option(
+        False,
+        "--include-bad-quotes",
+        help="Include candidates with bad quote quality (best-effort).",
+    ),
 ) -> None:
     """Recommend short-dated (30-90d) and long-dated (LEAPS) contracts based on technicals."""
     portfolio = load_portfolio(portfolio_path)
@@ -2469,7 +2550,15 @@ def research(
         table.add_column("Vol", justify="right")
         table.add_column("Spr%", justify="right")
         table.add_column("Exec", justify="right")
+        table.add_column("Quality", justify="right")
+        table.add_column("Stale", justify="right")
         table.add_column("Why")
+
+        def _fmt_stale(age_days: int | None) -> str:
+            if age_days is None:
+                return "-"
+            age = int(age_days)
+            return f"{age}d" if age > 5 else "-"
 
         if short_exp is not None:
             chain = client.get_options_chain(sym, short_exp)
@@ -2489,6 +2578,7 @@ def research(
                 next_earnings_date=next_earnings_date,
                 earnings_warn_days=rp.earnings_warn_days,
                 earnings_avoid_days=rp.earnings_avoid_days,
+                include_bad_quotes=include_bad_quotes,
             )
             if short_pick is not None:
                 if short_pick.exclude:
@@ -2511,10 +2601,14 @@ def research(
                         "-" if short_pick.volume is None else str(short_pick.volume),
                         "-" if short_pick.spread_pct is None else f"{short_pick.spread_pct:.1%}",
                         "-" if short_pick.execution_quality is None else short_pick.execution_quality,
+                        "-" if short_pick.quality_label is None else short_pick.quality_label,
+                        _fmt_stale(short_pick.last_trade_age_days),
                         why,
                     )
                     if short_pick.warnings:
                         emit(f"  - Earnings warnings (30–90d): {', '.join(short_pick.warnings)}")
+                    if short_pick.quality_warnings:
+                        emit(f"  - Quote warnings (30–90d): {', '.join(short_pick.quality_warnings)}")
         else:
             emit(f"  - No expiries found in {short_min_dte}-{short_max_dte} DTE range.")
 
@@ -2536,6 +2630,7 @@ def research(
                 next_earnings_date=next_earnings_date,
                 earnings_warn_days=rp.earnings_warn_days,
                 earnings_avoid_days=rp.earnings_avoid_days,
+                include_bad_quotes=include_bad_quotes,
             )
             if long_pick is not None:
                 if long_pick.exclude:
@@ -2558,10 +2653,14 @@ def research(
                         "-" if long_pick.volume is None else str(long_pick.volume),
                         "-" if long_pick.spread_pct is None else f"{long_pick.spread_pct:.1%}",
                         "-" if long_pick.execution_quality is None else long_pick.execution_quality,
+                        "-" if long_pick.quality_label is None else long_pick.quality_label,
+                        _fmt_stale(long_pick.last_trade_age_days),
                         why,
                     )
                     if long_pick.warnings:
                         emit(f"  - Earnings warnings (LEAPS): {', '.join(long_pick.warnings)}")
+                    if long_pick.quality_warnings:
+                        emit(f"  - Quote warnings (LEAPS): {', '.join(long_pick.quality_warnings)}")
         else:
             emit(f"  - No expiries found in {long_min_dte}-{long_max_dte} DTE range.")
 

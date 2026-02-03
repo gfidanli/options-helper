@@ -39,6 +39,9 @@ def _metrics(
     spread: float | None = None,
     spread_pct: float | None = None,
     execution_quality: str | None = "unknown",
+    quality_label: str | None = None,
+    last_trade_age_days: int | None = None,
+    quality_warnings: list[str] | None = None,
     as_of: date | None = None,
     next_earnings_date: date | None = None,
 ) -> PositionMetrics:
@@ -62,6 +65,9 @@ def _metrics(
         implied_vol=0.5,
         open_interest=1000,
         volume=100,
+        quality_label=quality_label,
+        last_trade_age_days=last_trade_age_days,
+        quality_warnings=quality_warnings or [],
         dte=dte,
         moneyness=close_d / position.strike,
         pnl_abs=pnl_abs,
@@ -162,6 +168,24 @@ def test_missing_bid_ask_warns() -> None:
     m = _metrics(portfolio.positions[0], mark=1.0, spread=None, spread_pct=None, execution_quality="unknown")
     a = advise(m, portfolio)
     assert any("quote quality low" in w for w in a.warnings)
+
+
+def test_bad_quote_quality_lowers_confidence_and_warns() -> None:
+    portfolio = Portfolio(
+        cash=500.0,
+        risk_profile=RiskProfile(max_portfolio_risk_pct=None, max_single_position_risk_pct=None),
+        positions=[_pos()],
+    )
+    m = _metrics(
+        portfolio.positions[0],
+        mark=1.0,
+        execution_quality="good",
+        quality_label="bad",
+        quality_warnings=["quote_stale"],
+    )
+    a = advise(m, portfolio)
+    assert a.confidence == Confidence.LOW
+    assert "quote_stale" in a.warnings
 
 
 def test_earnings_event_warnings_are_added() -> None:

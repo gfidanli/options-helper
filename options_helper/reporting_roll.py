@@ -30,6 +30,13 @@ def _fmt_exec(val: str | None) -> str:
     return val
 
 
+def _fmt_stale(age_days: int | None) -> str:
+    if age_days is None:
+        return "-"
+    age = int(age_days)
+    return f"{age}d" if age > 5 else "-"
+
+
 def render_roll_plan_console(console: Console, report: RollPlanReport) -> None:
     console.print(
         f"\n[bold]{report.symbol}[/bold] roll plan as-of {report.as_of} | spot={report.spot:.2f} | "
@@ -50,6 +57,8 @@ def render_roll_plan_console(console: Console, report: RollPlanReport) -> None:
     cur_table.add_column("Vol", justify="right")
     cur_table.add_column("Spr%", justify="right")
     cur_table.add_column("Exec", justify="right")
+    cur_table.add_column("Quality", justify="right")
+    cur_table.add_column("Stale", justify="right")
     cur_table.add_row(
         cur.expiry,
         f"{cur.strike:g}",
@@ -62,6 +71,8 @@ def render_roll_plan_console(console: Console, report: RollPlanReport) -> None:
         "-" if cur.volume is None else f"{cur.volume:d}",
         _fmt_pct(cur.spread_pct),
         _fmt_exec(cur.execution_quality),
+        _fmt_exec(cur.quality_label),
+        _fmt_stale(cur.last_trade_age_days),
     )
     console.print(cur_table)
 
@@ -82,6 +93,8 @@ def render_roll_plan_console(console: Console, report: RollPlanReport) -> None:
         cand_table.add_column("Vol", justify="right")
         cand_table.add_column("Spr%", justify="right")
         cand_table.add_column("Exec", justify="right")
+        cand_table.add_column("Quality", justify="right")
+        cand_table.add_column("Stale", justify="right")
         cand_table.add_column("Warn")
 
         for i, cand in enumerate(report.candidates, start=1):
@@ -104,6 +117,8 @@ def render_roll_plan_console(console: Console, report: RollPlanReport) -> None:
                 "-" if c.volume is None else f"{c.volume:d}",
                 _fmt_pct(c.spread_pct),
                 _fmt_exec(c.execution_quality),
+                _fmt_exec(c.quality_label),
+                _fmt_stale(c.last_trade_age_days),
                 warn,
                 style=style,
             )

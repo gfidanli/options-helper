@@ -74,13 +74,19 @@ Preference is given to strikes with:
 
 If nothing passes the filter, it falls back to the best strike by delta/ATM.
 
-### Execution quality (best-effort)
+### Execution + quote quality (best-effort)
 Each contract includes:
 - `spread` and `spread_pct` (from bid/ask)
 - `execution_quality`: `good` / `ok` / `bad` / `unknown`
+- `quality` label (`good` / `ok` / `bad` / `unknown`) + `stale` indicator (when last trade age is available)
 
-By default, candidates with `execution_quality == bad` are excluded. If all candidates are `bad`, the tool falls back
-to the best-effort pick and notes it in the “why” list.
+By default, candidates with `quality == bad` are excluded. If all candidates are `bad`, the tool falls back
+to the best-effort pick and notes it in the “why” list. Use `--include-bad-quotes` to override.
+
+Warnings (best-effort):
+- `quote_stale`
+- `quote_missing_bid_ask`
+- `quote_invalid`
 
 ## CLI usage
 Run research on your default watchlist named `watchlist`:
@@ -95,6 +101,11 @@ Run research for a single ticker:
 options-helper research portfolio.json --symbol IREN
 ```
 
+Include bad quote quality (best-effort):
+
+```bash
+options-helper research portfolio.json --symbol IREN --include-bad-quotes
+```
 Disable saving the report:
 
 ```bash

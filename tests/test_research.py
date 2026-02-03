@@ -132,6 +132,7 @@ def test_select_option_candidate_excludes_bad_spread() -> None:
     assert pick is not None
     assert pick.strike == 105.0
     assert pick.execution_quality != "bad"
+    assert pick.quality_label != "bad"
 
 
 def test_suggest_trade_levels_breakout_uses_breakout_level() -> None:
@@ -248,8 +249,6 @@ def test_research_cli_saves_report_and_includes_spreads(tmp_path: Path, monkeypa
     )
     assert res.exit_code == 0, res.output
     assert "Saved research report to" in res.output
-    assert ("Spr%" in res.output) or ("Sp…" in res.output)
-    assert ("Exec" in res.output) or ("Ex…" in res.output)
 
     expected_run_path_1 = tmp_path / f"research-{candle_dt_stamp}-{run_dt_1.strftime('%Y-%m-%d_%H%M%S')}.txt"
     assert expected_run_path_1.exists()
@@ -258,6 +257,10 @@ def test_research_cli_saves_report_and_includes_spreads(tmp_path: Path, monkeypa
     txt = expected_run_path_1.read_text(encoding="utf-8")
     assert f"candles_through: {last_candle_day.isoformat()} 00:00:00" in txt
     assert "Suggested entry (underlying)" in txt
+    assert "Spr%" in txt
+    assert "Exec" in txt
+    assert "Quality" in txt
+    assert "Stale" in txt
     assert "(+0.00%)" in txt
 
     ticker_path = tmp_path / "tickers" / "TEST.txt"

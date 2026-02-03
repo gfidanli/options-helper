@@ -7,10 +7,11 @@ from typing import cast
 
 import pandas as pd
 
-from options_helper.analysis.chain_metrics import compute_spread, compute_spread_pct, execution_quality
+from options_helper.analysis.chain_metrics import execution_quality
 from options_helper.analysis.events import earnings_event_risk
 from options_helper.analysis.greeks import black_scholes_greeks
 from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, stoch_rsi
+from options_helper.analysis.quote_quality import compute_quote_quality
 from options_helper.models import OptionType, RiskProfile
 
 
@@ -50,7 +51,11 @@ class OptionCandidate:
     delta: float | None
     open_interest: int | None
     volume: int | None
+    quality_score: float | None
+    quality_label: str | None
+    last_trade_age_days: int | None
     rationale: list[str]
+    quality_warnings: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     exclude: bool = False
 
@@ -396,6 +401,7 @@ def select_option_candidate(
     next_earnings_date: date | None = None,
     earnings_warn_days: int = 21,
     earnings_avoid_days: int = 0,
+    include_bad_quotes: bool = False,
 ) -> OptionCandidate | None:
     if df is None or df.empty:
         return None
@@ -412,11 +418,15 @@ def select_option_candidate(
     df["iv_f"] = df.get("impliedVolatility").map(_as_float) if "impliedVolatility" in df.columns else None
     df["oi_i"] = df.get("openInterest").map(_as_int) if "openInterest" in df.columns else None
     df["vol_i"] = df.get("volume").map(_as_int) if "volume" in df.columns else None
-    df["spread"] = compute_spread(df)
-    df["spread_pct"] = compute_spread_pct(df)
-    df["exec_quality"] = df["spread_pct"].map(execution_quality)
-
     today = as_of or date.today()
+    quality = compute_quote_quality(df, min_volume=min_volume, min_open_interest=min_open_interest, as_of=today)
+    df["spread"] = quality["spread"]
+    df["spread_pct"] = quality["spread_pct"]
+    df["quality_score"] = quality["quality_score"]
+    df["quality_label"] = quality["quality_label"]
+    df["quality_warnings"] = quality["quality_warnings"]
+    df["last_trade_age_days"] = quality["last_trade_age_days"]
+    df["exec_quality"] = df["spread_pct"].map(execution_quality)
     dte = max((expiry - today).days, 0)
     t_years = dte / 365.0 if dte > 0 else None
 
@@ -454,6 +464,14 @@ def select_option_candidate(
         else:
             spread_gate_fallback = True
 
+    quality_gate_fallback = False
+    if "quality_label" in liquid.columns and not include_bad_quotes:
+        quality_filtered = liquid[liquid["quality_label"].fillna("unknown") != "bad"]
+        if not quality_filtered.empty:
+            liquid = quality_filtered
+        else:
+            quality_gate_fallback = True
+
     # Choose by delta if available, otherwise by moneyness.
     if liquid["delta"].notna().any():
         liquid = liquid[liquid["delta"].notna()]
@@ -470,6 +488,10 @@ def select_option_candidate(
     spread = _as_float(pick.get("spread"))
     spread_pct = _as_float(pick.get("spread_pct"))
     exec_quality = pick.get("exec_quality")
+    quality_score = _as_float(pick.get("quality_score"))
+    quality_label = pick.get("quality_label")
+    last_trade_age_days = _as_int(pick.get("last_trade_age_days"))
+    quality_warnings = pick.get("quality_warnings")
     iv = pick["iv_f"]
     oi = pick["oi_i"]
     vol = pick["vol_i"]
@@ -486,6 +508,8 @@ def select_option_candidate(
         rationale.append(f"Execution: {exec_quality}.")
     if spread_gate_fallback:
         rationale.append("Spread quality was poor across candidates; used best-effort pick.")
+    if quality_gate_fallback:
+        rationale.append("Quote quality was poor across candidates; used best-effort pick.")
 
     risk = earnings_event_risk(
         today=today,
@@ -512,6 +536,10 @@ def select_option_candidate(
         delta=delta,
         open_interest=oi,
         volume=vol,
+        quality_score=quality_score,
+        quality_label=str(quality_label) if quality_label is not None else None,
+        last_trade_age_days=last_trade_age_days,
+        quality_warnings=cast(list[str], quality_warnings) if quality_warnings is not None else [],
         rationale=rationale,
         warnings=cast(list[str], risk["warnings"]),
         exclude=bool(risk["exclude"]),

@@ -2,14 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Literal
+from typing import Literal, cast
 
 import pandas as pd
 from pydantic import BaseModel, Field
 
-from options_helper.analysis.chain_metrics import compute_mark_price, compute_spread, compute_spread_pct, execution_quality
+from options_helper.analysis.chain_metrics import compute_mark_price, execution_quality
 from options_helper.analysis.events import earnings_event_risk
 from options_helper.analysis.greeks import black_scholes_greeks
+from options_helper.analysis.quote_quality import compute_quote_quality
 from options_helper.models import OptionType, Position
 
 RollIntent = Literal["max-upside", "reduce-theta", "increase-delta", "de-risk"]
@@ -106,6 +107,10 @@ class RollContract(BaseModel):
     spread: float | None = Field(default=None, ge=0.0)
     spread_pct: float | None = Field(default=None, ge=0.0)
     execution_quality: str | None = None
+    quality_score: float | None = None
+    quality_label: str | None = None
+    last_trade_age_days: int | None = None
+    quality_warnings: list[str] = Field(default_factory=list)
 
     implied_vol: float | None = Field(default=None, ge=0.0)
     open_interest: int | None = Field(default=None, ge=0)
@@ -228,6 +233,7 @@ def compute_roll_plan(
     next_earnings_date: date | None = None,
     earnings_warn_days: int = 21,
     earnings_avoid_days: int = 0,
+    include_bad_quotes: bool = False,
 ) -> RollPlanReport:
     warnings: list[str] = []
     excluded_warnings: set[str] = set()
@@ -262,8 +268,13 @@ def compute_roll_plan(
 
     # Add a deterministic mark field for pricing.
     chain["mark"] = compute_mark_price(chain)
-    chain["_spread"] = compute_spread(chain)
-    chain["_spread_pct"] = compute_spread_pct(chain)
+    quality = compute_quote_quality(chain, min_volume=min_volume, min_open_interest=min_open_interest, as_of=as_of)
+    chain["_spread"] = quality["spread"]
+    chain["_spread_pct"] = quality["spread_pct"]
+    chain["_quality_score"] = quality["quality_score"]
+    chain["_quality_label"] = quality["quality_label"]
+    chain["_quality_warnings"] = quality["quality_warnings"]
+    chain["_last_trade_age_days"] = quality["last_trade_age_days"]
 
     current_exp = position.expiry
     current_dte = (current_exp - as_of).days
@@ -293,6 +304,10 @@ def compute_roll_plan(
     cur_spread = _as_float(cur_row.get("_spread"))
     cur_spread_pct = _as_float(cur_row.get("_spread_pct"))
     cur_exec_quality = execution_quality(cur_spread_pct)
+    cur_quality_score = _as_float(cur_row.get("_quality_score"))
+    cur_quality_label = cur_row.get("_quality_label")
+    cur_last_trade_age_days = _as_int(cur_row.get("_last_trade_age_days"))
+    cur_quality_warnings = cur_row.get("_quality_warnings")
     cur_spread_ok = None
     if cur_spread_pct is not None:
         cur_spread_ok = (cur_spread_pct >= 0) and (cur_spread_pct <= max_spread_pct)
@@ -310,12 +325,20 @@ def compute_roll_plan(
         spread=cur_spread,
         spread_pct=cur_spread_pct,
         execution_quality=cur_exec_quality,
+        quality_score=cur_quality_score,
+        quality_label=str(cur_quality_label) if cur_quality_label is not None else None,
+        last_trade_age_days=cur_last_trade_age_days,
+        quality_warnings=cast(list[str], cur_quality_warnings) if cur_quality_warnings is not None else [],
         implied_vol=_as_float(cur_row.get("impliedVolatility")),
         open_interest=_as_int(cur_row.get("openInterest")),
         volume=_as_int(cur_row.get("volume")),
         delta=cur_delta,
         theta_per_day=cur_theta,
     )
+    if current.quality_warnings:
+        for w in current.quality_warnings:
+            if w not in warnings:
+                warnings.append(w)
 
     # Candidate expiry selection: expiries near target DTE (±90d), preferring later expiries (roll out).
     expiries = sorted({d for d in chain["_expiry"].tolist() if isinstance(d, date)})
@@ -392,6 +415,10 @@ def compute_roll_plan(
         spread = _as_float(row.get("_spread"))
         spread_pct = _as_float(row.get("_spread_pct"))
         exec_quality = execution_quality(spread_pct)
+        quality_score = _as_float(row.get("_quality_score"))
+        quality_label = row.get("_quality_label")
+        last_trade_age_days = _as_int(row.get("_last_trade_age_days"))
+        quality_warnings = row.get("_quality_warnings")
         spread_ok = None
         if spread_pct is not None:
             spread_ok = (spread_pct >= 0) and (spread_pct <= max_spread_pct)
@@ -477,31 +504,45 @@ def compute_roll_plan(
             spread=spread,
             spread_pct=spread_pct,
             execution_quality=exec_quality,
+            quality_score=quality_score,
+            quality_label=str(quality_label) if quality_label is not None else None,
+            last_trade_age_days=last_trade_age_days,
+            quality_warnings=cast(list[str], quality_warnings) if quality_warnings is not None else [],
             implied_vol=iv,
             open_interest=oi,
             volume=vol,
             delta=delta,
             theta_per_day=theta,
         )
+        combined_warnings = list(risk_warnings)
+        if contract.quality_warnings:
+            combined_warnings.extend(contract.quality_warnings)
+        combined_warnings = sorted(set(combined_warnings))
         candidates.append(
             RollCandidate(
                 rank_score=float(score),
                 contract=contract,
-            roll_debit=roll_debit,
-            roll_debit_per_contract=roll_debit_per_contract,
-            liquidity_ok=bool(liquidity_ok),
-            issues=issues,
-            rationale=rationale,
-            warnings=risk_warnings,
-        )
+                roll_debit=roll_debit,
+                roll_debit_per_contract=roll_debit_per_contract,
+                liquidity_ok=bool(liquidity_ok),
+                issues=issues,
+                rationale=rationale,
+                warnings=combined_warnings,
+            )
         )
 
     # Prefer candidates that pass liquidity and cost constraints; fall back if none.
-    filtered = [c for c in candidates if c.liquidity_ok and ("missing_mark" not in c.issues) and ("missing_roll_cost" not in c.issues)]
+    filtered = [
+        c
+        for c in candidates
+        if c.liquidity_ok and ("missing_mark" not in c.issues) and ("missing_roll_cost" not in c.issues)
+    ]
     if max_debit is not None:
         filtered = [c for c in filtered if "over_max_debit" not in c.issues]
     if min_credit is not None:
         filtered = [c for c in filtered if "below_min_credit" not in c.issues]
+    if not include_bad_quotes:
+        filtered = [c for c in filtered if c.contract.quality_label != "bad"]
 
     if not filtered and candidates:
         warnings.append("no_candidates_passed_gates_showing_best_effort")

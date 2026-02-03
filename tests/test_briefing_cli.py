@@ -20,7 +20,23 @@ def _write_chain_day(
 ) -> None:
     day_dir = cache_dir / symbol / day
     day_dir.mkdir(parents=True)
-    (day_dir / "meta.json").write_text(json.dumps({"spot": spot}), encoding="utf-8")
+    (day_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "spot": spot,
+                "quote_quality": {
+                    "contracts": 2,
+                    "missing_bid_ask_count": 0,
+                    "missing_bid_ask_pct": 0.0,
+                    "spread_pct_median": 0.12,
+                    "spread_pct_worst": 0.25,
+                    "stale_quotes": 0,
+                    "stale_pct": 0.0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
     df = pd.DataFrame(
         [
@@ -138,6 +154,7 @@ def test_briefing_writes_daily_md_and_updates_derived(tmp_path: Path, monkeypatc
     assert "Spr%" in content
     assert "## AAA (2026-01-02)" in content
     assert "Next earnings: 2026-01-10 (in 8 day(s))" in content
+    assert "Quote quality:" in content
     assert "earnings_within_21d" in content
     assert "expiry_crosses_earnings" in content
     assert "### Chain" in content
