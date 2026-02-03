@@ -21,6 +21,7 @@ Multi-leg positions use a `legs` array under a position item:
 
 Notes:
 - `net_debit` is **total dollars** for the structure (used for net PnL).
+- If `net_debit <= 0` (net credit), portfolio “premium at risk” is treated as `0` (credit-spread risk is not modeled yet).
 - `legs` must include at least two entries.
 - `ratio` is accepted but currently informational only (not yet applied in math).
 
