@@ -634,7 +634,7 @@ def snapshot_options(
         "--window-pct",
         min=0.0,
         max=2.0,
-        help="Strike window around spot (e.g. 1.0 = +/-100%).",
+        help="Strike window around spot in --windowed mode (e.g. 1.0 = +/-100%).",
     ),
     spot_period: str = typer.Option(
         "10d",
@@ -670,14 +670,20 @@ def snapshot_options(
         help="Snapshot all watchlists in the watchlists store (instead of portfolio positions).",
     ),
     all_expiries: bool = typer.Option(
-        False,
-        "--all-expiries",
-        help="Snapshot all expiries per symbol (instead of just expiries in portfolio positions).",
+        True,
+        "--all-expiries/--position-expiries",
+        help=(
+            "Snapshot all expiries per symbol (default). Use --position-expiries to restrict "
+            "(portfolio: expiries in positions; watchlists: nearest expiries unless --max-expiries)."
+        ),
     ),
     full_chain: bool = typer.Option(
-        False,
-        "--full-chain",
-        help="Snapshot the full Yahoo options payload per expiry (writes .raw.json + a full CSV). Implies --all-expiries and disables strike-window filtering.",
+        True,
+        "--full-chain/--windowed",
+        help=(
+            "Snapshot the full Yahoo options payload per expiry (writes .raw.json + a full CSV). "
+            "Disables strike-window filtering. Use --windowed for smaller flow-focused snapshots."
+        ),
     ),
     max_expiries: int | None = typer.Option(
         None,
@@ -691,7 +697,7 @@ def snapshot_options(
         help="Risk-free rate used for best-effort Black-Scholes Greeks (e.g. 0.05 = 5%).",
     ),
 ) -> None:
-    """Save a once-daily options chain snapshot (windowed around spot by default) for flow analysis."""
+    """Save a once-daily options chain snapshot (full-chain + all expiries by default)."""
     portfolio = load_portfolio(portfolio_path)
     console = Console()
 
@@ -700,7 +706,7 @@ def snapshot_options(
     client = YFinanceClient()
 
     want_full_chain = full_chain
-    want_all_expiries = all_expiries or want_full_chain
+    want_all_expiries = all_expiries
 
     use_watchlists = bool(watchlist) or all_watchlists
 
@@ -758,10 +764,10 @@ def snapshot_options(
     mode = "watchlists" if use_watchlists else "portfolio"
     console.print(
         f"Snapshotting options chains for {len(symbols)} symbol(s) "
-        f"({mode}, {'full' if want_full_chain else 'windowed'})..."
+        f"({mode}, {'full-chain' if want_full_chain else 'windowed'})..."
     )
 
-    # If the user snapshots watchlists without explicitly asking for all expiries/full-chain,
+    # If the user snapshots watchlists with --position-expiries and doesn't explicitly cap expiries,
     # default to the nearest couple expiries to keep runtime and storage sane.
     effective_max_expiries = max_expiries
     if use_watchlists and not want_all_expiries and effective_max_expiries is None:

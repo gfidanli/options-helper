@@ -93,5 +93,7 @@ fi
   --max-expiries 2 \
   --require-data-date today \
   --require-data-tz "${DATA_TZ}" \
+  --windowed \
+  --position-expiries \
   --window-pct 1.0 \
   >> "${LOG_DIR}/monitor_snapshot.log" 2>&1

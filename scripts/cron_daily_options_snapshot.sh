@@ -67,5 +67,7 @@ fi
   --candle-cache-dir "${REPO_DIR}/data/candles" \
   --require-data-date today \
   --require-data-tz "${DATA_TZ}" \
+  --windowed \
+  --position-expiries \
   --window-pct 1.0 \
   >> "${LOG_DIR}/options_snapshot.log" 2>&1

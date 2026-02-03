@@ -19,6 +19,7 @@ Important limitations:
 Snapshots are stored under a root directory (default `data/options_snapshots`):
 
 - `data/options_snapshots/{SYMBOL}/{YYYY-MM-DD}/{EXPIRY}.csv`
+- `data/options_snapshots/{SYMBOL}/{YYYY-MM-DD}/{EXPIRY}.raw.json` (full-chain mode; default)
 
 Each `{EXPIRY}.csv` file includes both calls and puts in one table with an `optionType` column.
 
@@ -43,34 +44,52 @@ Inputs:
 
 These are approximations and should be treated as a model-based estimate.
 
-## Snapshot scope (window around spot)
-To keep snapshots small and focused, the tool saves a **strike window around spot**:
+## Snapshot scope
+
+### Full-chain snapshots (default)
+By default, `snapshot-options` saves the **full chain per expiry** (all strikes returned by Yahoo) and stores the
+**raw Yahoo payload** (`.raw.json`) per expiry.
+
+By default, it also snapshots **all listed expiries** per symbol.
+
+This produces the richest offline dataset, but it can be large. Use `--position-expiries` and/or `--max-expiries` to
+keep runtime and storage manageable.
+
+### Windowed snapshots (flow-focused)
+To keep snapshots small and focused for **daily flow deltas**, run in `--windowed` mode, which saves a **strike window
+around spot**:
 
 - spot is estimated from cached daily candles (last close)
 - strikes saved: `spot * (1 - window_pct)` to `spot * (1 + window_pct)`
 
-Default:
+Default (when `--windowed`):
 - `window_pct = 1.0` (±100% around spot)
 
 You can override:
 
 ```bash
-options-helper snapshot-options portfolio.json --window-pct 0.25
+options-helper snapshot-options portfolio.json --windowed --position-expiries --window-pct 0.25
 ```
 
 ## Daily snapshot collection (recommended cadence)
 Recommended: **once per trading day after market close** (or later in the evening).
 
-CLI:
+Flow-focused CLI (recommended for day-to-day ΔOI/volume deltas):
 
 ```bash
-options-helper snapshot-options portfolio.json
+options-helper snapshot-options portfolio.json --windowed --position-expiries
 ```
 
 This snapshots:
 - only symbols in your `portfolio.json`
 - only expirations in your positions for those symbols
 - calls + puts for those expiries, filtered by the strike window
+
+Full-chain CLI (default; larger but richer dataset):
+
+```bash
+options-helper snapshot-options portfolio.json
+```
 
 ### Snapshotting watchlists (optional)
 You can also snapshot symbols from your watchlists store:
@@ -85,22 +104,14 @@ Or one or more named watchlists (repeatable):
 options-helper snapshot-options portfolio.json --watchlists-path data/watchlists.json --watchlist monitor --watchlist positions
 ```
 
-By default, watchlist snapshots are capped to the **nearest 2 expiries** per symbol to keep runtime and storage reasonable.
-Use `--all-expiries` or `--full-chain` to override.
+By default, watchlist snapshots include **all expiries** per symbol (can be large).
+Use `--max-expiries` to cap expiries, or `--position-expiries` to fall back to the default watchlist cap behavior (nearest expiries).
 
-### Full-chain snapshots (all expiries + raw Yahoo payload)
-If you want to snapshot **everything Yahoo returns for the options chain** (extra fields beyond yfinance’s fixed-column
-DataFrame) and **every listed expiry**, use `--full-chain`:
+To keep watchlist snapshots smaller for flow work, prefer:
 
 ```bash
-options-helper snapshot-options portfolio.json --watchlists-path data/watchlists.json --all-watchlists --full-chain
+options-helper snapshot-options portfolio.json --watchlists-path data/watchlists.json --watchlist monitor --watchlist positions --windowed --position-expiries --max-expiries 2
 ```
-
-In `--full-chain` mode the tool writes, per symbol/day/expiry:
-- `{EXPIRY}.csv` — calls + puts with **all fields** returned by Yahoo
-- `{EXPIRY}.raw.json` — the **raw Yahoo payload** for that expiry
-
-Full-chain snapshots can be large; consider using a separate cache root via `--cache-dir`.
 
 ## Flow report (day-to-day)
 Once you have at least two snapshots for a symbol, you can view day-to-day deltas:

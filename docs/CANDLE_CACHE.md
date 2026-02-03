@@ -69,7 +69,7 @@ To force a full re-download:
 The default cron job (`scripts/cron_daily_options_snapshot.sh`) runs:
 
 - `options-helper refresh-candles portfolio.json` (portfolio symbols + watchlists)
-- `options-helper snapshot-options portfolio.json` (options chain snapshots for position expiries)
+- `options-helper snapshot-options portfolio.json --windowed --position-expiries` (options chain snapshots for position expiries)
 
 This keeps the candle cache up to date daily so `research` can compute higher-timeframe technicals efficiently.
 

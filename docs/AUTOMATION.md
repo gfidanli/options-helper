@@ -34,7 +34,7 @@ All times below are **America/Chicago** time (the installers write `CRON_TZ=Amer
 - **Installs via:** `scripts/install_cron_daily_options_snapshot.sh`
 - **What it does:**
   - `options-helper refresh-candles portfolio.json` (portfolio + watchlists)
-  - `options-helper snapshot-options portfolio.json` (portfolio symbols, position expiries)
+  - `options-helper snapshot-options portfolio.json --windowed --position-expiries` (portfolio symbols, position expiries; flow-focused)
   - waits for the current day's daily candle to be published (canary check) so snapshots don't get written under the prior date
 - **Writes:**
   - candles: `data/candles/{SYMBOL}.csv`
@@ -52,7 +52,7 @@ flow/chain reports work for them too.
 - **When:** Weekdays at **17:30**
 - **Script:** `scripts/cron_daily_monitor_options_snapshot.sh`
 - **Installs via:** `scripts/install_cron_daily_monitor_options_snapshot.sh`
-- **What it does:** `options-helper snapshot-options portfolio.json --watchlist monitor --watchlist positions --max-expiries 2`
+- **What it does:** `options-helper snapshot-options portfolio.json --watchlist monitor --watchlist positions --max-expiries 2 --windowed --position-expiries`
 - **Depends on:**
   - `data/watchlists.json` existing and containing a non-empty `monitor` and/or `positions` list (otherwise it skips)
   - network access (Yahoo via `yfinance`)
