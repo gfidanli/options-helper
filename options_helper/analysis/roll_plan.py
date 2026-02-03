@@ -8,6 +8,7 @@ import pandas as pd
 from pydantic import BaseModel, Field
 
 from options_helper.analysis.chain_metrics import compute_mark_price, compute_spread, compute_spread_pct, execution_quality
+from options_helper.analysis.events import earnings_event_risk
 from options_helper.analysis.greeks import black_scholes_greeks
 from options_helper.models import OptionType, Position
 
@@ -122,6 +123,7 @@ class RollCandidate(BaseModel):
     liquidity_ok: bool = True
     issues: list[str] = Field(default_factory=list)
     rationale: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class RollPlanReport(BaseModel):
@@ -223,8 +225,12 @@ def compute_roll_plan(
     min_credit: float | None = None,
     top: int = 10,
     max_spread_pct: float = 0.35,
+    next_earnings_date: date | None = None,
+    earnings_warn_days: int = 21,
+    earnings_avoid_days: int = 0,
 ) -> RollPlanReport:
     warnings: list[str] = []
+    excluded_warnings: set[str] = set()
 
     if df is None or df.empty:
         raise ValueError("empty snapshot data")
@@ -447,6 +453,18 @@ def compute_roll_plan(
             + "."
         )
 
+        event_risk = earnings_event_risk(
+            today=as_of,
+            expiry=cr.expiry,
+            next_earnings_date=next_earnings_date,
+            warn_days=earnings_warn_days,
+            avoid_days=earnings_avoid_days,
+        )
+        risk_warnings = list(event_risk["warnings"])
+        if event_risk["exclude"]:
+            excluded_warnings.update(risk_warnings)
+            continue
+
         contract = RollContract(
             contract_symbol=str(row.get("contractSymbol")) if row.get("contractSymbol") is not None else None,
             option_type=option_type,
@@ -469,12 +487,13 @@ def compute_roll_plan(
             RollCandidate(
                 rank_score=float(score),
                 contract=contract,
-                roll_debit=roll_debit,
-                roll_debit_per_contract=roll_debit_per_contract,
-                liquidity_ok=bool(liquidity_ok),
-                issues=issues,
-                rationale=rationale,
-            )
+            roll_debit=roll_debit,
+            roll_debit_per_contract=roll_debit_per_contract,
+            liquidity_ok=bool(liquidity_ok),
+            issues=issues,
+            rationale=rationale,
+            warnings=risk_warnings,
+        )
         )
 
     # Prefer candidates that pass liquidity and cost constraints; fall back if none.
@@ -487,6 +506,9 @@ def compute_roll_plan(
     if not filtered and candidates:
         warnings.append("no_candidates_passed_gates_showing_best_effort")
         filtered = candidates
+
+    if excluded_warnings:
+        warnings.extend(sorted(excluded_warnings))
 
     # Sort deterministically: best score first, then expiry/strike.
     filtered.sort(

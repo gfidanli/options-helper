@@ -25,6 +25,8 @@ class RiskProfile(BaseModel):
     # Rolling
     roll_dte_threshold: int = Field(default=21, ge=0)
     preferred_roll_dte: int = Field(default=60, ge=1)
+    earnings_avoid_days: int = Field(default=0, ge=0)
+    earnings_warn_days: int = Field(default=21, ge=0)
 
     # Technical analysis
     support_proximity_pct: float = Field(default=0.03, ge=0.0, le=0.5)

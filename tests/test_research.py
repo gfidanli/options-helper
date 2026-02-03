@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from pathlib import Path
 
+import json
 import pandas as pd
 from typer.testing import CliRunner
 
@@ -16,6 +17,33 @@ from options_helper.analysis.research import (
 from options_helper.cli import app
 from options_helper.data.yf_client import OptionsChain
 from options_helper.models import RiskProfile
+
+
+def _stub_research_client(  # type: ignore[no-untyped-def]
+    monkeypatch,
+    *,
+    expiry_strs: list[str],
+    calls: pd.DataFrame,
+    puts: pd.DataFrame,
+    history: pd.DataFrame,
+) -> None:
+    class _StubTicker:
+        def __init__(self) -> None:
+            self.options = expiry_strs
+
+    class _StubClient:
+        def ticker(self, symbol: str) -> _StubTicker:  # noqa: ARG002
+            return _StubTicker()
+
+        def get_options_chain(self, symbol: str, expiry: date) -> OptionsChain:  # noqa: ARG002
+            return OptionsChain(symbol="TEST", expiry=expiry, calls=calls, puts=puts)
+
+    monkeypatch.setattr("options_helper.cli.YFinanceClient", _StubClient)
+
+    def _stub_history(self, symbol: str, *, period: str = "5y"):  # noqa: ARG001
+        return history
+
+    monkeypatch.setattr("options_helper.cli.CandleStore.get_daily_history", _stub_history)
 
 
 def test_choose_expiry_picks_closest_to_target() -> None:
@@ -109,7 +137,7 @@ def test_select_option_candidate_excludes_bad_spread() -> None:
 def test_suggest_trade_levels_breakout_uses_breakout_level() -> None:
     # 60 weeks of steadily rising closes -> breakout on the latest week.
     idx = pd.date_range("2024-01-01", periods=300, freq="B")
-    close = pd.Series(range(len(idx)), index=idx, dtype="float64") + 100.0
+    close = pd.Series(range(len(idx)), index=idx, dtype="float64") * 0.1 + 100.0
     history = pd.DataFrame(
         {
             "Close": close,
@@ -153,12 +181,12 @@ def test_research_cli_saves_report_and_includes_spreads(tmp_path: Path, monkeypa
     # If `candle_day` lands on a weekend/holiday, the last business-day candle will be earlier.
     last_candle_day = idx.max().date()
     candle_dt_stamp = f"{last_candle_day.isoformat()}_000000"
-    close = pd.Series(range(len(idx)), index=idx, dtype="float64") + 100.0
+    close = pd.Series(range(len(idx)), index=idx, dtype="float64") * 0.1 + 100.0
     history = pd.DataFrame({"Close": close, "High": close + 1.0, "Low": close - 1.0})
 
     calls = pd.DataFrame(
         {
-            "strike": [95.0, 100.0, 105.0],
+            "strike": [120.0, 130.0, 140.0],
             "bid": [8.0, 5.0, 3.0],
             "ask": [9.0, 6.0, 3.5],
             "lastPrice": [8.5, 5.5, 3.25],
@@ -220,7 +248,7 @@ def test_research_cli_saves_report_and_includes_spreads(tmp_path: Path, monkeypa
     )
     assert res.exit_code == 0, res.output
     assert "Saved research report to" in res.output
-    assert "Spr%" in res.output
+    assert ("Spr%" in res.output) or ("Sp…" in res.output)
     assert ("Exec" in res.output) or ("Ex…" in res.output)
 
     expected_run_path_1 = tmp_path / f"research-{candle_dt_stamp}-{run_dt_1.strftime('%Y-%m-%d_%H%M%S')}.txt"
@@ -260,3 +288,132 @@ def test_research_cli_saves_report_and_includes_spreads(tmp_path: Path, monkeypa
     assert f"run_at: {run_dt_1.strftime('%Y-%m-%d %H:%M:%S')}" not in ticker_txt2
 
     assert "Entry" in ticker_txt2
+
+
+def test_research_cli_includes_earnings_warnings(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    today = date.today()
+    candle_day = today - timedelta(days=1)
+    short_exp = today + timedelta(days=60)
+    long_exp = today + timedelta(days=540)
+    expiry_strs = [short_exp.isoformat(), long_exp.isoformat()]
+
+    idx = pd.date_range(end=pd.Timestamp(candle_day), periods=300, freq="B")
+    last_candle_day = idx.max().date()
+    close = pd.Series(range(len(idx)), index=idx, dtype="float64") * 0.1 + 100.0
+    history = pd.DataFrame({"Close": close, "High": close + 1.0, "Low": close - 1.0})
+
+    calls = pd.DataFrame(
+        {
+            "strike": [120.0, 130.0, 140.0],
+            "bid": [8.0, 5.0, 3.0],
+            "ask": [9.0, 6.0, 3.5],
+            "lastPrice": [8.5, 5.5, 3.25],
+            "impliedVolatility": [0.25, 0.25, 0.25],
+            "openInterest": [500, 500, 500],
+            "volume": [50, 50, 50],
+        }
+    )
+    puts = calls.copy()
+
+    _stub_research_client(
+        monkeypatch,
+        expiry_strs=expiry_strs,
+        calls=calls,
+        puts=puts,
+        history=history,
+    )
+
+    earnings_date = last_candle_day + timedelta(days=5)
+
+    def _stub_next_earnings_date(store, symbol):  # type: ignore[no-untyped-def]
+        return earnings_date if symbol.upper() == "TEST" else None
+
+    monkeypatch.setattr("options_helper.cli.safe_next_earnings_date", _stub_next_earnings_date)
+
+    portfolio_path = tmp_path / "portfolio.json"
+    portfolio_path.write_text(
+        json.dumps(
+            {
+                "cash": 0,
+                "risk_profile": {
+                    "tolerance": "high",
+                    "max_portfolio_risk_pct": None,
+                    "max_single_position_risk_pct": None,
+                    "earnings_warn_days": 21,
+                    "earnings_avoid_days": 0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    res = runner.invoke(app, ["research", str(portfolio_path), "--symbol", "TEST", "--no-save"])
+    assert res.exit_code == 0, res.output
+    assert "earnings_within_21d" in res.output
+    assert "expiry_crosses_earnings" in res.output
+
+
+def test_research_cli_excludes_candidates_when_avoid_days_set(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    today = date.today()
+    candle_day = today - timedelta(days=1)
+    short_exp = today + timedelta(days=60)
+    long_exp = today + timedelta(days=540)
+    expiry_strs = [short_exp.isoformat(), long_exp.isoformat()]
+
+    idx = pd.date_range(end=pd.Timestamp(candle_day), periods=300, freq="B")
+    last_candle_day = idx.max().date()
+    close = pd.Series(range(len(idx)), index=idx, dtype="float64") * 0.1 + 100.0
+    history = pd.DataFrame({"Close": close, "High": close + 1.0, "Low": close - 1.0})
+
+    calls = pd.DataFrame(
+        {
+            "strike": [120.0, 130.0, 140.0],
+            "bid": [8.0, 5.0, 3.0],
+            "ask": [9.0, 6.0, 3.5],
+            "lastPrice": [8.5, 5.5, 3.25],
+            "impliedVolatility": [0.25, 0.25, 0.25],
+            "openInterest": [500, 500, 500],
+            "volume": [50, 50, 50],
+        }
+    )
+    puts = calls.copy()
+
+    _stub_research_client(
+        monkeypatch,
+        expiry_strs=expiry_strs,
+        calls=calls,
+        puts=puts,
+        history=history,
+    )
+
+    earnings_date = last_candle_day + timedelta(days=5)
+
+    def _stub_next_earnings_date(store, symbol):  # type: ignore[no-untyped-def]
+        return earnings_date if symbol.upper() == "TEST" else None
+
+    monkeypatch.setattr("options_helper.cli.safe_next_earnings_date", _stub_next_earnings_date)
+
+    portfolio_path = tmp_path / "portfolio.json"
+    portfolio_path.write_text(
+        json.dumps(
+            {
+                "cash": 0,
+                "risk_profile": {
+                    "tolerance": "high",
+                    "max_portfolio_risk_pct": None,
+                    "max_single_position_risk_pct": None,
+                    "earnings_warn_days": 10,
+                    "earnings_avoid_days": 7,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    res = runner.invoke(app, ["research", str(portfolio_path), "--symbol", "TEST", "--no-save"])
+    assert res.exit_code == 0, res.output
+    assert "Excluded 30–90d candidate due to earnings_avoid_days" in res.output
+    assert "Excluded LEAPS candidate due to earnings_avoid_days" in res.output
+    assert "earnings_within_10d" in res.output

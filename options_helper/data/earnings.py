@@ -79,3 +79,12 @@ class EarningsStore:
         except Exception as exc:  # noqa: BLE001
             raise EarningsCacheError(f"Failed to delete earnings cache: {path}") from exc
 
+
+def safe_next_earnings_date(store: EarningsStore, symbol: str) -> date | None:
+    try:
+        record = store.load(symbol)
+    except EarningsCacheError:
+        return None
+    if record is None:
+        return None
+    return record.next_earnings_date

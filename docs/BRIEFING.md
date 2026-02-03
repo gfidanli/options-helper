@@ -52,10 +52,12 @@ The report includes:
 - Per symbol:
   - Technical context (from cached candles; canonical indicator source is `technicals_backtesting`)
     - Includes extension percentiles + rolling quantiles (1y/3y/5y when available)
+  - Next earnings line (date + days until; or `unknown`)
   - Chain highlights (walls, near-term EM/IV, gamma peak)
   - Compare highlights (spot + key deltas), if `--compare` is enabled and snapshots exist
   - Flow zones (net, aggregated by strike), if compare snapshots exist
   - Warnings/errors when data is missing
+    - Earnings warnings: `earnings_unknown`, `earnings_within_<N>d`, `expiry_crosses_earnings`
 
 ## Inputs (snapshots)
 

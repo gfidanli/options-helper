@@ -82,12 +82,14 @@ def render_roll_plan_console(console: Console, report: RollPlanReport) -> None:
         cand_table.add_column("Vol", justify="right")
         cand_table.add_column("Spr%", justify="right")
         cand_table.add_column("Exec", justify="right")
+        cand_table.add_column("Warn")
 
         for i, cand in enumerate(report.candidates, start=1):
             c = cand.contract
             style = None
             if not cand.liquidity_ok:
                 style = "yellow"
+            warn = "-" if not cand.warnings else ", ".join(cand.warnings)
             cand_table.add_row(
                 str(i),
                 c.expiry,
@@ -102,6 +104,7 @@ def render_roll_plan_console(console: Console, report: RollPlanReport) -> None:
                 "-" if c.volume is None else f"{c.volume:d}",
                 _fmt_pct(c.spread_pct),
                 _fmt_exec(c.execution_quality),
+                warn,
                 style=style,
             )
 
@@ -115,6 +118,11 @@ def render_roll_plan_console(console: Console, report: RollPlanReport) -> None:
         if top.issues:
             console.print("\n[yellow]Top pick flags[/yellow]")
             for w in sorted(set(top.issues)):
+                console.print(f"- {w}")
+
+        if top.warnings:
+            console.print("\n[yellow]Top pick warnings[/yellow]")
+            for w in sorted(set(top.warnings)):
                 console.print(f"- {w}")
 
     if report.warnings:

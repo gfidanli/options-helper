@@ -9,6 +9,7 @@ import pandas as pd
 
 from options_helper.analysis.chain_metrics import ChainReport
 from options_helper.analysis.compare_metrics import CompareReport
+from options_helper.analysis.events import format_next_earnings_line
 from options_helper.technicals_backtesting.snapshot import TechnicalSnapshot
 
 
@@ -315,6 +316,9 @@ def build_briefing_payload(
                 "errors": list(sec.errors),
                 "warnings": list(sec.warnings),
                 "derived_updated": bool(sec.derived_updated),
+                "next_earnings_date": None
+                if sec.next_earnings_date is None
+                else sec.next_earnings_date.isoformat(),
                 "technicals": _jsonable(sec.technicals),
                 "chain": _jsonable(sec.chain),
                 "compare": _jsonable(sec.compare),
@@ -336,6 +340,7 @@ class BriefingSymbolSection:
     errors: list[str]
     warnings: list[str]
     derived_updated: bool = False
+    next_earnings_date: date | None = None
 
 
 def render_portfolio_table_markdown(
@@ -409,6 +414,14 @@ def render_briefing_markdown(
 
     for sec in symbol_sections:
         lines.append(f"## {sec.symbol} ({sec.as_of})")
+        lines.append("")
+
+        as_of_date = None
+        try:
+            as_of_date = date.fromisoformat(sec.as_of)
+        except Exception:  # noqa: BLE001
+            as_of_date = date.today()
+        lines.append(f"- {format_next_earnings_line(as_of_date, sec.next_earnings_date)}")
         lines.append("")
 
         if sec.errors and sec.chain is None and sec.technicals is None:

@@ -6,12 +6,18 @@ from options_helper.analysis.advice import Action, Confidence, PositionMetrics, 
 from options_helper.models import Portfolio, Position, RiskProfile
 
 
-def _pos(*, contracts: int = 1, cost_basis: float = 1.0, option_type: str = "call") -> Position:
+def _pos(
+    *,
+    contracts: int = 1,
+    cost_basis: float = 1.0,
+    option_type: str = "call",
+    expiry: date | None = None,
+) -> Position:
     return Position(
         id="p",
         symbol="UROY",
         option_type=option_type,  # type: ignore[arg-type]
-        expiry=date.today() + timedelta(days=365),
+        expiry=expiry or (date.today() + timedelta(days=365)),
         strike=5.0,
         contracts=contracts,
         cost_basis=cost_basis,
@@ -33,6 +39,8 @@ def _metrics(
     spread: float | None = None,
     spread_pct: float | None = None,
     execution_quality: str | None = "unknown",
+    as_of: date | None = None,
+    next_earnings_date: date | None = None,
 ) -> PositionMetrics:
     pnl_abs = (mark - position.cost_basis) * 100.0 * position.contracts
     pnl_pct = (mark - position.cost_basis) / position.cost_basis if position.cost_basis else None
@@ -75,6 +83,8 @@ def _metrics(
         breakout_w=breakout_w,
         delta=0.5,
         theta_per_day=-0.01,
+        as_of=as_of,
+        next_earnings_date=next_earnings_date,
     )
 
 
@@ -152,3 +162,23 @@ def test_missing_bid_ask_warns() -> None:
     m = _metrics(portfolio.positions[0], mark=1.0, spread=None, spread_pct=None, execution_quality="unknown")
     a = advise(m, portfolio)
     assert any("quote quality low" in w for w in a.warnings)
+
+
+def test_earnings_event_warnings_are_added() -> None:
+    as_of = date(2026, 1, 2)
+    earnings = as_of + timedelta(days=5)
+    position = _pos(expiry=as_of + timedelta(days=30))
+    portfolio = Portfolio(
+        cash=500.0,
+        risk_profile=RiskProfile(
+            max_portfolio_risk_pct=None,
+            max_single_position_risk_pct=None,
+            earnings_warn_days=21,
+            earnings_avoid_days=0,
+        ),
+        positions=[position],
+    )
+    m = _metrics(position, mark=1.0, as_of=as_of, next_earnings_date=earnings)
+    a = advise(m, portfolio)
+    assert "earnings_within_21d" in a.warnings
+    assert "expiry_crosses_earnings" in a.warnings

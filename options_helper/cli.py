@@ -18,6 +18,7 @@ from options_helper.analysis.advice import Advice, PositionMetrics, advise
 from options_helper.analysis.chain_metrics import compute_chain_report, execution_quality
 from options_helper.analysis.compare_metrics import compute_compare_report
 from options_helper.analysis.derived_metrics import DerivedRow, compute_derived_stats
+from options_helper.analysis.events import earnings_event_risk
 from options_helper.analysis.flow import FlowGroupBy, aggregate_flow_window, compute_flow, summarize_flow
 from options_helper.analysis.performance import compute_daily_performance_quote
 from options_helper.analysis.research import (
@@ -32,7 +33,7 @@ from options_helper.analysis.greeks import add_black_scholes_greeks_to_chain, bl
 from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, sma
 from options_helper.data.candles import CandleCacheError, CandleStore, last_close
 from options_helper.data.derived import DERIVED_COLUMNS_V1, DERIVED_SCHEMA_VERSION, DerivedStore
-from options_helper.data.earnings import EarningsRecord, EarningsStore
+from options_helper.data.earnings import EarningsRecord, EarningsStore, safe_next_earnings_date
 from options_helper.data.options_snapshots import OptionsSnapshotStore
 from options_helper.data.options_snapshotter import snapshot_full_chain_for_symbols
 from options_helper.data.scanner import (
@@ -184,7 +185,7 @@ def derived_update(
     ),
 ) -> None:
     """Append or upsert a derived-metrics row for a symbol/day (offline)."""
-    console = Console()
+    console = Console(width=200)
     store = OptionsSnapshotStore(cache_dir)
     derived = DerivedStore(derived_dir)
 
@@ -338,8 +339,10 @@ def _position_metrics(
     risk_profile: RiskProfile,
     underlying_history: pd.DataFrame,
     underlying_last_price: float | None,
+    as_of: date | None = None,
+    next_earnings_date: date | None = None,
 ) -> PositionMetrics:
-    today = date.today()
+    today = as_of or date.today()
     chain = client.get_options_chain(position.symbol, position.expiry)
     df = chain.calls if position.option_type == "call" else chain.puts
     row = contract_row_by_strike(df, position.strike)
@@ -483,6 +486,8 @@ def _position_metrics(
         breakout_w=breakout_w,
         delta=delta,
         theta_per_day=theta_per_day,
+        as_of=today,
+        next_earnings_date=next_earnings_date,
     )
 
 
@@ -1752,6 +1757,11 @@ def briefing(
     """Generate a daily Markdown briefing for portfolio + optional watchlists (offline-first)."""
     console = Console(width=200)
     portfolio = load_portfolio(portfolio_path)
+    rp = portfolio.risk_profile
+
+    positions_by_symbol: dict[str, list[Position]] = {}
+    for p in portfolio.positions:
+        positions_by_symbol.setdefault(p.symbol.upper(), []).append(p)
 
     portfolio_symbols = sorted({p.symbol.upper() for p in portfolio.positions})
     watch_symbols: list[str] = []
@@ -1774,6 +1784,7 @@ def briefing(
     store = OptionsSnapshotStore(cache_dir)
     derived_store = DerivedStore(derived_dir)
     candle_store = CandleStore(candle_cache_dir)
+    earnings_store = EarningsStore(Path("data/earnings"))
 
     technicals_cfg: dict | None = None
     technicals_cfg_error: str | None = None
@@ -1798,10 +1809,32 @@ def briefing(
         flow_net = None
         technicals = None
         derived_updated = False
+        next_earnings_date = safe_next_earnings_date(earnings_store, sym)
 
         try:
             to_date = store.resolve_date(sym, as_of)
             resolved_to_dates.append(to_date)
+
+            event_warnings: set[str] = set()
+            base_risk = earnings_event_risk(
+                today=to_date,
+                expiry=None,
+                next_earnings_date=next_earnings_date,
+                warn_days=rp.earnings_warn_days,
+                avoid_days=rp.earnings_avoid_days,
+            )
+            event_warnings.update(base_risk["warnings"])
+            for pos in positions_by_symbol.get(sym, []):
+                pos_risk = earnings_event_risk(
+                    today=to_date,
+                    expiry=pos.expiry,
+                    next_earnings_date=next_earnings_date,
+                    warn_days=rp.earnings_warn_days,
+                    avoid_days=rp.earnings_avoid_days,
+                )
+                event_warnings.update(pos_risk["warnings"])
+            if event_warnings:
+                warnings.extend(sorted(event_warnings))
 
             df_to = store.load_day(sym, to_date)
             meta_to = store.load_meta(sym, to_date)
@@ -1894,6 +1927,7 @@ def briefing(
                 errors=errors,
                 warnings=warnings,
                 derived_updated=derived_updated,
+                next_earnings_date=next_earnings_date,
             )
         )
 
@@ -2070,6 +2104,8 @@ def roll_plan(
     min_vol = rp.min_volume if min_volume is None else int(min_volume)
 
     store = OptionsSnapshotStore(cache_dir)
+    earnings_store = EarningsStore(Path("data/earnings"))
+    next_earnings_date = safe_next_earnings_date(earnings_store, position.symbol)
 
     try:
         as_of_date = store.resolve_date(position.symbol, as_of)
@@ -2093,6 +2129,9 @@ def roll_plan(
             max_debit=max_debit,
             min_credit=min_credit,
             top=top,
+            next_earnings_date=next_earnings_date,
+            earnings_warn_days=rp.earnings_warn_days,
+            earnings_avoid_days=rp.earnings_avoid_days,
         )
 
         render_roll_plan_console(console, report)
@@ -2310,6 +2349,7 @@ def research(
 
     candle_store = CandleStore(candle_cache_dir)
     client = YFinanceClient()
+    earnings_store = EarningsStore(Path("data/earnings"))
     console = Console()
 
     from rich.table import Table
@@ -2349,6 +2389,8 @@ def research(
             # Candle store normalizes to tz-naive DatetimeIndex.
             symbol_candle_dates[sym] = last_ts.date()
             symbol_candle_datetimes[sym] = last_ts.to_pydatetime() if hasattr(last_ts, "to_pydatetime") else last_ts
+        as_of_date = symbol_candle_dates.get(sym)
+        next_earnings_date = safe_next_earnings_date(earnings_store, sym)
         setup = analyze_underlying(sym, history=history, risk_profile=rp)
 
         emit(f"\n[bold]{sym}[/bold] — setup: {setup.direction.value}")
@@ -2385,11 +2427,12 @@ def research(
             emit("  - No listed option expirations found.")
             continue
 
+        expiry_as_of = as_of_date or date.today()
         short_exp = choose_expiry(
-            expiry_strs, min_dte=short_min_dte, max_dte=short_max_dte, target_dte=60
+            expiry_strs, min_dte=short_min_dte, max_dte=short_max_dte, target_dte=60, today=expiry_as_of
         )
         long_exp = choose_expiry(
-            expiry_strs, min_dte=long_min_dte, max_dte=long_max_dte, target_dte=540
+            expiry_strs, min_dte=long_min_dte, max_dte=long_max_dte, target_dte=540, today=expiry_as_of
         )
         if long_exp is None:
             # Fallback: pick the farthest expiry that still qualifies as "long".
@@ -2399,7 +2442,7 @@ def research(
                     exp = date.fromisoformat(s)
                 except ValueError:
                     continue
-                dte = (exp - date.today()).days
+                dte = (exp - expiry_as_of).days
                 parsed.append((dte, exp))
             parsed = [t for t in parsed if t[0] >= long_min_dte]
             if parsed:
@@ -2442,24 +2485,36 @@ def research(
                 window_pct=window_pct,
                 min_open_interest=min_oi,
                 min_volume=min_vol,
+                as_of=expiry_as_of,
+                next_earnings_date=next_earnings_date,
+                earnings_warn_days=rp.earnings_warn_days,
+                earnings_avoid_days=rp.earnings_avoid_days,
             )
             if short_pick is not None:
-                why = "; ".join(short_pick.rationale[:2])
-                table.add_row(
-                    "30–90d",
-                    short_pick.expiry.isoformat(),
-                    str(short_pick.dte),
-                    short_pick.option_type,
-                    f"{short_pick.strike:g}",
-                    "-" if short_pick.mark is None else f"${short_pick.mark:.2f}",
-                    "-" if short_pick.delta is None else f"{short_pick.delta:+.2f}",
-                    "-" if short_pick.iv is None else f"{short_pick.iv:.1%}",
-                    "-" if short_pick.open_interest is None else str(short_pick.open_interest),
-                    "-" if short_pick.volume is None else str(short_pick.volume),
-                    "-" if short_pick.spread_pct is None else f"{short_pick.spread_pct:.1%}",
-                    "-" if short_pick.execution_quality is None else short_pick.execution_quality,
-                    why,
-                )
+                if short_pick.exclude:
+                    warn = ", ".join(short_pick.warnings) if short_pick.warnings else "earnings_unknown"
+                    emit(f"  - Excluded 30–90d candidate due to earnings_avoid_days ({warn}).")
+                else:
+                    why = "; ".join(short_pick.rationale[:2])
+                    if short_pick.warnings:
+                        why = f"{why}; Warnings: {', '.join(short_pick.warnings)}"
+                    table.add_row(
+                        "30–90d",
+                        short_pick.expiry.isoformat(),
+                        str(short_pick.dte),
+                        short_pick.option_type,
+                        f"{short_pick.strike:g}",
+                        "-" if short_pick.mark is None else f"${short_pick.mark:.2f}",
+                        "-" if short_pick.delta is None else f"{short_pick.delta:+.2f}",
+                        "-" if short_pick.iv is None else f"{short_pick.iv:.1%}",
+                        "-" if short_pick.open_interest is None else str(short_pick.open_interest),
+                        "-" if short_pick.volume is None else str(short_pick.volume),
+                        "-" if short_pick.spread_pct is None else f"{short_pick.spread_pct:.1%}",
+                        "-" if short_pick.execution_quality is None else short_pick.execution_quality,
+                        why,
+                    )
+                    if short_pick.warnings:
+                        emit(f"  - Earnings warnings (30–90d): {', '.join(short_pick.warnings)}")
         else:
             emit(f"  - No expiries found in {short_min_dte}-{short_max_dte} DTE range.")
 
@@ -2477,24 +2532,36 @@ def research(
                 window_pct=window_pct,
                 min_open_interest=min_oi,
                 min_volume=min_vol,
+                as_of=expiry_as_of,
+                next_earnings_date=next_earnings_date,
+                earnings_warn_days=rp.earnings_warn_days,
+                earnings_avoid_days=rp.earnings_avoid_days,
             )
             if long_pick is not None:
-                why = "; ".join(long_pick.rationale[:2] + ["Longer DTE reduces theta pressure."])
-                table.add_row(
-                    "LEAPS",
-                    long_pick.expiry.isoformat(),
-                    str(long_pick.dte),
-                    long_pick.option_type,
-                    f"{long_pick.strike:g}",
-                    "-" if long_pick.mark is None else f"${long_pick.mark:.2f}",
-                    "-" if long_pick.delta is None else f"{long_pick.delta:+.2f}",
-                    "-" if long_pick.iv is None else f"{long_pick.iv:.1%}",
-                    "-" if long_pick.open_interest is None else str(long_pick.open_interest),
-                    "-" if long_pick.volume is None else str(long_pick.volume),
-                    "-" if long_pick.spread_pct is None else f"{long_pick.spread_pct:.1%}",
-                    "-" if long_pick.execution_quality is None else long_pick.execution_quality,
-                    why,
-                )
+                if long_pick.exclude:
+                    warn = ", ".join(long_pick.warnings) if long_pick.warnings else "earnings_unknown"
+                    emit(f"  - Excluded LEAPS candidate due to earnings_avoid_days ({warn}).")
+                else:
+                    why = "; ".join(long_pick.rationale[:2] + ["Longer DTE reduces theta pressure."])
+                    if long_pick.warnings:
+                        why = f"{why}; Warnings: {', '.join(long_pick.warnings)}"
+                    table.add_row(
+                        "LEAPS",
+                        long_pick.expiry.isoformat(),
+                        str(long_pick.dte),
+                        long_pick.option_type,
+                        f"{long_pick.strike:g}",
+                        "-" if long_pick.mark is None else f"${long_pick.mark:.2f}",
+                        "-" if long_pick.delta is None else f"{long_pick.delta:+.2f}",
+                        "-" if long_pick.iv is None else f"{long_pick.iv:.1%}",
+                        "-" if long_pick.open_interest is None else str(long_pick.open_interest),
+                        "-" if long_pick.volume is None else str(long_pick.volume),
+                        "-" if long_pick.spread_pct is None else f"{long_pick.spread_pct:.1%}",
+                        "-" if long_pick.execution_quality is None else long_pick.execution_quality,
+                        why,
+                    )
+                    if long_pick.warnings:
+                        emit(f"  - Earnings warnings (LEAPS): {', '.join(long_pick.warnings)}")
         else:
             emit(f"  - No expiries found in {long_min_dte}-{long_max_dte} DTE range.")
 
@@ -3317,9 +3384,12 @@ def analyze(
 
     client = YFinanceClient()
     candle_store = CandleStore(cache_dir)
+    earnings_store = EarningsStore(Path("data/earnings"))
 
     history_by_symbol: dict[str, pd.DataFrame] = {}
     last_price_by_symbol: dict[str, float | None] = {}
+    as_of_by_symbol: dict[str, date | None] = {}
+    next_earnings_by_symbol: dict[str, date | None] = {}
     for sym in sorted({p.symbol for p in portfolio.positions}):
         try:
             history = candle_store.get_daily_history(sym, period=period)
@@ -3328,6 +3398,13 @@ def analyze(
             history = pd.DataFrame()
         history_by_symbol[sym] = history
         last_price_by_symbol[sym] = last_close(history)
+        as_of_date = None
+        if not history.empty and isinstance(history.index, pd.DatetimeIndex):
+            last_ts = history.index.max()
+            if last_ts is not None and not pd.isna(last_ts):
+                as_of_date = last_ts.date()
+        as_of_by_symbol[sym] = as_of_date
+        next_earnings_by_symbol[sym] = safe_next_earnings_date(earnings_store, sym)
 
     metrics_list: list[PositionMetrics] = []
     advice_by_id: dict[str, Advice] = {}
@@ -3340,6 +3417,8 @@ def analyze(
                 risk_profile=portfolio.risk_profile,
                 underlying_history=history_by_symbol.get(p.symbol, pd.DataFrame()),
                 underlying_last_price=last_price_by_symbol.get(p.symbol),
+                as_of=as_of_by_symbol.get(p.symbol),
+                next_earnings_date=next_earnings_by_symbol.get(p.symbol),
             )
             metrics_list.append(metrics)
             advice_by_id[p.id] = advise(metrics, portfolio)

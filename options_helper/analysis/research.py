@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
+from typing import cast
 
 import pandas as pd
 
 from options_helper.analysis.chain_metrics import compute_spread, compute_spread_pct, execution_quality
+from options_helper.analysis.events import earnings_event_risk
 from options_helper.analysis.greeks import black_scholes_greeks
 from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, stoch_rsi
 from options_helper.models import OptionType, RiskProfile
@@ -49,6 +51,8 @@ class OptionCandidate:
     open_interest: int | None
     volume: int | None
     rationale: list[str]
+    warnings: list[str] = field(default_factory=list)
+    exclude: bool = False
 
 
 @dataclass(frozen=True)
@@ -388,6 +392,10 @@ def select_option_candidate(
     min_open_interest: int,
     min_volume: int,
     max_spread_pct: float = 0.35,
+    as_of: date | None = None,
+    next_earnings_date: date | None = None,
+    earnings_warn_days: int = 21,
+    earnings_avoid_days: int = 0,
 ) -> OptionCandidate | None:
     if df is None or df.empty:
         return None
@@ -408,7 +416,7 @@ def select_option_candidate(
     df["spread_pct"] = compute_spread_pct(df)
     df["exec_quality"] = df["spread_pct"].map(execution_quality)
 
-    today = date.today()
+    today = as_of or date.today()
     dte = max((expiry - today).days, 0)
     t_years = dte / 365.0 if dte > 0 else None
 
@@ -479,6 +487,14 @@ def select_option_candidate(
     if spread_gate_fallback:
         rationale.append("Spread quality was poor across candidates; used best-effort pick.")
 
+    risk = earnings_event_risk(
+        today=today,
+        expiry=expiry,
+        next_earnings_date=next_earnings_date,
+        warn_days=earnings_warn_days,
+        avoid_days=earnings_avoid_days,
+    )
+
     return OptionCandidate(
         symbol=symbol.upper(),
         option_type=option_type,
@@ -497,6 +513,8 @@ def select_option_candidate(
         open_interest=oi,
         volume=vol,
         rationale=rationale,
+        warnings=cast(list[str], risk["warnings"]),
+        exclude=bool(risk["exclude"]),
     )
 
 
@@ -511,6 +529,10 @@ def build_call_debit_spread(
     min_volume: int,
     long_delta: float = 0.40,
     short_delta: float = 0.25,
+    as_of: date | None = None,
+    next_earnings_date: date | None = None,
+    earnings_warn_days: int = 21,
+    earnings_avoid_days: int = 0,
 ) -> SpreadCandidate | None:
     long_leg = select_option_candidate(
         calls_df,
@@ -522,6 +544,10 @@ def build_call_debit_spread(
         window_pct=window_pct,
         min_open_interest=min_open_interest,
         min_volume=min_volume,
+        as_of=as_of,
+        next_earnings_date=next_earnings_date,
+        earnings_warn_days=earnings_warn_days,
+        earnings_avoid_days=earnings_avoid_days,
     )
     if long_leg is None:
         return None
@@ -541,6 +567,10 @@ def build_call_debit_spread(
         window_pct=window_pct,
         min_open_interest=min_open_interest,
         min_volume=min_volume,
+        as_of=as_of,
+        next_earnings_date=next_earnings_date,
+        earnings_warn_days=earnings_warn_days,
+        earnings_avoid_days=earnings_avoid_days,
     )
     if short_leg is None:
         return None

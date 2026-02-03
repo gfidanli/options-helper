@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from enum import Enum
 
+from options_helper.analysis.events import earnings_event_risk, format_next_earnings_line
 from options_helper.models import Portfolio, Position, RiskProfile
 
 
@@ -71,6 +73,8 @@ class PositionMetrics:
 
     delta: float | None = None
     theta_per_day: float | None = None
+    as_of: date | None = None
+    next_earnings_date: date | None = None
 
 
 @dataclass(frozen=True)
@@ -149,6 +153,17 @@ def advise(metrics: PositionMetrics, portfolio: Portfolio) -> Advice:
     rp: RiskProfile = portfolio.risk_profile
     reasons: list[str] = []
     warnings: list[str] = []
+
+    as_of = metrics.as_of or date.today()
+    reasons.append(format_next_earnings_line(as_of, metrics.next_earnings_date))
+    event_risk = earnings_event_risk(
+        today=as_of,
+        expiry=metrics.position.expiry,
+        next_earnings_date=metrics.next_earnings_date,
+        warn_days=rp.earnings_warn_days,
+        avoid_days=rp.earnings_avoid_days,
+    )
+    warnings.extend(event_risk["warnings"])
 
     if metrics.mark is None:
         warnings.append("Missing option mark price; advice is limited.")
