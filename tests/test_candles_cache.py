@@ -5,6 +5,7 @@ from datetime import date, timedelta
 import pandas as pd
 
 from options_helper.data.candles import CandleStore
+from options_helper.data.yf_client import DataFetchError
 
 
 def _df(d0: date, days: int) -> pd.DataFrame:
@@ -73,6 +74,19 @@ def test_provider_history_fetch_used(tmp_path) -> None:
     assert back_adjust is False
     assert start == today - timedelta(days=5)
     assert not out.empty
+
+
+def test_rate_limit_detection_unwraps_exception_chain(tmp_path) -> None:
+    store = CandleStore(tmp_path, backfill_days=0)
+
+    class YFRateLimitError(Exception):
+        pass
+
+    inner = YFRateLimitError("429 Too Many Requests")
+    try:
+        raise DataFetchError("Failed to fetch") from inner
+    except DataFetchError as exc:
+        assert store._is_rate_limit_error(exc)
 
 
 def test_refresh_tail_fetches_recent_window(tmp_path) -> None:

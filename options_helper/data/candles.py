@@ -230,14 +230,22 @@ class CandleStore:
         )
 
     def _is_rate_limit_error(self, exc: Exception) -> bool:
-        name = exc.__class__.__name__
-        msg = str(exc).lower()
-        return (
-            name == "YFRateLimitError"
-            or "rate limit" in msg
-            or "too many requests" in msg
-            or "429" in msg
-        )
+        current: Exception | None = exc
+        for _ in range(4):
+            if current is None:
+                break
+            name = current.__class__.__name__
+            msg = str(current).lower()
+            if (
+                name == "YFRateLimitError"
+                or "rate limit" in msg
+                or "too many requests" in msg
+                or "429" in msg
+            ):
+                return True
+            next_exc = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+            current = next_exc if isinstance(next_exc, Exception) else None
+        return False
 
     def _fetch_with_retry(self, symbol: str, start: date | None, end: date | None) -> pd.DataFrame:
         attempt = 1

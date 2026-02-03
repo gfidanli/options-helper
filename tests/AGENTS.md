@@ -6,7 +6,7 @@
 - Use `typer.testing.CliRunner` for CLI coverage.
 
 ## Stubbing guidance
-- Monkeypatch `options_helper.cli.YFinanceClient` or methods to return stub chains.
+- Monkeypatch `options_helper.cli.get_provider` to return a stub provider (preferred).
 - Monkeypatch `CandleStore.get_daily_history` for candle-dependent commands.
 - If time matters (timestamps/filenames), monkeypatch `options_helper.cli.datetime`.
 
@@ -14,4 +14,3 @@
 - Edge cases: empty history, missing columns, NaNs, zeros from Yahoo.
 - “No crash” invariants: per-symbol failures should not abort multi-symbol runs.
 - Saved artifacts: reports, snapshots, metadata correctness.
-

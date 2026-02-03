@@ -56,6 +56,7 @@ from options_helper.data.journal import JournalStore, SignalContext, SignalEvent
 from options_helper.data.options_snapshots import OptionsSnapshotStore, find_snapshot_row
 from options_helper.data.options_snapshotter import snapshot_full_chain_for_symbols
 from options_helper.data.providers import get_provider
+from options_helper.data.providers.base import MarketDataProvider
 from options_helper.data.providers.runtime import reset_default_provider_name, set_default_provider_name
 from options_helper.data.scanner import (
     evaluate_liquidity_for_symbols,
@@ -79,7 +80,7 @@ from options_helper.data.technical_backtesting_config import (
 )
 from options_helper.data.technical_backtesting_io import load_ohlc_from_cache, load_ohlc_from_path
 from options_helper.data.universe import UniverseError, load_universe_symbols
-from options_helper.data.yf_client import DataFetchError, YFinanceClient, contract_row_by_strike
+from options_helper.data.yf_client import DataFetchError, contract_row_by_strike
 from options_helper.models import OptionType, Position, RiskProfile
 from options_helper.observability import finalize_run_logger, setup_run_logger
 from options_helper.reporting import render_positions, render_summary
@@ -628,7 +629,7 @@ def derived_stats(
 
 
 def _position_metrics(
-    client: YFinanceClient | None,
+    provider: MarketDataProvider | None,
     position: Position,
     *,
     risk_profile: RiskProfile,
@@ -642,9 +643,9 @@ def _position_metrics(
 
     row = snapshot_row
     if row is None:
-        if client is None:
-            raise ValueError("client is required when snapshot_row is not provided")
-        chain = client.get_options_chain(position.symbol, position.expiry)
+        if provider is None:
+            raise ValueError("provider is required when snapshot_row is not provided")
+        chain = provider.get_options_chain(position.symbol, position.expiry)
         df = chain.calls if position.option_type == "call" else chain.puts
         row = contract_row_by_strike(df, position.strike)
 
@@ -833,7 +834,7 @@ def daily_performance(
         console.print("No positions.")
         raise typer.Exit(0)
 
-    client = YFinanceClient()
+    provider = get_provider()
 
     from rich.table import Table
 
@@ -853,7 +854,7 @@ def daily_performance(
 
     for p in portfolio.positions:
         try:
-            chain = client.get_options_chain(p.symbol, p.expiry)
+            chain = provider.get_options_chain(p.symbol, p.expiry)
             df = chain.calls if p.option_type == "call" else chain.puts
             row = contract_row_by_strike(df, p.strike)
 
@@ -987,8 +988,8 @@ def snapshot_options(
     console = Console()
 
     store = OptionsSnapshotStore(cache_dir)
-    candle_store = CandleStore(candle_cache_dir)
     provider = get_provider()
+    candle_store = CandleStore(candle_cache_dir, provider=provider)
     provider_name = getattr(provider, "name", "unknown")
     provider_version = (
         getattr(provider, "version", None)
@@ -2923,8 +2924,8 @@ def research(
         if not symbols:
             raise typer.BadParameter(f"Watchlist '{watchlist}' is empty or missing in {watchlists_path}")
 
-    candle_store = CandleStore(candle_cache_dir)
-    client = YFinanceClient()
+    provider = get_provider()
+    candle_store = CandleStore(candle_cache_dir, provider=provider)
     earnings_store = EarningsStore(Path("data/earnings"))
     derived_store = DerivedStore(derived_dir)
     confluence_cfg = None
@@ -3066,7 +3067,7 @@ def research(
         for note in levels.notes:
             emit(f"    - {note}")
 
-        expiry_strs = list(client.ticker(sym).options or [])
+        expiry_strs = [d.isoformat() for d in provider.list_option_expiries(sym)]
         if not expiry_strs:
             emit("  - No listed option expirations found.")
             continue
@@ -3151,7 +3152,7 @@ def research(
             return f"{ctx.iv_percentile:.0f}"
 
         if short_exp is not None:
-            chain = client.get_options_chain(sym, short_exp)
+            chain = provider.get_options_chain(sym, short_exp)
             if vol_context is None:
                 vol_context = compute_volatility_context(
                     history=history,
@@ -3213,7 +3214,7 @@ def research(
             emit(f"  - No expiries found in {short_min_dte}-{short_max_dte} DTE range.")
 
         if long_exp is not None:
-            chain = client.get_options_chain(sym, long_exp)
+            chain = provider.get_options_chain(sym, long_exp)
             if vol_context is None:
                 vol_context = compute_volatility_context(
                     history=history,
@@ -3389,7 +3390,8 @@ def refresh_candles(
         Console().print("No symbols found (no positions and no watchlists).")
         raise typer.Exit(0)
 
-    store = CandleStore(candle_cache_dir)
+    provider = get_provider()
+    store = CandleStore(candle_cache_dir, provider=provider)
     console = Console()
     console.print(f"Refreshing daily candles for {len(symbols)} symbol(s)...")
 
@@ -3721,7 +3723,8 @@ def scanner_run(
     console.print(
         f"Scanning {len(symbols)} symbol(s) from `{universe}` (tail {tail_low_pct:.1f}/{tail_high_pct:.1f})..."
     )
-    candle_store = CandleStore(candle_cache_dir)
+    provider = get_provider()
+    candle_store = CandleStore(candle_cache_dir, provider=provider)
     scan_rows, tail_symbols = scan_symbols(
         symbols,
         candle_store=candle_store,
@@ -3833,6 +3836,7 @@ def scanner_run(
             risk_free_rate=risk_free_rate,
             symbol_source="scanner",
             watchlists=[all_watchlist_name],
+            provider=provider,
         )
         ok = sum(1 for r in snapshot_results if r.status == "ok")
         console.print(f"Options snapshots complete: {ok}/{len(snapshot_results)} ok")
@@ -4294,8 +4298,8 @@ def analyze(
     if offline:
         snapshot_store = OptionsSnapshotStore(snapshots_dir)
 
-    client = None if offline else YFinanceClient()
-    candle_store = CandleStore(cache_dir)
+    provider = None if offline else get_provider()
+    candle_store = CandleStore(cache_dir, provider=provider)
     earnings_store = EarningsStore(Path("data/earnings"))
 
     history_by_symbol: dict[str, pd.DataFrame] = {}
@@ -4396,7 +4400,7 @@ def analyze(
                 snapshot_row = row if row is not None else {}
 
             metrics = _position_metrics(
-                client,
+                provider,
                 p,
                 risk_profile=portfolio.risk_profile,
                 underlying_history=history_by_symbol.get(p.symbol, pd.DataFrame()),
@@ -4544,17 +4548,17 @@ def journal_log(
             console.print("No positions.")
             raise typer.Exit(0)
 
-    candle_store = CandleStore(cache_dir)
+    provider: MarketDataProvider | None = None
+    if (positions and not offline) or research:
+        provider = get_provider()
+
+    candle_store = CandleStore(cache_dir, provider=provider)
     earnings_store = EarningsStore(Path("data/earnings"))
     journal_store = JournalStore(journal_dir)
 
     events: list[SignalEvent] = []
     counts = {"position": 0, "research": 0, "scanner": 0}
     offline_missing: list[str] = []
-
-    yf_client: YFinanceClient | None = None
-    if (positions and not offline) or research:
-        yf_client = YFinanceClient()
 
     if positions:
         snapshot_store: OptionsSnapshotStore | None = None
@@ -4668,7 +4672,7 @@ def journal_log(
                     contract_symbol = _contract_symbol_from_row(row)
 
                 metrics = _position_metrics(
-                    None if offline else yf_client,
+                    None if offline else provider,
                     p,
                     risk_profile=portfolio.risk_profile,
                     underlying_history=history_by_symbol.get(p.symbol, pd.DataFrame()),
@@ -4795,7 +4799,7 @@ def journal_log(
                 if setup.spot is None:
                     warnings.append("no_spot_price")
                 else:
-                    expiry_strs = list(yf_client.ticker(sym).options or []) if yf_client else []
+                    expiry_strs = [d.isoformat() for d in provider.list_option_expiries(sym)] if provider else []
                     if not expiry_strs:
                         warnings.append("no_listed_expiries")
                     else:
@@ -4842,8 +4846,8 @@ def journal_log(
                             min_vol = rp.min_volume
                             derived_history = derived_store.load(sym)
 
-                            if short_exp is not None and yf_client is not None:
-                                chain = yf_client.get_options_chain(sym, short_exp)
+                            if short_exp is not None and provider is not None:
+                                chain = provider.get_options_chain(sym, short_exp)
                                 if vol_context is None:
                                     vol_context = compute_volatility_context(
                                         history=history,
@@ -4873,8 +4877,8 @@ def journal_log(
                             else:
                                 warnings.append("no_short_expiry")
 
-                            if long_exp is not None and yf_client is not None:
-                                chain = yf_client.get_options_chain(sym, long_exp)
+                            if long_exp is not None and provider is not None:
+                                chain = provider.get_options_chain(sym, long_exp)
                                 if vol_context is None:
                                     vol_context = compute_volatility_context(
                                         history=history,

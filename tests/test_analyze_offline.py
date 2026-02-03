@@ -65,11 +65,10 @@ def test_analyze_offline_uses_snapshots_and_never_instantiates_yfinance(tmp_path
     )
     snap.to_csv(day_dir / "2026-04-17.csv", index=False)
 
-    class BoomClient:
-        def __init__(self) -> None:
-            raise AssertionError("YFinanceClient should not be instantiated in --offline mode")
+    def _boom_provider(*_args, **_kwargs):  # noqa: ANN001
+        raise AssertionError("get_provider should not be called in --offline mode")
 
-    monkeypatch.setattr("options_helper.cli.YFinanceClient", BoomClient)
+    monkeypatch.setattr("options_helper.cli.get_provider", _boom_provider)
 
     original_position_metrics = cli._position_metrics
     seen: dict[str, object] = {}
@@ -173,11 +172,10 @@ def _write_offline_fixtures(tmp_path: Path) -> tuple[Path, Path, Path]:
 def test_analyze_offline_warns_when_snapshot_row_missing(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     portfolio_path, candle_dir, snapshots_dir = _write_offline_fixtures(tmp_path)
 
-    class BoomClient:
-        def __init__(self) -> None:
-            raise AssertionError("YFinanceClient should not be instantiated in --offline mode")
+    def _boom_provider(*_args, **_kwargs):  # noqa: ANN001
+        raise AssertionError("get_provider should not be called in --offline mode")
 
-    monkeypatch.setattr("options_helper.cli.YFinanceClient", BoomClient)
+    monkeypatch.setattr("options_helper.cli.get_provider", _boom_provider)
 
     runner = CliRunner()
     res = runner.invoke(
@@ -204,11 +202,10 @@ def test_analyze_offline_strict_exits_nonzero_when_snapshot_row_missing(
 ) -> None:  # type: ignore[no-untyped-def]
     portfolio_path, candle_dir, snapshots_dir = _write_offline_fixtures(tmp_path)
 
-    class BoomClient:
-        def __init__(self) -> None:
-            raise AssertionError("YFinanceClient should not be instantiated in --offline mode")
+    def _boom_provider(*_args, **_kwargs):  # noqa: ANN001
+        raise AssertionError("get_provider should not be called in --offline mode")
 
-    monkeypatch.setattr("options_helper.cli.YFinanceClient", BoomClient)
+    monkeypatch.setattr("options_helper.cli.get_provider", _boom_provider)
 
     runner = CliRunner()
     res = runner.invoke(

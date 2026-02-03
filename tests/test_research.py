@@ -27,18 +27,14 @@ def _stub_research_client(  # type: ignore[no-untyped-def]
     puts: pd.DataFrame,
     history: pd.DataFrame,
 ) -> None:
-    class _StubTicker:
-        def __init__(self) -> None:
-            self.options = expiry_strs
-
-    class _StubClient:
-        def ticker(self, symbol: str) -> _StubTicker:  # noqa: ARG002
-            return _StubTicker()
+    class _StubProvider:
+        def list_option_expiries(self, symbol: str):  # noqa: ARG002
+            return [date.fromisoformat(s) for s in expiry_strs]
 
         def get_options_chain(self, symbol: str, expiry: date) -> OptionsChain:  # noqa: ARG002
             return OptionsChain(symbol="TEST", expiry=expiry, calls=calls, puts=puts)
 
-    monkeypatch.setattr("options_helper.cli.YFinanceClient", _StubClient)
+    monkeypatch.setattr("options_helper.cli.get_provider", lambda *_args, **_kwargs: _StubProvider())
 
     def _stub_history(self, symbol: str, *, period: str = "5y"):  # noqa: ARG001
         return history
@@ -198,18 +194,14 @@ def test_research_cli_saves_report_and_includes_spreads(tmp_path: Path, monkeypa
     )
     puts = calls.copy()
 
-    class _StubTicker:
-        def __init__(self) -> None:
-            self.options = expiry_strs
-
-    class _StubClient:
-        def ticker(self, symbol: str) -> _StubTicker:  # noqa: ARG002
-            return _StubTicker()
+    class _StubProvider:
+        def list_option_expiries(self, symbol: str):  # noqa: ARG002
+            return [date.fromisoformat(s) for s in expiry_strs]
 
         def get_options_chain(self, symbol: str, expiry: date) -> OptionsChain:  # noqa: ARG002
             return OptionsChain(symbol="TEST", expiry=expiry, calls=calls, puts=puts)
 
-    monkeypatch.setattr("options_helper.cli.YFinanceClient", _StubClient)
+    monkeypatch.setattr("options_helper.cli.get_provider", lambda *_args, **_kwargs: _StubProvider())
 
     def _stub_history(self, symbol: str, *, period: str = "5y"):  # noqa: ARG001
         return history

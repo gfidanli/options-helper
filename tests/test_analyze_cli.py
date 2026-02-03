@@ -46,7 +46,7 @@ def test_analyze_online_path_stubs_still_runs(tmp_path: Path, monkeypatch) -> No
 
     monkeypatch.setattr("options_helper.cli.CandleStore.get_daily_history", _stub_history)
 
-    class StubClient:
+    class StubProvider:
         def get_options_chain(self, symbol: str, expiry: date) -> OptionsChain:  # noqa: ARG002
             calls = pd.DataFrame(
                 [
@@ -78,7 +78,7 @@ def test_analyze_online_path_stubs_still_runs(tmp_path: Path, monkeypatch) -> No
             )
             return OptionsChain(symbol=symbol.upper(), expiry=expiry, calls=calls, puts=puts)
 
-    monkeypatch.setattr("options_helper.cli.YFinanceClient", StubClient)
+    monkeypatch.setattr("options_helper.cli.get_provider", lambda *_args, **_kwargs: StubProvider())
 
     runner = CliRunner()
     res = runner.invoke(app, ["analyze", str(portfolio_path), "--cache-dir", str(tmp_path / "candles")])

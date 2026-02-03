@@ -76,11 +76,10 @@ def test_journal_log_offline_writes_position_event(tmp_path: Path, monkeypatch) 
     portfolio_path, candle_dir, snapshots_dir = _write_offline_fixtures(tmp_path)
     journal_dir = tmp_path / "journal"
 
-    class BoomClient:
-        def __init__(self) -> None:
-            raise AssertionError("YFinanceClient should not be instantiated in --offline mode")
+    def _boom_provider(*_args, **_kwargs):  # noqa: ANN001
+        raise AssertionError("get_provider should not be called in --offline mode")
 
-    monkeypatch.setattr("options_helper.cli.YFinanceClient", BoomClient)
+    monkeypatch.setattr("options_helper.cli.get_provider", _boom_provider)
 
     runner = CliRunner()
     res = runner.invoke(
@@ -180,16 +179,9 @@ def test_journal_log_research_uses_stubbed_client(tmp_path: Path, monkeypatch) -
 
     monkeypatch.setattr("options_helper.cli.load_technical_backtesting_config", _fake_config)
 
-    class StubTicker:
-        def __init__(self) -> None:
-            self.options = ["2026-03-15", "2027-01-15"]
-
-    class StubClient:
-        def __init__(self) -> None:
-            self._ticker = StubTicker()
-
-        def ticker(self, symbol: str) -> StubTicker:
-            return self._ticker
+    class StubProvider:
+        def list_option_expiries(self, symbol: str):  # noqa: ARG002
+            return [date(2026, 3, 15), date(2027, 1, 15)]
 
         def get_options_chain(self, symbol: str, expiry: date) -> OptionsChain:
             calls = pd.DataFrame(
@@ -222,7 +214,7 @@ def test_journal_log_research_uses_stubbed_client(tmp_path: Path, monkeypatch) -
             )
             return OptionsChain(symbol=symbol.upper(), expiry=expiry, calls=calls, puts=puts)
 
-    monkeypatch.setattr("options_helper.cli.YFinanceClient", StubClient)
+    monkeypatch.setattr("options_helper.cli.get_provider", lambda *_args, **_kwargs: StubProvider())
 
     journal_dir = tmp_path / "journal"
     runner = CliRunner()

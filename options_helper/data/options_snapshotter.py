@@ -68,7 +68,7 @@ def snapshot_full_chain_for_symbols(
 ) -> list[SnapshotSymbolResult]:
     provider = provider or get_provider()
     store = OptionsSnapshotStore(cache_dir)
-    candle_store = CandleStore(candle_cache_dir)
+    candle_store = CandleStore(candle_cache_dir, provider=provider)
     provider_name = getattr(provider, "name", "unknown")
     provider_version = (
         getattr(provider, "version", None)
