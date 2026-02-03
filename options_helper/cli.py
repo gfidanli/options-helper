@@ -49,6 +49,7 @@ from options_helper.analysis.greeks import add_black_scholes_greeks_to_chain, bl
 from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, sma
 from options_helper.analysis.journal_eval import build_journal_report, render_journal_report_markdown
 from options_helper.data.candles import CandleCacheError, CandleStore, close_asof, last_close
+from options_helper.data.backtesting_artifacts import write_backtest_artifacts
 from options_helper.data.confluence_config import ConfigError as ConfluenceConfigError, load_confluence_config
 from options_helper.data.derived import DERIVED_COLUMNS, DERIVED_SCHEMA_VERSION, DerivedStore
 from options_helper.data.earnings import EarningsRecord, EarningsStore, safe_next_earnings_date
@@ -124,6 +125,10 @@ from options_helper.technicals_backtesting.pipeline import compute_features, war
 from options_helper.technicals_backtesting.rsi_divergence import compute_rsi_divergence_flags, rsi_regime_tag
 from options_helper.technicals_backtesting.snapshot import TechnicalSnapshot, compute_technical_snapshot
 from options_helper.technicals_backtesting.strategies.registry import get_strategy
+from options_helper.backtesting.data_source import BacktestDataSource
+from options_helper.backtesting.runner import run_backtest
+from options_helper.backtesting.roll import RollPolicy
+from options_helper.backtesting.strategy import BaselineLongCallStrategy
 
 app = typer.Typer(add_completion=False)
 watchlists_app = typer.Typer(help="Manage symbol watchlists.")
@@ -136,6 +141,8 @@ scanner_app = typer.Typer(help="Market opportunity scanner (not financial advice
 app.add_typer(scanner_app, name="scanner")
 journal_app = typer.Typer(help="Signal journal + outcome tracking.")
 app.add_typer(journal_app, name="journal")
+backtest_app = typer.Typer(help="Offline options backtesting.")
+app.add_typer(backtest_app, name="backtest")
 
 
 @app.callback()
@@ -6809,3 +6816,166 @@ def technicals_run_all(
             console.print(f"[green]Completed[/green] {symbol}")
         except Exception as exc:  # noqa: BLE001
             console.print(f"[red]{symbol} failed:[/red] {exc}")
+
+
+@backtest_app.command("run")
+def backtest_run(
+    symbol: str = typer.Option(..., "--symbol", help="Underlying symbol to backtest."),
+    contract_symbol: str | None = typer.Option(
+        None,
+        "--contract-symbol",
+        help="Full contractSymbol to trade (uses snapshot data).",
+    ),
+    expiry: str | None = typer.Option(
+        None,
+        "--expiry",
+        help="Contract expiry (YYYY-MM-DD) when contract-symbol is not provided.",
+    ),
+    strike: float | None = typer.Option(None, "--strike", help="Contract strike when contract-symbol is not provided."),
+    option_type: OptionType = typer.Option("call", "--option-type", help="Option type (call/put)."),
+    start: str | None = typer.Option(None, "--start", help="Start snapshot date (YYYY-MM-DD)."),
+    end: str | None = typer.Option(None, "--end", help="End snapshot date (YYYY-MM-DD)."),
+    fill_mode: str = typer.Option(
+        "worst_case",
+        "--fill-mode",
+        help="Fill model: worst_case (bid/ask) or mark_slippage.",
+    ),
+    slippage_factor: float = typer.Option(0.5, "--slippage-factor", help="Slippage factor for mark_slippage."),
+    initial_cash: float = typer.Option(10000.0, "--initial-cash", help="Starting cash balance."),
+    quantity: int = typer.Option(1, "--quantity", help="Contracts per trade."),
+    extension_low_pct: float = typer.Option(20.0, "--extension-low-pct", help="Entry extension percentile threshold."),
+    take_profit_pct: float = typer.Option(0.8, "--take-profit-pct", help="Take-profit threshold (pct)."),
+    stop_loss_pct: float = typer.Option(0.5, "--stop-loss-pct", help="Stop-loss threshold (pct)."),
+    max_holding_days: int = typer.Option(15, "--max-holding-days", help="Time stop (days)."),
+    roll_dte_threshold: int | None = typer.Option(
+        None,
+        "--roll-dte-threshold",
+        help="Enable rolling when DTE <= threshold (omit to disable rolling).",
+    ),
+    roll_horizon_months: int = typer.Option(2, "--roll-horizon-months", help="Roll target horizon (months)."),
+    roll_shape: str = typer.Option(
+        "out-same-strike",
+        "--roll-shape",
+        help="Roll shape: out-same-strike | out-up | out-down.",
+    ),
+    roll_intent: str = typer.Option(
+        "max-upside",
+        "--roll-intent",
+        help="Roll intent: max-upside | reduce-theta | increase-delta | de-risk.",
+    ),
+    roll_min_oi: int = typer.Option(0, "--roll-min-oi", help="Minimum open interest for roll candidates."),
+    roll_min_volume: int = typer.Option(0, "--roll-min-volume", help="Minimum volume for roll candidates."),
+    roll_max_spread_pct: float = typer.Option(0.35, "--roll-max-spread-pct", help="Max spread pct gate."),
+    roll_include_bad_quotes: bool = typer.Option(
+        False, "--roll-include-bad-quotes", help="Include bad quotes in roll selection."
+    ),
+    cache_dir: Path = typer.Option(
+        Path("data/options_snapshots"),
+        "--cache-dir",
+        help="Directory for options chain snapshots.",
+    ),
+    candle_cache_dir: Path = typer.Option(
+        Path("data/candles"),
+        "--candle-cache-dir",
+        help="Directory for cached daily candles.",
+    ),
+    reports_dir: Path = typer.Option(
+        Path("data/reports/backtests"),
+        "--reports-dir",
+        help="Directory for backtest reports/artifacts.",
+    ),
+    run_id: str | None = typer.Option(None, "--run-id", help="Explicit run id (default: symbol + timestamp)."),
+) -> None:
+    """Run a daily backtest on offline snapshot history (not financial advice)."""
+    console = Console(width=200)
+
+    if contract_symbol is None:
+        if expiry is None or strike is None:
+            raise typer.BadParameter("Provide --contract-symbol or (--expiry and --strike).")
+    expiry_date = _parse_date(expiry) if expiry else None
+    start_date = _parse_date(start) if start else None
+    end_date = _parse_date(end) if end else None
+
+    fill_mode_norm = fill_mode.strip().lower()
+    if fill_mode_norm not in {"worst_case", "mark_slippage"}:
+        raise typer.BadParameter("fill_mode must be 'worst_case' or 'mark_slippage'")
+
+    roll_policy = None
+    if roll_dte_threshold is not None:
+        if roll_shape not in {"out-same-strike", "out-up", "out-down"}:
+            raise typer.BadParameter("roll_shape must be out-same-strike | out-up | out-down")
+        if roll_intent not in {"max-upside", "reduce-theta", "increase-delta", "de-risk"}:
+            raise typer.BadParameter("roll_intent must be max-upside | reduce-theta | increase-delta | de-risk")
+        roll_policy = RollPolicy(
+            dte_threshold=roll_dte_threshold,
+            horizon_months=roll_horizon_months,
+            shape=roll_shape,  # type: ignore[arg-type]
+            intent=roll_intent,  # type: ignore[arg-type]
+            min_open_interest=roll_min_oi,
+            min_volume=roll_min_volume,
+            max_spread_pct=roll_max_spread_pct,
+            include_bad_quotes=roll_include_bad_quotes,
+        )
+
+    options_store = OptionsSnapshotStore(cache_dir)
+    candle_store = CandleStore(candle_cache_dir)
+    data_source = BacktestDataSource(candle_store=candle_store, snapshot_store=options_store)
+
+    strategy = BaselineLongCallStrategy(
+        extension_low_pct=extension_low_pct,
+        take_profit_pct=take_profit_pct,
+        stop_loss_pct=stop_loss_pct,
+        max_holding_days=max_holding_days,
+    )
+
+    result = run_backtest(
+        data_source,
+        symbol=symbol,
+        contract_symbol=contract_symbol,
+        expiry=expiry_date,
+        strike=strike,
+        option_type=option_type,
+        strategy=strategy,
+        start=start_date,
+        end=end_date,
+        fill_mode=fill_mode_norm,
+        slippage_factor=slippage_factor,
+        initial_cash=initial_cash,
+        quantity=quantity,
+        roll_policy=roll_policy,
+    )
+
+    if run_id is None:
+        run_id = f"{symbol.upper()}_{utc_now().strftime('%Y%m%dT%H%M%SZ')}"
+
+    paths = write_backtest_artifacts(
+        result,
+        run_id=run_id,
+        reports_dir=reports_dir,
+        strategy_name=strategy.name,
+        quantity=quantity,
+    )
+
+    console.print(f"Backtest complete: {run_id}")
+    console.print(f"Summary: {paths.summary_json}")
+    console.print(f"Report: {paths.report_md}")
+    console.print("Not financial advice.")
+
+
+@backtest_app.command("report")
+def backtest_report(
+    run_id: str = typer.Option(..., "--run-id", help="Backtest run id."),
+    reports_dir: Path = typer.Option(
+        Path("data/reports/backtests"),
+        "--reports-dir",
+        help="Directory for backtest reports/artifacts.",
+    ),
+) -> None:
+    """Print the markdown report for a backtest run (not financial advice)."""
+    console = Console(width=200)
+    report_path = reports_dir / run_id / "report.md"
+    if not report_path.exists():
+        console.print(f"[red]Error:[/red] Missing report: {report_path}")
+        raise typer.Exit(1)
+    console.print(report_path.read_text(encoding="utf-8"))
+    console.print("Not financial advice.")

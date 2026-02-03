@@ -12,6 +12,7 @@ from options_helper.schemas.briefing import (
     BriefingSection,
     BriefingTechnicals,
 )
+from options_helper.schemas.backtest import BacktestSummaryArtifact, BacktestSummaryStats
 from options_helper.schemas.chain_report import ChainReportArtifact
 from options_helper.schemas.common import clean_nan
 from options_helper.schemas.compare import CompareArtifact
@@ -103,3 +104,31 @@ def test_briefing_artifact_minimal() -> None:
 
     payload = artifact.to_dict()
     assert payload["sections"][0]["symbol"] == "AAA"
+
+
+def test_backtest_summary_artifact_minimal() -> None:
+    artifact = BacktestSummaryArtifact(
+        run_id="run-1",
+        symbol="AAA",
+        contract_symbol=None,
+        start=None,
+        end=None,
+        strategy_name="baseline",
+        fill_mode="worst_case",
+        slippage_factor=0.0,
+        quantity=1,
+        initial_cash=10000.0,
+        final_cash=10000.0,
+        stats=BacktestSummaryStats(
+            total_pnl=0.0,
+            total_pnl_pct=0.0,
+            trade_count=0,
+            win_rate=None,
+            avg_pnl=None,
+            avg_pnl_pct=None,
+        ),
+    )
+
+    payload = artifact.to_dict()
+    assert payload["schema_version"] == 1
+    assert payload["symbol"] == "AAA"
