@@ -8,6 +8,7 @@ from options_helper.data.providers.base import (
     normalize_option_chain,
 )
 from options_helper.data.providers.runtime import get_default_provider_name
+from options_helper.data.providers.mock import MockProvider
 from options_helper.data.providers.yahoo import YahooProvider
 from options_helper.data.yf_client import YFinanceClient
 
@@ -42,6 +43,7 @@ def get_provider(
 __all__ = [
     "OPTION_CHAIN_REQUIRED_COLUMNS",
     "MarketDataProvider",
+    "MockProvider",
     "available_providers",
     "get_provider",
     "normalize_option_chain",

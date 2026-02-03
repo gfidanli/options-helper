@@ -6,6 +6,7 @@ from datetime import date
 import pandas as pd
 
 from options_helper.data.providers import get_provider
+from options_helper.data.providers import MockProvider
 from options_helper.data.providers.base import OPTION_CHAIN_REQUIRED_COLUMNS, normalize_option_chain
 from options_helper.data.yf_client import EarningsEvent, OptionsChain, UnderlyingData
 
@@ -52,3 +53,18 @@ def test_get_provider_yahoo_normalizes_chain() -> None:
     assert chain.calls.loc[0, "optionType"] == "call"
     assert chain.puts.loc[0, "optionType"] == "put"
     assert chain.calls.loc[0, "expiry"] == "2026-01-17"
+
+
+def test_mock_provider_history_slicing() -> None:
+    idx = pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"])
+    history = pd.DataFrame({"Close": [1.0, 2.0, 3.0]}, index=idx)
+    provider = MockProvider(history_by_symbol={"AAA": history})
+    out = provider.get_history(
+        "AAA",
+        start=date(2026, 1, 2),
+        end=None,
+        interval="1d",
+        auto_adjust=True,
+        back_adjust=False,
+    )
+    assert out.index.min().date() == date(2026, 1, 2)
