@@ -76,7 +76,7 @@ flow/chain reports work for them too.
 
 ### 5) Daily full scanner + completion checks (network, heavy)
 
-- **When:** Weekdays at **19:30 CST**, with checks at **21:00/22:00/23:00 CST**
+- **When:** Weekdays at **19:00 CST**, with checks at **20:00/21:00 CST**
 - **Script:** `scripts/cron_daily_scanner_full.sh`
 - **Checks:** `scripts/cron_check_scanner_full.sh`
 - **Installs via:** `scripts/install_cron_daily_scanner_full.sh`
@@ -94,7 +94,7 @@ flow/chain reports work for them too.
 
 Generates per-symbol saved artifacts (JSON/Markdown) for offline review.
 
-- **When:** Weekdays at **23:15 CST**
+- **When:** Weekdays at **21:45 CST**
 - **Script:** `scripts/cron_offline_report_pack.sh`
 - **Installs via:** `scripts/install_cron_offline_report_pack.sh`
 - **What it does:**
@@ -114,7 +114,7 @@ Generates per-symbol saved artifacts (JSON/Markdown) for offline review.
 
 ## Dependency order (recommended)
 
-- **Daily:** portfolio snapshot (16:00) → monitor snapshot (17:30) → briefing (18:00) → scanner (19:30) → report pack (23:15)
+- **Daily:** portfolio snapshot (16:00) → monitor snapshot (17:30) → briefing (18:00) → scanner (19:00) → report pack (21:45)
 - **Weekly:** earnings refresh is independent; schedule it whenever (it’s just a cache).
 - **Scanner:** full scanner run is independent but heavy; consider running after markets close.
 

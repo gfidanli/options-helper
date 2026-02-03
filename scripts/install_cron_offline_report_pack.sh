@@ -4,9 +4,9 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CRON_CMD="${REPO_DIR}/scripts/cron_offline_report_pack.sh"
 
-# Default: weekdays at 23:15 America/Chicago time (after scanner + retries).
+# Default: weekdays at 21:45 America/Chicago time (after scanner + checks, before bedtime).
 CRON_TZ="America/Chicago"
-SCHEDULE="15 23 * * 1-5"
+SCHEDULE="45 21 * * 1-5"
 
 BEGIN_MARK="# options-helper: daily offline report pack"
 END_MARK="# end options-helper: daily offline report pack"
@@ -79,4 +79,3 @@ print(f"  CRON_TZ={cron_tz}")
 print(f"  {schedule} {cron_cmd}")
 print(f"Logs: {repo_dir}/data/logs/report_pack.log")
 PY
-

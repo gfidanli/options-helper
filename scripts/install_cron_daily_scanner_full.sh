@@ -6,8 +6,10 @@ CRON_CMD_RUN="${REPO_DIR}/scripts/cron_daily_scanner_full.sh"
 CRON_CMD_CHECK="${REPO_DIR}/scripts/cron_check_scanner_full.sh"
 
 CRON_TZ="America/Chicago"
-SCHEDULE_RUN="30 19 * * 1-5"
-SCHEDULE_CHECK="0 21,22,23 * * 1-5"
+# Default: run early enough to finish before ~22:30, but still after Yahoo's daily candle is typically published.
+SCHEDULE_RUN="0 19 * * 1-5"
+# Retry checks (re-runs scanner if incomplete). Keep these before bedtime.
+SCHEDULE_CHECK="0 20,21 * * 1-5"
 
 BEGIN_MARK="# options-helper: daily full scanner"
 END_MARK="# end options-helper: daily full scanner"
