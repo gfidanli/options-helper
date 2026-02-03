@@ -3522,6 +3522,26 @@ def analyze(
     portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
     period: str = typer.Option("2y", "--period", help="Underlying history period (yfinance)."),
     interval: str = typer.Option("1d", "--interval", help="Underlying history interval (yfinance)."),
+    offline: bool = typer.Option(
+        False,
+        "--offline/--online",
+        help="Run from local snapshots + candle cache for deterministic as-of outputs.",
+    ),
+    as_of: str = typer.Option(
+        "latest",
+        "--as-of",
+        help="Snapshot date (YYYY-MM-DD) or 'latest' (used with --offline).",
+    ),
+    offline_strict: bool = typer.Option(
+        False,
+        "--offline-strict",
+        help="Fail if any position is missing snapshot coverage (used with --offline).",
+    ),
+    snapshots_dir: Path = typer.Option(
+        Path("data/options_snapshots"),
+        "--snapshots-dir",
+        help="Directory containing options snapshot folders (used with --offline).",
+    ),
     cache_dir: Path = typer.Option(
         Path("data/candles"),
         "--cache-dir",
@@ -3539,6 +3559,10 @@ def analyze(
     if not portfolio.positions:
         console.print("No positions.")
         raise typer.Exit(0)
+
+    snapshot_store: OptionsSnapshotStore | None = None
+    if offline:
+        snapshot_store = OptionsSnapshotStore(snapshots_dir)
 
     client = YFinanceClient()
     candle_store = CandleStore(cache_dir)
