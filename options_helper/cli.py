@@ -45,6 +45,7 @@ from options_helper.analysis.research import (
     suggest_trade_levels,
 )
 from options_helper.analysis.roll_plan import compute_roll_plan
+from options_helper.analysis.roll_plan_multileg import compute_roll_plan_multileg
 from options_helper.analysis.greeks import add_black_scholes_greeks_to_chain, black_scholes_greeks
 from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, sma
 from options_helper.analysis.journal_eval import build_journal_report, render_journal_report_markdown
@@ -83,9 +84,9 @@ from options_helper.data.technical_backtesting_io import load_ohlc_from_cache, l
 from options_helper.data.universe import UniverseError, load_universe_symbols
 from options_helper.data.market_types import DataFetchError
 from options_helper.data.yf_client import contract_row_by_strike
-from options_helper.models import OptionType, Position, RiskProfile
+from options_helper.models import Leg, MultiLegPosition, OptionType, Position, RiskProfile
 from options_helper.observability import finalize_run_logger, setup_run_logger
-from options_helper.reporting import render_positions, render_summary
+from options_helper.reporting import MultiLegSummary, render_multi_leg_positions, render_positions, render_summary
 from options_helper.reporting_chain import (
     render_chain_report_console,
     render_chain_report_markdown,
@@ -97,7 +98,7 @@ from options_helper.reporting_briefing import (
     render_briefing_markdown,
     render_portfolio_table_markdown,
 )
-from options_helper.reporting_roll import render_roll_plan_console
+from options_helper.reporting_roll import render_roll_plan_console, render_roll_plan_multileg_console
 from options_helper.schemas.briefing import BriefingArtifact
 from options_helper.schemas.common import utc_now
 from options_helper.schemas.chain_report import ChainReportArtifact
@@ -211,6 +212,67 @@ def _default_position_id(symbol: str, expiry: date, strike: float, option_type: 
     suffix = "c" if option_type == "call" else "p"
     strike_str = f"{strike:g}".replace(".", "p")
     return f"{symbol.lower()}-{expiry.isoformat()}-{strike_str}{suffix}"
+
+
+def _default_multileg_id(symbol: str, legs: list[Leg]) -> str:
+    sorted_legs = sorted(legs, key=lambda l: (l.expiry, l.option_type, l.strike, l.side))
+    tokens: list[str] = []
+    for leg in sorted_legs:
+        strike_str = f"{leg.strike:g}".replace(".", "p")
+        token = f"{leg.side[0]}{leg.option_type[0]}{strike_str}@{leg.expiry.isoformat()}"
+        tokens.append(token)
+    if len(tokens) > 2:
+        tokens = tokens[:2] + [f"n{len(legs)}"]
+    return f"{symbol.lower()}-ml-" + "-".join(tokens)
+
+
+def _parse_leg_spec(value: str) -> Leg:
+    parts = [p.strip() for p in value.split(",") if p.strip()]
+    if len(parts) < 5 or len(parts) > 6:
+        raise typer.BadParameter(
+            "Invalid --leg format. Use side,type,expiry,strike,contracts[,ratio].",
+            param_hint="--leg",
+        )
+    side = parts[0].lower()
+    if side not in {"long", "short"}:
+        raise typer.BadParameter("Invalid leg side (use long|short).", param_hint="--leg")
+    opt_type = parts[1].lower()
+    if opt_type not in {"call", "put"}:
+        raise typer.BadParameter("Invalid leg type (use call|put).", param_hint="--leg")
+    expiry = _parse_date(parts[2])
+    try:
+        strike = float(parts[3])
+    except ValueError as exc:
+        raise typer.BadParameter("Invalid leg strike (use number).", param_hint="--leg") from exc
+    try:
+        contracts = int(parts[4])
+    except ValueError as exc:
+        raise typer.BadParameter("Invalid leg contracts (use integer).", param_hint="--leg") from exc
+    ratio = None
+    if len(parts) == 6:
+        try:
+            ratio = float(parts[5])
+        except ValueError as exc:
+            raise typer.BadParameter("Invalid leg ratio (use number).", param_hint="--leg") from exc
+
+    return Leg(
+        side=side,  # type: ignore[arg-type]
+        option_type=opt_type,  # type: ignore[arg-type]
+        expiry=expiry,
+        strike=strike,
+        contracts=contracts,
+        ratio=ratio,
+    )
+
+
+def _unique_id_with_suffix(existing_ids: set[str], base_id: str) -> str:
+    if base_id not in existing_ids:
+        return base_id
+    for i in range(2, 1000):
+        candidate = f"{base_id}-{i}"
+        if candidate not in existing_ids:
+            return candidate
+    raise typer.BadParameter("Unable to generate a unique id; please supply --id.")
 
 
 def _extract_float(row, key: str) -> float | None:
@@ -646,6 +708,9 @@ def _position_metrics(
     as_of: date | None = None,
     next_earnings_date: date | None = None,
     snapshot_row: pd.Series | dict | None = None,
+    cost_basis_override: float | None = None,
+    include_pnl: bool = True,
+    contract_sign: int = 1,
 ) -> PositionMetrics:
     today = as_of or date.today()
 
@@ -710,9 +775,10 @@ def _position_metrics(
         moneyness = underlying_price / position.strike
 
     pnl_abs = pnl_pct = None
-    if mark is not None:
-        pnl_abs = (mark - position.cost_basis) * 100.0 * position.contracts
-        pnl_pct = None if position.cost_basis <= 0 else (mark - position.cost_basis) / position.cost_basis
+    if mark is not None and include_pnl:
+        basis = position.cost_basis if cost_basis_override is None else cost_basis_override
+        pnl_abs = (mark - basis) * 100.0 * position.contracts
+        pnl_pct = None if basis <= 0 else (mark - basis) / basis
 
     close_series: pd.Series | None = None
     volume_series: pd.Series | None = None
@@ -789,6 +855,7 @@ def _position_metrics(
 
     return PositionMetrics(
         position=position,
+        contract_sign=contract_sign,
         underlying_price=underlying_price,
         mark=mark,
         bid=bid,
@@ -2690,27 +2757,44 @@ def roll_plan(
         if spot is None:
             raise ValueError("missing spot price in meta.json (run snapshot-options first)")
 
-        report = compute_roll_plan(
-            df,
-            symbol=position.symbol,
-            as_of=as_of_date,
-            spot=spot,
-            position=position,
-            intent=intent_norm,  # type: ignore[arg-type]
-            horizon_months=horizon_months,
-            shape=shape_norm,  # type: ignore[arg-type]
-            min_open_interest=min_oi,
-            min_volume=min_vol,
-            max_debit=max_debit,
-            min_credit=min_credit,
-            top=top,
-            next_earnings_date=next_earnings_date,
-            earnings_warn_days=rp.earnings_warn_days,
-            earnings_avoid_days=rp.earnings_avoid_days,
-            include_bad_quotes=include_bad_quotes,
-        )
+        if isinstance(position, MultiLegPosition):
+            report = compute_roll_plan_multileg(
+                df,
+                symbol=position.symbol,
+                as_of=as_of_date,
+                spot=spot,
+                position=position,
+                horizon_months=horizon_months,
+                min_open_interest=min_oi,
+                min_volume=min_vol,
+                top=top,
+                include_bad_quotes=include_bad_quotes,
+                max_debit=max_debit,
+                min_credit=min_credit,
+            )
+            render_roll_plan_multileg_console(console, report)
+        else:
+            report = compute_roll_plan(
+                df,
+                symbol=position.symbol,
+                as_of=as_of_date,
+                spot=spot,
+                position=position,
+                intent=intent_norm,  # type: ignore[arg-type]
+                horizon_months=horizon_months,
+                shape=shape_norm,  # type: ignore[arg-type]
+                min_open_interest=min_oi,
+                min_volume=min_vol,
+                max_debit=max_debit,
+                min_credit=min_credit,
+                top=top,
+                next_earnings_date=next_earnings_date,
+                earnings_warn_days=rp.earnings_warn_days,
+                earnings_avoid_days=rp.earnings_avoid_days,
+                include_bad_quotes=include_bad_quotes,
+            )
 
-        render_roll_plan_console(console, report)
+            render_roll_plan_console(console, report)
     except Exception as exc:  # noqa: BLE001
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1)
@@ -4228,6 +4312,55 @@ def add_position(
     Console().print(f"Added {pid}")
 
 
+@app.command("add-spread")
+def add_spread(
+    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
+    symbol: str = typer.Option(..., "--symbol"),
+    legs: list[str] = typer.Option(
+        ...,
+        "--leg",
+        help="Repeatable leg spec: side,type,expiry,strike,contracts[,ratio].",
+    ),
+    net_debit: float | None = typer.Option(
+        None,
+        "--net-debit",
+        help="Net debit in dollars for the whole structure (optional).",
+    ),
+    position_id: str | None = typer.Option(None, "--id", help="Optional position id."),
+    opened_at: str | None = typer.Option(None, "--opened-at", help="Optional open date (YYYY-MM-DD)."),
+) -> None:
+    """Add a multi-leg (spread) position to the portfolio JSON."""
+    portfolio = load_portfolio(portfolio_path)
+
+    if len(legs) < 2:
+        raise typer.BadParameter("Provide at least two --leg values.", param_hint="--leg")
+
+    parsed_legs = [_parse_leg_spec(value) for value in legs]
+    symbol = symbol.upper()
+    opened_at_date = _parse_date(opened_at) if opened_at else None
+
+    base_id = position_id or _default_multileg_id(symbol, parsed_legs)
+    existing_ids = {p.id for p in portfolio.positions}
+    if position_id is not None:
+        if position_id in existing_ids:
+            raise typer.BadParameter(f"Position id already exists: {position_id}", param_hint="--id")
+        pid = position_id
+    else:
+        pid = _unique_id_with_suffix(existing_ids, base_id)
+
+    position = MultiLegPosition(
+        id=pid,
+        symbol=symbol,
+        legs=parsed_legs,
+        net_debit=None if net_debit is None else float(net_debit),
+        opened_at=opened_at_date,
+    )
+
+    portfolio.positions.append(position)
+    save_portfolio(portfolio_path, portfolio)
+    Console().print(f"Added {pid}")
+
+
 @app.command("remove-position")
 def remove_position(
     portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
@@ -4374,12 +4507,135 @@ def analyze(
 
         next_earnings_by_symbol[sym] = safe_next_earnings_date(earnings_store, sym)
 
-    metrics_list: list[PositionMetrics] = []
+    single_metrics: list[PositionMetrics] = []
+    all_metrics: list[PositionMetrics] = []
+    multi_leg_summaries: list[MultiLegSummary] = []
     advice_by_id: dict[str, Advice] = {}
     offline_missing: list[str] = []
 
     for p in portfolio.positions:
         try:
+            if isinstance(p, MultiLegPosition):
+                leg_metrics: list[PositionMetrics] = []
+                net_mark_total = 0.0
+                net_mark_ready = True
+                dte_vals: list[int] = []
+                warnings: list[str] = []
+                low_oi = False
+                low_vol = False
+                bad_spread = False
+                quote_flags = False
+
+                for idx, leg in enumerate(p.legs, start=1):
+                    snapshot_row = None
+                    if offline:
+                        snap_date = as_of_by_symbol.get(p.symbol)
+                        df_snap = snapshot_day_by_symbol.get(p.symbol, pd.DataFrame())
+                        row = None
+
+                        if snap_date is None:
+                            offline_missing.append(f"{p.id}: missing offline as-of date for {p.symbol}")
+                        elif df_snap.empty:
+                            offline_missing.append(
+                                f"{p.id}: missing snapshot day data for {p.symbol} (as-of {snap_date.isoformat()})"
+                            )
+                        else:
+                            row = find_snapshot_row(
+                                df_snap,
+                                expiry=leg.expiry,
+                                strike=leg.strike,
+                                option_type=leg.option_type,
+                            )
+                            if row is None:
+                                offline_missing.append(
+                                    f"{p.id}: missing snapshot row for {p.symbol} {leg.expiry.isoformat()} "
+                                    f"{leg.option_type} {leg.strike:g} (as-of {snap_date.isoformat()})"
+                                )
+
+                        snapshot_row = row if row is not None else {}
+
+                    leg_position = Position(
+                        id=f"{p.id}:leg{idx}",
+                        symbol=p.symbol,
+                        option_type=leg.option_type,
+                        expiry=leg.expiry,
+                        strike=leg.strike,
+                        contracts=leg.contracts,
+                        cost_basis=0.0,
+                        opened_at=p.opened_at,
+                    )
+
+                    metrics = _position_metrics(
+                        provider,
+                        leg_position,
+                        risk_profile=portfolio.risk_profile,
+                        underlying_history=history_by_symbol.get(p.symbol, pd.DataFrame()),
+                        underlying_last_price=last_price_by_symbol.get(p.symbol),
+                        as_of=as_of_by_symbol.get(p.symbol),
+                        next_earnings_date=next_earnings_by_symbol.get(p.symbol),
+                        snapshot_row=snapshot_row,
+                        include_pnl=False,
+                        contract_sign=1 if leg.side == "long" else -1,
+                    )
+                    leg_metrics.append(metrics)
+                    all_metrics.append(metrics)
+
+                    if metrics.mark is None:
+                        net_mark_ready = False
+                    else:
+                        net_mark_total += metrics.mark * leg.signed_contracts * 100.0
+
+                    if metrics.dte is not None:
+                        dte_vals.append(metrics.dte)
+                    if (
+                        metrics.open_interest is not None
+                        and metrics.open_interest < portfolio.risk_profile.min_open_interest
+                    ):
+                        low_oi = True
+                    if metrics.volume is not None and metrics.volume < portfolio.risk_profile.min_volume:
+                        low_vol = True
+                    if metrics.execution_quality == "bad":
+                        bad_spread = True
+                    if metrics.quality_warnings:
+                        quote_flags = True
+
+                net_mark = net_mark_total if net_mark_ready else None
+                if net_mark is None:
+                    warnings.append("missing_leg_marks")
+                if p.net_debit is None:
+                    warnings.append("missing_net_debit")
+                if low_oi:
+                    warnings.append("low_open_interest_leg")
+                if low_vol:
+                    warnings.append("low_volume_leg")
+                if bad_spread:
+                    warnings.append("bad_spread_leg")
+                if quote_flags:
+                    warnings.append("quote_quality_leg")
+
+                net_pnl_abs = net_pnl_pct = None
+                if net_mark is not None and p.net_debit is not None:
+                    net_pnl_abs = net_mark - p.net_debit
+                    if p.net_debit > 0:
+                        net_pnl_pct = net_pnl_abs / p.net_debit
+
+                dte_min = min(dte_vals) if dte_vals else None
+                dte_max = max(dte_vals) if dte_vals else None
+
+                multi_leg_summaries.append(
+                    MultiLegSummary(
+                        position=p,
+                        leg_metrics=leg_metrics,
+                        net_mark=net_mark,
+                        net_pnl_abs=net_pnl_abs,
+                        net_pnl_pct=net_pnl_pct,
+                        dte_min=dte_min,
+                        dte_max=dte_max,
+                        warnings=warnings,
+                    )
+                )
+                continue
+
             snapshot_row = None
             if offline:
                 snap_date = as_of_by_symbol.get(p.symbol)
@@ -4417,19 +4673,23 @@ def analyze(
                 next_earnings_date=next_earnings_by_symbol.get(p.symbol),
                 snapshot_row=snapshot_row,
             )
-            metrics_list.append(metrics)
+            single_metrics.append(metrics)
+            all_metrics.append(metrics)
             advice_by_id[p.id] = advise(metrics, portfolio)
         except DataFetchError as exc:
             console.print(f"[red]Data error:[/red] {exc}")
         except Exception as exc:  # noqa: BLE001
             console.print(f"[red]Unexpected error:[/red] {exc}")
 
-    if not metrics_list:
+    if not single_metrics and not multi_leg_summaries:
         raise typer.Exit(1)
 
-    render_positions(console, portfolio, metrics_list, advice_by_id)
+    if single_metrics:
+        render_positions(console, portfolio, single_metrics, advice_by_id)
+    if multi_leg_summaries:
+        render_multi_leg_positions(console, multi_leg_summaries)
 
-    exposure = compute_portfolio_exposure(metrics_list)
+    exposure = compute_portfolio_exposure(all_metrics)
     _render_portfolio_risk(
         console,
         exposure,

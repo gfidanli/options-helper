@@ -225,3 +225,108 @@ def test_analyze_offline_strict_exits_nonzero_when_snapshot_row_missing(
     )
     assert res.exit_code == 1, res.output
     assert "b: missing snapshot row" in res.output
+
+
+def test_analyze_offline_renders_multileg_summary(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    portfolio_path = tmp_path / "portfolio.json"
+    portfolio_path.write_text(
+        json.dumps(
+            {
+                "cash": 0,
+                "risk_profile": {
+                    "tolerance": "high",
+                    "max_portfolio_risk_pct": None,
+                    "max_single_position_risk_pct": None,
+                },
+                "positions": [
+                    {
+                        "id": "spread-1",
+                        "symbol": "AAA",
+                        "net_debit": 150.0,
+                        "legs": [
+                            {
+                                "side": "long",
+                                "option_type": "call",
+                                "expiry": "2026-04-17",
+                                "strike": 5.0,
+                                "contracts": 1,
+                            },
+                            {
+                                "side": "short",
+                                "option_type": "call",
+                                "expiry": "2026-04-17",
+                                "strike": 6.0,
+                                "contracts": 1,
+                            },
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    candle_dir = tmp_path / "candles"
+    candle_dir.mkdir(parents=True, exist_ok=True)
+    candles = pd.DataFrame(
+        {"Close": [10.0, 11.0], "Volume": [1000, 1200]},
+        index=pd.to_datetime(["2026-01-31", "2026-02-02"]),
+    )
+    candles.to_csv(candle_dir / "AAA.csv")
+
+    snapshots_dir = tmp_path / "snapshots"
+    day_dir = snapshots_dir / "AAA" / "2026-02-02"
+    day_dir.mkdir(parents=True)
+    snap = pd.DataFrame(
+        [
+            {
+                "contractSymbol": "AAA260417C00005000",
+                "optionType": "call",
+                "expiry": "2026-04-17",
+                "strike": 5.0,
+                "bid": 1.0,
+                "ask": 1.2,
+                "lastPrice": 1.1,
+                "impliedVolatility": 0.50,
+                "openInterest": 500,
+                "volume": 20,
+            },
+            {
+                "contractSymbol": "AAA260417C00006000",
+                "optionType": "call",
+                "expiry": "2026-04-17",
+                "strike": 6.0,
+                "bid": 0.4,
+                "ask": 0.6,
+                "lastPrice": 0.5,
+                "impliedVolatility": 0.45,
+                "openInterest": 400,
+                "volume": 18,
+            },
+        ]
+    )
+    snap.to_csv(day_dir / "2026-04-17.csv", index=False)
+
+    def _boom_provider(*_args, **_kwargs):  # noqa: ANN001
+        raise AssertionError("get_provider should not be called in --offline mode")
+
+    monkeypatch.setattr("options_helper.cli.get_provider", _boom_provider)
+
+    runner = CliRunner()
+    res = runner.invoke(
+        cli.app,
+        [
+            "analyze",
+            str(portfolio_path),
+            "--offline",
+            "--as-of",
+            "latest",
+            "--snapshots-dir",
+            str(snapshots_dir),
+            "--cache-dir",
+            str(candle_dir),
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    assert "Multi-leg Positions" in res.output
+    assert "spread-1" in res.output

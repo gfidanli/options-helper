@@ -83,6 +83,9 @@ def compute_portfolio_exposure(
         if metrics.as_of is not None:
             as_of_vals.add(metrics.as_of)
 
+        contract_sign = int(getattr(metrics, "contract_sign", 1) or 1)
+        signed_contracts = int(pos.contracts) * contract_sign
+
         per_warnings: list[str] = []
         spot = _clean_float(metrics.underlying_price)
         dte = _clean_dte(metrics.dte)
@@ -119,9 +122,9 @@ def compute_portfolio_exposure(
             per_warnings.append("missing_greeks")
             greek_source = "missing"
 
-        delta_shares = _scale_contracts(delta, pos.contracts)
-        theta_dollars = _scale_contracts(theta_per_day, pos.contracts)
-        vega_dollars = _scale_contracts(vega, pos.contracts)
+        delta_shares = _scale_contracts(delta, signed_contracts)
+        theta_dollars = _scale_contracts(theta_per_day, signed_contracts)
+        vega_dollars = _scale_contracts(vega, signed_contracts)
 
         if delta_shares is not None:
             delta_vals.append(delta_shares)
@@ -149,7 +152,7 @@ def compute_portfolio_exposure(
                 option_type=pos.option_type,
                 expiry=pos.expiry,
                 strike=pos.strike,
-                contracts=pos.contracts,
+                contracts=signed_contracts,
                 spot=spot,
                 dte=dte,
                 implied_vol=iv,

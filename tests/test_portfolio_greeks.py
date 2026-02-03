@@ -26,6 +26,7 @@ def _make_metrics(
     theta_per_day: float | None = None,
     mark: float | None = None,
     as_of: date | None = None,
+    contract_sign: int = 1,
 ) -> PositionMetrics:
     position = Position(
         id=position_id,
@@ -76,6 +77,7 @@ def _make_metrics(
         theta_per_day=theta_per_day,
         as_of=as_of,
         next_earnings_date=None,
+        contract_sign=contract_sign,
     )
 
 
@@ -186,3 +188,44 @@ def test_missing_iv_skips_stress() -> None:
 
     assert results[0].pnl is None
     assert any("stress_missing_inputs" in w for w in results[0].warnings)
+
+
+def test_compute_portfolio_exposure_respects_contract_sign() -> None:
+    spot = 100.0
+    iv = 0.2
+    dte = 30
+    as_of = date(2026, 1, 2)
+    expiry = as_of + timedelta(days=dte)
+
+    call_greeks = black_scholes_greeks(option_type="call", s=spot, k=100.0, t_years=dte / 365.0, sigma=iv)
+    assert call_greeks is not None
+
+    metrics_long = _make_metrics(
+        position_id="c1",
+        symbol="TEST",
+        option_type="call",
+        expiry=expiry,
+        strike=100.0,
+        contracts=1,
+        spot=spot,
+        iv=iv,
+        dte=dte,
+        as_of=as_of,
+        contract_sign=1,
+    )
+    metrics_short = _make_metrics(
+        position_id="c2",
+        symbol="TEST",
+        option_type="call",
+        expiry=expiry,
+        strike=100.0,
+        contracts=1,
+        spot=spot,
+        iv=iv,
+        dte=dte,
+        as_of=as_of,
+        contract_sign=-1,
+    )
+
+    exposure = compute_portfolio_exposure([metrics_long, metrics_short])
+    assert exposure.total_delta_shares == pytest.approx(0.0, abs=1e-6)

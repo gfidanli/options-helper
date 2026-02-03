@@ -283,3 +283,123 @@ def test_roll_plan_cli_excludes_candidates_when_avoid_days_set(tmp_path: Path, m
     assert res.exit_code == 0, res.output
     assert "No roll candidates found" in res.output
     assert "earnings_within_10d" in res.output
+
+
+def test_roll_plan_cli_supports_multi_leg_verticals(tmp_path: Path) -> None:
+    portfolio_path = tmp_path / "portfolio.json"
+    portfolio_path.write_text(
+        json.dumps(
+            {
+                "base_currency": "USD",
+                "cash": 0.0,
+                "risk_profile": {"min_open_interest": 50, "min_volume": 5},
+                "positions": [
+                    {
+                        "id": "spread-1",
+                        "symbol": "AAA",
+                        "net_debit": 150.0,
+                        "legs": [
+                            {
+                                "side": "long",
+                                "option_type": "call",
+                                "expiry": "2026-02-20",
+                                "strike": 100.0,
+                                "contracts": 1,
+                            },
+                            {
+                                "side": "short",
+                                "option_type": "call",
+                                "expiry": "2026-02-20",
+                                "strike": 105.0,
+                                "contracts": 1,
+                            },
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cache_dir = tmp_path / "snapshots"
+    day_dir = cache_dir / "AAA" / "2026-01-02"
+    day_dir.mkdir(parents=True)
+    (day_dir / "meta.json").write_text(json.dumps({"spot": 100.0}), encoding="utf-8")
+
+    pd.DataFrame(
+        [
+            {
+                "contractSymbol": "AAA_C_20260220_100",
+                "optionType": "call",
+                "expiry": "2026-02-20",
+                "strike": 100.0,
+                "bid": 2.0,
+                "ask": 2.2,
+                "lastPrice": 2.1,
+                "openInterest": 200,
+                "volume": 15,
+            },
+            {
+                "contractSymbol": "AAA_C_20260220_105",
+                "optionType": "call",
+                "expiry": "2026-02-20",
+                "strike": 105.0,
+                "bid": 1.0,
+                "ask": 1.2,
+                "lastPrice": 1.1,
+                "openInterest": 180,
+                "volume": 12,
+            },
+        ]
+    ).to_csv(day_dir / "2026-02-20.csv", index=False)
+
+    pd.DataFrame(
+        [
+            {
+                "contractSymbol": "AAA_C_20270115_100",
+                "optionType": "call",
+                "expiry": "2027-01-15",
+                "strike": 100.0,
+                "bid": 4.8,
+                "ask": 5.0,
+                "lastPrice": 4.9,
+                "openInterest": 150,
+                "volume": 10,
+            },
+            {
+                "contractSymbol": "AAA_C_20270115_105",
+                "optionType": "call",
+                "expiry": "2027-01-15",
+                "strike": 105.0,
+                "bid": 3.0,
+                "ask": 3.2,
+                "lastPrice": 3.1,
+                "openInterest": 140,
+                "volume": 9,
+            },
+        ]
+    ).to_csv(day_dir / "2027-01-15.csv", index=False)
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "roll-plan",
+            str(portfolio_path),
+            "--id",
+            "spread-1",
+            "--as-of",
+            "2026-01-02",
+            "--cache-dir",
+            str(cache_dir),
+            "--intent",
+            "max-upside",
+            "--horizon-months",
+            "12",
+            "--top",
+            "3",
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    assert "multi-leg roll plan" in res.output
+    assert "2027-01-15" in res.output

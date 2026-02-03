@@ -78,6 +78,7 @@ class PositionMetrics:
     theta_per_day: float | None = None
     as_of: date | None = None
     next_earnings_date: date | None = None
+    contract_sign: int = 1
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,7 @@ class Advice:
     confidence: Confidence
     reasons: list[str]
     warnings: list[str]
+
 
 def _thesis_state(
     *,
