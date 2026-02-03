@@ -230,8 +230,8 @@ def _format_flags(errors: list[str], warnings: list[str]) -> str:
 def _format_confluence(confluence: dict[str, Any] | None) -> str:
     if not confluence:
         return "-"
-    total = confluence.get("total")
-    coverage = confluence.get("coverage")
+    total = _safe_float(confluence.get("total"))
+    coverage = _safe_float(confluence.get("coverage"))
     if total is None and coverage is None:
         return "-"
     if total is None:
@@ -278,9 +278,12 @@ def _artifact_path_hints(
 
     chain_path = chain_dir
     if _is_iso_date(as_of):
-        candidate = chain_dir / f"{as_of}.md"
-        if candidate.exists():
-            chain_path = candidate
+        candidate_md = chain_dir / f"{as_of}.md"
+        candidate_json = chain_dir / f"{as_of}.json"
+        if candidate_md.exists():
+            chain_path = candidate_md
+        elif candidate_json.exists():
+            chain_path = candidate_json
 
     compare_path = compare_dir
     flow_path = flow_dir
@@ -332,3 +335,12 @@ def _parse_iso_date(value: str | None) -> date | None:
 
 def _is_iso_date(value: str | None) -> bool:
     return _parse_iso_date(value) is not None
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

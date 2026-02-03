@@ -2298,23 +2298,34 @@ def briefing(
     if symbol is not None:
         symbols = [symbol.upper().strip()]
 
-    symbol_sources_map: dict[str, set[str]] = {}
-    for sym in portfolio_symbols:
-        symbol_sources_map.setdefault(sym, set()).add("portfolio")
-    for name, syms in watchlist_symbols_by_name.items():
-        for sym in syms:
-            symbol_sources_map.setdefault(sym, set()).add(f"watchlist:{name}")
     if symbol is not None:
-        symbol_sources_map.setdefault(symbols[0], set()).add("manual")
+        sym = symbols[0] if symbols else ""
+        symbol_sources_map: dict[str, set[str]] = {}
+        if sym:
+            if sym in portfolio_symbols:
+                symbol_sources_map.setdefault(sym, set()).add("portfolio")
+            symbol_sources_map.setdefault(sym, set()).add("manual")
+        symbol_sources_payload = [
+            {"symbol": sym, "sources": sorted(symbol_sources_map.get(sym, set()))}
+            for sym in symbols
+        ]
+        watchlists_payload: list[dict[str, object]] = []
+    else:
+        symbol_sources_map = {}
+        for sym in portfolio_symbols:
+            symbol_sources_map.setdefault(sym, set()).add("portfolio")
+        for name, syms in watchlist_symbols_by_name.items():
+            for sym in syms:
+                symbol_sources_map.setdefault(sym, set()).add(f"watchlist:{name}")
 
-    symbol_sources_payload = [
-        {"symbol": sym, "sources": sorted(symbol_sources_map.get(sym, set()))} for sym in symbols
-    ]
-    watchlists_payload = [
-        {"name": name, "symbols": watchlist_symbols_by_name.get(name, [])}
-        for name in watchlist
-        if name in watchlist_symbols_by_name
-    ]
+        symbol_sources_payload = [
+            {"symbol": sym, "sources": sorted(symbol_sources_map.get(sym, set()))} for sym in symbols
+        ]
+        watchlists_payload = [
+            {"name": name, "symbols": watchlist_symbols_by_name.get(name, [])}
+            for name in watchlist
+            if name in watchlist_symbols_by_name
+        ]
 
     if not symbols:
         console.print("[red]Error:[/red] no symbols selected (empty portfolio and no watchlists)")

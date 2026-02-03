@@ -184,3 +184,75 @@ def test_briefing_writes_daily_md_and_updates_derived(tmp_path: Path, monkeypatc
     assert "watchlist:monitor" in sources["BBB"]
     watchlists = {row["name"]: row["symbols"] for row in payload["watchlists"]}
     assert watchlists["monitor"] == ["BBB"]
+
+
+def test_briefing_symbol_override_omits_watchlists(tmp_path: Path) -> None:
+    portfolio_path = tmp_path / "portfolio.json"
+    portfolio_path.write_text(
+        json.dumps(
+            {
+                "cash": 0,
+                "risk_profile": {
+                    "tolerance": "high",
+                    "max_portfolio_risk_pct": None,
+                    "max_single_position_risk_pct": None,
+                    "earnings_warn_days": 21,
+                    "earnings_avoid_days": 0,
+                },
+                "positions": [
+                    {
+                        "id": "aaa-2026-02-20-110c",
+                        "symbol": "AAA",
+                        "option_type": "call",
+                        "expiry": "2026-02-20",
+                        "strike": 110.0,
+                        "contracts": 1,
+                        "cost_basis": 1.0,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    watchlists_path = tmp_path / "watchlists.json"
+    watchlists_path.write_text('{"watchlists":{"monitor":["BBB"]}}', encoding="utf-8")
+
+    cache_dir = tmp_path / "snapshots"
+    _write_chain_day(cache_dir, symbol="AAA", day="2026-01-02", spot=100.0, oi_shift=0)
+
+    out_dir = tmp_path / "reports"
+    derived_dir = tmp_path / "derived"
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "briefing",
+            str(portfolio_path),
+            "--symbol",
+            "AAA",
+            "--watchlists-path",
+            str(watchlists_path),
+            "--watchlist",
+            "monitor",
+            "--as-of",
+            "2026-01-02",
+            "--compare",
+            "none",
+            "--cache-dir",
+            str(cache_dir),
+            "--out",
+            str(out_dir),
+            "--derived-dir",
+            str(derived_dir),
+        ],
+    )
+    assert res.exit_code == 0, res.output
+
+    json_path = out_dir / "2026-01-02.json"
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    assert payload["symbols"] == ["AAA"]
+    assert payload["watchlists"] == []
+    sources = {row["symbol"]: row["sources"] for row in payload["symbol_sources"]}
+    assert "manual" in sources["AAA"]
