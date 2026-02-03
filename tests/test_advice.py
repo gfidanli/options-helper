@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from options_helper.analysis.advice import Action, PositionMetrics, advise
+from options_helper.analysis.advice import Action, Confidence, PositionMetrics, advise
 from options_helper.models import Portfolio, Position, RiskProfile
 
 
@@ -30,6 +30,9 @@ def _metrics(
     rsi_w: float | None = 55.0,
     breakout_w: bool | None = None,
     near_support_w: bool | None = None,
+    spread: float | None = None,
+    spread_pct: float | None = None,
+    execution_quality: str | None = "unknown",
 ) -> PositionMetrics:
     pnl_abs = (mark - position.cost_basis) * 100.0 * position.contracts
     pnl_pct = (mark - position.cost_basis) / position.cost_basis if position.cost_basis else None
@@ -44,6 +47,9 @@ def _metrics(
         mark=mark,
         bid=None,
         ask=None,
+        spread=spread,
+        spread_pct=spread_pct,
+        execution_quality=execution_quality,
         last=None,
         implied_vol=0.5,
         open_interest=1000,
@@ -123,3 +129,26 @@ def test_low_dte_roll_when_weekly_supportive() -> None:
     m = _metrics(portfolio.positions[0], mark=1.0, dte=10, weekly=(10.0, 9.5, 9.0))
     a = advise(m, portfolio)
     assert a.action == Action.ROLL
+
+
+def test_wide_spread_warns_and_lowers_confidence() -> None:
+    portfolio = Portfolio(
+        cash=500.0,
+        risk_profile=RiskProfile(max_portfolio_risk_pct=None, max_single_position_risk_pct=None),
+        positions=[_pos()],
+    )
+    m = _metrics(portfolio.positions[0], mark=1.0, spread=0.5, spread_pct=0.50, execution_quality="bad")
+    a = advise(m, portfolio)
+    assert a.confidence == Confidence.LOW
+    assert any("fills may be poor" in w for w in a.warnings)
+
+
+def test_missing_bid_ask_warns() -> None:
+    portfolio = Portfolio(
+        cash=500.0,
+        risk_profile=RiskProfile(max_portfolio_risk_pct=None, max_single_position_risk_pct=None),
+        positions=[_pos()],
+    )
+    m = _metrics(portfolio.positions[0], mark=1.0, spread=None, spread_pct=None, execution_quality="unknown")
+    a = advise(m, portfolio)
+    assert any("quote quality low" in w for w in a.warnings)

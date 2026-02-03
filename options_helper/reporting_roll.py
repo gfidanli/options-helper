@@ -24,6 +24,12 @@ def _fmt_pct(val: float | None, *, digits: int = 1) -> str:
     return f"{val * 100.0:.{digits}f}%"
 
 
+def _fmt_exec(val: str | None) -> str:
+    if not val:
+        return "-"
+    return val
+
+
 def render_roll_plan_console(console: Console, report: RollPlanReport) -> None:
     console.print(
         f"\n[bold]{report.symbol}[/bold] roll plan as-of {report.as_of} | spot={report.spot:.2f} | "
@@ -43,6 +49,7 @@ def render_roll_plan_console(console: Console, report: RollPlanReport) -> None:
     cur_table.add_column("OI", justify="right")
     cur_table.add_column("Vol", justify="right")
     cur_table.add_column("Spr%", justify="right")
+    cur_table.add_column("Exec", justify="right")
     cur_table.add_row(
         cur.expiry,
         f"{cur.strike:g}",
@@ -54,6 +61,7 @@ def render_roll_plan_console(console: Console, report: RollPlanReport) -> None:
         "-" if cur.open_interest is None else f"{cur.open_interest:d}",
         "-" if cur.volume is None else f"{cur.volume:d}",
         _fmt_pct(cur.spread_pct),
+        _fmt_exec(cur.execution_quality),
     )
     console.print(cur_table)
 
@@ -73,6 +81,7 @@ def render_roll_plan_console(console: Console, report: RollPlanReport) -> None:
         cand_table.add_column("OI", justify="right")
         cand_table.add_column("Vol", justify="right")
         cand_table.add_column("Spr%", justify="right")
+        cand_table.add_column("Exec", justify="right")
 
         for i, cand in enumerate(report.candidates, start=1):
             c = cand.contract
@@ -92,6 +101,7 @@ def render_roll_plan_console(console: Console, report: RollPlanReport) -> None:
                 "-" if c.open_interest is None else f"{c.open_interest:d}",
                 "-" if c.volume is None else f"{c.volume:d}",
                 _fmt_pct(c.spread_pct),
+                _fmt_exec(c.execution_quality),
                 style=style,
             )
 
@@ -111,4 +121,3 @@ def render_roll_plan_console(console: Console, report: RollPlanReport) -> None:
         console.print("\n[yellow]Warnings[/yellow]")
         for w in report.warnings:
             console.print(f"- {w}")
-

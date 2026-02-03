@@ -74,6 +74,38 @@ def test_select_option_candidate_prefers_target_delta() -> None:
     assert otm.strike in {100.0, 110.0}
 
 
+def test_select_option_candidate_excludes_bad_spread() -> None:
+    expiry = date.today() + timedelta(days=60)
+    spot = 100.0
+
+    df = pd.DataFrame(
+        {
+            "strike": [100.0, 105.0],
+            "bid": [1.0, 4.5],
+            "ask": [2.0, 4.7],
+            "lastPrice": [1.5, 4.6],
+            "impliedVolatility": [None, None],
+            "openInterest": [500, 500],
+            "volume": [50, 50],
+        }
+    )
+
+    pick = select_option_candidate(
+        df,
+        symbol="TEST",
+        option_type="call",
+        expiry=expiry,
+        spot=spot,
+        target_delta=0.40,
+        window_pct=0.50,
+        min_open_interest=0,
+        min_volume=0,
+    )
+    assert pick is not None
+    assert pick.strike == 105.0
+    assert pick.execution_quality != "bad"
+
+
 def test_suggest_trade_levels_breakout_uses_breakout_level() -> None:
     # 60 weeks of steadily rising closes -> breakout on the latest week.
     idx = pd.date_range("2024-01-01", periods=300, freq="B")
@@ -107,7 +139,7 @@ def test_suggest_trade_levels_breakout_uses_breakout_level() -> None:
     assert abs(levels.stop - expected_breakout_level * (1.0 - rp.support_proximity_pct)) < 1e-6
 
 
-def test_research_cli_saves_report_and_omits_spreads(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_research_cli_saves_report_and_includes_spreads(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     today = date.today()
     candle_day = today - timedelta(days=1)
     run_dt_1 = __import__("datetime").datetime(today.year, today.month, today.day, 11, 59, 3)
@@ -188,7 +220,8 @@ def test_research_cli_saves_report_and_omits_spreads(tmp_path: Path, monkeypatch
     )
     assert res.exit_code == 0, res.output
     assert "Saved research report to" in res.output
-    assert "spread" not in res.output.lower()
+    assert "Spr%" in res.output
+    assert ("Exec" in res.output) or ("Ex…" in res.output)
 
     expected_run_path_1 = tmp_path / f"research-{candle_dt_stamp}-{run_dt_1.strftime('%Y-%m-%d_%H%M%S')}.txt"
     assert expected_run_path_1.exists()

@@ -48,6 +48,7 @@ By default it writes:
 
 The report includes:
 - Portfolio table (best-effort marks/PnL from the same snapshot day)
+  - Includes `Spr%` when bid/ask quotes are available
 - Per symbol:
   - Technical context (from cached candles; canonical indicator source is `technicals_backtesting`)
     - Includes extension percentiles + rolling quantiles (1y/3y/5y when available)

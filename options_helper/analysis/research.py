@@ -6,6 +6,7 @@ from enum import Enum
 
 import pandas as pd
 
+from options_helper.analysis.chain_metrics import compute_spread, compute_spread_pct, execution_quality
 from options_helper.analysis.greeks import black_scholes_greeks
 from options_helper.analysis.indicators import breakout_down, breakout_up, ema, rsi, stoch_rsi
 from options_helper.models import OptionType, RiskProfile
@@ -39,6 +40,9 @@ class OptionCandidate:
     mark: float | None
     bid: float | None
     ask: float | None
+    spread: float | None
+    spread_pct: float | None
+    execution_quality: str | None
     last: float | None
     iv: float | None
     delta: float | None
@@ -383,6 +387,7 @@ def select_option_candidate(
     window_pct: float,
     min_open_interest: int,
     min_volume: int,
+    max_spread_pct: float = 0.35,
 ) -> OptionCandidate | None:
     if df is None or df.empty:
         return None
@@ -399,6 +404,9 @@ def select_option_candidate(
     df["iv_f"] = df.get("impliedVolatility").map(_as_float) if "impliedVolatility" in df.columns else None
     df["oi_i"] = df.get("openInterest").map(_as_int) if "openInterest" in df.columns else None
     df["vol_i"] = df.get("volume").map(_as_int) if "volume" in df.columns else None
+    df["spread"] = compute_spread(df)
+    df["spread_pct"] = compute_spread_pct(df)
+    df["exec_quality"] = df["spread_pct"].map(execution_quality)
 
     today = date.today()
     dte = max((expiry - today).days, 0)
@@ -428,6 +436,16 @@ def select_option_candidate(
         if liquid.empty:
             liquid = df
 
+    spread_gate_fallback = False
+    if "spread_pct" in liquid.columns:
+        spread_pct = liquid["spread_pct"]
+        bad_mask = spread_pct.notna() & ((spread_pct < 0) | (spread_pct > max_spread_pct))
+        spread_filtered = liquid[~bad_mask]
+        if not spread_filtered.empty:
+            liquid = spread_filtered
+        else:
+            spread_gate_fallback = True
+
     # Choose by delta if available, otherwise by moneyness.
     if liquid["delta"].notna().any():
         liquid = liquid[liquid["delta"].notna()]
@@ -441,6 +459,9 @@ def select_option_candidate(
     ask = pick["ask_f"]
     last = pick["last_f"]
     mark = pick["mark"]
+    spread = _as_float(pick.get("spread"))
+    spread_pct = _as_float(pick.get("spread_pct"))
+    exec_quality = pick.get("exec_quality")
     iv = pick["iv_f"]
     oi = pick["oi_i"]
     vol = pick["vol_i"]
@@ -451,6 +472,12 @@ def select_option_candidate(
     ]
     if oi is not None or vol is not None:
         rationale.append(f"Liquidity (OI={oi if oi is not None else 'n/a'}, Vol={vol if vol is not None else 'n/a'}).")
+    if spread_pct is not None:
+        rationale.append(f"Execution: {exec_quality} (spread {spread_pct:.1%}).")
+    else:
+        rationale.append(f"Execution: {exec_quality}.")
+    if spread_gate_fallback:
+        rationale.append("Spread quality was poor across candidates; used best-effort pick.")
 
     return OptionCandidate(
         symbol=symbol.upper(),
@@ -461,6 +488,9 @@ def select_option_candidate(
         mark=mark,
         bid=bid,
         ask=ask,
+        spread=spread,
+        spread_pct=spread_pct,
+        execution_quality=str(exec_quality) if exec_quality is not None else None,
         last=last,
         iv=iv,
         delta=delta,

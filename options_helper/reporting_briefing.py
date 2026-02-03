@@ -338,6 +338,51 @@ class BriefingSymbolSection:
     derived_updated: bool = False
 
 
+def render_portfolio_table_markdown(
+    rows: list[dict[str, str]],
+    *,
+    include_spread: bool = False,
+) -> str:
+    if not rows:
+        return ""
+
+    headers = ["ID", "Sym", "Type", "Exp", "Strike", "Ct", "Cost", "Mark"]
+    if include_spread:
+        headers.append("Spr%")
+    headers += ["PnL $", "PnL %", "As-of"]
+
+    sep = ["---", "---", "---", "---", "---:", "---:", "---:", "---:"]
+    if include_spread:
+        sep.append("---:")
+    sep += ["---:", "---:", "---"]
+
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(sep) + " |",
+    ]
+    for r in rows:
+        base = [
+            r["id"],
+            r["symbol"],
+            r["type"],
+            r["expiry"],
+            r["strike"],
+            r["ct"],
+            r["cost"],
+            r["mark"],
+        ]
+        if include_spread:
+            base.append(r.get("spr_%", "-"))
+        base += [
+            r["pnl_$"],
+            r["pnl_%"],
+            r["as_of"],
+        ]
+        lines.append("| " + " | ".join(base) + " |")
+
+    return "\n".join(lines)
+
+
 def render_briefing_markdown(
     *,
     report_date: str,

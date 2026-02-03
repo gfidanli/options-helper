@@ -41,6 +41,50 @@ def compute_mark_price(df: pd.DataFrame) -> pd.Series:
     return mark
 
 
+def compute_spread(df: pd.DataFrame) -> pd.Series:
+    """
+    Best-effort bid/ask spread (ask - bid) when bid/ask are both > 0.
+    Returns NaN when bid/ask are missing or non-positive.
+    """
+    bid = _col_as_float(df, "bid")
+    ask = _col_as_float(df, "ask")
+    spread = ask - bid
+    valid_mask = (bid > 0) & (ask > 0)
+    return spread.where(valid_mask)
+
+
+def compute_spread_pct(df: pd.DataFrame) -> pd.Series:
+    """
+    Spread as a fraction of mid price when bid/ask are both > 0 and mid > 0.
+    Returns NaN when bid/ask are missing or non-positive.
+    """
+    bid = _col_as_float(df, "bid")
+    ask = _col_as_float(df, "ask")
+    mid = (ask + bid) / 2.0
+    spread_pct = (ask - bid) / mid
+    valid_mask = (bid > 0) & (ask > 0) & (mid > 0)
+    return spread_pct.where(valid_mask)
+
+
+def execution_quality(spread_pct: float | None) -> str:
+    if spread_pct is None:
+        return "unknown"
+    try:
+        if pd.isna(spread_pct):
+            return "unknown"
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+    val = float(spread_pct)
+    if val < 0:
+        return "bad"
+    if val <= 0.15:
+        return "good"
+    if val <= 0.35:
+        return "ok"
+    return "bad"
+
+
 def _safe_sum(series: pd.Series) -> float:
     val = series.dropna()
     if val.empty:

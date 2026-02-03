@@ -15,7 +15,7 @@ import typer
 from rich.console import Console
 
 from options_helper.analysis.advice import Advice, PositionMetrics, advise
-from options_helper.analysis.chain_metrics import compute_chain_report
+from options_helper.analysis.chain_metrics import compute_chain_report, execution_quality
 from options_helper.analysis.compare_metrics import compute_compare_report
 from options_helper.analysis.derived_metrics import DerivedRow, compute_derived_stats
 from options_helper.analysis.flow import FlowGroupBy, aggregate_flow_window, compute_flow, summarize_flow
@@ -62,6 +62,7 @@ from options_helper.reporting_briefing import (
     BriefingSymbolSection,
     build_briefing_payload,
     render_briefing_markdown,
+    render_portfolio_table_markdown,
 )
 from options_helper.reporting_roll import render_roll_plan_console
 from options_helper.storage import load_portfolio, save_portfolio, write_template
@@ -354,6 +355,13 @@ def _position_metrics(
         vol = _extract_int(row, "volume")
 
     mark = _mark_price(bid=bid, ask=ask, last=last)
+    spread = spread_pct = None
+    if bid is not None and ask is not None and bid > 0 and ask > 0:
+        spread = ask - bid
+        mid = (ask + bid) / 2.0
+        if mid > 0:
+            spread_pct = spread / mid
+    exec_quality = execution_quality(spread_pct)
 
     dte = (position.expiry - today).days
     dte_val = dte if dte >= 0 else 0
@@ -447,6 +455,9 @@ def _position_metrics(
         mark=mark,
         bid=bid,
         ask=ask,
+        spread=spread,
+        spread_pct=spread_pct,
+        execution_quality=exec_quality,
         last=last,
         implied_vol=iv,
         open_interest=oi,
@@ -1897,6 +1908,7 @@ def briefing(
         to_date, df_to = day_cache.get(sym, (None, pd.DataFrame()))
 
         mark = None
+        spr_pct = None
         if not df_to.empty:
             sub = df_to.copy()
             if "expiry" in sub.columns:
@@ -1909,11 +1921,13 @@ def briefing(
                 sub = sub[(sub["_strike"] - float(p.strike)).abs() < 1e-9]
             if not sub.empty:
                 row = sub.iloc[0]
-                mark = _mark_price(
-                    bid=_extract_float(row, "bid"),
-                    ask=_extract_float(row, "ask"),
-                    last=_extract_float(row, "lastPrice"),
-                )
+                bid = _extract_float(row, "bid")
+                ask = _extract_float(row, "ask")
+                mark = _mark_price(bid=bid, ask=ask, last=_extract_float(row, "lastPrice"))
+                if bid is not None and ask is not None and bid > 0 and ask > 0:
+                    mid = (bid + ask) / 2.0
+                    if mid > 0:
+                        spr_pct = (ask - bid) / mid
 
         pnl_abs = None
         pnl_pct = None
@@ -1933,6 +1947,7 @@ def briefing(
                 "mark": "-" if mark is None else f"{mark:.2f}",
                 "pnl_$": "-" if pnl_abs is None else f"{pnl_abs:+.0f}",
                 "pnl_%": "-" if pnl_pct is None else f"{pnl_pct * 100.0:+.1f}%",
+                "spr_%": "-" if spr_pct is None else f"{spr_pct * 100.0:.1f}%",
                 "as_of": "-" if to_date is None else to_date.isoformat(),
             }
         )
@@ -1943,32 +1958,8 @@ def briefing(
     if portfolio_rows:
         # Sort by pnl% descending; rows without pnl% go last.
         portfolio_rows_sorted = [row for _, row in sorted(portfolio_rows_with_pnl, key=lambda r: r[0], reverse=True)]
-        headers = ["ID", "Sym", "Type", "Exp", "Strike", "Ct", "Cost", "Mark", "PnL $", "PnL %", "As-of"]
-        lines = [
-            "| " + " | ".join(headers) + " |",
-            "|---|---|---|---|---:|---:|---:|---:|---:|---:|---|",
-        ]
-        for r in portfolio_rows_sorted:
-            lines.append(
-                "| "
-                + " | ".join(
-                    [
-                        r["id"],
-                        r["symbol"],
-                        r["type"],
-                        r["expiry"],
-                        r["strike"],
-                        r["ct"],
-                        r["cost"],
-                        r["mark"],
-                        r["pnl_$"],
-                        r["pnl_%"],
-                        r["as_of"],
-                    ]
-                )
-                + " |"
-            )
-        portfolio_table_md = "\n".join(lines)
+        include_spread = any(r.get("spr_%") not in (None, "-") for r in portfolio_rows_sorted)
+        portfolio_table_md = render_portfolio_table_markdown(portfolio_rows_sorted, include_spread=include_spread)
 
     md = render_briefing_markdown(
         report_date=report_date,
@@ -2433,6 +2424,8 @@ def research(
         table.add_column("IV", justify="right")
         table.add_column("OI", justify="right")
         table.add_column("Vol", justify="right")
+        table.add_column("Spr%", justify="right")
+        table.add_column("Exec", justify="right")
         table.add_column("Why")
 
         if short_exp is not None:
@@ -2463,6 +2456,8 @@ def research(
                     "-" if short_pick.iv is None else f"{short_pick.iv:.1%}",
                     "-" if short_pick.open_interest is None else str(short_pick.open_interest),
                     "-" if short_pick.volume is None else str(short_pick.volume),
+                    "-" if short_pick.spread_pct is None else f"{short_pick.spread_pct:.1%}",
+                    "-" if short_pick.execution_quality is None else short_pick.execution_quality,
                     why,
                 )
         else:
@@ -2496,6 +2491,8 @@ def research(
                     "-" if long_pick.iv is None else f"{long_pick.iv:.1%}",
                     "-" if long_pick.open_interest is None else str(long_pick.open_interest),
                     "-" if long_pick.volume is None else str(long_pick.volume),
+                    "-" if long_pick.spread_pct is None else f"{long_pick.spread_pct:.1%}",
+                    "-" if long_pick.execution_quality is None else long_pick.execution_quality,
                     why,
                 )
         else:

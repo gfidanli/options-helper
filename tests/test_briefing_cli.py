@@ -28,6 +28,8 @@ def _write_chain_day(
                 "optionType": "call",
                 "expiry": "2026-02-20",
                 "strike": 110.0,
+                "bid": 1.0,
+                "ask": 1.2,
                 "lastPrice": 1.1,
                 "openInterest": 900 + oi_shift,
                 "volume": 10,
@@ -40,6 +42,8 @@ def _write_chain_day(
                 "optionType": "put",
                 "expiry": "2026-02-20",
                 "strike": 90.0,
+                "bid": 0.9,
+                "ask": 1.1,
                 "lastPrice": 1.0,
                 "openInterest": 1200 - oi_shift,
                 "volume": 10,
@@ -117,6 +121,7 @@ def test_briefing_writes_daily_md_and_updates_derived(tmp_path: Path) -> None:
     content = md_path.read_text(encoding="utf-8")
 
     assert "# Daily briefing (2026-01-02)" in content
+    assert "Spr%" in content
     assert "## AAA (2026-01-02)" in content
     assert "### Chain" in content
     assert "### Compare" in content
@@ -128,4 +133,3 @@ def test_briefing_writes_daily_md_and_updates_derived(tmp_path: Path) -> None:
 
     assert (derived_dir / "AAA.csv").exists()
     assert (derived_dir / "BBB.csv").exists()
-

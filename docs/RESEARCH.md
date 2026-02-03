@@ -74,6 +74,14 @@ Preference is given to strikes with:
 
 If nothing passes the filter, it falls back to the best strike by delta/ATM.
 
+### Execution quality (best-effort)
+Each contract includes:
+- `spread` and `spread_pct` (from bid/ask)
+- `execution_quality`: `good` / `ok` / `bad` / `unknown`
+
+By default, candidates with `execution_quality == bad` are excluded. If all candidates are `bad`, the tool falls back
+to the best-effort pick and notes it in the “why” list.
+
 ## CLI usage
 Run research on your default watchlist named `watchlist`:
 

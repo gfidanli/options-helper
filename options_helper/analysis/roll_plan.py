@@ -7,7 +7,7 @@ from typing import Literal
 import pandas as pd
 from pydantic import BaseModel, Field
 
-from options_helper.analysis.chain_metrics import compute_mark_price
+from options_helper.analysis.chain_metrics import compute_mark_price, compute_spread, compute_spread_pct, execution_quality
 from options_helper.analysis.greeks import black_scholes_greeks
 from options_helper.models import OptionType, Position
 
@@ -62,32 +62,6 @@ def _months_to_target_dte(horizon_months: int) -> int:
     return int(round(horizon_months * (365.0 / 12.0)))
 
 
-def _spread_ok(
-    *,
-    bid: float | None,
-    ask: float | None,
-    max_spread_pct: float,
-) -> tuple[bool | None, float | None, float | None]:
-    """
-    Returns: (ok, spread, spread_pct)
-    - ok=True when bid/ask are present and spread is sane
-    - ok=False when bid/ask are present but spread is invalid/wide
-    - ok=None when bid/ask are missing/zero (unknown)
-    """
-    if bid is None or ask is None or bid <= 0 or ask <= 0:
-        return (None, None, None)
-    if ask < bid:
-        return (False, ask - bid, None)
-
-    spread = ask - bid
-    mid = (ask + bid) / 2.0
-    if mid <= 0:
-        return (False, spread, None)
-
-    spread_pct = spread / mid
-    return (spread_pct <= max_spread_pct, spread, spread_pct)
-
-
 def _best_effort_delta_theta(
     row: dict,
     *,
@@ -130,6 +104,7 @@ class RollContract(BaseModel):
     ask: float | None = Field(default=None, ge=0.0)
     spread: float | None = Field(default=None, ge=0.0)
     spread_pct: float | None = Field(default=None, ge=0.0)
+    execution_quality: str | None = None
 
     implied_vol: float | None = Field(default=None, ge=0.0)
     open_interest: int | None = Field(default=None, ge=0)
@@ -281,6 +256,8 @@ def compute_roll_plan(
 
     # Add a deterministic mark field for pricing.
     chain["mark"] = compute_mark_price(chain)
+    chain["_spread"] = compute_spread(chain)
+    chain["_spread_pct"] = compute_spread_pct(chain)
 
     current_exp = position.expiry
     current_dte = (current_exp - as_of).days
@@ -307,7 +284,12 @@ def compute_roll_plan(
     if cur_mark is None or cur_mark <= 0:
         raise ValueError("missing current contract mark price in snapshot")
 
-    cur_spread_ok, cur_spread, cur_spread_pct = _spread_ok(bid=cur_bid, ask=cur_ask, max_spread_pct=max_spread_pct)
+    cur_spread = _as_float(cur_row.get("_spread"))
+    cur_spread_pct = _as_float(cur_row.get("_spread_pct"))
+    cur_exec_quality = execution_quality(cur_spread_pct)
+    cur_spread_ok = None
+    if cur_spread_pct is not None:
+        cur_spread_ok = (cur_spread_pct >= 0) and (cur_spread_pct <= max_spread_pct)
     cur_delta, cur_theta = _best_effort_delta_theta(cur_row, option_type=option_type, spot=spot, as_of=as_of)
 
     current = RollContract(
@@ -321,6 +303,7 @@ def compute_roll_plan(
         ask=cur_ask,
         spread=cur_spread,
         spread_pct=cur_spread_pct,
+        execution_quality=cur_exec_quality,
         implied_vol=_as_float(cur_row.get("impliedVolatility")),
         open_interest=_as_int(cur_row.get("openInterest")),
         volume=_as_int(cur_row.get("volume")),
@@ -400,7 +383,12 @@ def compute_roll_plan(
         oi = _as_int(row.get("openInterest"))
         vol = _as_int(row.get("volume"))
 
-        spread_ok, spread, spread_pct = _spread_ok(bid=bid, ask=ask, max_spread_pct=max_spread_pct)
+        spread = _as_float(row.get("_spread"))
+        spread_pct = _as_float(row.get("_spread_pct"))
+        exec_quality = execution_quality(spread_pct)
+        spread_ok = None
+        if spread_pct is not None:
+            spread_ok = (spread_pct >= 0) and (spread_pct <= max_spread_pct)
         delta, theta = _best_effort_delta_theta(row, option_type=option_type, spot=spot, as_of=as_of)
 
         issues: list[str] = []
@@ -470,6 +458,7 @@ def compute_roll_plan(
             ask=ask,
             spread=spread,
             spread_pct=spread_pct,
+            execution_quality=exec_quality,
             implied_vol=iv,
             open_interest=oi,
             volume=vol,
@@ -522,4 +511,3 @@ def compute_roll_plan(
         candidates=filtered[:top],
         warnings=warnings,
     )
-

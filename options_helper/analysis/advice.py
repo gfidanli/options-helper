@@ -34,6 +34,9 @@ class PositionMetrics:
     mark: float | None
     bid: float | None
     ask: float | None
+    spread: float | None
+    spread_pct: float | None
+    execution_quality: str | None
     last: float | None
     implied_vol: float | None
     open_interest: int | None
@@ -149,6 +152,10 @@ def advise(metrics: PositionMetrics, portfolio: Portfolio) -> Advice:
 
     if metrics.mark is None:
         warnings.append("Missing option mark price; advice is limited.")
+    if metrics.execution_quality == "unknown":
+        warnings.append("Missing bid/ask quotes; quote quality low.")
+    if metrics.execution_quality == "bad" and metrics.spread_pct is not None:
+        warnings.append(f"Wide spread ({metrics.spread_pct:.1%}); fills may be poor.")
 
     if metrics.open_interest is not None and metrics.open_interest < rp.min_open_interest:
         warnings.append(f"Low open interest ({metrics.open_interest} < {rp.min_open_interest}).")
@@ -279,6 +286,12 @@ def advise(metrics: PositionMetrics, portfolio: Portfolio) -> Advice:
         if rp.max_single_position_risk_pct is not None and pos_risk > rp.max_single_position_risk_pct * capital:
             warnings.append("Single-position risk budget exceeded; suppressing ADD.")
             action = Action.HOLD
+            confidence = Confidence.LOW
+
+    if metrics.execution_quality == "bad":
+        if confidence == Confidence.HIGH:
+            confidence = Confidence.MEDIUM
+        elif confidence == Confidence.MEDIUM:
             confidence = Confidence.LOW
 
     if not reasons:
