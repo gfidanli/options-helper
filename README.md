@@ -82,5 +82,10 @@ Automates a daily Markdown artifact and maintains a compact per-symbol derived-m
 - Commands: `briefing`, `derived`
 - Design/usage: `docs/BRIEFING.md`, `docs/DERIVED.md`
 
+## Roadmap
+- Ranked improvements: `docs/REPO_IMPROVEMENTS.md`
+- Feature PRDs and milestones: `docs/BACKLOG.md`
+- Implementation plans (LLM-friendly): `docs/plans/`
+
 ## Disclaimer
 This tool is for informational/educational use only and is not financial advice.

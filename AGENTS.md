@@ -41,6 +41,12 @@ This repo is an information/decision-support tool. Keep outputs and docs clear t
 - Start with simple rules and measurable outputs; iterate with tests and docs.
 - Track next ideas in `FEATURE_IDEAS.md`.
 
+## Planning artifacts
+- Ranked improvements: `docs/REPO_IMPROVEMENTS.md`
+- Feature PRDs/milestones: `docs/BACKLOG.md`
+- Implementation plans: `docs/plans/`
+- Iteration loop prompt: `docs/LLM_LOOP_PROMPT.md`
+
 ## Completion sound (Terminal.app)
 - When you finish a task and are **waiting for user input**, play the macOS “Glass” sound via: `afplay /System/Library/Sounds/Glass.aiff`
 - Don’t rely on the terminal bell (`\a`) for notifications (it’s disabled/muted in this setup).
