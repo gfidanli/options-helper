@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from typing import Callable
 
@@ -8,7 +8,7 @@ import pandas as pd
 
 from options_helper.analysis.indicators import ema
 from options_helper.backtesting.data_source import BacktestDataSource
-from options_helper.backtesting.execution import FillMode, FillResult, fill_price
+from options_helper.backtesting.execution import FillMode, fill_price
 from options_helper.backtesting.ledger import BacktestLedger, PositionState, TradeLogRow
 from options_helper.backtesting.roll import RollPolicy, select_roll_candidate, should_roll
 from options_helper.backtesting.strategy import DayContext, PositionContext, Strategy

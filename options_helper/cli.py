@@ -6964,7 +6964,8 @@ def backtest_run(
 
 @backtest_app.command("report")
 def backtest_report(
-    run_id: str = typer.Option(..., "--run-id", help="Backtest run id."),
+    run_id: str | None = typer.Option(None, "--run-id", help="Backtest run id."),
+    latest: bool = typer.Option(False, "--latest", help="Load the most recent run in --reports-dir."),
     reports_dir: Path = typer.Option(
         Path("data/reports/backtests"),
         "--reports-dir",
@@ -6973,7 +6974,31 @@ def backtest_report(
 ) -> None:
     """Print the markdown report for a backtest run (not financial advice)."""
     console = Console(width=200)
-    report_path = reports_dir / run_id / "report.md"
+    if latest and run_id is not None:
+        raise typer.BadParameter("Provide either --run-id or --latest (not both).")
+    if not latest and not run_id:
+        raise typer.BadParameter("Provide --run-id or use --latest.")
+
+    if latest:
+        best: tuple[float, Path] | None = None
+        for p in sorted(reports_dir.glob("*")):
+            if not p.is_dir():
+                continue
+            report = p / "report.md"
+            if not report.exists():
+                continue
+            try:
+                mtime = float(report.stat().st_mtime)
+            except Exception:  # noqa: BLE001
+                continue
+            if best is None or mtime > best[0]:
+                best = (mtime, report)
+        if best is None:
+            console.print(f"[red]Error:[/red] No backtest reports found under {reports_dir}")
+            raise typer.Exit(1)
+        report_path = best[1]
+    else:
+        report_path = reports_dir / str(run_id) / "report.md"
     if not report_path.exists():
         console.print(f"[red]Error:[/red] Missing report: {report_path}")
         raise typer.Exit(1)

@@ -51,6 +51,11 @@ data/reports/backtests/<run_id>/
   report.md
 ```
 
+View the latest report:
+```
+./.venv/bin/options-helper backtest report --latest
+```
+
 ## Notes / Caveats
 - Daily resolution only (no intraday fills).
 - Uses snapshot dates as the timeline (gaps remain gaps).

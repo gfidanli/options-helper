@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
+import os
+
 from typer.testing import CliRunner
 
 from options_helper.backtesting.ledger import TradeLogRow
@@ -67,3 +69,33 @@ def test_backtest_run_cli_writes_artifacts(tmp_path: Path, monkeypatch) -> None:
     assert (reports_dir / "test-run" / "summary.json").exists()
     assert (reports_dir / "test-run" / "report.md").exists()
     assert (reports_dir / "test-run" / "trades.csv").exists()
+
+
+def test_backtest_report_latest(tmp_path: Path) -> None:
+    reports_dir = tmp_path / "reports"
+    run1 = reports_dir / "run1"
+    run2 = reports_dir / "run2"
+    run1.mkdir(parents=True)
+    run2.mkdir(parents=True)
+
+    report1 = run1 / "report.md"
+    report2 = run2 / "report.md"
+    report1.write_text("# run1\n", encoding="utf-8")
+    report2.write_text("# run2\n", encoding="utf-8")
+
+    os.utime(report1, (1000, 1000))
+    os.utime(report2, (2000, 2000))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "backtest",
+            "report",
+            "--latest",
+            "--reports-dir",
+            str(reports_dir),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "# run2" in result.output

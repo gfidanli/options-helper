@@ -24,6 +24,13 @@ Offline/deterministic analysis (no live Yahoo calls; uses `data/options_snapshot
 options-helper analyze portfolio.json --offline --as-of latest
 ```
 
+Offline options backtesting (requires snapshots; not financial advice):
+
+```bash
+options-helper backtest run --symbol AAPL --contract-symbol AAPL260320C00150000 --fill-mode worst_case
+options-helper backtest report --latest
+```
+
 Without installing an entrypoint script:
 
 ```bash
