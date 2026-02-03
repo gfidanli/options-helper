@@ -25,7 +25,7 @@ These plans are written to be **LLM-agent friendly**: clear goals, bounded scope
 | 2 | IMP-012 | Earnings-aware event risk warnings + DTE gating ([IMP-012](./IMP-012.md)) | done | S | High |
 | 3 | IMP-013 | Quote staleness + data quality scoring ([IMP-013](./IMP-013.md)) | done | S | High |
 | 4 | IMP-002 | IV vs Realized Vol + IV percentile + term structure in the daily loop ([IMP-002](./IMP-002.md)) | done | M | High |
-| 5 | IMP-005 | `analyze` offline-first mode ([IMP-005](./IMP-005.md)) | ready | M | Medium |
+| 5 | IMP-005 | `analyze` offline-first mode ([IMP-005](./IMP-005.md)) | done | M | Medium |
 | 6 | IMP-004 | Portfolio-level Greeks + scenario stress ([IMP-004](./IMP-004.md)) | ready | M | Med–High |
 | 7 | IMP-003 | Explainable confluence/conviction score ([IMP-003](./IMP-003.md)) | ready | M | Med–High |
 | 8 | IMP-008 | Multi-factor scanner ranking ([IMP-008](./IMP-008.md)) | ready | M–L | Med–High |

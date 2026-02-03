@@ -8,6 +8,12 @@ It is intended to make the workflow **regular**:
 - per-symbol “state + change + flow” highlights,
 - optional derived-metrics history updates.
 
+Related: `analyze` also supports an offline/deterministic mode from the same snapshot + candle caches:
+
+```bash
+options-helper analyze portfolio.json --offline --as-of latest
+```
+
 This tool is for informational/educational use only and is not financial advice.
 
 ## Usage

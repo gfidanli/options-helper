@@ -18,6 +18,12 @@ options-helper add-position portfolio.json --symbol UROY --expiry 2026-04-17 --s
 options-helper analyze portfolio.json
 ```
 
+Offline/deterministic analysis (no live Yahoo calls; uses `data/options_snapshots/` + `data/candles/`):
+
+```bash
+options-helper analyze portfolio.json --offline --as-of latest
+```
+
 Without installing an entrypoint script:
 
 ```bash
