@@ -55,5 +55,7 @@ Each `meta.json` includes:
 - Intraday capture currently supports **Alpaca only**.
 - For **today**, bars are requested with a buffer (`OH_ALPACA_RECENT_BARS_BUFFER_MINUTES`, default 16m) to avoid
   plan-based “recent bars” restrictions.
+- The `--day` argument is interpreted as the **market date** in `OH_ALPACA_MARKET_TZ` (default
+  `America/New_York`). Partitions are keyed by that market date; timestamps inside the bars are stored in UTC.
 - Options capture depends on the **cached contracts** (IMP-023). Use `--contracts-as-of` to point at a specific cache date.
 - Missing bars, partial sessions, or empty partitions are possible (holidays, early closes, provider limits).

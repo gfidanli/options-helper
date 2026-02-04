@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from importlib import metadata
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -39,6 +40,27 @@ NewsRequest = None
 
 def _clean_env(value: str | None) -> str:
     return (value or "").strip()
+
+
+_DEFAULT_MARKET_TZ = "America/New_York"
+
+
+def _load_market_tz_name() -> str:
+    return _clean_env(os.getenv("OH_ALPACA_MARKET_TZ")) or _DEFAULT_MARKET_TZ
+
+
+def _load_market_tz() -> ZoneInfo:
+    name = _load_market_tz_name()
+    try:
+        return ZoneInfo(name)
+    except Exception:  # noqa: BLE001
+        return ZoneInfo(_DEFAULT_MARKET_TZ)
+
+
+def _market_day_bounds(day: date, market_tz: ZoneInfo) -> tuple[datetime, datetime]:
+    start_local = datetime.combine(day, datetime.min.time()).replace(tzinfo=market_tz)
+    end_local = datetime.combine(day, datetime.max.time()).replace(tzinfo=market_tz)
+    return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
 
 
 def _coerce_int(value: str | None, default: int) -> int:
@@ -1331,18 +1353,22 @@ class AlpacaClient:
         if not alpaca_symbol:
             raise DataFetchError(f"Invalid symbol: {symbol}")
 
-        today = datetime.now(timezone.utc).date()
-        if day > today:
+        market_tz = _load_market_tz()
+        market_today = datetime.now(market_tz).date()
+        if day > market_today:
             raise DataFetchError(f"Requested intraday day is in the future: {day.isoformat()}")
 
         timeframe_val = _resolve_timeframe(timeframe)
-        start_dt = _coerce_datetime(day, end_of_day=False)
-        if day == today:
+        start_dt, day_end_dt = _market_day_bounds(day, market_tz)
+        if day == market_today:
             end_dt = self.effective_end(None, end_of_day=True)
+            if end_dt is None:
+                end_dt = day_end_dt
+            end_dt = min(end_dt, day_end_dt)
+            if end_dt < start_dt:
+                end_dt = start_dt
         else:
-            end_dt = _coerce_datetime(day, end_of_day=True)
-        if start_dt is not None and end_dt is not None and end_dt < start_dt:
-            raise DataFetchError("End date is before start date for Alpaca intraday bars request.")
+            end_dt = day_end_dt
 
         request_cls = _load_stock_bars_request()
         kwargs = {
@@ -1477,18 +1503,22 @@ class AlpacaClient:
                 ]
             )
 
-        today = datetime.now(timezone.utc).date()
-        if day > today:
+        market_tz = _load_market_tz()
+        market_today = datetime.now(market_tz).date()
+        if day > market_today:
             raise DataFetchError(f"Requested intraday day is in the future: {day.isoformat()}")
 
         timeframe_val = _resolve_timeframe(timeframe)
-        start_dt = _coerce_datetime(day, end_of_day=False)
-        if day == today:
+        start_dt, day_end_dt = _market_day_bounds(day, market_tz)
+        if day == market_today:
             end_dt = self.effective_end(None, end_of_day=True)
+            if end_dt is None:
+                end_dt = day_end_dt
+            end_dt = min(end_dt, day_end_dt)
+            if end_dt < start_dt:
+                end_dt = start_dt
         else:
-            end_dt = _coerce_datetime(day, end_of_day=True)
-        if start_dt is not None and end_dt is not None and end_dt < start_dt:
-            raise DataFetchError("End date is before start date for Alpaca intraday option bars request.")
+            end_dt = day_end_dt
 
         client = self.option_client
         method = getattr(client, "get_option_bars", None)

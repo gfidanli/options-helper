@@ -24,7 +24,8 @@ if [[ ! -x "${VENV_BIN}/options-helper" ]]; then
   exit 1
 fi
 
-DAY="${DAY:-$(date +%F)}"
+MARKET_TZ="${MARKET_TZ:-${OH_ALPACA_MARKET_TZ:-America/New_York}}"
+DAY="${DAY:-$(TZ="${MARKET_TZ}" date +%F)}"
 TIMEFRAME="${TIMEFRAME:-1Min}"
 STOCK_SYMBOLS="${STOCK_SYMBOLS:-}"
 OPTION_UNDERLYINGS="${OPTION_UNDERLYINGS:-}"
@@ -38,7 +39,7 @@ if [[ -z "${STOCK_SYMBOLS}" && -z "${OPTION_UNDERLYINGS}" ]]; then
   exit 0
 fi
 
-echo "[$(date)] Running intraday capture (day=${DAY}, timeframe=${TIMEFRAME})" >> "${LOG_PATH}"
+echo "[$(date)] Running intraday capture (day=${DAY}, timeframe=${TIMEFRAME}, market_tz=${MARKET_TZ})" >> "${LOG_PATH}"
 
 if [[ -n "${STOCK_SYMBOLS}" ]]; then
   "${VENV_BIN}/options-helper" --log-dir "${LOG_DIR}" --provider alpaca intraday pull-stocks-bars \

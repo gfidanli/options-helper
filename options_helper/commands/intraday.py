@@ -279,9 +279,23 @@ def pull_options_bars(
             console.print(f"[yellow]Warning:[/yellow] {sym}: no intraday bars returned.")
             continue
 
+        groups: dict[str, pd.DataFrame] = {}
+        try:
+            for contract_symbol, sub in bars_df.groupby("contractSymbol", sort=False):
+                groups[str(contract_symbol)] = sub
+        except Exception:  # noqa: BLE001
+            groups = {}
+
         written = 0
+        seen_contracts: set[str] = set()
         for contract in contract_symbols:
-            sub = bars_df[bars_df["contractSymbol"] == contract]
+            if contract in seen_contracts:
+                continue
+            seen_contracts.add(contract)
+
+            sub = groups.get(contract)
+            if sub is None:
+                sub = bars_df[bars_df["contractSymbol"] == contract]
             if sub.empty:
                 continue
             meta = {
