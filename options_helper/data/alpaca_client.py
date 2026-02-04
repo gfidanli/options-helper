@@ -647,6 +647,12 @@ def option_chain_to_rows(payload: Any) -> list[dict[str, Any]]:
             or _get_field(snapshot, "latestQuote")
             or _get_field(snapshot, "quote")
         )
+        quote_time = (
+            _get_field(quote, "timestamp")
+            or _get_field(quote, "t")
+            or _get_field(quote, "quote_timestamp")
+            or _get_field(quote, "quoteTimestamp")
+        )
         bid = _as_float(
             _get_field(quote, "bid_price")
             or _get_field(quote, "bp")
@@ -708,6 +714,8 @@ def option_chain_to_rows(payload: Any) -> list[dict[str, Any]]:
                 "ask": ask,
                 "lastPrice": last_price,
                 "lastTradeDate": _coerce_timestamp_value(trade_time),
+                "quoteTime": _coerce_timestamp_value(quote_time),
+                "tradeTime": _coerce_timestamp_value(trade_time),
                 "impliedVolatility": implied_volatility,
                 "delta": delta,
                 "gamma": gamma,

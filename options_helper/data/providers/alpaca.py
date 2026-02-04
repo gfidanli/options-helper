@@ -67,7 +67,15 @@ def _merge_contract_metadata(chain_df: pd.DataFrame, contracts_df: pd.DataFrame 
         return chain_df
 
     merged = chain_df.merge(contracts_df, on="contractSymbol", how="left", suffixes=("", "_contract"))
-    for field in ("strike", "optionType", "openInterest", "openInterestDate", "expiry"):
+    for field in (
+        "strike",
+        "optionType",
+        "openInterest",
+        "openInterestDate",
+        "closePrice",
+        "closePriceDate",
+        "expiry",
+    ):
         contract_field = f"{field}_contract"
         if contract_field not in merged.columns:
             continue

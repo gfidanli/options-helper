@@ -46,12 +46,21 @@ def test_alpaca_option_chain_raw_splits_and_enriches(tmp_path: Path) -> None:
     payload = {
         "data": {
             "SPY260221C00450000": {
-                "latest_quote": {"bid_price": 1.0, "ask_price": 1.2},
+                "latest_quote": {
+                    "bid_price": 1.0,
+                    "ask_price": 1.2,
+                    "timestamp": datetime(2026, 2, 3, 15, 29, tzinfo=timezone.utc),
+                },
                 "latest_trade": {"price": 1.1, "timestamp": datetime(2026, 2, 3, 15, 30, tzinfo=timezone.utc)},
                 "implied_volatility": 0.2,
+                "greeks": {"delta": 0.4, "gamma": 0.01, "theta": -0.02, "vega": 0.1, "rho": 0.05},
             },
             "SPY260221P00450000": {
-                "latest_quote": {"bid_price": 0.9, "ask_price": 1.1},
+                "latest_quote": {
+                    "bid_price": 0.9,
+                    "ask_price": 1.1,
+                    "timestamp": datetime(2026, 2, 3, 15, 30, tzinfo=timezone.utc),
+                },
                 "latest_trade": {"price": 1.0, "timestamp": datetime(2026, 2, 3, 15, 31, tzinfo=timezone.utc)},
             },
         }
@@ -65,6 +74,8 @@ def test_alpaca_option_chain_raw_splits_and_enriches(tmp_path: Path) -> None:
             "strike_price": 450,
             "open_interest": 123,
             "open_interest_date": "2026-02-02",
+            "close_price": 1.05,
+            "close_price_date": "2026-02-02",
         }
     ]
 
@@ -85,11 +96,22 @@ def test_alpaca_option_chain_raw_splits_and_enriches(tmp_path: Path) -> None:
     assert call["optionType"] == "call"
     assert call["strike"] == 450.0
     assert call["openInterest"] == 123
+    assert call["closePrice"] == 1.05
+    assert call["closePriceDate"] == "2026-02-02"
     assert call["impliedVolatility"] == 0.2
+    assert call["delta"] == 0.4
+    assert call["gamma"] == 0.01
+    assert call["theta"] == -0.02
+    assert call["vega"] == 0.1
+    assert call["rho"] == 0.05
+    assert call["quoteTime"] == "2026-02-03T15:29:00+00:00"
+    assert call["tradeTime"] == "2026-02-03T15:30:00+00:00"
 
     assert put["contractSymbol"] == "SPY260221P00450000"
     assert put["optionType"] == "put"
     assert put["strike"] == 450.0
+    assert put["quoteTime"] == "2026-02-03T15:30:00+00:00"
+    assert put["tradeTime"] == "2026-02-03T15:31:00+00:00"
 
 
 def test_alpaca_get_options_chain_normalizes(tmp_path: Path) -> None:
