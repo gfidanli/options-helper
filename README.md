@@ -84,9 +84,13 @@ Required env vars:
 - `APCA_API_KEY_ID`
 - `APCA_API_SECRET_KEY`
 
+Local (repo) secret file (recommended; not committed):
+- Copy `config/alpaca.env.example` → `config/alpaca.env` and fill in your keys.
+- The app auto-loads `config/alpaca.env` and `.env` (only `APCA_` / `OH_ALPACA_` keys), without overriding existing env vars.
+
 Optional env vars:
 - `APCA_API_BASE_URL` (paper/live trading endpoint)
-- `OH_ALPACA_STOCK_FEED` (e.g., `iex`/`sip`)
+- `OH_ALPACA_STOCK_FEED` (e.g., `sip`/`iex`)
 - `OH_ALPACA_OPTIONS_FEED` (e.g., `opra`/`indicative`)
 - `OH_ALPACA_RECENT_BARS_BUFFER_MINUTES` (default 16)
 

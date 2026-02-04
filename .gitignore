@@ -33,10 +33,11 @@ venv/
 *.egg-info/
 
 # Env and secrets
-.env
+*.env
 .env.*
 .env.local
 .python-version
+config/alpaca.env
 
 # Logs and misc
 *.log
