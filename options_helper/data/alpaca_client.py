@@ -31,6 +31,10 @@ StockBarsRequest = None
 OptionContractsRequest = None
 OptionChainRequest = None
 OptionBarsRequest = None
+CorporateActionsClient = None
+CorporateActionsRequest = None
+NewsClient = None
+NewsRequest = None
 
 
 def _clean_env(value: str | None) -> str:
@@ -172,6 +176,60 @@ def _load_option_bars_request():
     except Exception:  # noqa: BLE001
         return None
     return OptionBarsRequest
+
+
+def _load_corporate_actions_client():
+    global CorporateActionsClient  # noqa: PLW0603 - intentional lazy import
+    if CorporateActionsClient is not None:
+        return CorporateActionsClient
+    try:
+        from alpaca.data.historical.corporate_actions import (
+            CorporateActionsClient as AlpacaCorporateActionsClient,
+        )
+
+        CorporateActionsClient = AlpacaCorporateActionsClient
+    except Exception:  # noqa: BLE001
+        return None
+    return CorporateActionsClient
+
+
+def _load_corporate_actions_request():
+    global CorporateActionsRequest  # noqa: PLW0603 - intentional lazy import
+    if CorporateActionsRequest is not None:
+        return CorporateActionsRequest
+    try:
+        from alpaca.data.requests import CorporateActionsRequest as AlpacaCorporateActionsRequest
+
+        CorporateActionsRequest = AlpacaCorporateActionsRequest
+    except Exception:  # noqa: BLE001
+        return None
+    return CorporateActionsRequest
+
+
+def _load_news_client():
+    global NewsClient  # noqa: PLW0603 - intentional lazy import
+    if NewsClient is not None:
+        return NewsClient
+    try:
+        from alpaca.data.historical.news import NewsClient as AlpacaNewsClient
+
+        NewsClient = AlpacaNewsClient
+    except Exception:  # noqa: BLE001
+        return None
+    return NewsClient
+
+
+def _load_news_request():
+    global NewsRequest  # noqa: PLW0603 - intentional lazy import
+    if NewsRequest is not None:
+        return NewsRequest
+    try:
+        from alpaca.data.requests import NewsRequest as AlpacaNewsRequest
+
+        NewsRequest = AlpacaNewsRequest
+    except Exception:  # noqa: BLE001
+        return None
+    return NewsRequest
 
 
 def _coerce_datetime(value: date | datetime | None, *, end_of_day: bool) -> datetime | None:
@@ -357,6 +415,13 @@ def _is_rate_limit_error(exc: Exception) -> bool:
         return True
     message = str(exc).lower()
     return "rate" in message or "429" in message
+
+
+def _raise_missing_optional_client(feature: str) -> None:
+    message = f"Alpaca {feature} requires alpaca-py. Install with `pip install -e \".[alpaca]\"`."
+    if _ALPACA_IMPORT_ERROR is not None:
+        message = f"{message} (import error: {_ALPACA_IMPORT_ERROR})"
+    raise DataFetchError(message)
 
 
 def _normalize_stock_bars(df: pd.DataFrame, *, symbol: str) -> pd.DataFrame:
@@ -563,6 +628,85 @@ def _normalize_intraday_option_bars(df: pd.DataFrame) -> pd.DataFrame:
     ].reset_index(drop=True)
 
 
+def _normalize_corporate_action(item: Any, *, default_symbol: str | None = None) -> dict[str, Any]:
+    symbol = (
+        _get_field(item, "symbol")
+        or _get_field(item, "ticker")
+        or _get_field(item, "asset_id")
+        or default_symbol
+    )
+    action_type = (
+        _get_field(item, "type")
+        or _get_field(item, "action_type")
+        or _get_field(item, "event_type")
+        or _get_field(item, "corporate_action_type")
+    )
+    return {
+        "type": (str(action_type).strip().lower() if action_type else None),
+        "symbol": to_repo_symbol(str(symbol)) if symbol else None,
+        "ex_date": _coerce_date_string(
+            _get_field(item, "ex_date")
+            or _get_field(item, "exDate")
+            or _get_field(item, "exdate")
+        ),
+        "record_date": _coerce_date_string(
+            _get_field(item, "record_date")
+            or _get_field(item, "recordDate")
+            or _get_field(item, "recorddate")
+        ),
+        "pay_date": _coerce_date_string(
+            _get_field(item, "pay_date")
+            or _get_field(item, "payment_date")
+            or _get_field(item, "paymentDate")
+            or _get_field(item, "payDate")
+        ),
+        "ratio": _as_float(
+            _get_field(item, "ratio")
+            or _get_field(item, "split_ratio")
+            or _get_field(item, "splitRatio")
+        ),
+        "cash_amount": _as_float(
+            _get_field(item, "cash_amount")
+            or _get_field(item, "cashAmount")
+            or _get_field(item, "dividend")
+            or _get_field(item, "amount")
+        ),
+        "raw": _contract_to_dict(item) if not isinstance(item, dict) else item,
+    }
+
+
+def _normalize_news_item(item: Any, *, include_content: bool) -> dict[str, Any]:
+    raw_symbols = _get_field(item, "symbols") or _get_field(item, "symbol") or _get_field(item, "tickers")
+    symbols: list[str] = []
+    if isinstance(raw_symbols, (list, tuple)):
+        symbols = [to_repo_symbol(str(sym)) for sym in raw_symbols if sym]
+    elif isinstance(raw_symbols, str):
+        symbols = [to_repo_symbol(sym) for sym in raw_symbols.split(",") if sym.strip()]
+
+    created_at = (
+        _get_field(item, "created_at")
+        or _get_field(item, "createdAt")
+        or _get_field(item, "published_at")
+        or _get_field(item, "publishedAt")
+        or _get_field(item, "timestamp")
+    )
+
+    payload = {
+        "id": _get_field(item, "id") or _get_field(item, "news_id") or _get_field(item, "newsId"),
+        "created_at": _coerce_timestamp_value(created_at),
+        "headline": _get_field(item, "headline") or _get_field(item, "title"),
+        "summary": _get_field(item, "summary") or _get_field(item, "description"),
+        "source": _get_field(item, "source") or _get_field(item, "source_name") or _get_field(item, "sourceName"),
+        "symbols": [sym for sym in symbols if sym],
+    }
+
+    if include_content:
+        payload["content"] = _get_field(item, "content") or _get_field(item, "body") or _get_field(
+            item, "story"
+        )
+    return payload
+
+
 def _extract_contracts_page(payload: Any) -> tuple[list[Any], str | None]:
     if payload is None:
         return [], None
@@ -585,6 +729,56 @@ def _extract_contracts_page(payload: Any) -> tuple[list[Any], str | None]:
         contracts = getattr(payload, "contracts") or []
         token = getattr(payload, "next_page_token", None) or getattr(payload, "next_token", None)
         return list(contracts), token
+    return [], None
+
+
+def _extract_corporate_actions_page(payload: Any) -> tuple[list[Any], str | None]:
+    if payload is None:
+        return [], None
+    if isinstance(payload, list):
+        return payload, None
+    if isinstance(payload, dict):
+        actions = (
+            payload.get("corporate_actions")
+            or payload.get("actions")
+            or payload.get("data")
+            or payload.get("corporateActions")
+            or []
+        )
+        token = (
+            payload.get("next_page_token")
+            or payload.get("next_token")
+            or payload.get("nextPageToken")
+            or payload.get("next")
+        )
+        return list(actions or []), token
+    for attr in ("corporate_actions", "actions", "data"):
+        if hasattr(payload, attr):
+            actions = getattr(payload, attr) or []
+            token = getattr(payload, "next_page_token", None) or getattr(payload, "next_token", None)
+            return list(actions), token
+    return [], None
+
+
+def _extract_news_page(payload: Any) -> tuple[list[Any], str | None]:
+    if payload is None:
+        return [], None
+    if isinstance(payload, list):
+        return payload, None
+    if isinstance(payload, dict):
+        news_items = payload.get("news") or payload.get("data") or payload.get("items") or []
+        token = (
+            payload.get("next_page_token")
+            or payload.get("next_token")
+            or payload.get("nextPageToken")
+            or payload.get("next")
+        )
+        return list(news_items or []), token
+    for attr in ("news", "data", "items"):
+        if hasattr(payload, attr):
+            news_items = getattr(payload, attr) or []
+            token = getattr(payload, "next_page_token", None) or getattr(payload, "next_token", None)
+            return list(news_items), token
     return [], None
 
 
@@ -988,6 +1182,8 @@ class AlpacaClient:
         self._stock_client = None
         self._option_client = None
         self._trading_client = None
+        self._corporate_actions_client = None
+        self._news_client = None
 
     @property
     def provider_version(self) -> str | None:
@@ -1052,6 +1248,26 @@ class AlpacaClient:
                 kwargs.update({"base_url": self._api_base_url, "url_override": self._api_base_url})
             self._trading_client = self._construct_client(TradingClient, **kwargs)
         return self._trading_client
+
+    @property
+    def corporate_actions_client(self):
+        if self._corporate_actions_client is None:
+            self._ensure_credentials()
+            client_cls = _load_corporate_actions_client()
+            if client_cls is None:
+                _raise_missing_optional_client("corporate actions")
+            self._corporate_actions_client = self._construct_client(client_cls, **self._credential_kwargs())
+        return self._corporate_actions_client
+
+    @property
+    def news_client(self):
+        if self._news_client is None:
+            self._ensure_credentials()
+            client_cls = _load_news_client()
+            if client_cls is None:
+                _raise_missing_optional_client("news")
+            self._news_client = self._construct_client(client_cls, **self._credential_kwargs())
+        return self._news_client
 
     def get_stock_bars(
         self,
@@ -1342,6 +1558,143 @@ class AlpacaClient:
         combined = pd.concat(all_chunks, ignore_index=True)
         combined = combined.drop_duplicates(subset=["contractSymbol", "timestamp"], keep="last")
         return combined.reset_index(drop=True)
+
+    def get_corporate_actions(
+        self,
+        symbols: list[str],
+        *,
+        start: date | datetime | None = None,
+        end: date | datetime | None = None,
+        types: list[str] | None = None,
+        limit: int | None = None,
+        page_limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        raw_symbols = [str(sym).strip() for sym in (symbols or []) if sym]
+        alpaca_symbols = [to_alpaca_symbol(sym) for sym in raw_symbols if to_alpaca_symbol(sym)]
+        if not alpaca_symbols:
+            return []
+
+        start_dt = _coerce_datetime(start, end_of_day=False)
+        end_dt = _coerce_datetime(end, end_of_day=True)
+        if start_dt is not None and end_dt is not None and end_dt < start_dt:
+            raise DataFetchError("End date is before start date for Alpaca corporate actions request.")
+
+        client = self.corporate_actions_client
+        method = getattr(client, "get_corporate_actions", None)
+        if method is None:
+            raise DataFetchError("Alpaca corporate actions client missing get_corporate_actions.")
+
+        request_cls = _load_corporate_actions_request()
+        page_token: str | None = None
+        page_count = 0
+        actions: list[dict[str, Any]] = []
+
+        while True:
+            page_count += 1
+            if page_limit is not None and page_count > page_limit:
+                raise DataFetchError("Exceeded Alpaca corporate actions page limit.")
+
+            kwargs = {
+                "symbols": alpaca_symbols,
+                "symbol": alpaca_symbols,
+                "start": start_dt,
+                "end": end_dt,
+                "types": types,
+                "limit": limit,
+                "page_token": page_token,
+            }
+
+            payload = None
+            if request_cls is not None:
+                try:
+                    request_kwargs = _filter_kwargs(request_cls, kwargs)
+                    request = request_cls(**request_kwargs)
+                    payload = method(request)
+                except TypeError:
+                    payload = None
+
+            if payload is None:
+                try:
+                    payload = method(**_filter_kwargs(method, kwargs))
+                except Exception as exc:  # noqa: BLE001
+                    raise DataFetchError("Failed to fetch Alpaca corporate actions.") from exc
+
+            items, page_token = _extract_corporate_actions_page(payload)
+            for item in items:
+                actions.append(_normalize_corporate_action(item))
+
+            if not page_token:
+                break
+
+        return actions
+
+    def get_news(
+        self,
+        symbols: list[str],
+        *,
+        start: date | datetime | None = None,
+        end: date | datetime | None = None,
+        include_content: bool = False,
+        limit: int | None = None,
+        page_limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        raw_symbols = [str(sym).strip() for sym in (symbols or []) if sym]
+        alpaca_symbols = [to_alpaca_symbol(sym) for sym in raw_symbols if to_alpaca_symbol(sym)]
+        if not alpaca_symbols:
+            return []
+
+        start_dt = _coerce_datetime(start, end_of_day=False)
+        end_dt = _coerce_datetime(end, end_of_day=True)
+        if start_dt is not None and end_dt is not None and end_dt < start_dt:
+            raise DataFetchError("End date is before start date for Alpaca news request.")
+
+        client = self.news_client
+        method = getattr(client, "get_news", None)
+        if method is None:
+            raise DataFetchError("Alpaca news client missing get_news.")
+
+        request_cls = _load_news_request()
+        page_token: str | None = None
+        page_count = 0
+        items: list[dict[str, Any]] = []
+
+        while True:
+            page_count += 1
+            if page_limit is not None and page_count > page_limit:
+                raise DataFetchError("Exceeded Alpaca news page limit.")
+
+            kwargs = {
+                "symbols": alpaca_symbols,
+                "symbol": alpaca_symbols,
+                "start": start_dt,
+                "end": end_dt,
+                "limit": limit,
+                "page_token": page_token,
+            }
+
+            payload = None
+            if request_cls is not None:
+                try:
+                    request_kwargs = _filter_kwargs(request_cls, kwargs)
+                    request = request_cls(**request_kwargs)
+                    payload = method(request)
+                except TypeError:
+                    payload = None
+
+            if payload is None:
+                try:
+                    payload = method(**_filter_kwargs(method, kwargs))
+                except Exception as exc:  # noqa: BLE001
+                    raise DataFetchError("Failed to fetch Alpaca news.") from exc
+
+            page_items, page_token = _extract_news_page(payload)
+            for item in page_items:
+                items.append(_normalize_news_item(item, include_content=include_content))
+
+            if not page_token:
+                break
+
+        return items
 
     def list_option_contracts(
         self,
