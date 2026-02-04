@@ -192,6 +192,9 @@ def _resolve_timeframe(interval: str) -> Any:
         "1d": ("day", 1, "Day"),
         "1h": ("hour", 1, "Hour"),
         "1m": ("minute", 1, "Minute"),
+        "1min": ("minute", 1, "Minute"),
+        "5m": ("minute", 5, "Minute"),
+        "5min": ("minute", 5, "Minute"),
     }
     if interval not in mapping:
         raise DataFetchError(
@@ -201,7 +204,7 @@ def _resolve_timeframe(interval: str) -> Any:
     timeframe_cls, timeframe_unit = _load_timeframe()
     if timeframe_cls is None:
         raise DataFetchError("Alpaca TimeFrame unavailable. Install with `pip install -e \".[alpaca]\"`.")
-    if hasattr(timeframe_cls, attr):
+    if amount == 1 and hasattr(timeframe_cls, attr):
         return getattr(timeframe_cls, attr)
     if timeframe_unit is not None:
         unit_val = getattr(timeframe_unit, unit_name.capitalize(), None) or getattr(
@@ -416,6 +419,148 @@ def _normalize_stock_bars(df: pd.DataFrame, *, symbol: str) -> pd.DataFrame:
     out.index = idx[mask].tz_convert(None)
     out = out[~out.index.duplicated(keep="last")].sort_index()
     return out
+
+
+def _normalize_intraday_stock_bars(df: pd.DataFrame, *, symbol: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(
+            columns=["timestamp", "open", "high", "low", "close", "volume", "trade_count", "vwap"]
+        )
+
+    out = df.copy()
+    if isinstance(out.index, pd.MultiIndex):
+        out = out.reset_index()
+    elif isinstance(out.index, pd.DatetimeIndex):
+        out = out.reset_index().rename(columns={out.index.name or "index": "timestamp"})
+
+    rename_map = {
+        "symbol": "symbol",
+        "t": "timestamp",
+        "time": "timestamp",
+        "timestamp": "timestamp",
+        "o": "open",
+        "open": "open",
+        "h": "high",
+        "high": "high",
+        "l": "low",
+        "low": "low",
+        "c": "close",
+        "close": "close",
+        "v": "volume",
+        "volume": "volume",
+        "n": "trade_count",
+        "trade_count": "trade_count",
+        "tradecount": "trade_count",
+        "vw": "vwap",
+        "vwap": "vwap",
+    }
+    for col in list(out.columns):
+        key = str(col).lower()
+        if key in rename_map:
+            out = out.rename(columns={col: rename_map[key]})
+
+    if "symbol" in out.columns:
+        sym_col = out["symbol"].astype(str).str.upper()
+        target = symbol.upper()
+        out = out[sym_col == target].copy()
+        out = out.drop(columns=["symbol"])
+
+    if "timestamp" not in out.columns:
+        raise DataFetchError("Alpaca intraday bars missing timestamp column.")
+
+    out["timestamp"] = pd.to_datetime(out["timestamp"], errors="coerce", utc=True)
+    out = out.dropna(subset=["timestamp"]).copy()
+
+    required = ["open", "high", "low", "close", "volume"]
+    missing = sorted([col for col in required if col not in out.columns])
+    if missing:
+        raise DataFetchError(f"Alpaca intraday bars missing columns: {', '.join(missing)}")
+
+    for col in required + ["trade_count", "vwap"]:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+        else:
+            out[col] = pd.NA
+
+    out = out.sort_values("timestamp", na_position="last")
+    return out[["timestamp", "open", "high", "low", "close", "volume", "trade_count", "vwap"]].reset_index(drop=True)
+
+
+def _normalize_intraday_option_bars(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(
+            columns=[
+                "contractSymbol",
+                "timestamp",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "trade_count",
+                "vwap",
+            ]
+        )
+
+    out = df.copy()
+    if isinstance(out.index, pd.MultiIndex):
+        out = out.reset_index()
+    elif isinstance(out.index, pd.DatetimeIndex):
+        out = out.reset_index().rename(columns={out.index.name or "index": "timestamp"})
+
+    rename_map = {
+        "symbol": "contractSymbol",
+        "option_symbol": "contractSymbol",
+        "contract_symbol": "contractSymbol",
+        "contractsymbol": "contractSymbol",
+        "t": "timestamp",
+        "time": "timestamp",
+        "timestamp": "timestamp",
+        "o": "open",
+        "open": "open",
+        "h": "high",
+        "high": "high",
+        "l": "low",
+        "low": "low",
+        "c": "close",
+        "close": "close",
+        "v": "volume",
+        "volume": "volume",
+        "n": "trade_count",
+        "trade_count": "trade_count",
+        "tradecount": "trade_count",
+        "vw": "vwap",
+        "vwap": "vwap",
+    }
+    for col in list(out.columns):
+        key = str(col).lower()
+        if key in rename_map:
+            out = out.rename(columns={col: rename_map[key]})
+
+    if "contractSymbol" not in out.columns:
+        raise DataFetchError("Alpaca intraday option bars missing contract symbol column.")
+    if "timestamp" not in out.columns:
+        raise DataFetchError("Alpaca intraday option bars missing timestamp column.")
+
+    out["contractSymbol"] = out["contractSymbol"].astype(str)
+    out["timestamp"] = pd.to_datetime(out["timestamp"], errors="coerce", utc=True)
+    out = out.dropna(subset=["contractSymbol", "timestamp"]).copy()
+
+    required = ["open", "high", "low", "close", "volume"]
+    missing = sorted([col for col in required if col not in out.columns])
+    if missing:
+        raise DataFetchError(f"Alpaca intraday option bars missing columns: {', '.join(missing)}")
+
+    for col in required + ["trade_count", "vwap"]:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+        else:
+            out[col] = pd.NA
+
+    out = out.sort_values(["contractSymbol", "timestamp"], na_position="last")
+    return out[
+        ["contractSymbol", "timestamp", "open", "high", "low", "close", "volume", "trade_count", "vwap"]
+    ].reset_index(drop=True)
 
 
 def _extract_contracts_page(payload: Any) -> tuple[list[Any], str | None]:
@@ -957,6 +1102,59 @@ class AlpacaClient:
         df = _bars_to_dataframe(payload, alpaca_symbol)
         return _normalize_stock_bars(df, symbol=alpaca_symbol)
 
+    def get_stock_bars_intraday(
+        self,
+        symbol: str,
+        *,
+        day: date,
+        timeframe: str = "1Min",
+        feed: str | None = None,
+        adjustment: str = "raw",
+    ) -> pd.DataFrame:
+        alpaca_symbol = to_alpaca_symbol(symbol)
+        if not alpaca_symbol:
+            raise DataFetchError(f"Invalid symbol: {symbol}")
+
+        today = datetime.now(timezone.utc).date()
+        if day > today:
+            raise DataFetchError(f"Requested intraday day is in the future: {day.isoformat()}")
+
+        timeframe_val = _resolve_timeframe(timeframe)
+        start_dt = _coerce_datetime(day, end_of_day=False)
+        if day == today:
+            end_dt = self.effective_end(None, end_of_day=True)
+        else:
+            end_dt = _coerce_datetime(day, end_of_day=True)
+        if start_dt is not None and end_dt is not None and end_dt < start_dt:
+            raise DataFetchError("End date is before start date for Alpaca intraday bars request.")
+
+        request_cls = _load_stock_bars_request()
+        kwargs = {
+            "symbol_or_symbols": alpaca_symbol,
+            "timeframe": timeframe_val,
+            "start": start_dt,
+            "end": end_dt,
+            "adjustment": adjustment,
+            "feed": feed or self._stock_feed,
+        }
+
+        try:
+            if request_cls is not None:
+                request_kwargs = _filter_kwargs(request_cls, kwargs)
+                request = request_cls(**request_kwargs)
+                payload = self.stock_client.get_stock_bars(request)
+            else:
+                payload = self.stock_client.get_stock_bars(**_filter_kwargs(self.stock_client.get_stock_bars, kwargs))
+        except DataFetchError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise DataFetchError(
+                f"Failed to fetch Alpaca intraday stock bars for {alpaca_symbol} ({timeframe})."
+            ) from exc
+
+        df = _bars_to_dataframe(payload, alpaca_symbol)
+        return _normalize_intraday_stock_bars(df, symbol=alpaca_symbol)
+
     def get_option_bars(
         self,
         symbols: list[str],
@@ -1034,6 +1232,115 @@ class AlpacaClient:
 
         combined = pd.concat(all_chunks, ignore_index=True)
         combined = combined.drop_duplicates(subset=["contractSymbol"], keep="last")
+        return combined.reset_index(drop=True)
+
+    def get_option_bars_intraday(
+        self,
+        symbols: list[str],
+        *,
+        day: date,
+        timeframe: str = "1Min",
+        feed: str | None = None,
+        max_chunk_size: int = 200,
+        max_retries: int = 3,
+    ) -> pd.DataFrame:
+        raw_symbols = [str(sym).strip() for sym in (symbols or []) if sym]
+        unique_symbols = sorted({sym for sym in raw_symbols if sym})
+        if not unique_symbols:
+            return pd.DataFrame(
+                columns=[
+                    "contractSymbol",
+                    "timestamp",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "trade_count",
+                    "vwap",
+                ]
+            )
+
+        today = datetime.now(timezone.utc).date()
+        if day > today:
+            raise DataFetchError(f"Requested intraday day is in the future: {day.isoformat()}")
+
+        timeframe_val = _resolve_timeframe(timeframe)
+        start_dt = _coerce_datetime(day, end_of_day=False)
+        if day == today:
+            end_dt = self.effective_end(None, end_of_day=True)
+        else:
+            end_dt = _coerce_datetime(day, end_of_day=True)
+        if start_dt is not None and end_dt is not None and end_dt < start_dt:
+            raise DataFetchError("End date is before start date for Alpaca intraday option bars request.")
+
+        client = self.option_client
+        method = getattr(client, "get_option_bars", None)
+        if method is None:
+            raise DataFetchError("Alpaca data client missing get_option_bars.")
+
+        request_cls = _load_option_bars_request()
+        feed_val = feed or self._options_feed
+        all_chunks: list[pd.DataFrame] = []
+
+        def _call_with_backoff(make_call):
+            for attempt in range(max_retries):
+                try:
+                    return make_call()
+                except Exception as exc:  # noqa: BLE001
+                    if attempt >= max_retries - 1 or not _is_rate_limit_error(exc):
+                        raise
+                    time.sleep(0.5 * (2**attempt))
+            return None
+
+        for i in range(0, len(unique_symbols), max_chunk_size):
+            chunk = unique_symbols[i : i + max_chunk_size]
+            kwargs = {
+                "symbol_or_symbols": chunk,
+                "symbols": chunk,
+                "timeframe": timeframe_val,
+                "start": start_dt,
+                "end": end_dt,
+                "feed": feed_val,
+            }
+
+            payload = None
+            if request_cls is not None:
+                try:
+                    request_kwargs = _filter_kwargs(request_cls, kwargs)
+                    request = request_cls(**request_kwargs)
+                    payload = _call_with_backoff(lambda: method(request))
+                except TypeError:
+                    payload = None
+
+            if payload is None:
+                payload = _call_with_backoff(lambda: method(**_filter_kwargs(method, kwargs)))
+
+            if payload is None:
+                continue
+
+            df = _option_bars_to_dataframe(payload)
+            norm = _normalize_intraday_option_bars(df)
+            if not norm.empty:
+                all_chunks.append(norm)
+
+        if not all_chunks:
+            return pd.DataFrame(
+                columns=[
+                    "contractSymbol",
+                    "timestamp",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "trade_count",
+                    "vwap",
+                ]
+            )
+
+        combined = pd.concat(all_chunks, ignore_index=True)
+        combined = combined.drop_duplicates(subset=["contractSymbol", "timestamp"], keep="last")
         return combined.reset_index(drop=True)
 
     def list_option_contracts(
