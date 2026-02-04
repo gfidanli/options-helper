@@ -24,7 +24,8 @@ if [[ ! -x "${VENV_BIN}/options-helper" ]]; then
   exit 1
 fi
 
-MARKET_TZ="${MARKET_TZ:-${OH_ALPACA_MARKET_TZ:-America/New_York}}"
+MARKET_TZ="${OH_ALPACA_MARKET_TZ:-${MARKET_TZ:-America/New_York}}"
+export OH_ALPACA_MARKET_TZ="${MARKET_TZ}"
 DAY="${DAY:-$(TZ="${MARKET_TZ}" date +%F)}"
 TIMEFRAME="${TIMEFRAME:-1Min}"
 STOCK_SYMBOLS="${STOCK_SYMBOLS:-}"
