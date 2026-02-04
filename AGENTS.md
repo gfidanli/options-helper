@@ -23,7 +23,9 @@ This repo is an information/decision-support tool. Keep outputs and docs clear t
 - Prefer adding fixtures under `tests/` instead of committing real market data.
 
 ## Architecture expectations
-- CLI entrypoints live in `options_helper/cli.py` and should be thin.
+- CLI entrypoint lives in `options_helper/cli.py` and should be thin (wiring only).
+- Command implementations should live in `options_helper/commands/` and be registered from `options_helper/cli.py`.
+- Provider/store construction should go through `options_helper/cli_deps.py` so tests can monkeypatch a stable seam.
 - External I/O (yfinance, filesystem caches) lives under `options_helper/data/`.
 - Pure computations/heuristics live under `options_helper/analysis/` (no network calls).
 - Each new feature should ship with:
@@ -46,6 +48,9 @@ This repo is an information/decision-support tool. Keep outputs and docs clear t
 - Feature PRDs/milestones: `docs/BACKLOG.md`
 - Implementation plans: `docs/plans/`
 - Iteration loop prompt: `docs/LLM_LOOP_PROMPT.md`
+
+## Plan hygiene
+- Before starting an IMP, check recent commits for it (`git log --grep "IMP-XXX"`), since plan docs/status may lag.
 
 ## Completion sound (Terminal.app)
 - When you finish a task and are **waiting for user input**, play the macOS “Glass” sound via: `afplay /System/Library/Sounds/Glass.aiff`
