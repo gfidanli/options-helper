@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import date, datetime
 from pathlib import Path
 
@@ -302,7 +303,11 @@ def capture(
     try:
         written = runner.run(duration_seconds=duration)
     except DataFetchError as exc:
-        console.print(f"[red]Error:[/red] {exc}")
+        effective_stock_feed = stock_feed or os.getenv("OH_ALPACA_STOCK_FEED") or "unset"
+        effective_options_feed = options_feed or os.getenv("OH_ALPACA_OPTIONS_FEED") or "unset"
+        console.print(
+            f"[red]Error:[/red] {exc} (stock_feed={effective_stock_feed}, options_feed={effective_options_feed})"
+        )
         raise typer.Exit(code=1) from exc
 
     if written:
