@@ -8,6 +8,8 @@
 ## Stubbing guidance
 - Prefer monkeypatching `options_helper.cli_deps.build_provider` (stable seam) to return a stub provider.
 - Avoid new tests that monkeypatch `options_helper.cli.*` imported aliases (they change during CLI refactors).
+- For top-level commands, monkeypatch the command module directly (e.g. `options_helper.commands.workflows` or
+  `options_helper.commands.reports`) instead of `options_helper.cli`.
 - Monkeypatch `options_helper.data.candles.CandleStore.get_daily_history` for candle-dependent commands.
 - If time matters (timestamps/filenames), monkeypatch the module-local `datetime` used by the command module under test
   (or `options_helper.schemas.common.utc_now` when artifacts use it).
