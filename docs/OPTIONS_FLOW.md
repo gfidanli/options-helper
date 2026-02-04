@@ -25,6 +25,11 @@ Each `{EXPIRY}.csv` file includes both calls and puts in one table with an `opti
 When available, snapshots also include a canonical `osi` (Options Symbology Initiative) contract ID and `underlying_norm`
 to provide a stable join key across days/providers.
 
+Join behavior (best-effort):
+- Flow joins by `contractSymbol` by default.
+- If `osi` exists on both days, it is used as a fallback join key for contracts whose `contractSymbol` does not match.
+- If only one side has `osi` (mixed-schema snapshots), flow still joins via `contractSymbol` (no all-miss joins).
+
 **Important:** `{YYYY-MM-DD}` is the **data date** (latest available daily candle date used to estimate spot), not the
 wall-clock time you ran the snapshot. This avoids pre-market runs being labeled as “today” when the latest daily candle
 is still “yesterday’s close”.
