@@ -33,6 +33,7 @@ Plan index: `docs/plans/README.md`.
 | 14 | IMP-010 | Multi-leg support (verticals / calendars / diagonals) + roll-plans | XL | Med–High | Enables structure selection by IV/skew regime and risk limits (big build). | `docs/plans/IMP-010.md` |
 | 15 | IMP-017 | Engineering leverage: CI, pre-commit, type checks, perf/observability | S–M | Medium | Doesn’t create “edge” directly, but prevents regressions and speeds iteration. | `docs/plans/IMP-017.md` |
 | 16 | IMP-011 | Reporting UX (TUI dashboards / web UI) | M–L | Low | Improves review speed and adoption; not an edge source by itself. | `docs/plans/IMP-011.md` |
+| 17 | IMP-030 | Repo cleanup: modular CLI + regression tests (no behavior changes) | M–L | Medium | Reduces change risk and speeds iteration by protecting “what works” with tests before refactors. | `docs/plans/IMP-030.md` |
 
 ---
 
