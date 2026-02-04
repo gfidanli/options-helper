@@ -83,3 +83,25 @@ def test_missing_credentials_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("APCA_API_SECRET_KEY", raising=False)
     with pytest.raises(DataFetchError, match="Missing Alpaca credentials"):
         AlpacaOptionStreamer(stream_cls=DummyStream)
+
+
+def test_stock_stream_coerces_feed_enum(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OH_ALPACA_ENV_FILE", "/tmp/does-not-exist")
+    monkeypatch.setenv("APCA_API_KEY_ID", "test")
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "test")
+
+    from alpaca.data.live import StockDataStream
+
+    streamer = AlpacaStockStreamer(stream_cls=StockDataStream, feed="sip")
+    assert "/sip" in getattr(streamer.stream, "_endpoint", "")
+
+
+def test_option_stream_coerces_feed_enum(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OH_ALPACA_ENV_FILE", "/tmp/does-not-exist")
+    monkeypatch.setenv("APCA_API_KEY_ID", "test")
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "test")
+
+    from alpaca.data.live import OptionDataStream
+
+    streamer = AlpacaOptionStreamer(stream_cls=OptionDataStream, feed="opra")
+    assert "/opra" in getattr(streamer.stream, "_endpoint", "")

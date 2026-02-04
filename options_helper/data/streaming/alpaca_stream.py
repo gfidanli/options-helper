@@ -65,6 +65,30 @@ def _load_stream_class(class_name: str) -> tuple[type[Any] | None, Exception | N
     return None, last_exc
 
 
+def _coerce_feed_value(stream_cls: type[Any], feed: Any) -> Any:
+    if feed is None or not isinstance(feed, str):
+        return feed
+    raw = feed.strip().lower()
+    if not raw:
+        return None
+    name = getattr(stream_cls, "__name__", "")
+    try:
+        from alpaca.data.enums import DataFeed, OptionsFeed
+    except Exception:  # noqa: BLE001
+        return feed
+    if name == "StockDataStream":
+        for item in DataFeed:
+            if item.value == raw or item.name.lower() == raw:
+                return item
+        return feed
+    if name == "OptionDataStream":
+        for item in OptionsFeed:
+            if item.value == raw or item.name.lower() == raw:
+                return item
+        return feed
+    return feed
+
+
 def _construct_stream(stream_cls: type[Any], **kwargs: Any) -> Any:
     filtered = {k: v for k, v in kwargs.items() if v is not None}
     try:
@@ -73,6 +97,8 @@ def _construct_stream(stream_cls: type[Any], **kwargs: Any) -> Any:
         filtered = {k: v for k, v in filtered.items() if k in allowed}
     except (TypeError, ValueError):
         pass
+    if "feed" in filtered:
+        filtered["feed"] = _coerce_feed_value(stream_cls, filtered["feed"])
     return stream_cls(**filtered)
 
 
