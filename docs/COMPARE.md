@@ -50,4 +50,7 @@ The JSON includes:
 
 - Requires `meta.json` spot for both dates.
 - If expiries differ between dates, only common expiries are compared (uses a “near” subset by default).
-
+- Yahoo OI often updates **once/day** and can lag. If you see `ΔOI = 0` across the entire chain, it may indicate
+  **stale open interest** rather than “no positioning changes”.
+- Contract-level ΔOI reuses `flow` and joins snapshots by `contractSymbol` (with best-effort `osi` fallback when present).
+  Mixed-schema snapshots (one day has `osi`, the other doesn’t) are supported.

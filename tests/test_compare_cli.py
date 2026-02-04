@@ -157,3 +157,61 @@ def test_compare_cli_relative_from_latest(tmp_path: Path) -> None:
     )
     assert res.exit_code == 0, res.output
     assert "AAA compare 2026-01-01 \u2192 2026-01-02" in res.output
+
+
+def test_compare_cli_mixed_schema_osi_no_deltas_omits_flow_tables(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "snapshots"
+    day1 = cache_dir / "AAA" / "2026-01-01"
+    day2 = cache_dir / "AAA" / "2026-01-02"
+    day1.mkdir(parents=True)
+    day2.mkdir(parents=True)
+
+    (day1 / "meta.json").write_text(json.dumps({"spot": 100.0}), encoding="utf-8")
+    (day2 / "meta.json").write_text(json.dumps({"spot": 101.0}), encoding="utf-8")
+
+    df1 = pd.DataFrame(
+        [
+            {
+                "contractSymbol": "AAA_C_100",
+                "optionType": "call",
+                "expiry": "2026-02-20",
+                "strike": 100.0,
+                "lastPrice": 2.0,
+                "openInterest": 10,
+                "volume": 1,
+            },
+            {
+                "contractSymbol": "AAA_P_100",
+                "optionType": "put",
+                "expiry": "2026-02-20",
+                "strike": 100.0,
+                "lastPrice": 1.0,
+                "openInterest": 20,
+                "volume": 1,
+            },
+        ]
+    )
+    df2 = df1.copy()
+    df2["osi"] = ["AAA   260220C00100000", "AAA   260220P00100000"]
+
+    df1.to_csv(day1 / "2026-02-20.csv", index=False)
+    df2.to_csv(day2 / "2026-02-20.csv", index=False)
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "compare",
+            "--symbol",
+            "AAA",
+            "--from",
+            "2026-01-01",
+            "--to",
+            "2026-01-02",
+            "--cache-dir",
+            str(cache_dir),
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    assert "oi_unchanged_between_snapshots" in res.output
+    assert "Top contracts by |ΔOI$|" not in res.output
