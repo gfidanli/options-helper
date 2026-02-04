@@ -47,9 +47,9 @@ Current Alpaca coverage:
 - Stock candles/history + spot quotes
 - Option expiry listing + contract metadata cache
 - Options chain snapshots (bid/ask/last, greeks when available)
+- Options volume via daily option bars (best-effort; adds `volume`, `vwap`, `trade_count`)
 
 Not yet implemented:
-- Options volume from bars (IMP-025)
 - Intraday trades/quotes stores (IMP-027)
 
 ## Provider contract (dev)
