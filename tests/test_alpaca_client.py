@@ -39,6 +39,7 @@ def test_alpaca_client_missing_credentials(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(alpaca_client, "OptionHistoricalDataClient", _StubClient)
     monkeypatch.setattr(alpaca_client, "TradingClient", _StubClient)
     monkeypatch.setattr(alpaca_client, "_ALPACA_IMPORT_ERROR", None)
+    monkeypatch.setattr(alpaca_client, "_maybe_load_alpaca_env", lambda: None)
 
     client = alpaca_client.AlpacaClient()
     with pytest.raises(DataFetchError) as exc:
@@ -111,6 +112,7 @@ def test_get_stock_bars_preserves_datafetcherror(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(alpaca_client, "_ALPACA_IMPORT_ERROR", None)
     monkeypatch.setattr(alpaca_client, "TimeFrame", _StubTimeFrame)
     monkeypatch.setattr(alpaca_client, "_load_stock_bars_request", lambda: None)
+    monkeypatch.setattr(alpaca_client, "_maybe_load_alpaca_env", lambda: None)
 
     client = alpaca_client.AlpacaClient()
     with pytest.raises(DataFetchError) as exc:
