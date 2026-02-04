@@ -25,7 +25,6 @@ from options_helper.analysis.flow import FlowGroupBy, aggregate_flow_window, com
 from options_helper.analysis.performance import compute_daily_performance_quote
 from options_helper.analysis.portfolio_risk import (
     PortfolioExposure,
-    StressScenario,
     compute_portfolio_exposure,
     run_stress,
 )
@@ -53,11 +52,13 @@ from options_helper.data.derived import DERIVED_COLUMNS, DERIVED_SCHEMA_VERSION
 from options_helper.data.earnings import EarningsRecord, safe_next_earnings_date
 from options_helper.data.options_snapshots import OptionsSnapshotStore, find_snapshot_row
 from options_helper.commands.backtest import app as backtest_app
+from options_helper.commands.common import _build_stress_scenarios, _parse_date, _spot_from_meta
 from options_helper.commands.derived import app as derived_app
 from options_helper.commands.events import app as events_app
 from options_helper.commands.intraday import app as intraday_app
 from options_helper.commands.journal import app as journal_app
 from options_helper.commands.position_metrics import _extract_float, _mark_price, _position_metrics
+from options_helper.commands.portfolio import register as register_portfolio_commands
 from options_helper.commands.scanner import app as scanner_app
 from options_helper.commands.stream import app as stream_app
 from options_helper.commands.technicals import app as technicals_app, technicals_extension_stats
@@ -70,7 +71,7 @@ from options_helper.data.technical_backtesting_config import (
 )
 from options_helper.data.market_types import DataFetchError
 from options_helper.data.yf_client import contract_row_by_strike
-from options_helper.models import Leg, MultiLegPosition, OptionType, Position, RiskProfile
+from options_helper.models import OptionType, Position, RiskProfile
 from options_helper.observability import finalize_run_logger, setup_run_logger
 from options_helper.reporting import MultiLegSummary, render_multi_leg_positions, render_positions, render_summary
 from options_helper.reporting_chain import (
@@ -90,7 +91,7 @@ from options_helper.schemas.common import utc_now
 from options_helper.schemas.chain_report import ChainReportArtifact
 from options_helper.schemas.compare import CompareArtifact
 from options_helper.schemas.flow import FlowArtifact
-from options_helper.storage import load_portfolio, save_portfolio, write_template
+from options_helper.storage import load_portfolio
 from options_helper.watchlists import build_default_watchlists, load_watchlists, save_watchlists
 from options_helper.ui.dashboard import load_briefing_artifact, render_dashboard, resolve_briefing_paths
 from options_helper.technicals_backtesting.snapshot import TechnicalSnapshot, compute_technical_snapshot
@@ -105,6 +106,7 @@ app.add_typer(backtest_app, name="backtest")
 app.add_typer(intraday_app, name="intraday")
 app.add_typer(events_app, name="events")
 app.add_typer(stream_app, name="stream")
+register_portfolio_commands(app)
 
 
 @app.callback()
@@ -149,102 +151,6 @@ def _ensure_pandas() -> None:
         pd = _pd
 
 
-def _parse_date(value: str) -> date:
-    value = value.strip()
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
-        try:
-            return datetime.strptime(value, fmt).date()
-        except ValueError:
-            continue
-    raise typer.BadParameter("Invalid date format. Use YYYY-MM-DD (recommended).")
-
-
-def _spot_from_meta(meta: dict) -> float | None:
-    if not meta:
-        return None
-    candidates = [
-        meta.get("spot"),
-        (meta.get("underlying") or {}).get("regularMarketPrice"),
-        (meta.get("underlying") or {}).get("regularMarketPreviousClose"),
-        (meta.get("underlying") or {}).get("regularMarketOpen"),
-    ]
-    for v in candidates:
-        try:
-            if v is None:
-                continue
-            spot = float(v)
-            if spot > 0:
-                return spot
-        except Exception:  # noqa: BLE001
-            continue
-    return None
-
-
-def _default_position_id(symbol: str, expiry: date, strike: float, option_type: OptionType) -> str:
-    suffix = "c" if option_type == "call" else "p"
-    strike_str = f"{strike:g}".replace(".", "p")
-    return f"{symbol.lower()}-{expiry.isoformat()}-{strike_str}{suffix}"
-
-
-def _default_multileg_id(symbol: str, legs: list[Leg]) -> str:
-    sorted_legs = sorted(legs, key=lambda l: (l.expiry, l.option_type, l.strike, l.side))
-    tokens: list[str] = []
-    for leg in sorted_legs:
-        strike_str = f"{leg.strike:g}".replace(".", "p")
-        token = f"{leg.side[0]}{leg.option_type[0]}{strike_str}@{leg.expiry.isoformat()}"
-        tokens.append(token)
-    if len(tokens) > 2:
-        tokens = tokens[:2] + [f"n{len(legs)}"]
-    return f"{symbol.lower()}-ml-" + "-".join(tokens)
-
-
-def _parse_leg_spec(value: str) -> Leg:
-    parts = [p.strip() for p in value.split(",") if p.strip()]
-    if len(parts) < 5 or len(parts) > 6:
-        raise typer.BadParameter(
-            "Invalid --leg format. Use side,type,expiry,strike,contracts[,ratio].",
-            param_hint="--leg",
-        )
-    side = parts[0].lower()
-    if side not in {"long", "short"}:
-        raise typer.BadParameter("Invalid leg side (use long|short).", param_hint="--leg")
-    opt_type = parts[1].lower()
-    if opt_type not in {"call", "put"}:
-        raise typer.BadParameter("Invalid leg type (use call|put).", param_hint="--leg")
-    expiry = _parse_date(parts[2])
-    try:
-        strike = float(parts[3])
-    except ValueError as exc:
-        raise typer.BadParameter("Invalid leg strike (use number).", param_hint="--leg") from exc
-    try:
-        contracts = int(parts[4])
-    except ValueError as exc:
-        raise typer.BadParameter("Invalid leg contracts (use integer).", param_hint="--leg") from exc
-    ratio = None
-    if len(parts) == 6:
-        try:
-            ratio = float(parts[5])
-        except ValueError as exc:
-            raise typer.BadParameter("Invalid leg ratio (use number).", param_hint="--leg") from exc
-
-    return Leg(
-        side=side,  # type: ignore[arg-type]
-        option_type=opt_type,  # type: ignore[arg-type]
-        expiry=expiry,
-        strike=strike,
-        contracts=contracts,
-        ratio=ratio,
-    )
-
-
-def _unique_id_with_suffix(existing_ids: set[str], base_id: str) -> str:
-    if base_id not in existing_ids:
-        return base_id
-    for i in range(2, 1000):
-        candidate = f"{base_id}-{i}"
-        if candidate not in existing_ids:
-            return candidate
-    raise typer.BadParameter("Unable to generate a unique id; please supply --id.")
 
 
 @app.command("daily")
@@ -2965,159 +2871,6 @@ def refresh_candles(
 
 
 @app.command()
-def init(
-    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
-    force: bool = typer.Option(False, "--force", help="Overwrite if file exists."),
-) -> None:
-    """Create a starter portfolio JSON file."""
-    write_template(portfolio_path, force=force)
-    Console().print(f"Wrote template portfolio to {portfolio_path}")
-
-
-@app.command("list")
-def list_positions(
-    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
-) -> None:
-    """List positions in the portfolio file."""
-    portfolio = load_portfolio(portfolio_path)
-    console = Console()
-    render_summary(console, portfolio)
-
-    if not portfolio.positions:
-        console.print("No positions.")
-        return
-
-    # Minimal list (no fetch)
-    from rich.table import Table
-
-    table = Table(title="Portfolio Positions")
-    table.add_column("ID")
-    table.add_column("Symbol")
-    table.add_column("Type")
-    table.add_column("Expiry")
-    table.add_column("Strike", justify="right")
-    table.add_column("Ct", justify="right")
-    table.add_column("Cost", justify="right")
-    for p in portfolio.positions:
-        table.add_row(
-            p.id,
-            p.symbol,
-            p.option_type,
-            p.expiry.isoformat(),
-            f"{p.strike:g}",
-            str(p.contracts),
-            f"${p.cost_basis:.2f}",
-        )
-    console.print(table)
-
-
-@app.command("add-position")
-def add_position(
-    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
-    symbol: str = typer.Option(..., "--symbol"),
-    expiry: str = typer.Option(..., "--expiry", help="Expiry date, e.g. 2026-04-17."),
-    strike: float = typer.Option(..., "--strike"),
-    option_type: OptionType = typer.Option(..., "--type", case_sensitive=False),
-    contracts: int = typer.Option(1, "--contracts"),
-    cost_basis: float = typer.Option(..., "--cost-basis", help="Premium per share (e.g. 0.45)."),
-    position_id: str | None = typer.Option(None, "--id", help="Optional position id."),
-    opened_at: str | None = typer.Option(None, "--opened-at", help="Optional open date (YYYY-MM-DD)."),
-) -> None:
-    """Add a position to the portfolio JSON."""
-    portfolio = load_portfolio(portfolio_path)
-
-    expiry_date = _parse_date(expiry)
-    opened_at_date = _parse_date(opened_at) if opened_at else None
-
-    symbol = symbol.upper()
-    option_type = option_type.lower()  # type: ignore[assignment]
-
-    pid = position_id or _default_position_id(symbol, expiry_date, strike, option_type)
-    if any(p.id == pid for p in portfolio.positions):
-        raise typer.BadParameter(f"Position id already exists: {pid}")
-
-    position = Position(
-        id=pid,
-        symbol=symbol,
-        option_type=option_type,
-        expiry=expiry_date,
-        strike=float(strike),
-        contracts=int(contracts),
-        cost_basis=float(cost_basis),
-        opened_at=opened_at_date,
-    )
-
-    portfolio.positions.append(position)
-    save_portfolio(portfolio_path, portfolio)
-    Console().print(f"Added {pid}")
-
-
-@app.command("add-spread")
-def add_spread(
-    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
-    symbol: str = typer.Option(..., "--symbol"),
-    legs: list[str] = typer.Option(
-        ...,
-        "--leg",
-        help="Repeatable leg spec: side,type,expiry,strike,contracts[,ratio].",
-    ),
-    net_debit: float | None = typer.Option(
-        None,
-        "--net-debit",
-        help="Net debit in dollars for the whole structure (optional).",
-    ),
-    position_id: str | None = typer.Option(None, "--id", help="Optional position id."),
-    opened_at: str | None = typer.Option(None, "--opened-at", help="Optional open date (YYYY-MM-DD)."),
-) -> None:
-    """Add a multi-leg (spread) position to the portfolio JSON."""
-    portfolio = load_portfolio(portfolio_path)
-
-    if len(legs) < 2:
-        raise typer.BadParameter("Provide at least two --leg values.", param_hint="--leg")
-
-    parsed_legs = [_parse_leg_spec(value) for value in legs]
-    symbol = symbol.upper()
-    opened_at_date = _parse_date(opened_at) if opened_at else None
-
-    base_id = position_id or _default_multileg_id(symbol, parsed_legs)
-    existing_ids = {p.id for p in portfolio.positions}
-    if position_id is not None:
-        if position_id in existing_ids:
-            raise typer.BadParameter(f"Position id already exists: {position_id}", param_hint="--id")
-        pid = position_id
-    else:
-        pid = _unique_id_with_suffix(existing_ids, base_id)
-
-    position = MultiLegPosition(
-        id=pid,
-        symbol=symbol,
-        legs=parsed_legs,
-        net_debit=None if net_debit is None else float(net_debit),
-        opened_at=opened_at_date,
-    )
-
-    portfolio.positions.append(position)
-    save_portfolio(portfolio_path, portfolio)
-    Console().print(f"Added {pid}")
-
-
-@app.command("remove-position")
-def remove_position(
-    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
-    position_id: str = typer.Argument(..., help="Position id to remove."),
-) -> None:
-    """Remove a position by id."""
-    portfolio = load_portfolio(portfolio_path)
-    before = len(portfolio.positions)
-    portfolio.positions = [p for p in portfolio.positions if p.id != position_id]
-    after = len(portfolio.positions)
-    if before == after:
-        raise typer.BadParameter(f"No position found with id: {position_id}")
-    save_portfolio(portfolio_path, portfolio)
-    Console().print(f"Removed {position_id}")
-
-
-@app.command()
 def analyze(
     portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
     period: str = typer.Option("2y", "--period", help="Underlying history period (yfinance)."),
@@ -3485,49 +3238,6 @@ def watch(
         time.sleep(minutes * 60)
 
 
-def _normalize_pct(val: float) -> float:
-    try:
-        val_f = float(val)
-    except Exception:  # noqa: BLE001
-        return 0.0
-    return val_f / 100.0 if abs(val_f) > 1.0 else val_f
-
-
-def _normalize_pp(val: float) -> float:
-    try:
-        val_f = float(val)
-    except Exception:  # noqa: BLE001
-        return 0.0
-    return val_f / 100.0 if abs(val_f) > 1.0 else val_f
-
-
-def _build_stress_scenarios(
-    *,
-    stress_spot_pct: list[float],
-    stress_vol_pp: float,
-    stress_days: int,
-) -> list[StressScenario]:
-    scenarios: list[StressScenario] = []
-    spot_values = stress_spot_pct or [0.05]
-    seen_spot: set[float] = set()
-    for raw in spot_values:
-        pct = abs(_normalize_pct(raw))
-        if pct <= 0 or pct in seen_spot:
-            continue
-        seen_spot.add(pct)
-        scenarios.append(StressScenario(name=f"Spot {pct:+.0%}", spot_pct=pct))
-        scenarios.append(StressScenario(name=f"Spot {-pct:+.0%}", spot_pct=-pct))
-
-    vol_pp = _normalize_pp(stress_vol_pp)
-    if vol_pp != 0:
-        pp_label = vol_pp * 100.0
-        scenarios.append(StressScenario(name=f"IV {pp_label:+.1f}pp", vol_pp=vol_pp))
-        scenarios.append(StressScenario(name=f"IV {-pp_label:+.1f}pp", vol_pp=-vol_pp))
-
-    if stress_days > 0:
-        scenarios.append(StressScenario(name=f"Time +{stress_days}d", days=stress_days))
-
-    return scenarios
 
 
 def _render_portfolio_risk(
