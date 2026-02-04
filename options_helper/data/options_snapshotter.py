@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+import inspect
 import logging
 
 import numpy as np
@@ -52,6 +53,27 @@ def _add_osi_columns(df: pd.DataFrame) -> pd.DataFrame:
     out["osi"] = osi_values
     out["underlying_norm"] = underlying_values
     return out
+
+
+def _supports_snapshot_date(provider: MarketDataProvider) -> bool:
+    try:
+        sig = inspect.signature(provider.get_options_chain_raw)
+    except (TypeError, ValueError):
+        return False
+    if "snapshot_date" in sig.parameters:
+        return True
+    return any(param.kind == inspect.Parameter.VAR_KEYWORD for param in sig.parameters.values())
+
+
+def _fetch_chain_raw(
+    provider: MarketDataProvider,
+    symbol: str,
+    expiry: date,
+    snapshot_date: date,
+) -> dict:
+    if _supports_snapshot_date(provider):
+        return provider.get_options_chain_raw(symbol, expiry, snapshot_date=snapshot_date)
+    return provider.get_options_chain_raw(symbol, expiry)
 
 
 def snapshot_full_chain_for_symbols(
@@ -159,7 +181,7 @@ def snapshot_full_chain_for_symbols(
             spread_pcts: list[float] = []
             for exp in expiries:
                 try:
-                    raw = provider.get_options_chain_raw(sym, exp)
+                    raw = _fetch_chain_raw(provider, sym, exp, snapshot_date)
                 except DataFetchError as exc:
                     logger.warning("%s %s: %s", sym, exp.isoformat(), exc)
                     continue
