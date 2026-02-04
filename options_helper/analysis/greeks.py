@@ -250,8 +250,10 @@ def add_black_scholes_greeks_to_chain(
     volumes = out["volume"].tolist() if "volume" in out.columns else [None] * len(out)
 
     iv_out: list[float | None] = []
+    iv_source_out: list[str | None] = []
+    iv_source_in = out["iv_source"].tolist() if "iv_source" in out.columns else [None] * len(out)
 
-    for opt_type, strike, sigma, bid_v, ask_v, last_v, vol_v in zip(
+    for opt_type, strike, sigma, bid_v, ask_v, last_v, vol_v, source_in in zip(
         out[option_type_col].tolist(),
         out[strike_col].tolist(),
         out[iv_col].tolist(),
@@ -259,15 +261,18 @@ def add_black_scholes_greeks_to_chain(
         asks,
         lasts,
         volumes,
+        iv_source_in,
     ):
         opt = str(opt_type).lower().strip() if opt_type is not None else ""
         k = _as_float(strike)
         iv = _as_float(sigma)
+        source = str(source_in).strip() if source_in is not None and str(source_in).strip() else None
 
         # Yahoo sometimes returns placeholder/sentinel IV values (commonly 1e-05) when quote data is missing.
         if iv is not None and iv <= iv_placeholder_threshold:
             iv = None
 
+        inferred_iv = False
         if iv is None and fill_iv_from_mark:
             bid = _as_float(bid_v)
             ask = _as_float(ask_v)
@@ -290,19 +295,36 @@ def add_black_scholes_greeks_to_chain(
                 )
                 if iv_calc is not None and iv_calc > iv_placeholder_threshold:
                     iv = iv_calc
+                    inferred_iv = True
 
         iv_out.append(iv)
 
         if opt not in {"call", "put"} or k is None or iv is None:
+            if inferred_iv:
+                source = "bs_inferred"
+            elif iv is None:
+                source = "missing"
+            iv_source_out.append(source)
             for key in cols:
                 cols[key].append(None)
             continue
 
         g = black_scholes_greeks(option_type=opt, s=spot, k=k, t_years=t_years, sigma=iv, r=r)
         if g is None:
+            if inferred_iv:
+                source = "bs_inferred"
+            elif iv is None:
+                source = "missing"
+            iv_source_out.append(source)
             for key in cols:
                 cols[key].append(None)
             continue
+
+        if inferred_iv:
+            source = "bs_inferred"
+        elif iv is None:
+            source = "missing"
+        iv_source_out.append(source)
 
         cols[f"{prefix}price"].append(g.price)
         cols[f"{prefix}delta"].append(g.delta)
@@ -316,5 +338,6 @@ def add_black_scholes_greeks_to_chain(
     # Replace placeholder IV with our best-effort inferred value (or None) so downstream reports don't treat
     # sentinel IV values as real.
     out[iv_col] = iv_out
+    out["iv_source"] = iv_source_out
 
     return out

@@ -690,6 +690,7 @@ def option_chain_to_rows(payload: Any) -> list[dict[str, Any]]:
             or _get_field(snapshot, "impliedVolatility")
             or _get_field(snapshot, "iv")
         )
+        iv_source = "alpaca_snapshot" if implied_volatility is not None else None
 
         greeks = (
             _get_field(snapshot, "greeks")
@@ -717,6 +718,7 @@ def option_chain_to_rows(payload: Any) -> list[dict[str, Any]]:
                 "quoteTime": _coerce_timestamp_value(quote_time),
                 "tradeTime": _coerce_timestamp_value(trade_time),
                 "impliedVolatility": implied_volatility,
+                "iv_source": iv_source,
                 "delta": delta,
                 "gamma": gamma,
                 "theta": theta,

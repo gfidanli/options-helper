@@ -61,6 +61,7 @@ def test_add_black_scholes_greeks_to_chain_fills_placeholder_iv_from_last_price(
 
     out = add_black_scholes_greeks_to_chain(df, spot=spot, expiry=expiry, as_of=as_of, r=0.0)
     assert out.loc[0, "impliedVolatility"] == pytest.approx(sigma, abs=1e-2)
+    assert out.loc[0, "iv_source"] == "bs_inferred"
     assert out.loc[0, "bs_price"] == pytest.approx(float(last_price), abs=1e-2)
     assert out.loc[0, "bs_gamma"] > 0
     assert out.loc[0, "bs_vega"] > 0
@@ -95,4 +96,5 @@ def test_add_black_scholes_greeks_to_chain_keeps_placeholder_iv_missing_when_no_
 
     out = add_black_scholes_greeks_to_chain(df, spot=spot, expiry=expiry, as_of=as_of, r=0.0)
     assert pd.isna(out.loc[0, "impliedVolatility"])
+    assert out.loc[0, "iv_source"] == "missing"
     assert pd.isna(out.loc[0, "bs_delta"])

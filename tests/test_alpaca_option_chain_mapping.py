@@ -99,6 +99,7 @@ def test_alpaca_option_chain_raw_splits_and_enriches(tmp_path: Path) -> None:
     assert call["closePrice"] == 1.05
     assert call["closePriceDate"] == "2026-02-02"
     assert call["impliedVolatility"] == 0.2
+    assert call["iv_source"] == "alpaca_snapshot"
     assert call["delta"] == 0.4
     assert call["gamma"] == 0.01
     assert call["theta"] == -0.02
