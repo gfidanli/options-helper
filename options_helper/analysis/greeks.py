@@ -233,6 +233,17 @@ def add_black_scholes_greeks_to_chain(
         except Exception:  # noqa: BLE001
             return None
 
+    def _as_source(val: object) -> str | None:
+        if val is None:
+            return None
+        try:
+            if pd.isna(val):
+                return None
+        except Exception:  # noqa: BLE001
+            pass
+        raw = str(val).strip()
+        return raw or None
+
     def _mark_price(bid: float | None, ask: float | None, last: float | None) -> tuple[float | None, str]:
         if bid is not None and bid > 0 and ask is not None and ask > 0:
             return (bid + ask) / 2.0, "mid"
@@ -266,7 +277,7 @@ def add_black_scholes_greeks_to_chain(
         opt = str(opt_type).lower().strip() if opt_type is not None else ""
         k = _as_float(strike)
         iv = _as_float(sigma)
-        source = str(source_in).strip() if source_in is not None and str(source_in).strip() else None
+        source = _as_source(source_in)
 
         # Yahoo sometimes returns placeholder/sentinel IV values (commonly 1e-05) when quote data is missing.
         if iv is not None and iv <= iv_placeholder_threshold:

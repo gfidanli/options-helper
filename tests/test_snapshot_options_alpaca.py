@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -95,8 +96,10 @@ def test_snapshot_full_chain_with_alpaca_provider(
     day_dir = snapshot_dir / "SPY" / candle_day.isoformat()
     assert (day_dir / f"{expiry.isoformat()}.csv").exists()
     assert (day_dir / f"{expiry.isoformat()}.raw.json").exists()
-    meta = (day_dir / "meta.json").read_text(encoding="utf-8")
-    assert '"provider_params"' in meta
-    assert '"options_feed": "opra"' in meta
-    assert '"stock_feed": "sip"' in meta
-    assert '"recent_bars_buffer_minutes": 16' in meta
+    meta = json.loads((day_dir / "meta.json").read_text(encoding="utf-8"))
+    assert meta.get("provider") == "alpaca"
+    assert meta.get("provider_params") == {
+        "options_feed": "opra",
+        "stock_feed": "sip",
+        "recent_bars_buffer_minutes": 16,
+    }
