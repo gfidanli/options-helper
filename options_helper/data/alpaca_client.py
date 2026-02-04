@@ -8,6 +8,7 @@ from typing import Any
 
 import pandas as pd
 
+from options_helper.analysis.osi import parse_contract_symbol
 from options_helper.data.alpaca_symbols import to_alpaca_symbol, to_repo_symbol
 from options_helper.data.market_types import DataFetchError
 
@@ -25,6 +26,7 @@ except Exception as exc:  # noqa: BLE001 - optional dependency
 TimeFrame = None
 TimeFrameUnit = None
 StockBarsRequest = None
+OptionContractsRequest = None
 
 
 def _clean_env(value: str | None) -> str:
@@ -71,6 +73,24 @@ def _load_stock_bars_request():
     return StockBarsRequest
 
 
+def _load_option_contracts_request():
+    global OptionContractsRequest  # noqa: PLW0603 - intentional lazy import
+    if OptionContractsRequest is not None:
+        return OptionContractsRequest
+    try:
+        from alpaca.trading.requests import GetOptionContractsRequest as AlpacaGetOptionContractsRequest
+
+        OptionContractsRequest = AlpacaGetOptionContractsRequest
+    except Exception:  # noqa: BLE001
+        try:
+            from alpaca.trading.requests import OptionContractsRequest as AlpacaOptionContractsRequest
+
+            OptionContractsRequest = AlpacaOptionContractsRequest
+        except Exception:  # noqa: BLE001
+            return None
+    return OptionContractsRequest
+
+
 def _coerce_datetime(value: date | datetime | None, *, end_of_day: bool) -> datetime | None:
     if value is None:
         return None
@@ -113,6 +133,17 @@ def _resolve_timeframe(interval: str) -> Any:
         return timeframe_cls(amount, unit_name)
     except Exception as exc:  # noqa: BLE001
         raise DataFetchError(f"Unable to build Alpaca TimeFrame for interval '{interval}'.") from exc
+
+
+def _filter_kwargs(target, kwargs: dict[str, Any]) -> dict[str, Any]:
+    try:
+        sig = inspect.signature(target)
+    except (TypeError, ValueError):
+        return kwargs
+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in sig.parameters.values()):
+        return kwargs
+    allowed = {name for name in sig.parameters if name != "self"}
+    return {k: v for k, v in kwargs.items() if k in allowed}
 
 
 def _bars_to_dataframe(payload: Any, symbol: str) -> pd.DataFrame:
@@ -199,6 +230,212 @@ def _normalize_stock_bars(df: pd.DataFrame, *, symbol: str) -> pd.DataFrame:
     out.index = idx[mask].tz_convert(None)
     out = out[~out.index.duplicated(keep="last")].sort_index()
     return out
+
+
+def _extract_contracts_page(payload: Any) -> tuple[list[Any], str | None]:
+    if payload is None:
+        return [], None
+    if isinstance(payload, list):
+        return payload, None
+    if isinstance(payload, dict):
+        contracts = payload.get("option_contracts") or payload.get("contracts") or payload.get("data") or []
+        token = (
+            payload.get("next_page_token")
+            or payload.get("next_token")
+            or payload.get("nextPageToken")
+            or payload.get("next")
+        )
+        return list(contracts or []), token
+    if hasattr(payload, "option_contracts"):
+        contracts = getattr(payload, "option_contracts") or []
+        token = getattr(payload, "next_page_token", None) or getattr(payload, "next_token", None)
+        return list(contracts), token
+    if hasattr(payload, "contracts"):
+        contracts = getattr(payload, "contracts") or []
+        token = getattr(payload, "next_page_token", None) or getattr(payload, "next_token", None)
+        return list(contracts), token
+    return [], None
+
+
+def _contract_to_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    for attr in ("model_dump", "dict", "to_dict"):
+        method = getattr(value, attr, None)
+        if callable(method):
+            try:
+                payload = method()
+                if isinstance(payload, dict):
+                    return payload
+            except Exception:  # noqa: BLE001
+                pass
+    data = getattr(value, "__dict__", None)
+    if isinstance(data, dict):
+        return dict(data)
+    fields = [
+        "symbol",
+        "contractSymbol",
+        "option_symbol",
+        "underlying_symbol",
+        "underlyingSymbol",
+        "underlying",
+        "expiration_date",
+        "expiry",
+        "option_type",
+        "type",
+        "strike_price",
+        "strike",
+        "multiplier",
+        "open_interest",
+        "openInterest",
+        "open_interest_date",
+        "openInterestDate",
+        "close_price",
+        "closePrice",
+        "close_price_date",
+        "closePriceDate",
+    ]
+    out: dict[str, Any] = {}
+    for field in fields:
+        if hasattr(value, field):
+            out[field] = getattr(value, field)
+    return out
+
+
+def _coerce_date_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            return date.fromisoformat(raw[:10]).isoformat()
+        except ValueError:
+            return None
+    return None
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        if value is None or (isinstance(value, float) and pd.isna(value)) or pd.isna(value):
+            return None
+        return float(value)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _as_int(value: Any) -> int | None:
+    try:
+        if value is None or (isinstance(value, float) and pd.isna(value)) or pd.isna(value):
+            return None
+        return int(value)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _normalize_option_type(value: Any) -> str | None:
+    if value is None:
+        return None
+    raw = str(value).strip().lower()
+    if not raw:
+        return None
+    if raw in {"call", "put"}:
+        return raw
+    if raw in {"c", "p"}:
+        return "call" if raw == "c" else "put"
+    if raw.startswith("call"):
+        return "call"
+    if raw.startswith("put"):
+        return "put"
+    return None
+
+
+def contracts_to_df(raw_contracts: list[Any]) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for contract in raw_contracts or []:
+        data = _contract_to_dict(contract)
+        contract_symbol = data.get("contractSymbol") or data.get("symbol") or data.get("option_symbol")
+        underlying = (
+            data.get("underlying_symbol")
+            or data.get("underlyingSymbol")
+            or data.get("underlying")
+            or data.get("root_symbol")
+        )
+        expiry = data.get("expiration_date") or data.get("expiry") or data.get("expiration")
+        option_type = data.get("option_type") or data.get("optionType") or data.get("type")
+        strike = data.get("strike_price") or data.get("strike")
+        multiplier = data.get("multiplier")
+        open_interest = data.get("open_interest") or data.get("openInterest")
+        open_interest_date = data.get("open_interest_date") or data.get("openInterestDate")
+        close_price = data.get("close_price") or data.get("closePrice")
+        close_price_date = data.get("close_price_date") or data.get("closePriceDate")
+
+        row = {
+            "contractSymbol": contract_symbol,
+            "underlying": to_repo_symbol(str(underlying)) if underlying else None,
+            "expiry": _coerce_date_string(expiry),
+            "optionType": _normalize_option_type(option_type),
+            "strike": _as_float(strike),
+            "multiplier": _as_int(multiplier),
+            "openInterest": _as_int(open_interest),
+            "openInterestDate": _coerce_date_string(open_interest_date),
+            "closePrice": _as_float(close_price),
+            "closePriceDate": _coerce_date_string(close_price_date),
+        }
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    required = [
+        "contractSymbol",
+        "underlying",
+        "expiry",
+        "optionType",
+        "strike",
+        "multiplier",
+        "openInterest",
+        "openInterestDate",
+        "closePrice",
+        "closePriceDate",
+    ]
+    for col in required:
+        if col not in df.columns:
+            df[col] = pd.NA
+    df = df[required]
+
+    if not df.empty and "contractSymbol" in df.columns:
+        def _needs_fill(value: Any) -> bool:
+            try:
+                if value is None or pd.isna(value):
+                    return True
+            except Exception:  # noqa: BLE001
+                return value is None
+            if isinstance(value, str) and not value.strip():
+                return True
+            return False
+
+        for idx, raw_symbol in df["contractSymbol"].items():
+            if not raw_symbol or not isinstance(raw_symbol, str):
+                continue
+            parsed = parse_contract_symbol(raw_symbol)
+            if parsed is None:
+                continue
+            if _needs_fill(df.at[idx, "expiry"]):
+                df.at[idx, "expiry"] = parsed.expiry.isoformat()
+            if _needs_fill(df.at[idx, "optionType"]):
+                df.at[idx, "optionType"] = parsed.option_type
+            if _needs_fill(df.at[idx, "strike"]):
+                df.at[idx, "strike"] = parsed.strike
+            if _needs_fill(df.at[idx, "underlying"]):
+                df.at[idx, "underlying"] = parsed.underlying_norm or parsed.underlying
+
+        df = df.drop_duplicates(subset=["contractSymbol"], keep="last")
+
+    return df
 
 
 class AlpacaClient:
@@ -327,6 +564,9 @@ class AlpacaClient:
                     end=end_dt,
                     adjustment=adjustment,
                 )
+        except DataFetchError:
+            # Preserve higher-level errors (missing credentials, missing SDK, etc.).
+            raise
         except Exception as exc:  # noqa: BLE001
             raise DataFetchError(
                 f"Failed to fetch Alpaca stock bars for {alpaca_symbol} ({interval})."
@@ -334,6 +574,68 @@ class AlpacaClient:
 
         df = _bars_to_dataframe(payload, alpaca_symbol)
         return _normalize_stock_bars(df, symbol=alpaca_symbol)
+
+    def list_option_contracts(
+        self,
+        underlying: str,
+        *,
+        exp_gte: date | None = None,
+        exp_lte: date | None = None,
+        limit: int | None = None,
+        page_limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        alpaca_symbol = to_alpaca_symbol(underlying)
+        if not alpaca_symbol:
+            raise DataFetchError(f"Invalid underlying symbol: {underlying}")
+
+        client = self.trading_client
+        method = getattr(client, "get_option_contracts", None) or getattr(client, "get_option_contract", None)
+        if method is None:
+            raise DataFetchError("Alpaca trading client missing get_option_contracts.")
+
+        request_cls = _load_option_contracts_request()
+        page_token: str | None = None
+        page_count = 0
+        out: list[dict[str, Any]] = []
+
+        while True:
+            page_count += 1
+            if page_limit is not None and page_count > page_limit:
+                raise DataFetchError("Exceeded Alpaca option contracts page limit.")
+
+            kwargs = {
+                "underlying_symbol": alpaca_symbol,
+                "underlying_symbols": [alpaca_symbol],
+                "underlying": alpaca_symbol,
+                "symbol": alpaca_symbol,
+                "expiration_date_gte": exp_gte,
+                "expiration_date_lte": exp_lte,
+                "exp_gte": exp_gte,
+                "exp_lte": exp_lte,
+                "limit": limit,
+                "page_token": page_token,
+            }
+
+            payload = None
+            if request_cls is not None:
+                try:
+                    request_kwargs = _filter_kwargs(request_cls, kwargs)
+                    request = request_cls(**request_kwargs)
+                    payload = method(request)
+                except TypeError:
+                    payload = None
+
+            if payload is None:
+                payload = method(**_filter_kwargs(method, kwargs))
+
+            contracts, next_token = _extract_contracts_page(payload)
+            if contracts:
+                out.extend(_contract_to_dict(c) for c in contracts)
+            if not next_token:
+                break
+            page_token = str(next_token)
+
+        return out
 
     def _ensure_credentials(self) -> None:
         if not self._api_key_id or not self._api_secret_key:
@@ -382,6 +684,7 @@ class AlpacaClient:
 
 __all__ = [
     "AlpacaClient",
+    "contracts_to_df",
     "to_alpaca_symbol",
     "to_repo_symbol",
 ]
