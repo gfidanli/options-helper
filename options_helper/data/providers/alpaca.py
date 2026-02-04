@@ -8,12 +8,12 @@ from typing import Any
 import pandas as pd
 
 from options_helper.analysis.osi import parse_contract_symbol
-from options_helper.data.alpaca_client import AlpacaClient, contracts_to_df
+from options_helper.data.alpaca_client import AlpacaClient, contracts_to_df, option_chain_to_rows
 from options_helper.data.alpaca_symbols import to_alpaca_symbol, to_repo_symbol
 from options_helper.data.candles import _parse_period_to_start
 from options_helper.data.market_types import DataFetchError, EarningsEvent, OptionsChain, UnderlyingData
 from options_helper.data.option_contracts import OptionContractsStore
-from options_helper.data.providers.base import MarketDataProvider
+from options_helper.data.providers.base import MarketDataProvider, normalize_option_chain
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,92 @@ def _as_float(value: Any) -> float | None:
     except Exception:  # noqa: BLE001
         return None
     return val if val > 0 else None
+
+
+def _normalize_option_type_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    raw = str(value).strip().lower()
+    if not raw:
+        return None
+    if raw in {"call", "put"}:
+        return raw
+    if raw in {"c", "p"}:
+        return "call" if raw == "c" else "put"
+    if raw.startswith("call"):
+        return "call"
+    if raw.startswith("put"):
+        return "put"
+    return None
+
+
+def _needs_fill(value: Any) -> bool:
+    if value is None:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    if isinstance(value, str) and not value.strip():
+        return True
+    return False
+
+
+def _merge_contract_metadata(chain_df: pd.DataFrame, contracts_df: pd.DataFrame | None) -> pd.DataFrame:
+    if chain_df is None or chain_df.empty:
+        return chain_df
+    if contracts_df is None or contracts_df.empty:
+        return chain_df
+    if "contractSymbol" not in chain_df.columns or "contractSymbol" not in contracts_df.columns:
+        return chain_df
+
+    merged = chain_df.merge(contracts_df, on="contractSymbol", how="left", suffixes=("", "_contract"))
+    for field in ("strike", "optionType", "openInterest", "openInterestDate", "expiry"):
+        contract_field = f"{field}_contract"
+        if contract_field not in merged.columns:
+            continue
+        if field not in merged.columns:
+            merged[field] = merged[contract_field]
+        else:
+            mask = merged[field].map(_needs_fill)
+            if mask.any():
+                merged.loc[mask, field] = merged.loc[mask, contract_field]
+    drop_cols = [col for col in merged.columns if col.endswith("_contract")]
+    if drop_cols:
+        merged = merged.drop(columns=drop_cols)
+    return merged
+
+
+def _fill_missing_from_osi(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty or "contractSymbol" not in df.columns:
+        return df
+
+    parsed = df["contractSymbol"].map(lambda raw: parse_contract_symbol(str(raw)) if raw else None)
+
+    if "optionType" in df.columns:
+        df["optionType"] = df["optionType"].map(_normalize_option_type_value)
+        mask = df["optionType"].map(_needs_fill)
+        if mask.any():
+            df.loc[mask, "optionType"] = parsed.map(lambda item: item.option_type if item else None)
+    else:
+        df["optionType"] = parsed.map(lambda item: item.option_type if item else None)
+
+    if "strike" in df.columns:
+        mask = df["strike"].map(_needs_fill)
+        if mask.any():
+            df.loc[mask, "strike"] = parsed.map(lambda item: item.strike if item else None)
+    else:
+        df["strike"] = parsed.map(lambda item: item.strike if item else None)
+
+    if "expiry" in df.columns:
+        mask = df["expiry"].map(_needs_fill)
+        if mask.any():
+            df.loc[mask, "expiry"] = parsed.map(lambda item: item.expiry.isoformat() if item else None)
+    else:
+        df["expiry"] = parsed.map(lambda item: item.expiry.isoformat() if item else None)
+
+    return df
 
 
 def _get_field(obj: Any, name: str) -> Any:
@@ -259,12 +345,103 @@ class AlpacaProvider(MarketDataProvider):
         return _expiries_from_contracts(df)
 
     def get_options_chain(self, symbol: str, expiry: date) -> OptionsChain:
-        _ = self._client.option_client
-        raise DataFetchError("Alpaca provider scaffold: options chain not implemented yet (see IMP-024).")
+        sym = to_repo_symbol(symbol)
+        if not sym:
+            raise DataFetchError(f"Invalid symbol: {symbol}")
+
+        raw = self.get_options_chain_raw(sym, expiry)
+        calls = pd.DataFrame(raw.get("calls", []))
+        puts = pd.DataFrame(raw.get("puts", []))
+
+        calls = normalize_option_chain(calls, option_type="call", expiry=expiry)
+        puts = normalize_option_chain(puts, option_type="put", expiry=expiry)
+
+        return OptionsChain(symbol=sym, expiry=expiry, calls=calls, puts=puts)
 
     def get_options_chain_raw(self, symbol: str, expiry: date) -> dict:
-        _ = self._client.option_client
-        raise DataFetchError("Alpaca provider scaffold: raw chain not implemented yet (see IMP-024).")
+        sym = to_repo_symbol(symbol)
+        if not sym:
+            raise DataFetchError(f"Invalid symbol: {symbol}")
+
+        try:
+            payload = self._client.get_option_chain_snapshots(
+                sym,
+                expiry=expiry,
+                feed=self._client.options_feed,
+            )
+        except DataFetchError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise DataFetchError(f"Failed to fetch Alpaca option chain for {sym} {expiry.isoformat()}.") from exc
+
+        rows = option_chain_to_rows(payload)
+        chain_df = pd.DataFrame(rows)
+
+        contracts_df: pd.DataFrame | None = None
+        as_of = date.today()
+        cached = self._contracts_store.load(sym, as_of)
+        if cached is not None:
+            contracts_df = cached
+        else:
+            try:
+                raw_contracts = self._client.list_option_contracts(
+                    sym,
+                    exp_gte=expiry,
+                    exp_lte=expiry,
+                    limit=1000,
+                    page_limit=50,
+                )
+            except DataFetchError:
+                raw_contracts = []
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to fetch Alpaca contracts for %s: %s", sym, exc)
+                raw_contracts = []
+
+            if raw_contracts:
+                contracts_df = contracts_to_df(raw_contracts)
+                meta = {
+                    "provider": self.name,
+                    "provider_version": self._client.provider_version,
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    "exp_gte": expiry.isoformat(),
+                    "exp_lte": expiry.isoformat(),
+                    "contracts": int(len(raw_contracts)),
+                }
+                self._contracts_store.save(sym, as_of, contracts_df, raw={"contracts": raw_contracts}, meta=meta)
+
+        if contracts_df is not None and "expiry" in contracts_df.columns:
+            contracts_df = contracts_df[contracts_df["expiry"] == expiry.isoformat()]
+
+        chain_df = _merge_contract_metadata(chain_df, contracts_df)
+        chain_df = _fill_missing_from_osi(chain_df)
+
+        if "optionType" not in chain_df.columns:
+            chain_df["optionType"] = pd.NA
+
+        calls_df = chain_df[chain_df.get("optionType") == "call"].copy()
+        puts_df = chain_df[chain_df.get("optionType") == "put"].copy()
+
+        underlying_payload = None
+        if isinstance(payload, dict):
+            underlying_payload = payload.get("underlying") or payload.get("underlying_snapshot")
+        else:
+            underlying_payload = getattr(payload, "underlying", None)
+
+        underlying: dict[str, Any] = {"symbol": sym}
+        if isinstance(underlying_payload, dict):
+            underlying.update(underlying_payload)
+            spot = _extract_snapshot_price(underlying_payload, sym)
+            if spot is not None:
+                underlying["spot"] = spot
+        elif underlying_payload is not None:
+            underlying["raw"] = str(underlying_payload)
+
+        return {
+            "underlying": underlying,
+            "calls": calls_df.to_dict(orient="records"),
+            "puts": puts_df.to_dict(orient="records"),
+            "provider_raw": payload,
+        }
 
     def get_next_earnings_event(self, symbol: str, *, today: date | None = None) -> EarningsEvent:
         _ = self._client.stock_client

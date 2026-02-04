@@ -24,7 +24,7 @@ This EPIC is intentionally decomposed into small, PR-sized IMPs with clear depen
 | 1 | IMP-021 — Alpaca provider scaffold + config surface | done | S | — | Provider can be selected; SDK wired; helpful errors |
 | 2 | IMP-022 — Stocks: candles/history + quote + underlying | done | S–M | IMP-021 | CandleStore + spot workflows work with Alpaca |
 | 3 | IMP-023 — Options contract universe + expiry listing + contract cache | done | M | IMP-021 | Fast expiry listing; contract metadata cache (OI, strike, etc.) |
-| 4 | IMP-024 — Options chain snapshots → normalized calls/puts + raw payload | draft | M | IMP-021, IMP-022, IMP-023 | Snapshotter works end-to-end with Alpaca |
+| 4 | IMP-024 — Options chain snapshots → normalized calls/puts + raw payload | done | M | IMP-021, IMP-022, IMP-023 | Snapshotter works end-to-end with Alpaca |
 | 5 | IMP-025 — Options volume + “recent bars restriction” hardening | draft | M | IMP-024 | Better liquidity metrics; fewer provider-plan footguns |
 | 6 | IMP-026 — Snapshot enrichment: store more fields (greeks, timestamps, OI dates) | draft | S–M | IMP-024 | Future features unlocked without re-snapshotting |
 | 7 | IMP-027 — Intraday microstructure stores (stock/option trades+quotes+bars) | draft | L | IMP-021 | New offline analytics: spreads, staleness, RV intraday |

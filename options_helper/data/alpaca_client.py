@@ -4,6 +4,7 @@ import inspect
 import os
 from datetime import date, datetime, timedelta, timezone
 from importlib import metadata
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -27,6 +28,7 @@ TimeFrame = None
 TimeFrameUnit = None
 StockBarsRequest = None
 OptionContractsRequest = None
+OptionChainRequest = None
 
 
 def _clean_env(value: str | None) -> str:
@@ -44,6 +46,59 @@ def _coerce_int(value: str | None, default: int) -> int:
     except ValueError:
         return default
     return parsed if parsed > 0 else default
+
+
+def _strip_quotes(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and ((value[0] == value[-1] == '"') or (value[0] == value[-1] == "'")):
+        return value[1:-1]
+    return value
+
+
+def _parse_env_line(line: str) -> tuple[str, str] | None:
+    raw = line.strip()
+    if not raw or raw.startswith("#"):
+        return None
+    if raw.startswith("export "):
+        raw = raw[len("export ") :].strip()
+    if "=" not in raw:
+        return None
+    key, value = raw.split("=", 1)
+    key = key.strip()
+    if not key:
+        return None
+    return key, _strip_quotes(value)
+
+
+def _load_env_file(path: Path) -> None:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return
+    except Exception:  # noqa: BLE001
+        return
+
+    for line in content.splitlines():
+        parsed = _parse_env_line(line)
+        if parsed is None:
+            continue
+        key, value = parsed
+        # Only set known Alpaca/repo knobs and never override the current process environment.
+        if not (key.startswith("APCA_") or key.startswith("OH_ALPACA_")):
+            continue
+        if key in os.environ:
+            continue
+        os.environ[key] = value
+
+
+def _maybe_load_alpaca_env() -> None:
+    override = _clean_env(os.getenv("OH_ALPACA_ENV_FILE"))
+    if override:
+        _load_env_file(Path(override))
+        return
+    # Default locations (local-only; should be gitignored if it contains secrets).
+    _load_env_file(Path("config/alpaca.env"))
+    _load_env_file(Path(".env"))
 
 
 def _load_timeframe():
@@ -89,6 +144,19 @@ def _load_option_contracts_request():
         except Exception:  # noqa: BLE001
             return None
     return OptionContractsRequest
+
+
+def _load_option_chain_request():
+    global OptionChainRequest  # noqa: PLW0603 - intentional lazy import
+    if OptionChainRequest is not None:
+        return OptionChainRequest
+    try:
+        from alpaca.data.requests import OptionChainRequest as AlpacaOptionChainRequest
+
+        OptionChainRequest = AlpacaOptionChainRequest
+    except Exception:  # noqa: BLE001
+        return None
+    return OptionChainRequest
 
 
 def _coerce_datetime(value: date | datetime | None, *, end_of_day: bool) -> datetime | None:
@@ -144,6 +212,14 @@ def _filter_kwargs(target, kwargs: dict[str, Any]) -> dict[str, Any]:
         return kwargs
     allowed = {name for name in sig.parameters if name != "self"}
     return {k: v for k, v in kwargs.items() if k in allowed}
+
+
+def _get_field(obj: Any, name: str) -> Any:
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
 
 
 def _bars_to_dataframe(payload: Any, symbol: str) -> pd.DataFrame:
@@ -320,6 +396,28 @@ def _coerce_date_string(value: Any) -> str | None:
     return None
 
 
+def _coerce_timestamp_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat()
+    if isinstance(value, date):
+        dt = datetime.combine(value, datetime.min.time()).replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        raw = value.strip()
+        return raw or None
+    try:
+        return str(value)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _as_float(value: Any) -> float | None:
     try:
         if value is None or (isinstance(value, float) and pd.isna(value)) or pd.isna(value):
@@ -353,6 +451,165 @@ def _normalize_option_type(value: Any) -> str | None:
     if raw.startswith("put"):
         return "put"
     return None
+
+
+def _looks_like_snapshot(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, dict):
+        keys = {str(k) for k in value.keys()}
+        markers = {
+            "latest_quote",
+            "latestQuote",
+            "latest_trade",
+            "latestTrade",
+            "greeks",
+            "implied_volatility",
+            "impliedVolatility",
+            "iv",
+        }
+        return bool(keys & markers)
+    for attr in ("latest_quote", "latest_trade", "greeks", "implied_volatility", "impliedVolatility", "iv"):
+        if hasattr(value, attr):
+            return True
+    return False
+
+
+def _looks_like_chain_map(value: dict[str, Any]) -> bool:
+    if not value:
+        return False
+    for item in value.values():
+        if _looks_like_snapshot(item):
+            return True
+    return False
+
+
+def _extract_chain_container(payload: Any) -> Any:
+    if payload is None:
+        return None
+    if isinstance(payload, dict):
+        for key in ("data", "chain", "snapshots", "option_chain", "optionChain"):
+            if key in payload:
+                return payload[key]
+        return payload
+    for attr in ("data", "chain", "snapshots", "option_chain", "optionChain"):
+        candidate = getattr(payload, attr, None)
+        if candidate is not None:
+            return candidate
+    return payload
+
+
+def option_chain_to_rows(payload: Any) -> list[dict[str, Any]]:
+    if payload is None:
+        return []
+
+    container = _extract_chain_container(payload)
+    items: list[tuple[str | None, Any]] = []
+
+    if isinstance(container, dict):
+        if _looks_like_chain_map(container):
+            items = [(str(key) if key is not None else None, val) for key, val in container.items()]
+        elif _looks_like_snapshot(container):
+            items = [(None, container)]
+        else:
+            return []
+    elif isinstance(container, (list, tuple)):
+        items = [(None, snapshot) for snapshot in container]
+    else:
+        items = [(None, container)]
+
+    rows: list[dict[str, Any]] = []
+    for symbol_key, snapshot in items:
+        if snapshot is None:
+            continue
+
+        contract_symbol = (
+            _get_field(snapshot, "symbol")
+            or _get_field(snapshot, "contract_symbol")
+            or _get_field(snapshot, "contractSymbol")
+            or _get_field(snapshot, "option_symbol")
+            or symbol_key
+        )
+        contract_symbol = str(contract_symbol) if contract_symbol is not None else None
+
+        quote = (
+            _get_field(snapshot, "latest_quote")
+            or _get_field(snapshot, "latestQuote")
+            or _get_field(snapshot, "quote")
+        )
+        bid = _as_float(
+            _get_field(quote, "bid_price")
+            or _get_field(quote, "bp")
+            or _get_field(quote, "bid")
+            or _get_field(quote, "bidPrice")
+        )
+        ask = _as_float(
+            _get_field(quote, "ask_price")
+            or _get_field(quote, "ap")
+            or _get_field(quote, "ask")
+            or _get_field(quote, "askPrice")
+        )
+
+        trade = (
+            _get_field(snapshot, "latest_trade")
+            or _get_field(snapshot, "latestTrade")
+            or _get_field(snapshot, "trade")
+        )
+        last_price = _as_float(
+            _get_field(trade, "price")
+            or _get_field(trade, "p")
+            or _get_field(trade, "last_price")
+            or _get_field(trade, "lastPrice")
+        )
+        trade_time = (
+            _get_field(trade, "timestamp")
+            or _get_field(trade, "t")
+            or _get_field(trade, "trade_timestamp")
+            or _get_field(trade, "tradeTimestamp")
+            or _get_field(snapshot, "lastTradeDate")
+        )
+
+        implied_volatility = _as_float(
+            _get_field(snapshot, "implied_volatility")
+            or _get_field(snapshot, "impliedVolatility")
+            or _get_field(snapshot, "iv")
+        )
+
+        greeks = (
+            _get_field(snapshot, "greeks")
+            or _get_field(snapshot, "latest_greeks")
+            or _get_field(snapshot, "latestGreeks")
+        )
+        delta = _as_float(_get_field(greeks, "delta"))
+        gamma = _as_float(_get_field(greeks, "gamma"))
+        theta = _as_float(_get_field(greeks, "theta"))
+        vega = _as_float(_get_field(greeks, "vega"))
+        rho = _as_float(_get_field(greeks, "rho"))
+
+        open_interest = _as_int(
+            _get_field(snapshot, "open_interest") or _get_field(snapshot, "openInterest")
+        )
+        volume = _as_int(_get_field(snapshot, "volume") or _get_field(snapshot, "vol"))
+
+        rows.append(
+            {
+                "contractSymbol": contract_symbol,
+                "bid": bid,
+                "ask": ask,
+                "lastPrice": last_price,
+                "lastTradeDate": _coerce_timestamp_value(trade_time),
+                "impliedVolatility": implied_volatility,
+                "delta": delta,
+                "gamma": gamma,
+                "theta": theta,
+                "vega": vega,
+                "rho": rho,
+                "openInterest": open_interest,
+                "volume": volume,
+            }
+        )
+
+    return rows
 
 
 def contracts_to_df(raw_contracts: list[Any]) -> pd.DataFrame:
@@ -449,6 +706,7 @@ class AlpacaClient:
         options_feed: str | None = None,
         recent_bars_buffer_minutes: int | None = None,
     ) -> None:
+        _maybe_load_alpaca_env()
         self._api_key_id = _clean_env(api_key_id) or _clean_env(os.getenv("APCA_API_KEY_ID"))
         self._api_secret_key = _clean_env(api_secret_key) or _clean_env(os.getenv("APCA_API_SECRET_KEY"))
         self._api_base_url = _clean_env(api_base_url) or _clean_env(os.getenv("APCA_API_BASE_URL"))
@@ -637,6 +895,56 @@ class AlpacaClient:
 
         return out
 
+    def get_option_chain_snapshots(
+        self,
+        underlying: str,
+        *,
+        expiry: date,
+        feed: str | None = None,
+    ) -> Any:
+        alpaca_symbol = to_alpaca_symbol(underlying)
+        if not alpaca_symbol:
+            raise DataFetchError(f"Invalid underlying symbol: {underlying}")
+
+        client = self.option_client
+        method = getattr(client, "get_option_chain", None)
+        if method is None:
+            raise DataFetchError("Alpaca data client missing get_option_chain.")
+
+        kwargs = {
+            "underlying_symbol": alpaca_symbol,
+            "underlying_symbols": [alpaca_symbol],
+            "underlying": alpaca_symbol,
+            "symbol": alpaca_symbol,
+            "expiration_date": expiry,
+            "expiry": expiry,
+            "expiration": expiry,
+            "feed": feed or self._options_feed,
+        }
+
+        payload = None
+        request_cls = _load_option_chain_request()
+        if request_cls is not None:
+            try:
+                request_kwargs = _filter_kwargs(request_cls, kwargs)
+                request = request_cls(**request_kwargs)
+                payload = method(request)
+            except TypeError:
+                payload = None
+
+        if payload is None:
+            try:
+                payload = method(**_filter_kwargs(method, kwargs))
+            except Exception as exc:  # noqa: BLE001
+                raise DataFetchError(
+                    f"Failed to fetch Alpaca option chain for {alpaca_symbol} {expiry.isoformat()}."
+                ) from exc
+
+        if payload is None:
+            raise DataFetchError(f"Empty Alpaca option chain for {alpaca_symbol} {expiry.isoformat()}.")
+
+        return payload
+
     def _ensure_credentials(self) -> None:
         if not self._api_key_id or not self._api_secret_key:
             raise DataFetchError(
@@ -685,6 +993,7 @@ class AlpacaClient:
 __all__ = [
     "AlpacaClient",
     "contracts_to_df",
+    "option_chain_to_rows",
     "to_alpaca_symbol",
     "to_repo_symbol",
 ]
