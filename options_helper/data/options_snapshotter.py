@@ -171,6 +171,14 @@ def snapshot_full_chain_for_symbols(
                 "watchlists": watchlists or [],
                 "provider": provider_name,
             }
+            provider_params = None
+            if hasattr(provider, "provider_params"):
+                try:
+                    provider_params = provider.provider_params
+                except Exception:  # noqa: BLE001
+                    provider_params = None
+            if isinstance(provider_params, dict):
+                meta["provider_params"] = provider_params
             if provider_version:
                 meta["provider_version"] = provider_version
 

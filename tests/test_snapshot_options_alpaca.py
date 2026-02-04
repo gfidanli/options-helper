@@ -16,6 +16,8 @@ class _StubClient:
         self.payload = payload
         self.contracts = contracts
         self.options_feed = "opra"
+        self.stock_feed = "sip"
+        self.recent_bars_buffer_minutes = 16
         self.provider_version = "test"
 
     def get_option_chain_snapshots(self, underlying: str, *, expiry: date, feed: str | None = None):
@@ -93,3 +95,8 @@ def test_snapshot_full_chain_with_alpaca_provider(
     day_dir = snapshot_dir / "SPY" / candle_day.isoformat()
     assert (day_dir / f"{expiry.isoformat()}.csv").exists()
     assert (day_dir / f"{expiry.isoformat()}.raw.json").exists()
+    meta = (day_dir / "meta.json").read_text(encoding="utf-8")
+    assert '"provider_params"' in meta
+    assert '"options_feed": "opra"' in meta
+    assert '"stock_feed": "sip"' in meta
+    assert '"recent_bars_buffer_minutes": 16' in meta

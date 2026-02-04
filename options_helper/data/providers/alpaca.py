@@ -248,6 +248,14 @@ class AlpacaProvider(MarketDataProvider):
             adjustment=adjustment,
         )
 
+    @property
+    def provider_params(self) -> dict[str, Any]:
+        return {
+            "options_feed": getattr(self._client, "options_feed", None),
+            "stock_feed": getattr(self._client, "stock_feed", None),
+            "recent_bars_buffer_minutes": getattr(self._client, "recent_bars_buffer_minutes", None),
+        }
+
     def get_underlying(self, symbol: str, *, period: str = "6mo", interval: str = "1d") -> UnderlyingData:
         try:
             start = _parse_period_to_start(period, today=date.today())
