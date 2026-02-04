@@ -1,6 +1,6 @@
 # EPIC — Alpaca market data provider integration (stocks + options)
 
-- **Status:** draft
+- **Status:** done (2026-02-04)
 - **Effort:** L–XL (split across IMPs)
 - **Alpha potential:** Very High
 
