@@ -10,15 +10,18 @@ from options_helper.data.providers.base import (
 from options_helper.data.providers.runtime import get_default_provider_name
 from options_helper.data.providers.mock import MockProvider
 from options_helper.data.providers.yahoo import YahooProvider
+from options_helper.data.providers.alpaca import AlpacaProvider
 from options_helper.data.yf_client import YFinanceClient
 
 _PROVIDERS: dict[str, Callable[[], MarketDataProvider]] = {
     "yahoo": YahooProvider,
+    "alpaca": AlpacaProvider,
 }
 
 _ALIASES: dict[str, str] = {
     "yf": "yahoo",
     "yfinance": "yahoo",
+    "apca": "alpaca",
 }
 
 

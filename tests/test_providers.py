@@ -54,6 +54,11 @@ def test_get_provider_yahoo_normalizes_chain() -> None:
     assert chain.calls.loc[0, "expiry"] == "2026-01-17"
 
 
+def test_get_provider_alpaca_scaffold() -> None:
+    provider = get_provider("alpaca")
+    assert provider.name == "alpaca"
+
+
 def test_mock_provider_history_slicing() -> None:
     idx = pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"])
     history = pd.DataFrame({"Close": [1.0, 2.0, 3.0]}, index=idx)

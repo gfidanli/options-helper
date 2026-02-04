@@ -15,10 +15,29 @@ options-helper --provider yahoo snapshot-options portfolio.json
 
 Currently implemented providers:
 - `yahoo` (default)
+- `alpaca` (scaffold; data endpoints land in follow-on IMPs)
 
 Aliases:
 - `yf`
 - `yfinance`
+- `apca`
+
+## Alpaca setup (scaffold)
+
+Install extras:
+```bash
+pip install -e ".[alpaca]"
+```
+
+Required env vars:
+- `APCA_API_KEY_ID`
+- `APCA_API_SECRET_KEY`
+
+Optional env vars:
+- `APCA_API_BASE_URL`
+- `OH_ALPACA_STOCK_FEED`
+- `OH_ALPACA_OPTIONS_FEED`
+- `OH_ALPACA_RECENT_BARS_BUFFER_MINUTES` (default 16)
 
 ## Provider contract (dev)
 

@@ -28,6 +28,9 @@ dev = [
   "ruff>=0.5",
   "mypy>=1.8",
 ]
+alpaca = [
+  "alpaca-py>=0.30.0",
+]
 
 [project.scripts]
 options-helper = "options_helper.cli:app"

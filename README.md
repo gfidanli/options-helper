@@ -68,9 +68,32 @@ Recommends short-dated (30–90 DTE) and long-dated (LEAPS) contracts to conside
 - Design/usage: `docs/CANDLE_CACHE.md`
 
 ### Market data providers
-All commands accept a global `--provider` option (currently only `yahoo` is implemented).
+All commands accept a global `--provider` option (currently `yahoo` plus a scaffolded `alpaca` provider).
 
 - Design/usage: `docs/PROVIDERS.md`
+
+### Alpaca provider setup (scaffold)
+The Alpaca provider is scaffolded (client wiring + config). Data endpoints land in follow-on IMPs.
+
+Install Alpaca extras:
+```bash
+pip install -e ".[alpaca]"
+```
+
+Required env vars:
+- `APCA_API_KEY_ID`
+- `APCA_API_SECRET_KEY`
+
+Optional env vars:
+- `APCA_API_BASE_URL` (paper/live trading endpoint)
+- `OH_ALPACA_STOCK_FEED` (e.g., `iex`/`sip`)
+- `OH_ALPACA_OPTIONS_FEED` (e.g., `opra`/`indicative`)
+- `OH_ALPACA_RECENT_BARS_BUFFER_MINUTES` (default 16)
+
+Example usage:
+```bash
+options-helper --provider alpaca analyze portfolio.json
+```
 
 ### Daily performance (best-effort)
 Computes day’s P&L from options-chain `change` * contracts * 100 (best-effort; can be stale on illiquid chains).
