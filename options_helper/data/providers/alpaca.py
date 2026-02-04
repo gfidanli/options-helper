@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-from options_helper.data.alpaca_client import AlpacaClient
+from options_helper.analysis.osi import parse_contract_symbol
+from options_helper.data.alpaca_client import AlpacaClient, contracts_to_df
 from options_helper.data.alpaca_symbols import to_alpaca_symbol, to_repo_symbol
 from options_helper.data.candles import _parse_period_to_start
 from options_helper.data.market_types import DataFetchError, EarningsEvent, OptionsChain, UnderlyingData
+from options_helper.data.option_contracts import OptionContractsStore
 from options_helper.data.providers.base import MarketDataProvider
 
 logger = logging.getLogger(__name__)
@@ -79,12 +82,55 @@ def _last_close(history: pd.DataFrame) -> float | None:
     return float(close.iloc[-1])
 
 
+def _coerce_expiry_date(value: Any) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            return date.fromisoformat(raw[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _expiries_from_contracts(df: pd.DataFrame) -> list[date]:
+    if df is None or df.empty:
+        return []
+    expiries: set[date] = set()
+    if "expiry" in df.columns:
+        for val in df["expiry"].dropna().tolist():
+            exp = _coerce_expiry_date(val)
+            if exp is not None:
+                expiries.add(exp)
+    if not expiries and "contractSymbol" in df.columns:
+        for raw in df["contractSymbol"].dropna().tolist():
+            parsed = parse_contract_symbol(str(raw))
+            if parsed is not None:
+                expiries.add(parsed.expiry)
+    return sorted(expiries)
+
+
 class AlpacaProvider(MarketDataProvider):
     name = "alpaca"
 
-    def __init__(self, client: AlpacaClient | None = None) -> None:
+    def __init__(
+        self,
+        client: AlpacaClient | None = None,
+        *,
+        contracts_store: OptionContractsStore | None = None,
+        contracts_cache_dir: Path | None = None,
+    ) -> None:
         self._client = client or AlpacaClient()
         self._warned_back_adjust = False
+        cache_dir = contracts_cache_dir or Path("data/option_contracts")
+        self._contracts_store = contracts_store or OptionContractsStore(cache_dir)
 
     def get_history(
         self,
@@ -178,8 +224,39 @@ class AlpacaProvider(MarketDataProvider):
             raise exc
 
     def list_option_expiries(self, symbol: str) -> list[date]:
-        _ = self._client.option_client
-        raise DataFetchError("Alpaca provider scaffold: expiries not implemented yet (see IMP-023).")
+        sym = to_repo_symbol(symbol)
+        if not sym:
+            raise DataFetchError(f"Invalid symbol: {symbol}")
+
+        as_of = date.today()
+        cached = self._contracts_store.load(sym, as_of)
+        if cached is not None:
+            return _expiries_from_contracts(cached)
+
+        try:
+            raw_contracts = self._client.list_option_contracts(
+                sym,
+                exp_gte=as_of,
+                exp_lte=None,
+                limit=1000,
+                page_limit=50,
+            )
+        except DataFetchError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise DataFetchError(f"Failed to fetch Alpaca option contracts for {sym}.") from exc
+
+        df = contracts_to_df(raw_contracts)
+        meta = {
+            "provider": self.name,
+            "provider_version": self._client.provider_version,
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "exp_gte": as_of.isoformat(),
+            "exp_lte": None,
+            "contracts": int(len(raw_contracts)),
+        }
+        self._contracts_store.save(sym, as_of, df, raw={"contracts": raw_contracts}, meta=meta)
+        return _expiries_from_contracts(df)
 
     def get_options_chain(self, symbol: str, expiry: date) -> OptionsChain:
         _ = self._client.option_client
