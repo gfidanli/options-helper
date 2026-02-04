@@ -34,12 +34,12 @@ def _stub_research_client(  # type: ignore[no-untyped-def]
         def get_options_chain(self, symbol: str, expiry: date) -> OptionsChain:  # noqa: ARG002
             return OptionsChain(symbol="TEST", expiry=expiry, calls=calls, puts=puts)
 
-    monkeypatch.setattr("options_helper.cli.get_provider", lambda *_args, **_kwargs: _StubProvider())
+    monkeypatch.setattr("options_helper.cli.build_provider", lambda *_args, **_kwargs: _StubProvider())
 
     def _stub_history(self, symbol: str, *, period: str = "5y"):  # noqa: ARG001
         return history
 
-    monkeypatch.setattr("options_helper.cli.CandleStore.get_daily_history", _stub_history)
+    monkeypatch.setattr("options_helper.data.candles.CandleStore.get_daily_history", _stub_history)
 
 
 def test_choose_expiry_picks_closest_to_target() -> None:
@@ -201,12 +201,12 @@ def test_research_cli_saves_report_and_includes_spreads(tmp_path: Path, monkeypa
         def get_options_chain(self, symbol: str, expiry: date) -> OptionsChain:  # noqa: ARG002
             return OptionsChain(symbol="TEST", expiry=expiry, calls=calls, puts=puts)
 
-    monkeypatch.setattr("options_helper.cli.get_provider", lambda *_args, **_kwargs: _StubProvider())
+    monkeypatch.setattr("options_helper.cli.build_provider", lambda *_args, **_kwargs: _StubProvider())
 
     def _stub_history(self, symbol: str, *, period: str = "5y"):  # noqa: ARG001
         return history
 
-    monkeypatch.setattr("options_helper.cli.CandleStore.get_daily_history", _stub_history)
+    monkeypatch.setattr("options_helper.data.candles.CandleStore.get_daily_history", _stub_history)
 
     portfolio_path = tmp_path / "portfolio.json"
     portfolio_path.write_text(

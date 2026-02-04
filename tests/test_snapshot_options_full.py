@@ -30,7 +30,7 @@ def test_snapshot_options_full_chain_from_all_watchlists(tmp_path: Path, monkeyp
         idx = pd.to_datetime([candle_day.replace(day=candle_day.day - 1), candle_day])
         return pd.DataFrame({"Close": [100.0, 101.0]}, index=idx)
 
-    monkeypatch.setattr("options_helper.cli.CandleStore.get_daily_history", _stub_history)
+    monkeypatch.setattr("options_helper.data.candles.CandleStore.get_daily_history", _stub_history)
 
     expiries = [date(2026, 2, 20), date(2026, 3, 20)]
 
@@ -73,7 +73,7 @@ def test_snapshot_options_full_chain_from_all_watchlists(tmp_path: Path, monkeyp
                 ],
             }
 
-    monkeypatch.setattr("options_helper.cli.get_provider", lambda *_args, **_kwargs: _StubProvider())
+    monkeypatch.setattr("options_helper.cli.build_provider", lambda *_args, **_kwargs: _StubProvider())
 
     cache_dir = tmp_path / "snapshots"
 
@@ -147,7 +147,7 @@ def test_snapshot_options_defaults_to_full_chain_and_all_expiries(tmp_path: Path
         idx = pd.to_datetime([candle_day.replace(day=candle_day.day - 1), candle_day])
         return pd.DataFrame({"Close": [100.0, 101.0]}, index=idx)
 
-    monkeypatch.setattr("options_helper.cli.CandleStore.get_daily_history", _stub_history)
+    monkeypatch.setattr("options_helper.data.candles.CandleStore.get_daily_history", _stub_history)
 
     expiries = [date(2026, 2, 20), date(2026, 3, 20), date(2026, 4, 17)]
 
@@ -189,7 +189,7 @@ def test_snapshot_options_defaults_to_full_chain_and_all_expiries(tmp_path: Path
                 ],
             }
 
-    monkeypatch.setattr("options_helper.cli.get_provider", lambda *_args, **_kwargs: _StubProvider())
+    monkeypatch.setattr("options_helper.cli.build_provider", lambda *_args, **_kwargs: _StubProvider())
 
     cache_dir = tmp_path / "snapshots"
 
@@ -241,7 +241,7 @@ def test_snapshot_options_position_expiries_caps_watchlists_by_default(tmp_path:
         idx = pd.to_datetime([candle_day.replace(day=candle_day.day - 1), candle_day])
         return pd.DataFrame({"Close": [100.0, 101.0]}, index=idx)
 
-    monkeypatch.setattr("options_helper.cli.CandleStore.get_daily_history", _stub_history)
+    monkeypatch.setattr("options_helper.data.candles.CandleStore.get_daily_history", _stub_history)
 
     expiries = [date(2026, 2, 20), date(2026, 3, 20), date(2026, 4, 17)]
 
@@ -283,7 +283,7 @@ def test_snapshot_options_position_expiries_caps_watchlists_by_default(tmp_path:
                 ],
             }
 
-    monkeypatch.setattr("options_helper.cli.get_provider", lambda *_args, **_kwargs: _StubProvider())
+    monkeypatch.setattr("options_helper.cli.build_provider", lambda *_args, **_kwargs: _StubProvider())
 
     cache_dir = tmp_path / "snapshots"
 

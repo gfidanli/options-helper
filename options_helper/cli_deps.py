@@ -1,0 +1,64 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from options_helper.data.candles import CandleStore, HistoryFetcher
+    from options_helper.data.derived import DerivedStore
+    from options_helper.data.earnings import EarningsStore
+    from options_helper.data.journal import JournalStore
+    from options_helper.data.options_snapshots import OptionsSnapshotStore
+    from options_helper.data.providers.base import MarketDataProvider
+
+
+def build_provider(name: str | None = None) -> MarketDataProvider:
+    from options_helper.data.providers import get_provider
+
+    return get_provider(name)
+
+
+def build_candle_store(
+    cache_dir: Path,
+    *,
+    provider: MarketDataProvider | None = None,
+    fetcher: HistoryFetcher | None = None,
+    auto_adjust: bool | None = None,
+    back_adjust: bool | None = None,
+) -> CandleStore:
+    from options_helper.data.candles import CandleStore
+
+    kwargs: dict[str, object] = {}
+    if provider is not None:
+        kwargs["provider"] = provider
+    if fetcher is not None:
+        kwargs["fetcher"] = fetcher
+    if auto_adjust is not None:
+        kwargs["auto_adjust"] = bool(auto_adjust)
+    if back_adjust is not None:
+        kwargs["back_adjust"] = bool(back_adjust)
+    return CandleStore(cache_dir, **kwargs)
+
+
+def build_snapshot_store(cache_dir: Path) -> OptionsSnapshotStore:
+    from options_helper.data.options_snapshots import OptionsSnapshotStore
+
+    return OptionsSnapshotStore(cache_dir)
+
+
+def build_derived_store(derived_dir: Path) -> DerivedStore:
+    from options_helper.data.derived import DerivedStore
+
+    return DerivedStore(derived_dir)
+
+
+def build_earnings_store(cache_dir: Path) -> EarningsStore:
+    from options_helper.data.earnings import EarningsStore
+
+    return EarningsStore(cache_dir)
+
+
+def build_journal_store(journal_dir: Path) -> JournalStore:
+    from options_helper.data.journal import JournalStore
+
+    return JournalStore(journal_dir)

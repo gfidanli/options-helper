@@ -44,7 +44,7 @@ def test_analyze_online_path_stubs_still_runs(tmp_path: Path, monkeypatch) -> No
     def _stub_history(self, symbol: str, *, period: str = "2y", today=None):  # noqa: ANN001,ARG001
         return history
 
-    monkeypatch.setattr("options_helper.cli.CandleStore.get_daily_history", _stub_history)
+    monkeypatch.setattr("options_helper.data.candles.CandleStore.get_daily_history", _stub_history)
 
     class StubProvider:
         def get_options_chain(self, symbol: str, expiry: date) -> OptionsChain:  # noqa: ARG002
@@ -78,7 +78,7 @@ def test_analyze_online_path_stubs_still_runs(tmp_path: Path, monkeypatch) -> No
             )
             return OptionsChain(symbol=symbol.upper(), expiry=expiry, calls=calls, puts=puts)
 
-    monkeypatch.setattr("options_helper.cli.get_provider", lambda *_args, **_kwargs: StubProvider())
+    monkeypatch.setattr("options_helper.cli.build_provider", lambda *_args, **_kwargs: StubProvider())
 
     runner = CliRunner()
     res = runner.invoke(app, ["analyze", str(portfolio_path), "--cache-dir", str(tmp_path / "candles")])

@@ -77,9 +77,9 @@ def test_journal_log_offline_writes_position_event(tmp_path: Path, monkeypatch) 
     journal_dir = tmp_path / "journal"
 
     def _boom_provider(*_args, **_kwargs):  # noqa: ANN001
-        raise AssertionError("get_provider should not be called in --offline mode")
+        raise AssertionError("build_provider should not be called in --offline mode")
 
-    monkeypatch.setattr("options_helper.cli.get_provider", _boom_provider)
+    monkeypatch.setattr("options_helper.cli.build_provider", _boom_provider)
 
     runner = CliRunner()
     res = runner.invoke(
@@ -172,7 +172,7 @@ def test_journal_log_research_uses_stubbed_client(tmp_path: Path, monkeypatch) -
     def _fake_history(self, symbol: str, period: str = "5y") -> pd.DataFrame:  # noqa: ANN001
         return history
 
-    monkeypatch.setattr("options_helper.cli.CandleStore.get_daily_history", _fake_history)
+    monkeypatch.setattr("options_helper.data.candles.CandleStore.get_daily_history", _fake_history)
 
     def _fake_config(*_args, **_kwargs):  # noqa: ANN001
         raise cli.TechnicalConfigError("no config")
@@ -214,7 +214,7 @@ def test_journal_log_research_uses_stubbed_client(tmp_path: Path, monkeypatch) -
             )
             return OptionsChain(symbol=symbol.upper(), expiry=expiry, calls=calls, puts=puts)
 
-    monkeypatch.setattr("options_helper.cli.get_provider", lambda *_args, **_kwargs: StubProvider())
+    monkeypatch.setattr("options_helper.cli.build_provider", lambda *_args, **_kwargs: StubProvider())
 
     journal_dir = tmp_path / "journal"
     runner = CliRunner()

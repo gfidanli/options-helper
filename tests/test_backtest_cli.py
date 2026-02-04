@@ -45,7 +45,13 @@ def test_backtest_run_cli_writes_artifacts(tmp_path: Path, monkeypatch) -> None:
         rolls=[],
     )
 
-    monkeypatch.setattr("options_helper.cli.run_backtest", lambda *_args, **_kwargs: run)
+    def _fake_run_backtest(*_args, **_kwargs):  # noqa: ANN001
+        return run
+
+    monkeypatch.setattr(
+        "options_helper.commands.backtest._resolve_run_backtest",
+        lambda: _fake_run_backtest,
+    )
 
     reports_dir = tmp_path / "reports"
     runner = CliRunner()

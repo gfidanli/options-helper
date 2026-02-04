@@ -34,7 +34,7 @@ def test_refresh_candles_includes_positions_and_watchlists(tmp_path: Path, monke
         idx = pd.date_range(datetime.now() - timedelta(days=3), periods=3, freq="D")
         return pd.DataFrame({"Close": [1.0, 2.0, 3.0]}, index=idx)
 
-    monkeypatch.setattr("options_helper.cli.CandleStore.get_daily_history", _stub_get)
+    monkeypatch.setattr("options_helper.data.candles.CandleStore.get_daily_history", _stub_get)
 
     runner = CliRunner()
     res = runner.invoke(
@@ -52,4 +52,3 @@ def test_refresh_candles_includes_positions_and_watchlists(tmp_path: Path, monke
     )
     assert res.exit_code == 0, res.output
     assert sorted(set(calls)) == ["AAA", "BBB"]
-

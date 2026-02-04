@@ -167,6 +167,7 @@ def _write_candle_cache(candle_dir: Path, *, symbol: str, end: str, periods: int
 def test_derived_update_is_idempotent(tmp_path: Path) -> None:
     cache_dir = tmp_path / "snapshots"
     derived_dir = tmp_path / "derived"
+    candle_dir = tmp_path / "candles"
     _write_snapshot_day(cache_dir, symbol="AAA", day="2026-01-02", spot=100.0)
 
     runner = CliRunner()
@@ -184,6 +185,8 @@ def test_derived_update_is_idempotent(tmp_path: Path) -> None:
                 str(cache_dir),
                 "--derived-dir",
                 str(derived_dir),
+                "--candle-cache-dir",
+                str(candle_dir),
             ],
         )
         assert res.exit_code == 0, res.output
@@ -217,6 +220,7 @@ def test_derived_update_is_idempotent(tmp_path: Path) -> None:
 def test_derived_show_prints_rows(tmp_path: Path) -> None:
     cache_dir = tmp_path / "snapshots"
     derived_dir = tmp_path / "derived"
+    candle_dir = tmp_path / "candles"
     _write_snapshot_day(cache_dir, symbol="AAA", day="2026-01-02", spot=100.0)
 
     runner = CliRunner()
@@ -233,6 +237,8 @@ def test_derived_show_prints_rows(tmp_path: Path) -> None:
             str(cache_dir),
             "--derived-dir",
             str(derived_dir),
+            "--candle-cache-dir",
+            str(candle_dir),
         ],
     )
     assert res_up.exit_code == 0, res_up.output
@@ -258,6 +264,7 @@ def test_derived_show_prints_rows(tmp_path: Path) -> None:
 def test_derived_stats_json_percentiles_and_trends(tmp_path: Path) -> None:
     cache_dir = tmp_path / "snapshots"
     derived_dir = tmp_path / "derived"
+    candle_dir = tmp_path / "candles"
 
     _write_snapshot_day(cache_dir, symbol="AAA", day="2026-01-01", spot=95.0)
     _write_snapshot_day(cache_dir, symbol="AAA", day="2026-01-02", spot=100.0)
@@ -278,6 +285,8 @@ def test_derived_stats_json_percentiles_and_trends(tmp_path: Path) -> None:
                 str(cache_dir),
                 "--derived-dir",
                 str(derived_dir),
+                "--candle-cache-dir",
+                str(candle_dir),
             ],
         )
         assert res.exit_code == 0, res.output
