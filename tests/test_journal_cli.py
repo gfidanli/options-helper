@@ -177,7 +177,7 @@ def test_journal_log_research_uses_stubbed_client(tmp_path: Path, monkeypatch) -
     def _fake_config(*_args, **_kwargs):  # noqa: ANN001
         raise cli.TechnicalConfigError("no config")
 
-    monkeypatch.setattr("options_helper.cli.load_technical_backtesting_config", _fake_config)
+    monkeypatch.setattr("options_helper.commands.journal.load_technical_backtesting_config", _fake_config)
 
     class StubProvider:
         def list_option_expiries(self, symbol: str):  # noqa: ARG002
