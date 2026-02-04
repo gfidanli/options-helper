@@ -91,3 +91,34 @@ def test_compute_flow_prefers_osi_join_when_available() -> None:
     assert len(out) == 1
     row = out.iloc[0]
     assert row["deltaOI"] == 50
+
+
+def test_compute_flow_falls_back_to_contract_symbol_when_prev_missing_osi() -> None:
+    today = pd.DataFrame(
+        [
+            {
+                "contractSymbol": "ABC240119C00010000",
+                "osi": "ABC   240119C00010000",
+                "optionType": "call",
+                "expiry": "2024-01-19",
+                "strike": 10.0,
+                "lastPrice": 2.0,
+                "volume": 100,
+                "openInterest": 150,
+            }
+        ]
+    )
+    prev = pd.DataFrame(
+        [
+            {
+                "contractSymbol": "ABC240119C00010000",
+                "openInterest": 100,
+            }
+        ]
+    )
+
+    out = compute_flow(today, prev)
+    assert len(out) == 1
+    row = out.iloc[0]
+    assert row["openInterest_prev"] == 100
+    assert row["deltaOI"] == 50

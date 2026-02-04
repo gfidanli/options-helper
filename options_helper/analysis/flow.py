@@ -122,22 +122,49 @@ def compute_flow(today: pd.DataFrame, prev: pd.DataFrame, *, spot: float | None 
     if "contractSymbol" not in prev.columns and "osi" not in prev.columns:
         raise ValueError("prev snapshot missing required columns: contractSymbol or osi")
 
+    # Join strategy:
+    # - Prefer contractSymbol because it's always present in `today` and commonly present in `prev`.
+    # - Use OSI as a fallback join key to handle cases where contractSymbol differs across providers/versions.
+    # - Crucially, do NOT switch the entire join key to OSI when only one side has it (mixed-schema snapshots);
+    #   that causes all prev OI lookups to miss.
     t = today.copy()
-    t["_join_key"] = _clean_key_series(t["contractSymbol"])
-    if "osi" in t.columns:
-        osi_key = _clean_key_series(t["osi"])
-        t["_join_key"] = osi_key.where(osi_key.notna(), t["_join_key"])
+    t["_contract_key"] = _clean_key_series(t["contractSymbol"])
+    t["_osi_key"] = _clean_key_series(t["osi"]) if "osi" in t.columns else pd.Series([None] * len(t), index=t.index)
+
+    merged = t.copy()
+    merged["openInterest_prev"] = float("nan")
 
     p = prev.copy()
-    base_key = _clean_key_series(p["contractSymbol"]) if "contractSymbol" in p.columns else pd.Series([None] * len(p), index=p.index)
-    if "osi" in p.columns:
-        osi_key = _clean_key_series(p["osi"])
-        base_key = osi_key.where(osi_key.notna(), base_key)
-    p = p.assign(_join_key=base_key)[["_join_key", "openInterest"]].copy()
-    p = p.rename(columns={"openInterest": "openInterest_prev"})
 
-    merged = t.merge(p, on="_join_key", how="left")
-    merged = merged.drop(columns=["_join_key"])
+    if "contractSymbol" in p.columns:
+        p_contract = pd.DataFrame(
+            {
+                "_contract_key": _clean_key_series(p["contractSymbol"]),
+                "openInterest_prev": p["openInterest"],
+            }
+        )
+        p_contract = p_contract.dropna(subset=["_contract_key"]).drop_duplicates(subset=["_contract_key"], keep="last")
+        merged = merged.merge(p_contract, on="_contract_key", how="left", suffixes=("", "_from_contract"))
+        if "openInterest_prev_from_contract" in merged.columns:
+            merged["openInterest_prev"] = merged["openInterest_prev_from_contract"]
+            merged = merged.drop(columns=["openInterest_prev_from_contract"])
+
+    if "osi" in p.columns:
+        p_osi = pd.DataFrame(
+            {
+                "_osi_key": _clean_key_series(p["osi"]),
+                "openInterest_prev_from_osi": p["openInterest"],
+            }
+        )
+        p_osi = p_osi.dropna(subset=["_osi_key"]).drop_duplicates(subset=["_osi_key"], keep="last")
+        merged = merged.merge(p_osi, on="_osi_key", how="left")
+        merged["openInterest_prev"] = merged["openInterest_prev"].where(
+            merged["openInterest_prev"].notna(),
+            merged["openInterest_prev_from_osi"],
+        )
+        merged = merged.drop(columns=["openInterest_prev_from_osi"])
+
+    merged = merged.drop(columns=["_contract_key", "_osi_key"])
 
     # Normalize types (prefer numeric dtype + NaN for missing)
     merged["lastPrice"] = (

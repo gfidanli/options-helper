@@ -261,10 +261,37 @@ def compute_compare_report(
     flow_top_contracts: list[FlowContract] = []
     flow_top_expiries: list[FlowExpiryNet] = []
     try:
-        flow = compute_flow(to_df, from_df)
+        non_zero_flow = pd.DataFrame()
+        flow = compute_flow(to_df, from_df, spot=spot_to)
+        if not flow.empty:
+            prev_oi = pd.to_numeric(flow.get("openInterest_prev"), errors="coerce") if "openInterest_prev" in flow.columns else None
+            prev_matched = int(prev_oi.notna().sum()) if prev_oi is not None else 0
+            total_contracts = int(len(flow))
+            if total_contracts > 0 and prev_matched == 0:
+                warnings.append(f"flow_prev_oi_unmatched (0/{total_contracts} contracts)")
+            elif total_contracts > 0 and prev_matched < total_contracts:
+                warnings.append(f"flow_prev_oi_partial ({prev_matched}/{total_contracts} contracts)")
+
+            delta_oi = pd.to_numeric(flow.get("deltaOI"), errors="coerce") if "deltaOI" in flow.columns else None
+            if delta_oi is not None and prev_matched > 0:
+                non_zero = (delta_oi.abs() > 0).any()
+                if not bool(non_zero):
+                    warnings.append(f"oi_unchanged_between_snapshots ({prev_matched} contracts matched)")
+
         if not flow.empty and "deltaOI_notional" in flow.columns:
-            flow = flow.assign(_abs=flow["deltaOI_notional"].abs()).sort_values("_abs", ascending=False)
-            for _, row in flow.head(top).iterrows():
+            flow = flow.copy()
+            flow["deltaOI_notional"] = pd.to_numeric(flow.get("deltaOI_notional"), errors="coerce")
+
+            non_zero_flow = flow[flow["deltaOI_notional"].abs() > 0].copy()
+            if non_zero_flow.empty:
+                # Avoid rendering misleading "top" tables when there's no meaningful notional deltas.
+                non_zero_flow = pd.DataFrame()
+
+        if not flow.empty and "deltaOI_notional" in flow.columns and not non_zero_flow.empty:
+            non_zero_flow = non_zero_flow.assign(_abs=non_zero_flow["deltaOI_notional"].abs()).sort_values(
+                "_abs", ascending=False
+            )
+            for _, row in non_zero_flow.head(top).iterrows():
                 strike = row.get("strike")
                 strike_val = float(strike) if strike is not None and not pd.isna(strike) else None
                 osi_raw = row.get("osi")
@@ -290,7 +317,7 @@ def compute_compare_report(
                     )
                 )
 
-            expiry_net = flow.groupby("expiry", as_index=False)["deltaOI_notional"].sum()
+            expiry_net = non_zero_flow.groupby("expiry", as_index=False)["deltaOI_notional"].sum()
             expiry_net = expiry_net.assign(_abs=expiry_net["deltaOI_notional"].abs()).sort_values("_abs", ascending=False)
             for _, row in expiry_net.head(top).iterrows():
                 flow_top_expiries.append(
