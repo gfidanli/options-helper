@@ -126,7 +126,7 @@ def test_roll_plan_cli_ranks_candidates_and_applies_liquidity_gates(tmp_path: Pa
     def _stub_next_earnings_date(store, symbol):  # type: ignore[no-untyped-def]
         return date(2026, 1, 10) if symbol.upper() == "AAA" else None
 
-    monkeypatch.setattr("options_helper.cli.safe_next_earnings_date", _stub_next_earnings_date)
+    monkeypatch.setattr("options_helper.commands.reports.safe_next_earnings_date", _stub_next_earnings_date)
 
     runner = CliRunner()
     res = runner.invoke(
@@ -258,7 +258,7 @@ def test_roll_plan_cli_excludes_candidates_when_avoid_days_set(tmp_path: Path, m
     def _stub_next_earnings_date(store, symbol):  # type: ignore[no-untyped-def]
         return date(2026, 1, 5) if symbol.upper() == "AAA" else None
 
-    monkeypatch.setattr("options_helper.cli.safe_next_earnings_date", _stub_next_earnings_date)
+    monkeypatch.setattr("options_helper.commands.reports.safe_next_earnings_date", _stub_next_earnings_date)
 
     runner = CliRunner()
     res = runner.invoke(

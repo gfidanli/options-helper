@@ -5,7 +5,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from options_helper.cli import _position_metrics
+from options_helper.commands.position_metrics import _position_metrics
 from options_helper.models import Position, RiskProfile
 
 

@@ -227,7 +227,7 @@ def test_research_cli_saves_report_and_includes_spreads(tmp_path: Path, monkeypa
             return run_dt_2
 
     runner = CliRunner()
-    monkeypatch.setattr("options_helper.cli.datetime", _FakeDateTime1)
+    monkeypatch.setattr("options_helper.commands.workflows.datetime", _FakeDateTime1)
     res = runner.invoke(
         app,
         [
@@ -268,7 +268,7 @@ def test_research_cli_saves_report_and_includes_spreads(tmp_path: Path, monkeypa
     assert f"run_at: {run_dt_1.strftime('%Y-%m-%d %H:%M:%S')}" in ticker_txt
 
     # Re-run later in the same day: overwrite that day's ticker entry.
-    monkeypatch.setattr("options_helper.cli.datetime", _FakeDateTime2)
+    monkeypatch.setattr("options_helper.commands.workflows.datetime", _FakeDateTime2)
     res2 = runner.invoke(
         app,
         [
@@ -331,7 +331,7 @@ def test_research_cli_includes_earnings_warnings(tmp_path: Path, monkeypatch) ->
     def _stub_next_earnings_date(store, symbol):  # type: ignore[no-untyped-def]
         return earnings_date if symbol.upper() == "TEST" else None
 
-    monkeypatch.setattr("options_helper.cli.safe_next_earnings_date", _stub_next_earnings_date)
+    monkeypatch.setattr("options_helper.commands.workflows.safe_next_earnings_date", _stub_next_earnings_date)
 
     portfolio_path = tmp_path / "portfolio.json"
     portfolio_path.write_text(
@@ -406,7 +406,7 @@ def test_research_cli_excludes_candidates_when_avoid_days_set(tmp_path: Path, mo
     def _stub_next_earnings_date(store, symbol):  # type: ignore[no-untyped-def]
         return earnings_date if symbol.upper() == "TEST" else None
 
-    monkeypatch.setattr("options_helper.cli.safe_next_earnings_date", _stub_next_earnings_date)
+    monkeypatch.setattr("options_helper.commands.workflows.safe_next_earnings_date", _stub_next_earnings_date)
 
     portfolio_path = tmp_path / "portfolio.json"
     portfolio_path.write_text(

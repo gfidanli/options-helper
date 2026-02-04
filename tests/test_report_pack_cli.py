@@ -118,7 +118,7 @@ def test_report_pack_can_write_technicals_artifacts(tmp_path: Path, monkeypatch)
         (base / "2026-01-02.json").write_text("{}", encoding="utf-8")
         (base / "2026-01-02.md").write_text("# stub\n", encoding="utf-8")
 
-    monkeypatch.setattr("options_helper.cli.technicals_extension_stats", _stub_extension_stats)
+    monkeypatch.setattr("options_helper.commands.reports.technicals_extension_stats", _stub_extension_stats)
 
     runner = CliRunner()
     res = runner.invoke(
@@ -142,4 +142,3 @@ def test_report_pack_can_write_technicals_artifacts(tmp_path: Path, monkeypatch)
 
     assert (out_dir / "technicals" / "extension" / "AAA" / "2026-01-02.json").exists()
     assert (out_dir / "technicals" / "extension" / "AAA" / "2026-01-02.md").exists()
-

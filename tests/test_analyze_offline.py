@@ -7,6 +7,7 @@ import pandas as pd
 from typer.testing import CliRunner
 
 import options_helper.cli as cli
+import options_helper.commands.workflows as workflows
 
 
 def test_analyze_offline_uses_snapshots_and_never_instantiates_yfinance(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -70,14 +71,14 @@ def test_analyze_offline_uses_snapshots_and_never_instantiates_yfinance(tmp_path
 
     monkeypatch.setattr("options_helper.cli_deps.build_provider", _boom_provider)
 
-    original_position_metrics = cli._position_metrics
+    original_position_metrics = workflows._position_metrics
     seen: dict[str, object] = {}
 
     def _wrapped_position_metrics(*args, **kwargs):  # noqa: ANN001
         seen["snapshot_row"] = kwargs.get("snapshot_row")
         return original_position_metrics(*args, **kwargs)
 
-    monkeypatch.setattr(cli, "_position_metrics", _wrapped_position_metrics)
+    monkeypatch.setattr(workflows, "_position_metrics", _wrapped_position_metrics)
 
     runner = CliRunner()
     res = runner.invoke(

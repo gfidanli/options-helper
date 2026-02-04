@@ -120,7 +120,7 @@ def test_briefing_writes_daily_md_and_updates_derived(tmp_path: Path, monkeypatc
             return date(2026, 1, 10)
         return None
 
-    monkeypatch.setattr("options_helper.cli.safe_next_earnings_date", _stub_next_earnings_date)
+    monkeypatch.setattr("options_helper.commands.reports.safe_next_earnings_date", _stub_next_earnings_date)
 
     runner = CliRunner()
     res = runner.invoke(

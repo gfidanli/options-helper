@@ -9,6 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 import options_helper.cli as cli
+from options_helper.data.technical_backtesting_config import ConfigError as TechnicalConfigError
 from options_helper.data.journal import JournalStore, SignalContext
 from options_helper.data.market_types import OptionsChain
 
@@ -175,7 +176,7 @@ def test_journal_log_research_uses_stubbed_client(tmp_path: Path, monkeypatch) -
     monkeypatch.setattr("options_helper.data.candles.CandleStore.get_daily_history", _fake_history)
 
     def _fake_config(*_args, **_kwargs):  # noqa: ANN001
-        raise cli.TechnicalConfigError("no config")
+        raise TechnicalConfigError("no config")
 
     monkeypatch.setattr("options_helper.commands.journal.load_technical_backtesting_config", _fake_config)
 
