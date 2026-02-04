@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
@@ -54,6 +55,7 @@ def _setup_timeframe(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_get_stock_bars_intraday_normalizes(monkeypatch: pytest.MonkeyPatch) -> None:
     _setup_timeframe(monkeypatch)
     monkeypatch.setattr(alpaca_client, "_load_stock_bars_request", lambda: None)
+    monkeypatch.setenv("OH_ALPACA_MARKET_TZ", "America/New_York")
 
     idx = pd.MultiIndex.from_product(
         [["AAPL"], pd.to_datetime(["2026-02-03T14:30:00Z", "2026-02-03T14:31:00Z"], utc=True)],
@@ -76,6 +78,12 @@ def test_get_stock_bars_intraday_normalizes(monkeypatch: pytest.MonkeyPatch) -> 
     out = client.get_stock_bars_intraday("AAPL", day=date(2026, 2, 3), timeframe="1Min")
 
     assert len(stub.calls) == 1
+    call = stub.calls[0]
+    market_tz = ZoneInfo("America/New_York")
+    start_local = datetime.combine(date(2026, 2, 3), datetime.min.time()).replace(tzinfo=market_tz)
+    end_local = datetime.combine(date(2026, 2, 3), datetime.max.time()).replace(tzinfo=market_tz)
+    assert call["start"] == start_local.astimezone(timezone.utc)
+    assert call["end"] == end_local.astimezone(timezone.utc)
     assert list(out.columns) == [
         "timestamp",
         "open",
@@ -92,6 +100,7 @@ def test_get_stock_bars_intraday_normalizes(monkeypatch: pytest.MonkeyPatch) -> 
 def test_get_option_bars_intraday_normalizes(monkeypatch: pytest.MonkeyPatch) -> None:
     _setup_timeframe(monkeypatch)
     monkeypatch.setattr(alpaca_client, "_load_option_bars_request", lambda: None)
+    monkeypatch.setenv("OH_ALPACA_MARKET_TZ", "America/New_York")
 
     idx = pd.MultiIndex.from_product(
         [
@@ -121,5 +130,11 @@ def test_get_option_bars_intraday_normalizes(monkeypatch: pytest.MonkeyPatch) ->
     )
 
     assert len(stub.calls) == 1
+    call = stub.calls[0]
+    market_tz = ZoneInfo("America/New_York")
+    start_local = datetime.combine(date(2026, 2, 3), datetime.min.time()).replace(tzinfo=market_tz)
+    end_local = datetime.combine(date(2026, 2, 3), datetime.max.time()).replace(tzinfo=market_tz)
+    assert call["start"] == start_local.astimezone(timezone.utc)
+    assert call["end"] == end_local.astimezone(timezone.utc)
     assert set(out["contractSymbol"]) == {"SPY260621C00100000", "SPY260621P00100000"}
     assert out["volume"].max() == 21
