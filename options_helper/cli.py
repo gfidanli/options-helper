@@ -57,6 +57,7 @@ from options_helper.data.journal import SignalContext, SignalEvent
 from options_helper.data.options_snapshots import OptionsSnapshotStore, find_snapshot_row
 from options_helper.data.options_snapshotter import snapshot_full_chain_for_symbols
 from options_helper.commands.backtest import app as backtest_app
+from options_helper.commands.intraday import app as intraday_app
 from options_helper.commands.technicals import app as technicals_app, technicals_extension_stats
 from options_helper.commands.technicals_common import setup_technicals_logging
 from options_helper.commands.watchlists import app as watchlists_app
@@ -131,6 +132,7 @@ app.add_typer(scanner_app, name="scanner")
 journal_app = typer.Typer(help="Signal journal + outcome tracking.")
 app.add_typer(journal_app, name="journal")
 app.add_typer(backtest_app, name="backtest")
+app.add_typer(intraday_app, name="intraday")
 
 
 @app.callback()
