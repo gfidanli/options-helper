@@ -28,7 +28,7 @@ This EPIC is intentionally decomposed into small, PR-sized IMPs with clear depen
 | 5 | IMP-025 — Options volume + “recent bars restriction” hardening | done | M | IMP-024 | Better liquidity metrics; fewer provider-plan footguns |
 | 6 | IMP-026 — Snapshot enrichment: store more fields (greeks, timestamps, OI dates) | done | S–M | IMP-024 | Future features unlocked without re-snapshotting |
 | 7 | IMP-027 — Intraday microstructure stores (stock/option trades+quotes+bars) | done | L | IMP-021 | New offline analytics: spreads, staleness, RV intraday |
-| 8 | IMP-028 — Corporate actions + news ingestion (event-aware analytics) | draft | M | IMP-021 | Split/dividend awareness; news context (when permitted) |
+| 8 | IMP-028 — Corporate actions + news ingestion (event-aware analytics) | done | M | IMP-021 | Split/dividend awareness; news context (when permitted) |
 | 9 | IMP-029 — Streaming adapters (optional) | draft | M–L | IMP-021 (and ideally IMP-027) | Real-time watchlists, alerts, continuous capture |
 
 ## Critical design decisions (make these once)
