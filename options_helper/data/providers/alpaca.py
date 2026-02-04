@@ -358,7 +358,7 @@ class AlpacaProvider(MarketDataProvider):
 
         return OptionsChain(symbol=sym, expiry=expiry, calls=calls, puts=puts)
 
-    def get_options_chain_raw(self, symbol: str, expiry: date) -> dict:
+    def get_options_chain_raw(self, symbol: str, expiry: date, *, snapshot_date: date | None = None) -> dict:
         sym = to_repo_symbol(symbol)
         if not sym:
             raise DataFetchError(f"Invalid symbol: {symbol}")
@@ -414,6 +414,72 @@ class AlpacaProvider(MarketDataProvider):
 
         chain_df = _merge_contract_metadata(chain_df, contracts_df)
         chain_df = _fill_missing_from_osi(chain_df)
+
+        if "contractSymbol" in chain_df.columns and not chain_df.empty:
+            snapshot_day = snapshot_date or date.today()
+            if snapshot_day <= date.today():
+                start_dt = datetime.combine(snapshot_day, datetime.min.time()).replace(tzinfo=timezone.utc)
+                end_dt = None
+                if snapshot_day < date.today():
+                    end_dt = datetime.combine(snapshot_day, datetime.max.time()).replace(tzinfo=timezone.utc)
+
+                symbols = [
+                    str(raw).strip()
+                    for raw in chain_df["contractSymbol"].dropna().unique().tolist()
+                    if str(raw).strip()
+                ]
+                if symbols:
+                    try:
+                        bars_df = self._client.get_option_bars(
+                            symbols,
+                            start=start_dt,
+                            end=end_dt,
+                            interval="1d",
+                        )
+                    except DataFetchError as exc:
+                        logger.warning("Failed to fetch Alpaca option bars for %s %s: %s", sym, expiry, exc)
+                        bars_df = pd.DataFrame()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Failed to fetch Alpaca option bars for %s %s: %s", sym, expiry, exc)
+                        bars_df = pd.DataFrame()
+
+                    if not bars_df.empty:
+                        bars_df = bars_df.rename(
+                            columns={
+                                "volume": "volume_bar",
+                                "vwap": "vwap_bar",
+                                "trade_count": "trade_count_bar",
+                            }
+                        )
+                        merge_cols = ["contractSymbol", "volume_bar", "vwap_bar", "trade_count_bar"]
+                        chain_df = chain_df.merge(
+                            bars_df[merge_cols],
+                            on="contractSymbol",
+                            how="left",
+                        )
+
+                        if "volume" not in chain_df.columns:
+                            chain_df["volume"] = pd.NA
+                        volume_numeric = pd.to_numeric(chain_df["volume"], errors="coerce")
+                        fill_volume = volume_numeric.isna() | (volume_numeric <= 0)
+                        chain_df.loc[fill_volume, "volume"] = chain_df.loc[fill_volume, "volume_bar"]
+
+                        if "vwap" not in chain_df.columns:
+                            chain_df["vwap"] = chain_df["vwap_bar"]
+                        else:
+                            mask = chain_df["vwap"].map(_needs_fill)
+                            chain_df.loc[mask, "vwap"] = chain_df.loc[mask, "vwap_bar"]
+
+                        if "trade_count" not in chain_df.columns:
+                            chain_df["trade_count"] = chain_df["trade_count_bar"]
+                        else:
+                            mask = chain_df["trade_count"].map(_needs_fill)
+                            chain_df.loc[mask, "trade_count"] = chain_df.loc[mask, "trade_count_bar"]
+
+                        chain_df = chain_df.drop(
+                            columns=["volume_bar", "vwap_bar", "trade_count_bar"],
+                            errors="ignore",
+                        )
 
         if "optionType" not in chain_df.columns:
             chain_df["optionType"] = pd.NA
