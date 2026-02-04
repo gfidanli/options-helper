@@ -55,44 +55,21 @@ from options_helper.data.derived import DERIVED_COLUMNS, DERIVED_SCHEMA_VERSION
 from options_helper.data.earnings import EarningsRecord, safe_next_earnings_date
 from options_helper.data.journal import SignalContext, SignalEvent
 from options_helper.data.options_snapshots import OptionsSnapshotStore, find_snapshot_row
-from options_helper.data.options_snapshotter import snapshot_full_chain_for_symbols
 from options_helper.commands.backtest import app as backtest_app
+from options_helper.commands.derived import app as derived_app
 from options_helper.commands.events import app as events_app
 from options_helper.commands.intraday import app as intraday_app
+from options_helper.commands.scanner import app as scanner_app
 from options_helper.commands.stream import app as stream_app
 from options_helper.commands.technicals import app as technicals_app, technicals_extension_stats
-from options_helper.commands.technicals_common import setup_technicals_logging
 from options_helper.commands.watchlists import app as watchlists_app
-from options_helper.cli_deps import (
-    build_candle_store,
-    build_derived_store,
-    build_earnings_store,
-    build_journal_store,
-    build_provider,
-    build_snapshot_store,
-)
+import options_helper.cli_deps as cli_deps
 from options_helper.data.providers.base import MarketDataProvider
 from options_helper.data.providers.runtime import reset_default_provider_name, set_default_provider_name
-from options_helper.data.scanner import (
-    evaluate_liquidity_for_symbols,
-    prefilter_symbols,
-    rank_shortlist_candidates,
-    read_exclude_symbols,
-    read_scanned_symbols,
-    scan_symbols,
-    score_shortlist_confluence,
-    write_liquidity_csv,
-    write_scan_csv,
-    write_shortlist_csv,
-    write_exclude_symbols,
-    write_scanned_symbols,
-    ScannerShortlistRow,
-)
 from options_helper.data.technical_backtesting_config import (
     ConfigError as TechnicalConfigError,
     load_technical_backtesting_config,
 )
-from options_helper.data.universe import UniverseError, load_universe_symbols
 from options_helper.data.market_types import DataFetchError
 from options_helper.data.yf_client import contract_row_by_strike
 from options_helper.models import Leg, MultiLegPosition, OptionType, Position, RiskProfile
@@ -115,10 +92,6 @@ from options_helper.schemas.common import utc_now
 from options_helper.schemas.chain_report import ChainReportArtifact
 from options_helper.schemas.compare import CompareArtifact
 from options_helper.schemas.flow import FlowArtifact
-from options_helper.schemas.scanner_shortlist import (
-    ScannerShortlistArtifact,
-    ScannerShortlistRow as ScannerShortlistRowSchema,
-)
 from options_helper.storage import load_portfolio, save_portfolio, write_template
 from options_helper.watchlists import build_default_watchlists, load_watchlists, save_watchlists
 from options_helper.ui.dashboard import load_briefing_artifact, render_dashboard, resolve_briefing_paths
@@ -126,10 +99,8 @@ from options_helper.technicals_backtesting.snapshot import TechnicalSnapshot, co
 
 app = typer.Typer(add_completion=False)
 app.add_typer(watchlists_app, name="watchlists")
-derived_app = typer.Typer(help="Persist derived metrics from local snapshots.")
 app.add_typer(derived_app, name="derived")
 app.add_typer(technicals_app, name="technicals")
-scanner_app = typer.Typer(help="Market opportunity scanner (not financial advice).")
 app.add_typer(scanner_app, name="scanner")
 journal_app = typer.Typer(help="Signal journal + outcome tracking.")
 app.add_typer(journal_app, name="journal")
@@ -534,178 +505,6 @@ def _read_scanner_shortlist(path: Path) -> list[dict[str, object]]:
     return rows
 
 
-@derived_app.command("update")
-def derived_update(
-    symbol: str = typer.Option(..., "--symbol", help="Symbol to update."),
-    as_of: str = typer.Option("latest", "--as-of", help="Snapshot date (YYYY-MM-DD) or 'latest'."),
-    cache_dir: Path = typer.Option(
-        Path("data/options_snapshots"),
-        "--cache-dir",
-        help="Directory for options chain snapshots.",
-    ),
-    derived_dir: Path = typer.Option(
-        Path("data/derived"),
-        "--derived-dir",
-        help="Directory for derived metric files (writes {derived_dir}/{SYMBOL}.csv).",
-    ),
-    candle_cache_dir: Path = typer.Option(
-        Path("data/candles"),
-        "--candle-cache-dir",
-        help="Directory for cached daily candles (used for realized volatility).",
-    ),
-) -> None:
-    """Append or upsert a derived-metrics row for a symbol/day (offline)."""
-    console = Console(width=200)
-    store = build_snapshot_store(cache_dir)
-    derived = build_derived_store(derived_dir)
-    candle_store = build_candle_store(candle_cache_dir)
-
-    try:
-        as_of_date = store.resolve_date(symbol, as_of)
-        df = store.load_day(symbol, as_of_date)
-        meta = store.load_meta(symbol, as_of_date)
-        spot = _spot_from_meta(meta)
-        if spot is None:
-            raise ValueError("missing spot price in meta.json (run snapshot-options first)")
-
-        report = compute_chain_report(
-            df,
-            symbol=symbol,
-            as_of=as_of_date,
-            spot=spot,
-            expiries_mode="near",
-            top=10,
-            best_effort=True,
-        )
-
-        candles = candle_store.load(symbol)
-        history = derived.load(symbol)
-        row = DerivedRow.from_chain_report(report, candles=candles, derived_history=history)
-        out_path = derived.upsert(symbol, row)
-        console.print(f"Derived schema v{DERIVED_SCHEMA_VERSION} updated: {out_path}")
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"[red]Error:[/red] {exc}")
-        raise typer.Exit(1)
-
-
-@derived_app.command("show")
-def derived_show(
-    symbol: str = typer.Option(..., "--symbol", help="Symbol to show."),
-    derived_dir: Path = typer.Option(
-        Path("data/derived"),
-        "--derived-dir",
-        help="Directory for derived metric files (reads {derived_dir}/{SYMBOL}.csv).",
-    ),
-    last: int = typer.Option(30, "--last", min=1, max=3650, help="Show the last N rows."),
-) -> None:
-    """Print the last N rows of derived metrics for a symbol."""
-    from rich.table import Table
-
-    _ensure_pandas()
-    console = Console(width=200)
-    derived = build_derived_store(derived_dir)
-
-    try:
-        df = derived.load(symbol)
-        if df.empty:
-            console.print(f"No derived rows found for {symbol.upper()} in {derived_dir}")
-            raise typer.Exit(1)
-
-        tail = df.tail(last)
-        t = Table(title=f"{symbol.upper()} derived metrics (last {min(last, len(df))})")
-        for col in tail.columns:
-            t.add_column(col)
-        for _, row in tail.iterrows():
-            t.add_row(*["" if pd.isna(v) else str(v) for v in row.tolist()])
-        console.print(t)
-    except typer.Exit:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"[red]Error:[/red] {exc}")
-        raise typer.Exit(1)
-
-
-@derived_app.command("stats")
-def derived_stats(
-    symbol: str = typer.Option(..., "--symbol", help="Symbol to analyze."),
-    as_of: str = typer.Option("latest", "--as-of", help="Derived date (YYYY-MM-DD) or 'latest'."),
-    derived_dir: Path = typer.Option(
-        Path("data/derived"),
-        "--derived-dir",
-        help="Directory for derived metric files (reads {derived_dir}/{SYMBOL}.csv).",
-    ),
-    window: int = typer.Option(60, "--window", min=1, max=3650, help="Lookback window for percentiles."),
-    trend_window: int = typer.Option(5, "--trend-window", min=1, max=3650, help="Lookback window for trend flags."),
-    format: str = typer.Option("console", "--format", help="Output format: console|json"),
-    out: Path | None = typer.Option(
-        None,
-        "--out",
-        help="Output root for saved artifacts (writes under {out}/derived/{SYMBOL}/).",
-    ),
-) -> None:
-    """Percentile ranks and trend flags from the derived-metrics history (offline)."""
-    from rich.table import Table
-
-    console = Console(width=200)
-    derived = build_derived_store(derived_dir)
-
-    try:
-        df = derived.load(symbol)
-        if df.empty:
-            console.print(f"No derived rows found for {symbol.upper()} in {derived_dir}")
-            raise typer.Exit(1)
-
-        fmt = format.strip().lower()
-        if fmt not in {"console", "json"}:
-            raise typer.BadParameter("Invalid --format (use console|json)", param_hint="--format")
-
-        report = compute_derived_stats(
-            df,
-            symbol=symbol,
-            as_of=as_of,
-            window=window,
-            trend_window=trend_window,
-            metric_columns=[c for c in DERIVED_COLUMNS if c != "date"],
-        )
-
-        if fmt == "json":
-            console.print(report.model_dump_json(indent=2))
-        else:
-            t = Table(
-                title=f"{report.symbol} derived stats (as-of {report.as_of}; pct w={window}; trend w={trend_window})"
-            )
-            t.add_column("metric")
-            t.add_column("value", justify="right")
-            t.add_column(f"pct({window})", justify="right")
-            t.add_column(f"trend({trend_window})", justify="right")
-            t.add_column("Δ", justify="right")
-            t.add_column("Δ%", justify="right")
-
-            for m in report.metrics:
-                value = "" if m.value is None else f"{m.value:.8g}"
-                pct = "" if m.percentile is None else f"{m.percentile:.1f}"
-                delta = "" if m.trend_delta is None else f"{m.trend_delta:.8g}"
-                delta_pct = "" if m.trend_delta_pct is None else f"{m.trend_delta_pct:.2f}"
-                trend = "" if m.trend_direction is None else m.trend_direction
-                t.add_row(m.name, value, pct, trend, delta, delta_pct)
-
-            console.print(t)
-            if report.warnings:
-                console.print(f"[yellow]Warnings:[/yellow] {', '.join(report.warnings)}")
-
-        if out is not None:
-            base = out / "derived" / report.symbol
-            base.mkdir(parents=True, exist_ok=True)
-            out_path = base / f"{report.as_of}_w{window}_tw{trend_window}.json"
-            out_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
-            console.print(f"\nSaved: {out_path}")
-    except typer.Exit:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"[red]Error:[/red] {exc}")
-        raise typer.Exit(1)
-
-
 def _position_metrics(
     provider: MarketDataProvider | None,
     position: Position,
@@ -918,7 +717,7 @@ def daily_performance(
         console.print("No positions.")
         raise typer.Exit(0)
 
-    provider = build_provider()
+    provider = cli_deps.build_provider()
 
     from rich.table import Table
 
@@ -1074,9 +873,9 @@ def snapshot_options(
     portfolio = load_portfolio(portfolio_path)
     console = Console()
 
-    store = build_snapshot_store(cache_dir)
-    provider = build_provider()
-    candle_store = build_candle_store(candle_cache_dir, provider=provider)
+    store = cli_deps.build_snapshot_store(cache_dir)
+    provider = cli_deps.build_provider()
+    candle_store = cli_deps.build_candle_store(candle_cache_dir, provider=provider)
     provider_name = getattr(provider, "name", "unknown")
     provider_version = (
         getattr(provider, "version", None)
@@ -1414,7 +1213,7 @@ def flow_report(
     portfolio = load_portfolio(portfolio_path)
     console = Console()
 
-    store = build_snapshot_store(cache_dir)
+    store = cli_deps.build_snapshot_store(cache_dir)
     use_watchlists = bool(watchlist) or all_watchlists
     if use_watchlists:
         wl = load_watchlists(watchlists_path)
@@ -1726,7 +1525,7 @@ def chain_report(
 ) -> None:
     """Offline options chain dashboard from local snapshot files."""
     console = Console()
-    store = build_snapshot_store(cache_dir)
+    store = cli_deps.build_snapshot_store(cache_dir)
 
     try:
         as_of_date = store.resolve_date(symbol, as_of)
@@ -1815,7 +1614,7 @@ def compare_snapshots(
 ) -> None:
     """Diff two snapshot dates for a symbol (offline)."""
     console = Console()
-    store = build_snapshot_store(cache_dir)
+    store = cli_deps.build_snapshot_store(cache_dir)
 
     try:
         to_date = store.resolve_date(symbol, to_spec)
@@ -1984,9 +1783,9 @@ def report_pack(
         console.print("[yellow]No symbols selected (empty watchlists).[/yellow]")
         raise typer.Exit(0)
 
-    store = build_snapshot_store(cache_dir)
-    derived_store = build_derived_store(derived_dir)
-    candle_store = build_candle_store(candle_cache_dir)
+    store = cli_deps.build_snapshot_store(cache_dir)
+    derived_store = cli_deps.build_derived_store(derived_dir)
+    candle_store = cli_deps.build_candle_store(candle_cache_dir)
 
     required_date: date | None = None
     if require_snapshot_date is not None:
@@ -2345,10 +2144,10 @@ def briefing(
         console.print("[red]Error:[/red] no symbols selected (empty portfolio and no watchlists)")
         raise typer.Exit(1)
 
-    store = build_snapshot_store(cache_dir)
-    derived_store = build_derived_store(derived_dir)
-    candle_store = build_candle_store(candle_cache_dir)
-    earnings_store = build_earnings_store(Path("data/earnings"))
+    store = cli_deps.build_snapshot_store(cache_dir)
+    derived_store = cli_deps.build_derived_store(derived_dir)
+    candle_store = cli_deps.build_candle_store(candle_cache_dir)
+    earnings_store = cli_deps.build_earnings_store(Path("data/earnings"))
 
     technicals_cfg: dict | None = None
     technicals_cfg_error: str | None = None
@@ -2867,8 +2666,8 @@ def roll_plan(
     min_oi = rp.min_open_interest if min_open_interest is None else int(min_open_interest)
     min_vol = rp.min_volume if min_volume is None else int(min_volume)
 
-    store = build_snapshot_store(cache_dir)
-    earnings_store = build_earnings_store(Path("data/earnings"))
+    store = cli_deps.build_snapshot_store(cache_dir)
+    earnings_store = cli_deps.build_earnings_store(Path("data/earnings"))
     next_earnings_date = safe_next_earnings_date(earnings_store, position.symbol)
 
     try:
@@ -2941,7 +2740,7 @@ def earnings(
 ) -> None:
     """Show/cache the next earnings date (best-effort; Yahoo can be wrong/stale)."""
     console = Console(width=120)
-    store = build_earnings_store(cache_dir)
+    store = cli_deps.build_earnings_store(cache_dir)
     sym = symbol.upper().strip()
 
     if clear:
@@ -2960,7 +2759,7 @@ def earnings(
         record = store.load(sym)
         if refresh or record is None:
             try:
-                ev = build_provider().get_next_earnings_event(sym)
+                ev = cli_deps.build_provider().get_next_earnings_event(sym)
             except DataFetchError as exc:
                 console.print(f"[red]Data error:[/red] {exc}")
                 raise typer.Exit(1)
@@ -3036,8 +2835,8 @@ def refresh_earnings(
         console.print("No symbols found (no watchlists or empty watchlist selection).")
         raise typer.Exit(0)
 
-    store = build_earnings_store(cache_dir)
-    provider = build_provider()
+    store = cli_deps.build_earnings_store(cache_dir)
+    provider = cli_deps.build_provider()
 
     ok = 0
     err = 0
@@ -3139,10 +2938,10 @@ def research(
         if not symbols:
             raise typer.BadParameter(f"Watchlist '{watchlist}' is empty or missing in {watchlists_path}")
 
-    provider = build_provider()
-    candle_store = build_candle_store(candle_cache_dir, provider=provider)
-    earnings_store = build_earnings_store(Path("data/earnings"))
-    derived_store = build_derived_store(derived_dir)
+    provider = cli_deps.build_provider()
+    candle_store = cli_deps.build_candle_store(candle_cache_dir, provider=provider)
+    earnings_store = cli_deps.build_earnings_store(Path("data/earnings"))
+    derived_store = cli_deps.build_derived_store(derived_dir)
     confluence_cfg = None
     confluence_cfg_error = None
     technicals_cfg = None
@@ -3605,8 +3404,8 @@ def refresh_candles(
         Console().print("No symbols found (no positions and no watchlists).")
         raise typer.Exit(0)
 
-    provider = build_provider()
-    store = build_candle_store(candle_cache_dir, provider=provider)
+    provider = cli_deps.build_provider()
+    store = cli_deps.build_candle_store(candle_cache_dir, provider=provider)
     console = Console()
     console.print(f"Refreshing daily candles for {len(symbols)} symbol(s)...")
 
@@ -3620,596 +3419,6 @@ def refresh_candles(
                 console.print(f"{sym}: cached through {last_dt.date().isoformat()}")
         except Exception as exc:  # noqa: BLE001
             console.print(f"[red]Error:[/red] {sym}: {exc}")
-
-
-@scanner_app.command("run")
-def scanner_run(
-    universe: str = typer.Option(
-        "file:data/universe/sec_company_tickers.json",
-        "--universe",
-        help="Universe source: us-all/us-equities/us-etfs or file:/path/to/list.txt.",
-    ),
-    universe_cache_dir: Path = typer.Option(
-        Path("data/universe"),
-        "--universe-cache-dir",
-        help="Directory for cached universe lists.",
-    ),
-    universe_refresh_days: int = typer.Option(
-        1,
-        "--universe-refresh-days",
-        help="Refresh universe cache if older than this many days.",
-    ),
-    max_symbols: int | None = typer.Option(
-        None,
-        "--max-symbols",
-        min=1,
-        help="Optional cap on number of symbols scanned (for dev/testing).",
-    ),
-    prefilter_mode: str = typer.Option(
-        "default",
-        "--prefilter-mode",
-        help="Prefilter mode: default, aggressive, or none.",
-    ),
-    exclude_path: Path = typer.Option(
-        Path("data/universe/exclude_symbols.txt"),
-        "--exclude-path",
-        help="Path to exclude symbols file (one ticker per line).",
-    ),
-    scanned_path: Path = typer.Option(
-        Path("data/scanner/scanned_symbols.txt"),
-        "--scanned-path",
-        help="Path to scanned symbols file (one ticker per line).",
-    ),
-    skip_scanned: bool = typer.Option(
-        True,
-        "--skip-scanned/--no-skip-scanned",
-        help="Skip symbols already recorded in the scanned file.",
-    ),
-    write_scanned: bool = typer.Option(
-        True,
-        "--write-scanned/--no-write-scanned",
-        help="Persist scanned symbols so future runs skip them.",
-    ),
-    write_error_excludes: bool = typer.Option(
-        True,
-        "--write-error-excludes/--no-write-error-excludes",
-        help="Persist symbols that error to the exclude file.",
-    ),
-    exclude_statuses: str = typer.Option(
-        "error,no_candles",
-        "--exclude-statuses",
-        help="Comma-separated scan statuses to add to the exclude file.",
-    ),
-    error_flush_every: int = typer.Option(
-        50,
-        "--error-flush-every",
-        min=1,
-        help="Flush exclude file after this many new error symbols.",
-    ),
-    scanned_flush_every: int = typer.Option(
-        250,
-        "--scanned-flush-every",
-        min=1,
-        help="Flush scanned file after this many new symbols.",
-    ),
-    scan_period: str = typer.Option(
-        "max",
-        "--scan-period",
-        help="Candle period to pull for the scan (yfinance period format).",
-    ),
-    tail_pct: float | None = typer.Option(
-        None,
-        "--tail-pct",
-        help="Symmetric tail threshold percentile (e.g. 2.5 => low<=2.5, high>=97.5).",
-    ),
-    percentile_window_years: int | None = typer.Option(
-        None,
-        "--percentile-window-years",
-        help="Rolling window (years) for extension percentiles (default: auto 1y/3y).",
-    ),
-    watchlists_path: Path = typer.Option(
-        Path("data/watchlists.json"),
-        "--watchlists-path",
-        help="Path to watchlists JSON store.",
-    ),
-    all_watchlist_name: str = typer.Option(
-        "Scanner - All",
-        "--all-watchlist-name",
-        help="Watchlist name for all tail symbols (replaced each run).",
-    ),
-    shortlist_watchlist_name: str = typer.Option(
-        "Scanner - Shortlist",
-        "--shortlist-watchlist-name",
-        help="Watchlist name for liquid short list (replaced each run).",
-    ),
-    candle_cache_dir: Path = typer.Option(
-        Path("data/candles"),
-        "--candle-cache-dir",
-        help="Directory for cached daily candles.",
-    ),
-    options_cache_dir: Path = typer.Option(
-        Path("data/options_snapshots"),
-        "--options-cache-dir",
-        help="Directory for options chain snapshots.",
-    ),
-    derived_dir: Path = typer.Option(
-        Path("data/derived"),
-        "--derived-dir",
-        help="Directory for derived metric files (reads {derived_dir}/{SYMBOL}.csv).",
-    ),
-    spot_period: str = typer.Option(
-        "10d",
-        "--spot-period",
-        help="Candle period used to estimate spot from daily candles for snapshotting.",
-    ),
-    backfill: bool = typer.Option(
-        True,
-        "--backfill/--no-backfill",
-        help="Backfill max candle history for tail symbols.",
-    ),
-    snapshot_options: bool = typer.Option(
-        True,
-        "--snapshot-options/--no-snapshot-options",
-        help="Snapshot full options chain for all expiries on tail symbols.",
-    ),
-    risk_free_rate: float = typer.Option(
-        0.0,
-        "--risk-free-rate",
-        help="Risk-free rate used for best-effort Black-Scholes Greeks (e.g. 0.05 = 5%).",
-    ),
-    liquidity_min_dte: int = typer.Option(
-        60,
-        "--liquidity-min-dte",
-        help="Minimum DTE for liquidity screening.",
-    ),
-    liquidity_min_volume: int = typer.Option(
-        10,
-        "--liquidity-min-volume",
-        help="Minimum volume for liquidity screening.",
-    ),
-    liquidity_min_oi: int = typer.Option(
-        500,
-        "--liquidity-min-oi",
-        help="Minimum open interest for liquidity screening.",
-    ),
-    run_dir: Path = typer.Option(
-        Path("data/scanner/runs"),
-        "--run-dir",
-        help="Output root for scanner runs.",
-    ),
-    run_id: str | None = typer.Option(
-        None,
-        "--run-id",
-        help="Optional run id (default: timestamp).",
-    ),
-    workers: int | None = typer.Option(
-        None,
-        "--workers",
-        min=1,
-        help="Max concurrent workers for scan (default: auto).",
-    ),
-    batch_size: int = typer.Option(
-        50,
-        "--batch-size",
-        min=1,
-        help="Batch size for scan requests.",
-    ),
-    batch_sleep_seconds: float = typer.Option(
-        0.25,
-        "--batch-sleep-seconds",
-        min=0.0,
-        help="Sleep between batches (seconds) to be polite to data sources.",
-    ),
-    reports_out: Path = typer.Option(
-        Path("data/reports/technicals/extension"),
-        "--reports-out",
-        help="Output root for Extension Percentile Stats reports.",
-    ),
-    run_reports: bool = typer.Option(
-        True,
-        "--run-reports/--no-run-reports",
-        help="Generate Extension Percentile Stats reports for shortlist symbols.",
-    ),
-    write_scan: bool = typer.Option(
-        True,
-        "--write-scan/--no-write-scan",
-        help="Write scan CSV under the run directory.",
-    ),
-    write_liquidity: bool = typer.Option(
-        True,
-        "--write-liquidity/--no-write-liquidity",
-        help="Write liquidity CSV under the run directory.",
-    ),
-    write_shortlist: bool = typer.Option(
-        True,
-        "--write-shortlist/--no-write-shortlist",
-        help="Write shortlist CSV under the run directory.",
-    ),
-    strict: bool = typer.Option(
-        False,
-        "--strict",
-        help="Validate JSON artifacts against schemas.",
-    ),
-    config_path: Path = typer.Option(
-        Path("config/technical_backtesting.yaml"),
-        "--config",
-        help="Config path.",
-    ),
-) -> None:
-    """Scan the market for extension tails and build watchlists (not financial advice)."""
-    console = Console(width=200)
-    cfg = load_technical_backtesting_config(config_path)
-    setup_technicals_logging(cfg)
-    confluence_cfg = None
-    confluence_cfg_error = None
-    try:
-        confluence_cfg = load_confluence_config()
-    except ConfluenceConfigError as exc:
-        confluence_cfg_error = str(exc)
-    if confluence_cfg_error:
-        console.print(f"[yellow]Warning:[/yellow] confluence config unavailable: {confluence_cfg_error}")
-
-    ext_cfg = cfg.get("extension_percentiles", {})
-    tail_high_cfg = float(ext_cfg.get("tail_high_pct", 97.5))
-    tail_low_cfg = float(ext_cfg.get("tail_low_pct", 2.5))
-    if tail_pct is None:
-        tail_low_pct = tail_low_cfg
-        tail_high_pct = tail_high_cfg
-    else:
-        tp = float(tail_pct)
-        if tp < 0.0 or tp >= 50.0:
-            raise typer.BadParameter("--tail-pct must be >= 0 and < 50")
-        tail_low_pct = tp
-        tail_high_pct = 100.0 - tp
-
-    if tail_low_pct >= tail_high_pct:
-        raise typer.BadParameter("Tail thresholds must satisfy low < high")
-
-    try:
-        symbols = load_universe_symbols(
-            universe,
-            cache_dir=universe_cache_dir,
-            refresh_days=universe_refresh_days,
-        )
-    except UniverseError as exc:
-        console.print(f"[red]Universe error:[/red] {exc}")
-        raise typer.Exit(1)
-
-    symbols = sorted({s.strip().upper() for s in symbols if s and s.strip()})
-
-    exclude_symbols = read_exclude_symbols(exclude_path) if exclude_path else set()
-    if exclude_symbols:
-        console.print(f"Loaded {len(exclude_symbols)} excluded symbol(s) from {exclude_path}")
-
-    scanned_symbols: set[str] = set()
-    if scanned_path and (skip_scanned or write_scanned):
-        scanned_symbols = read_scanned_symbols(scanned_path)
-        if scanned_symbols:
-            console.print(f"Loaded {len(scanned_symbols)} scanned symbol(s) from {scanned_path}")
-
-    filtered, dropped = prefilter_symbols(
-        symbols,
-        mode=prefilter_mode,
-        exclude=exclude_symbols,
-        scanned=scanned_symbols if skip_scanned else None,
-    )
-    dropped_n = sum(dropped.values())
-    if dropped_n:
-        console.print(f"Prefiltered symbols: dropped {dropped_n} ({dropped})")
-    symbols = filtered
-
-    if max_symbols is not None:
-        symbols = symbols[: int(max_symbols)]
-
-    if not symbols:
-        console.print("[yellow]No symbols found in universe.[/yellow]")
-        raise typer.Exit(0)
-
-    run_stamp = run_id or datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    run_root = run_dir / run_stamp
-    run_root.mkdir(parents=True, exist_ok=True)
-
-    new_error_symbols: set[str] = set()
-    new_scanned_symbols: set[str] = set()
-
-    status_set = {s.strip().lower() for s in exclude_statuses.split(",") if s.strip()}
-
-    def _row_callback(row) -> None:  # noqa: ANN001
-        if write_scanned and scanned_path is not None:
-            sym = row.symbol
-            if sym not in scanned_symbols:
-                scanned_symbols.add(sym)
-                new_scanned_symbols.add(sym)
-                if len(new_scanned_symbols) >= int(scanned_flush_every):
-                    write_scanned_symbols(scanned_path, scanned_symbols)
-                    new_scanned_symbols.clear()
-        if not write_error_excludes or exclude_path is None:
-            return
-        if str(row.status).strip().lower() not in status_set:
-            return
-        sym = row.symbol
-        if sym not in exclude_symbols:
-            exclude_symbols.add(sym)
-            new_error_symbols.add(sym)
-            if len(new_error_symbols) >= int(error_flush_every):
-                write_exclude_symbols(exclude_path, exclude_symbols)
-                new_error_symbols.clear()
-
-    console.print(
-        f"Scanning {len(symbols)} symbol(s) from `{universe}` (tail {tail_low_pct:.1f}/{tail_high_pct:.1f})..."
-    )
-    provider = build_provider()
-    candle_store = build_candle_store(candle_cache_dir, provider=provider)
-    scan_rows, tail_symbols = scan_symbols(
-        symbols,
-        candle_store=candle_store,
-        cfg=cfg,
-        scan_period=scan_period,
-        tail_low_pct=float(tail_low_pct),
-        tail_high_pct=float(tail_high_pct),
-        percentile_window_years=percentile_window_years,
-        workers=workers,
-        batch_size=batch_size,
-        batch_sleep_seconds=batch_sleep_seconds,
-        row_callback=_row_callback,
-    )
-
-    scan_as_of_dates: list[date] = []
-    for row in scan_rows:
-        if not row.asof:
-            continue
-        try:
-            scan_as_of_dates.append(date.fromisoformat(row.asof))
-        except ValueError:
-            continue
-    scan_as_of = max(scan_as_of_dates).isoformat() if scan_as_of_dates else date.today().isoformat()
-
-    if write_error_excludes and new_error_symbols and exclude_path is not None:
-        write_exclude_symbols(exclude_path, exclude_symbols)
-        console.print(f"Wrote {len(new_error_symbols)} new excluded symbol(s) to {exclude_path}")
-
-    if write_scanned and new_scanned_symbols and scanned_path is not None:
-        write_scanned_symbols(scanned_path, scanned_symbols)
-        console.print(f"Wrote {len(new_scanned_symbols)} new scanned symbol(s) to {scanned_path}")
-
-    if write_scan:
-        scan_path = run_root / "scan.csv"
-        write_scan_csv(scan_rows, scan_path)
-        console.print(f"Wrote scan CSV: {scan_path}")
-
-    wl = load_watchlists(watchlists_path)
-    wl.set(all_watchlist_name, tail_symbols)
-    save_watchlists(watchlists_path, wl)
-    console.print(f"Updated watchlist `{all_watchlist_name}` ({len(tail_symbols)} symbol(s))")
-
-    if not tail_symbols:
-        wl.set(shortlist_watchlist_name, [])
-        save_watchlists(watchlists_path, wl)
-        console.print("[yellow]No tail symbols found; shortlist cleared.[/yellow]")
-        if write_liquidity:
-            liquidity_path = run_root / "liquidity.csv"
-            write_liquidity_csv([], liquidity_path)
-            console.print(f"Wrote liquidity CSV: {liquidity_path}")
-        if write_shortlist:
-            shortlist_csv = run_root / "shortlist.csv"
-            write_shortlist_csv([], shortlist_csv)
-            console.print(f"Wrote shortlist CSV: {shortlist_csv}")
-            shortlist_json = run_root / "shortlist.json"
-            payload = ScannerShortlistArtifact(
-                schema_version=1,
-                generated_at=utc_now(),
-                as_of=scan_as_of,
-                run_id=run_stamp,
-                universe=universe,
-                tail_low_pct=float(tail_low_pct),
-                tail_high_pct=float(tail_high_pct),
-                all_watchlist_name=all_watchlist_name,
-                shortlist_watchlist_name=shortlist_watchlist_name,
-                rows=[],
-            ).to_dict()
-            if strict:
-                ScannerShortlistArtifact.model_validate(payload)
-            shortlist_json.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-            console.print(f"Wrote shortlist JSON: {shortlist_json}")
-        shortlist_md = run_root / "shortlist.md"
-        lines = [
-            f"# Scanner Shortlist — {run_stamp}",
-            "",
-            f"- Universe: `{universe}`",
-            f"- Tail threshold: `{tail_low_pct:.1f}` / `{tail_high_pct:.1f}`",
-            f"- Tail watchlist: `{all_watchlist_name}`",
-            f"- Shortlist watchlist: `{shortlist_watchlist_name}`",
-            "- Ranking: `scanner score` (desc)",
-            "- Symbols: `0`",
-            "",
-            "Not financial advice.",
-            "",
-            "## Symbols",
-            "- (empty)",
-        ]
-        shortlist_md.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
-        console.print(f"Wrote shortlist summary: {shortlist_md}")
-        console.print("Not financial advice.")
-        return
-
-    if backfill:
-        console.print(f"Backfilling candles for {len(tail_symbols)} tail symbol(s)...")
-        for sym in tail_symbols:
-            try:
-                candle_store.get_daily_history(sym, period="max")
-            except Exception as exc:  # noqa: BLE001
-                console.print(f"[yellow]Warning:[/yellow] {sym}: candle backfill failed: {exc}")
-
-    if snapshot_options:
-        console.print(f"Snapshotting full options chains for {len(tail_symbols)} tail symbol(s)...")
-        snapshot_results = snapshot_full_chain_for_symbols(
-            tail_symbols,
-            cache_dir=options_cache_dir,
-            candle_cache_dir=candle_cache_dir,
-            spot_period=spot_period,
-            max_expiries=None,
-            risk_free_rate=risk_free_rate,
-            symbol_source="scanner",
-            watchlists=[all_watchlist_name],
-            provider=provider,
-        )
-        ok = sum(1 for r in snapshot_results if r.status == "ok")
-        console.print(f"Options snapshots complete: {ok}/{len(snapshot_results)} ok")
-
-    options_store = build_snapshot_store(options_cache_dir)
-    liquidity_rows, shortlist_symbols = evaluate_liquidity_for_symbols(
-        tail_symbols,
-        store=options_store,
-        min_dte=liquidity_min_dte,
-        min_volume=liquidity_min_volume,
-        min_open_interest=liquidity_min_oi,
-    )
-
-    rank_results = {}
-    if shortlist_symbols:
-        rank_cfg = None
-        if confluence_cfg is not None and isinstance(confluence_cfg, dict):
-            rank_cfg = confluence_cfg.get("scanner_rank")
-        derived_store = build_derived_store(derived_dir)
-        rank_results = rank_shortlist_candidates(
-            shortlist_symbols,
-            candle_store=candle_store,
-            rank_cfg=rank_cfg,
-            scan_rows=scan_rows,
-            liquidity_rows=liquidity_rows,
-            derived_store=derived_store,
-            period=scan_period,
-        )
-
-    scan_percentiles = {row.symbol.upper(): row.percentile for row in scan_rows}
-    confluence_scores = score_shortlist_confluence(
-        shortlist_symbols,
-        candle_store=candle_store,
-        confluence_cfg=confluence_cfg,
-        extension_percentiles=scan_percentiles,
-        period=scan_period,
-    )
-    if rank_results:
-        def _shortlist_rank_key(sym: str) -> tuple[float, float, str]:
-            score = rank_results.get(sym)
-            total = score.score if score is not None else -1.0
-            coverage = score.coverage if score is not None else -1.0
-            return (-total, -coverage, sym)
-
-        shortlist_symbols = sorted(shortlist_symbols, key=_shortlist_rank_key)
-    elif confluence_scores:
-        def _shortlist_sort_key(sym: str) -> tuple[float, float, str]:
-            score = confluence_scores.get(sym)
-            coverage = score.coverage if score is not None else -1.0
-            total = score.total if score is not None else -1.0
-            return (-coverage, -total, sym)
-
-        shortlist_symbols = sorted(shortlist_symbols, key=_shortlist_sort_key)
-
-    if write_liquidity:
-        liquidity_path = run_root / "liquidity.csv"
-        write_liquidity_csv(liquidity_rows, liquidity_path)
-        console.print(f"Wrote liquidity CSV: {liquidity_path}")
-
-    if write_shortlist:
-        shortlist_csv = run_root / "shortlist.csv"
-        rows: list[ScannerShortlistRow] = []
-        schema_rows: list[ScannerShortlistRowSchema] = []
-        for sym in shortlist_symbols:
-            rank = rank_results.get(sym)
-            reasons = "; ".join(rank.top_reasons) if rank is not None else ""
-            rows.append(
-                ScannerShortlistRow(
-                    symbol=sym,
-                    score=rank.score if rank is not None else None,
-                    coverage=rank.coverage if rank is not None else None,
-                    top_reasons=reasons,
-                )
-            )
-            schema_rows.append(
-                ScannerShortlistRowSchema(
-                    symbol=sym,
-                    score=rank.score if rank is not None else None,
-                    coverage=rank.coverage if rank is not None else None,
-                    top_reasons=reasons or None,
-                )
-            )
-        write_shortlist_csv(rows, shortlist_csv)
-        console.print(f"Wrote shortlist CSV: {shortlist_csv}")
-        shortlist_json = run_root / "shortlist.json"
-        payload = ScannerShortlistArtifact(
-            schema_version=1,
-            generated_at=utc_now(),
-            as_of=scan_as_of,
-            run_id=run_stamp,
-            universe=universe,
-            tail_low_pct=float(tail_low_pct),
-            tail_high_pct=float(tail_high_pct),
-            all_watchlist_name=all_watchlist_name,
-            shortlist_watchlist_name=shortlist_watchlist_name,
-            rows=schema_rows,
-        ).to_dict()
-        if strict:
-            ScannerShortlistArtifact.model_validate(payload)
-        shortlist_json.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        console.print(f"Wrote shortlist JSON: {shortlist_json}")
-
-    wl.set(shortlist_watchlist_name, shortlist_symbols)
-    save_watchlists(watchlists_path, wl)
-    console.print(f"Updated watchlist `{shortlist_watchlist_name}` ({len(shortlist_symbols)} symbol(s))")
-
-    if run_reports and shortlist_symbols:
-        console.print(f"Running Extension Percentile Stats for {len(shortlist_symbols)} symbol(s)...")
-        for sym in shortlist_symbols:
-            try:
-                technicals_extension_stats(
-                    symbol=sym,
-                    ohlc_path=None,
-                    cache_dir=candle_cache_dir,
-                    config_path=config_path,
-                    tail_pct=tail_pct,
-                    percentile_window_years=percentile_window_years,
-                    out=reports_out,
-                    write_json=True,
-                    write_md=True,
-                    print_to_console=False,
-                )
-            except Exception as exc:  # noqa: BLE001
-                console.print(f"[yellow]Warning:[/yellow] {sym}: extension-stats failed: {exc}")
-
-    shortlist_md = run_root / "shortlist.md"
-    lines = [
-        f"# Scanner Shortlist — {run_stamp}",
-        "",
-        f"- Universe: `{universe}`",
-        f"- Tail threshold: `{tail_low_pct:.1f}` / `{tail_high_pct:.1f}`",
-        f"- Tail watchlist: `{all_watchlist_name}`",
-        f"- Shortlist watchlist: `{shortlist_watchlist_name}`",
-        "- Ranking: `scanner score` (desc)",
-        f"- Symbols: `{len(shortlist_symbols)}`",
-        "",
-        "Not financial advice.",
-        "",
-        "## Symbols",
-    ]
-    if shortlist_symbols:
-        for sym in shortlist_symbols:
-            parts: list[str] = []
-            rank = rank_results.get(sym)
-            if rank is not None:
-                parts.append(f"scanner {rank.score:.0f}, cov {rank.coverage * 100.0:.0f}%")
-            score = confluence_scores.get(sym)
-            if score is not None:
-                parts.append(f"confluence {score.total:.0f}, cov {score.coverage * 100.0:.0f}%")
-            if parts:
-                lines.append(f"- `{sym}` ({'; '.join(parts)}) → `{reports_out / sym}`")
-            else:
-                lines.append(f"- `{sym}` → `{reports_out / sym}`")
-    else:
-        lines.append("- (empty)")
-    shortlist_md.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
-    console.print(f"Wrote shortlist summary: {shortlist_md}")
-    console.print("Not financial advice.")
 
 
 @app.command()
@@ -4426,11 +3635,11 @@ def analyze(
 
     snapshot_store: OptionsSnapshotStore | None = None
     if offline:
-        snapshot_store = build_snapshot_store(snapshots_dir)
+        snapshot_store = cli_deps.build_snapshot_store(snapshots_dir)
 
-    provider = None if offline else build_provider()
-    candle_store = build_candle_store(cache_dir, provider=provider)
-    earnings_store = build_earnings_store(Path("data/earnings"))
+    provider = None if offline else cli_deps.build_provider()
+    candle_store = cli_deps.build_candle_store(cache_dir, provider=provider)
+    earnings_store = cli_deps.build_earnings_store(Path("data/earnings"))
 
     history_by_symbol: dict[str, pd.DataFrame] = {}
     last_price_by_symbol: dict[str, float | None] = {}
@@ -4826,11 +4035,11 @@ def journal_log(
 
     provider: MarketDataProvider | None = None
     if (positions and not offline) or research:
-        provider = build_provider()
+        provider = cli_deps.build_provider()
 
-    candle_store = build_candle_store(cache_dir, provider=provider)
-    earnings_store = build_earnings_store(Path("data/earnings"))
-    journal_store = build_journal_store(journal_dir)
+    candle_store = cli_deps.build_candle_store(cache_dir, provider=provider)
+    earnings_store = cli_deps.build_earnings_store(Path("data/earnings"))
+    journal_store = cli_deps.build_journal_store(journal_dir)
 
     events: list[SignalEvent] = []
     counts = {"position": 0, "research": 0, "scanner": 0}
@@ -4839,7 +4048,7 @@ def journal_log(
     if positions:
         snapshot_store: OptionsSnapshotStore | None = None
         if offline:
-            snapshot_store = build_snapshot_store(snapshots_dir)
+            snapshot_store = cli_deps.build_snapshot_store(snapshots_dir)
 
         history_by_symbol: dict[str, pd.DataFrame] = {}
         last_price_by_symbol: dict[str, float | None] = {}
@@ -4979,7 +4188,7 @@ def journal_log(
 
     if research:
         rp = portfolio.risk_profile
-        derived_store = build_derived_store(derived_dir)
+        derived_store = cli_deps.build_derived_store(derived_dir)
         confluence_cfg = None
         technicals_cfg = None
         confluence_cfg_error = None
@@ -5336,7 +4545,7 @@ def journal_evaluate(
     """Evaluate journal outcomes across horizons (offline, deterministic)."""
     _ensure_pandas()
     console = Console()
-    store = build_journal_store(journal_dir)
+    store = cli_deps.build_journal_store(journal_dir)
     result = store.read_events()
     if result.errors:
         console.print(f"[yellow]Warning:[/yellow] skipped {len(result.errors)} invalid journal lines.")
@@ -5369,7 +4578,7 @@ def journal_evaluate(
         raise typer.BadParameter("Provide at least one horizon.")
 
     symbols = {e.symbol for e in events if e.symbol}
-    candle_store = build_candle_store(cache_dir)
+    candle_store = cli_deps.build_candle_store(cache_dir)
     history_by_symbol: dict[str, pd.DataFrame] = {}
     for sym in symbols:
         try:
@@ -5378,7 +4587,7 @@ def journal_evaluate(
             console.print(f"[yellow]Warning:[/yellow] candle cache read failed for {sym}: {exc}")
             history_by_symbol[sym] = pd.DataFrame()
 
-    snapshot_store = build_snapshot_store(snapshots_dir)
+    snapshot_store = cli_deps.build_snapshot_store(snapshots_dir)
     snapshot_cache: dict[tuple[str, date], pd.DataFrame] = {}
 
     def _snapshot_loader(symbol: str, snapshot_date: date) -> pd.DataFrame | None:

@@ -6,7 +6,7 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
-from options_helper.cli_deps import build_candle_store, build_snapshot_store
+import options_helper.cli_deps as cli_deps
 from options_helper.models import OptionType
 from options_helper.schemas.common import utc_now
 
@@ -134,8 +134,8 @@ def backtest_run(
             include_bad_quotes=roll_include_bad_quotes,
         )
 
-    options_store = build_snapshot_store(cache_dir)
-    candle_store = build_candle_store(candle_cache_dir)
+    options_store = cli_deps.build_snapshot_store(cache_dir)
+    candle_store = cli_deps.build_candle_store(candle_cache_dir)
     data_source = BacktestDataSource(candle_store=candle_store, snapshot_store=options_store)
 
     strategy = BaselineLongCallStrategy(

@@ -68,7 +68,7 @@ def test_analyze_offline_uses_snapshots_and_never_instantiates_yfinance(tmp_path
     def _boom_provider(*_args, **_kwargs):  # noqa: ANN001
         raise AssertionError("build_provider should not be called in --offline mode")
 
-    monkeypatch.setattr("options_helper.cli.build_provider", _boom_provider)
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", _boom_provider)
 
     original_position_metrics = cli._position_metrics
     seen: dict[str, object] = {}
@@ -175,7 +175,7 @@ def test_analyze_offline_warns_when_snapshot_row_missing(tmp_path: Path, monkeyp
     def _boom_provider(*_args, **_kwargs):  # noqa: ANN001
         raise AssertionError("build_provider should not be called in --offline mode")
 
-    monkeypatch.setattr("options_helper.cli.build_provider", _boom_provider)
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", _boom_provider)
 
     runner = CliRunner()
     res = runner.invoke(
@@ -205,7 +205,7 @@ def test_analyze_offline_strict_exits_nonzero_when_snapshot_row_missing(
     def _boom_provider(*_args, **_kwargs):  # noqa: ANN001
         raise AssertionError("build_provider should not be called in --offline mode")
 
-    monkeypatch.setattr("options_helper.cli.build_provider", _boom_provider)
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", _boom_provider)
 
     runner = CliRunner()
     res = runner.invoke(
@@ -310,7 +310,7 @@ def test_analyze_offline_renders_multileg_summary(tmp_path: Path, monkeypatch) -
     def _boom_provider(*_args, **_kwargs):  # noqa: ANN001
         raise AssertionError("build_provider should not be called in --offline mode")
 
-    monkeypatch.setattr("options_helper.cli.build_provider", _boom_provider)
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", _boom_provider)
 
     runner = CliRunner()
     res = runner.invoke(

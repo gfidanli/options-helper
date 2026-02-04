@@ -78,7 +78,7 @@ def test_analyze_online_path_stubs_still_runs(tmp_path: Path, monkeypatch) -> No
             )
             return OptionsChain(symbol=symbol.upper(), expiry=expiry, calls=calls, puts=puts)
 
-    monkeypatch.setattr("options_helper.cli.build_provider", lambda *_args, **_kwargs: StubProvider())
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda *_args, **_kwargs: StubProvider())
 
     runner = CliRunner()
     res = runner.invoke(app, ["analyze", str(portfolio_path), "--cache-dir", str(tmp_path / "candles")])

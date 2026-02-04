@@ -43,7 +43,7 @@ def test_earnings_cli_refresh_uses_client(tmp_path: Path, monkeypatch) -> None:
 
             return Ev()
 
-    monkeypatch.setattr("options_helper.cli.build_provider", lambda *_args, **_kwargs: StubProvider())
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda *_args, **_kwargs: StubProvider())
 
     runner = CliRunner()
     res = runner.invoke(app, ["earnings", "AAA", "--refresh", "--cache-dir", str(cache_dir)])
@@ -74,7 +74,7 @@ def test_refresh_earnings_uses_watchlists(tmp_path: Path, monkeypatch) -> None:
 
             return Ev()
 
-    monkeypatch.setattr("options_helper.cli.build_provider", lambda *_args, **_kwargs: StubProvider())
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda *_args, **_kwargs: StubProvider())
 
     runner = CliRunner()
     res = runner.invoke(

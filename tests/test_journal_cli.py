@@ -79,7 +79,7 @@ def test_journal_log_offline_writes_position_event(tmp_path: Path, monkeypatch) 
     def _boom_provider(*_args, **_kwargs):  # noqa: ANN001
         raise AssertionError("build_provider should not be called in --offline mode")
 
-    monkeypatch.setattr("options_helper.cli.build_provider", _boom_provider)
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", _boom_provider)
 
     runner = CliRunner()
     res = runner.invoke(
@@ -214,7 +214,7 @@ def test_journal_log_research_uses_stubbed_client(tmp_path: Path, monkeypatch) -
             )
             return OptionsChain(symbol=symbol.upper(), expiry=expiry, calls=calls, puts=puts)
 
-    monkeypatch.setattr("options_helper.cli.build_provider", lambda *_args, **_kwargs: StubProvider())
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda *_args, **_kwargs: StubProvider())
 
     journal_dir = tmp_path / "journal"
     runner = CliRunner()

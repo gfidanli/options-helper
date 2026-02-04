@@ -73,7 +73,7 @@ def test_snapshot_options_full_chain_from_all_watchlists(tmp_path: Path, monkeyp
                 ],
             }
 
-    monkeypatch.setattr("options_helper.cli.build_provider", lambda *_args, **_kwargs: _StubProvider())
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda *_args, **_kwargs: _StubProvider())
 
     cache_dir = tmp_path / "snapshots"
 
@@ -189,7 +189,7 @@ def test_snapshot_options_defaults_to_full_chain_and_all_expiries(tmp_path: Path
                 ],
             }
 
-    monkeypatch.setattr("options_helper.cli.build_provider", lambda *_args, **_kwargs: _StubProvider())
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda *_args, **_kwargs: _StubProvider())
 
     cache_dir = tmp_path / "snapshots"
 
@@ -283,7 +283,7 @@ def test_snapshot_options_position_expiries_caps_watchlists_by_default(tmp_path:
                 ],
             }
 
-    monkeypatch.setattr("options_helper.cli.build_provider", lambda *_args, **_kwargs: _StubProvider())
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda *_args, **_kwargs: _StubProvider())
 
     cache_dir = tmp_path / "snapshots"
 

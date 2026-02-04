@@ -73,11 +73,11 @@ def test_scanner_run_updates_watchlists_and_writes_run_files(tmp_path: Path, mon
             )
         }
 
-    monkeypatch.setattr("options_helper.cli.load_universe_symbols", _stub_universe)
-    monkeypatch.setattr("options_helper.cli.scan_symbols", _stub_scan)
-    monkeypatch.setattr("options_helper.cli.evaluate_liquidity_for_symbols", _stub_liquidity)
-    monkeypatch.setattr("options_helper.cli.score_shortlist_confluence", _stub_confluence)
-    monkeypatch.setattr("options_helper.cli.rank_shortlist_candidates", _stub_rank)
+    monkeypatch.setattr("options_helper.commands.scanner.load_universe_symbols", _stub_universe)
+    monkeypatch.setattr("options_helper.commands.scanner.scan_symbols", _stub_scan)
+    monkeypatch.setattr("options_helper.commands.scanner.evaluate_liquidity_for_symbols", _stub_liquidity)
+    monkeypatch.setattr("options_helper.commands.scanner.score_shortlist_confluence", _stub_confluence)
+    monkeypatch.setattr("options_helper.commands.scanner.rank_shortlist_candidates", _stub_rank)
 
     runner = CliRunner()
     res = runner.invoke(
@@ -178,11 +178,11 @@ def test_scanner_run_preserves_scanned_file_when_no_skip(tmp_path: Path, monkeyp
             )
         }
 
-    monkeypatch.setattr("options_helper.cli.load_universe_symbols", _stub_universe)
-    monkeypatch.setattr("options_helper.cli.scan_symbols", _stub_scan)
-    monkeypatch.setattr("options_helper.cli.evaluate_liquidity_for_symbols", _stub_liquidity)
-    monkeypatch.setattr("options_helper.cli.score_shortlist_confluence", _stub_confluence)
-    monkeypatch.setattr("options_helper.cli.rank_shortlist_candidates", _stub_rank)
+    monkeypatch.setattr("options_helper.commands.scanner.load_universe_symbols", _stub_universe)
+    monkeypatch.setattr("options_helper.commands.scanner.scan_symbols", _stub_scan)
+    monkeypatch.setattr("options_helper.commands.scanner.evaluate_liquidity_for_symbols", _stub_liquidity)
+    monkeypatch.setattr("options_helper.commands.scanner.score_shortlist_confluence", _stub_confluence)
+    monkeypatch.setattr("options_helper.commands.scanner.rank_shortlist_candidates", _stub_rank)
 
     runner = CliRunner()
     res = runner.invoke(

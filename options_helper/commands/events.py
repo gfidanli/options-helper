@@ -7,7 +7,7 @@ import typer
 from rich.console import Console
 
 from options_helper.analysis.osi import normalize_underlying
-from options_helper.cli_deps import build_provider
+import options_helper.cli_deps as cli_deps
 from options_helper.data.alpaca_client import AlpacaClient
 from options_helper.data.corporate_actions_store import CorporateActionsStore
 from options_helper.data.market_types import DataFetchError
@@ -50,7 +50,7 @@ def _parse_types(types: list[str] | None, types_csv: str | None) -> list[str]:
 
 
 def _require_alpaca_provider() -> None:
-    provider = build_provider()
+    provider = cli_deps.build_provider()
     name = getattr(provider, "name", None)
     if name != "alpaca":
         raise typer.BadParameter("Events ingestion currently requires --provider alpaca.")

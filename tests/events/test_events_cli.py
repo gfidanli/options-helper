@@ -69,7 +69,7 @@ def test_events_refresh_corporate_actions(tmp_path, monkeypatch):  # type: ignor
     runner = CliRunner()
     stub = _StubClient()
 
-    monkeypatch.setattr(events, "build_provider", lambda: _StubProvider())
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda: _StubProvider())
     monkeypatch.setattr(events, "AlpacaClient", lambda: stub)
 
     result = runner.invoke(
@@ -99,7 +99,7 @@ def test_events_refresh_news(tmp_path, monkeypatch):  # type: ignore[no-untyped-
     runner = CliRunner()
     stub = _StubClient()
 
-    monkeypatch.setattr(events, "build_provider", lambda: _StubProvider())
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda: _StubProvider())
     monkeypatch.setattr(events, "AlpacaClient", lambda: stub)
 
     result = runner.invoke(

@@ -43,7 +43,7 @@ def test_intraday_pull_stocks_bars(tmp_path, monkeypatch):  # type: ignore[no-un
                 }
             )
 
-    monkeypatch.setattr(intraday, "build_provider", lambda: _StubProvider())
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda: _StubProvider())
     monkeypatch.setattr(intraday, "AlpacaClient", _StubClient)
 
     result = runner.invoke(
@@ -131,7 +131,7 @@ def test_intraday_pull_options_bars(tmp_path, monkeypatch):  # type: ignore[no-u
                 }
             )
 
-    monkeypatch.setattr(intraday, "build_provider", lambda: _StubProvider())
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda: _StubProvider())
     monkeypatch.setattr(intraday, "AlpacaClient", _StubClient)
 
     out_dir = tmp_path / "intraday"
