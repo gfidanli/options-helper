@@ -1,0 +1,61 @@
+site_name: options-helper
+site_description: "CLI-first options analysis (not financial advice)"
+docs_dir: docs
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.instant
+    - navigation.tracking
+    - search.suggest
+    - content.code.copy
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+
+nav:
+  - Home: index.md
+  - Using the CLI:
+      - Briefing: BRIEFING.md
+      - Report Pack: REPORT_PACK.md
+      - Automation: AUTOMATION.md
+      - Dashboard: DASHBOARD.md
+      - Scanner: SCANNER.md
+  - Data & Artifacts:
+      - Candle Cache: CANDLE_CACHE.md
+      - Chain Report: CHAIN_REPORT.md
+      - Options Flow: OPTIONS_FLOW.md
+      - Derived Metrics: DERIVED.md
+      - Artifact Schemas: ARTIFACT_SCHEMAS.md
+  - Research & Analysis:
+      - Research: RESEARCH.md
+      - Backtesting: BACKTESTING.md
+      - Confluence Score: CONFLUENCE_SCORE.md
+      - Technical Extension (Percentiles): TECHNICAL_EXTENSION_PERCENTILES.md
+      - Technical Extension (RSI Divergence): TECHNICAL_EXTENSION_RSI_DIVERGENCE.md
+  - Planning:
+      - Backlog: BACKLOG.md
+      - Repo Improvements: REPO_IMPROVEMENTS.md
+      - Plans Index: plans/README.md
+  - Docs Site: DOCS_SITE.md
+  - Reference:
+      - Providers: PROVIDERS.md
+      - Multi-leg: MULTI_LEG.md
+      - Roll Plan: ROLL_PLAN.md
+      - Earnings: EARNINGS.md
+      - Events: EVENTS.md
+      - Intraday: INTRADAY.md
+      - Compare: COMPARE.md
+      - Watchlists: WATCHLISTS.md
+      - Journal: JOURNAL.md
+      - LLM Loop Prompt: LLM_LOOP_PROMPT.md
+      - Technical Backtesting (PRD): technical_backtesting/PRD.md
+      - Technical Backtesting (Runbook): technical_backtesting/RUNBOOK.md

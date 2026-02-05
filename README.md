@@ -37,6 +37,17 @@ Without installing an entrypoint script:
 python3 -m options_helper init portfolio.json
 ```
 
+## Docs site (MkDocs)
+
+Render `docs/` as a browsable website locally:
+
+```bash
+pip install -e ".[dev,docs]"
+mkdocs serve
+```
+
+GitHub Pages setup details: `docs/DOCS_SITE.md`
+
 ## Features
 
 ### Portfolio (JSON) + CRUD
