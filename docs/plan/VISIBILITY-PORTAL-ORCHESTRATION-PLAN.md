@@ -169,9 +169,9 @@ T16 + T17 ───────────────────────�
 - **location**: `/Volumes/develop/options-helper/apps/streamlit/pages/02_Portfolio.py`, `/Volumes/develop/options-helper/apps/streamlit/pages/03_Symbol_Explorer.py`
 - **description**: Portfolio page loads portfolio JSON and best-effort risk summary (briefing artifact fallback + live computed fallback). Symbol Explorer page provides symbol selector/query params, candles chart, latest snapshot summary (OI/IV views), and derived-history snippets.
 - **validation**: `./.venv/bin/python -m pytest tests/portal/test_portfolio_page_queries.py tests/portal/test_symbol_explorer_queries.py`
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Implemented full Portfolio and Symbol Explorer pages with reusable helper modules for portfolio loading/risk-summary fallback and symbol-level DuckDB queries. Added deterministic offline tests covering portfolio parsing/risk-source fallback plus symbol query helpers, snapshot summaries, and derived snippets.
+- **files edited/created**: `/Volumes/develop/options-helper/apps/streamlit/pages/02_Portfolio.py`, `/Volumes/develop/options-helper/apps/streamlit/pages/03_Symbol_Explorer.py`, `/Volumes/develop/options-helper/apps/streamlit/components/portfolio_page.py`, `/Volumes/develop/options-helper/apps/streamlit/components/symbol_explorer_page.py`, `/Volumes/develop/options-helper/tests/portal/test_portfolio_page_queries.py`, `/Volumes/develop/options-helper/tests/portal/test_symbol_explorer_queries.py`, `/Volumes/develop/options-helper/docs/plan/VISIBILITY-PORTAL-ORCHESTRATION-PLAN.md`
 
 ### T12: Implement Flow, Derived History, and Data Explorer Pages
 - **depends_on**: [T4, T9]
