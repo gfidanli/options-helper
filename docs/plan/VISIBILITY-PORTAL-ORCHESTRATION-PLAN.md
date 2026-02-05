@@ -81,9 +81,13 @@ T16 + T17 ───────────────────────�
 - **location**: `/Volumes/develop/options-helper/options_helper/data/observability_meta.py` (new), `/Volumes/develop/options-helper/options_helper/cli_deps.py`
 - **description**: Implement `RunLogger` protocol with `DuckDBRunLogger` and `NoopRunLogger`; include start/finalize lifecycle, asset event logging, watermark upserts, check persistence, stack hashing, args JSON serialization, and centralized health query helpers; add `cli_deps.build_run_logger(...)` seam.
 - **validation**: `./.venv/bin/python -m pytest tests/test_observability_meta.py`
-- **status**: Not Completed
-- **log**:
+- **status**: Completed
+- **log**: Added `options_helper.data.observability_meta` with a `RunLogger` protocol, `DuckDBRunLogger` + `NoopRunLogger`, run lifecycle start/success/failure finalization, per-asset upserted event rows, watermark upserts, persisted checks, stack hashing, args JSON serialization, and shared health query helpers (`latest runs`, `recent failures`, `watermarks`, `check failures`). Added storage-aware `cli_deps.build_run_logger(...)` that returns a started DuckDB logger in DuckDB mode and a started no-op logger in filesystem mode. Added deterministic offline tests covering runtime writes, failure hashing, query helpers, no-op behavior, and CLI deps seam.
 - **files edited/created**:
+  - `/Volumes/develop/options-helper/options_helper/data/observability_meta.py` (new)
+  - `/Volumes/develop/options-helper/options_helper/cli_deps.py`
+  - `/Volumes/develop/options-helper/tests/test_observability_meta.py` (new)
+  - `/Volumes/develop/options-helper/docs/plan/VISIBILITY-PORTAL-ORCHESTRATION-PLAN.md`
 
 ### T4: Add Flow Persistence Store
 - **depends_on**: [T2]

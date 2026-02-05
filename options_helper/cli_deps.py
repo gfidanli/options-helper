@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from options_helper.data.derived import DerivedStore
     from options_helper.data.earnings import EarningsStore
     from options_helper.data.journal import JournalStore
+    from options_helper.data.observability_meta import RunLogger
     from options_helper.data.option_bars import OptionBarsStore
     from options_helper.data.option_contracts import OptionContractsStore
     from options_helper.data.options_snapshots import OptionsSnapshotStore
@@ -76,3 +77,42 @@ def build_option_bars_store(bars_dir: Path) -> OptionBarsStore:
     from options_helper.data.store_factory import get_option_bars_store
 
     return get_option_bars_store(bars_dir)
+
+
+def build_run_logger(
+    *,
+    job_name: str,
+    triggered_by: str = "cli",
+    parent_run_id: str | None = None,
+    provider: str | None = None,
+    storage_backend: str | None = None,
+    args: object | None = None,
+    git_sha: str | None = None,
+    app_version: str | None = None,
+    run_id: str | None = None,
+) -> RunLogger:
+    from options_helper.data.observability_meta import DuckDBRunLogger, NoopRunLogger
+    from options_helper.data.storage_runtime import get_storage_runtime_config
+
+    cfg = get_storage_runtime_config()
+    effective_storage_backend = storage_backend or cfg.backend
+
+    if cfg.backend == "duckdb":
+        from options_helper.data.store_factory import get_warehouse
+
+        logger: RunLogger = DuckDBRunLogger(get_warehouse(cfg.duckdb_path))
+    else:
+        logger = NoopRunLogger()
+
+    logger.start_run(
+        job_name=job_name,
+        triggered_by=triggered_by,
+        parent_run_id=parent_run_id,
+        provider=provider,
+        storage_backend=effective_storage_backend,
+        args=args,
+        git_sha=git_sha,
+        app_version=app_version,
+        run_id=run_id,
+    )
+    return logger
