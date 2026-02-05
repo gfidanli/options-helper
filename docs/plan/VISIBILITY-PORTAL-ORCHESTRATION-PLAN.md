@@ -63,9 +63,18 @@ T16 + T17 ───────────────────────�
 - **location**: `/Volumes/develop/options-helper/options_helper/db/schema_v3.sql` (new), `/Volumes/develop/options-helper/options_helper/db/migrations.py`
 - **description**: Add idempotent v3 migration with `meta.*` tables and `options_flow`; add indexes for run/job/time lookups and health queries; keep `schema_migrations` as canonical version source; ensure repeated init is safe.
 - **validation**: `./.venv/bin/python -m pytest tests/test_duckdb_migrations.py tests/test_duckdb_migrations_v2.py tests/test_duckdb_cli_db.py`
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added `schema_v3.sql` with idempotent DDL for `meta.ingestion_runs`, `meta.ingestion_run_assets`, `meta.asset_watermarks`, `meta.asset_checks`, and `options_flow`.
+  - Added v3 index set for run/job/time lookup and health-query paths (`meta.ingestion_runs`, `meta.ingestion_run_assets`, `meta.asset_checks`, `meta.asset_watermarks`, `options_flow`).
+  - Updated `ensure_schema(...)` to apply v3 and record migration row `schema_version=3` idempotently using `schema_migrations` as source of truth.
+  - Extended migration tests for fresh v3 init, simulated v2→v3 upgrade path, and repeated idempotent migration calls.
 - **files edited/created**:
+  - `/Volumes/develop/options-helper/options_helper/db/schema_v3.sql` (new)
+  - `/Volumes/develop/options-helper/options_helper/db/migrations.py`
+  - `/Volumes/develop/options-helper/tests/test_duckdb_migrations.py`
+  - `/Volumes/develop/options-helper/tests/test_duckdb_migrations_v2.py`
+  - `/Volumes/develop/options-helper/docs/plan/VISIBILITY-PORTAL-ORCHESTRATION-PLAN.md`
 
 ### T3: Implement Observability Runtime (DuckDB + Noop)
 - **depends_on**: [T2]
