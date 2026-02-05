@@ -37,6 +37,9 @@ if schemas_note:
 if not schemas:
     st.info("No schemas found. Initialize and populate DuckDB first.")
     st.stop()
+    # `st.stop()` is a no-op in bare script execution (used by import smoke tests).
+    # Keep fallback values so module import remains safe in that mode.
+    schemas = ["main"]
 
 default_schema = "main" if "main" in schemas else schemas[0]
 selected_schema = st.selectbox(
@@ -51,58 +54,58 @@ if tables_note:
 if tables_df.empty:
     st.info(f"No tables found in schema `{selected_schema}`.")
     st.stop()
-
-st.subheader("Tables")
-display_tables = tables_df.copy()
-display_tables["row_count"] = display_tables["row_count"].map(_fmt_row_count)
-st.dataframe(display_tables, hide_index=True, use_container_width=True)
-
-table_names = tables_df["table_name"].astype("string").tolist()
-selected_table = st.selectbox(
-    "Table",
-    options=table_names,
-    index=0,
-    help="Select a table/view to inspect schema and rows.",
-)
-
-columns_df, columns_note = load_table_columns(
-    selected_schema,
-    selected_table,
-    database_path=database_arg,
-)
-if columns_note:
-    st.warning(f"Column metadata unavailable: {columns_note}")
-elif columns_df.empty:
-    st.info(f"No columns found for `{selected_schema}.{selected_table}`.")
 else:
-    st.subheader("Columns")
-    st.dataframe(columns_df, hide_index=True, use_container_width=True)
+    st.subheader("Tables")
+    display_tables = tables_df.copy()
+    display_tables["row_count"] = display_tables["row_count"].map(_fmt_row_count)
+    st.dataframe(display_tables, hide_index=True, use_container_width=True)
 
-rows_df, rows_note = preview_table_rows(
-    selected_schema,
-    selected_table,
-    limit=preview_limit,
-    database_path=database_arg,
-)
-if rows_note:
-    st.warning(f"Preview query unavailable: {rows_note}")
-else:
-    st.subheader("Preview Rows")
-    if rows_df.empty:
-        st.info("Selected table has no rows.")
+    table_names = tables_df["table_name"].astype("string").tolist()
+    selected_table = st.selectbox(
+        "Table",
+        options=table_names,
+        index=0,
+        help="Select a table/view to inspect schema and rows.",
+    )
+
+    columns_df, columns_note = load_table_columns(
+        selected_schema,
+        selected_table,
+        database_path=database_arg,
+    )
+    if columns_note:
+        st.warning(f"Column metadata unavailable: {columns_note}")
+    elif columns_df.empty:
+        st.info(f"No columns found for `{selected_schema}.{selected_table}`.")
     else:
-        preview = rows_df.copy()
-        for column in preview.columns:
-            if pd.api.types.is_datetime64_any_dtype(preview[column]):
-                preview[column] = preview[column].dt.strftime("%Y-%m-%d %H:%M:%S")
-        st.dataframe(preview, hide_index=True, use_container_width=True)
+        st.subheader("Columns")
+        st.dataframe(columns_df, hide_index=True, use_container_width=True)
 
-st.subheader("Query Snippet")
-st.code(
-    build_select_sql(
+    rows_df, rows_note = preview_table_rows(
         selected_schema,
         selected_table,
         limit=preview_limit,
+        database_path=database_arg,
+    )
+    if rows_note:
+        st.warning(f"Preview query unavailable: {rows_note}")
+    else:
+        st.subheader("Preview Rows")
+        if rows_df.empty:
+            st.info("Selected table has no rows.")
+        else:
+            preview = rows_df.copy()
+            for column in preview.columns:
+                if pd.api.types.is_datetime64_any_dtype(preview[column]):
+                    preview[column] = preview[column].dt.strftime("%Y-%m-%d %H:%M:%S")
+            st.dataframe(preview, hide_index=True, use_container_width=True)
+
+    st.subheader("Query Snippet")
+    st.code(
+        build_select_sql(
+            selected_schema,
+            selected_table,
+            limit=preview_limit,
+        ),
+        language="sql",
     ),
-    language="sql",
-)

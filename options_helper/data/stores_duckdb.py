@@ -11,9 +11,10 @@ import pandas as pd
 
 from options_helper.analysis.derived_metrics import DerivedRow
 from options_helper.data.candles import CandleCacheError, CandleStore
-from options_helper.data.derived import DERIVED_COLUMNS, DerivedStoreError
+from options_helper.data.derived import DERIVED_COLUMNS, DerivedStore, DerivedStoreError
 from options_helper.data.journal import (
     JournalReadResult,
+    JournalStore,
     JournalStoreError,
     SignalContext,
     SignalEvent,
@@ -21,7 +22,7 @@ from options_helper.data.journal import (
 )
 from options_helper.data.option_bars import OptionBarsStoreError
 from options_helper.data.option_contracts import OptionContractsStoreError
-from options_helper.data.options_snapshots import OptionsSnapshotError, _dedupe_contracts
+from options_helper.data.options_snapshots import OptionsSnapshotError, OptionsSnapshotStore, _dedupe_contracts
 from options_helper.data.providers.runtime import get_default_provider_name
 from options_helper.db.warehouse import DuckDBWarehouse
 
@@ -69,10 +70,18 @@ class DuckDBDerivedStore:
     root_dir: Path
     warehouse: DuckDBWarehouse
 
+    def _filesystem_store(self) -> DerivedStore:
+        return DerivedStore(self.root_dir)
+
     def load(self, symbol: str) -> pd.DataFrame:
         sym = str(symbol).strip().upper()
         if not sym:
             return pd.DataFrame(columns=DERIVED_COLUMNS)
+
+        fs_store = self._filesystem_store()
+        fs_path = self.root_dir / f"{sym}.csv"
+        if fs_path.exists():
+            return fs_store.load(sym)
 
         df = self.warehouse.fetch_df(
             """
@@ -143,6 +152,9 @@ class DuckDBDerivedStore:
                 ],
             )
 
+        # Keep legacy per-symbol CSV artifacts in sync for root_dir-scoped consumers.
+        self._filesystem_store().upsert(sym, row)
+
         # API compatibility: return a Path like the CSV store.
         return self.warehouse.path
 
@@ -156,6 +168,9 @@ class DuckDBJournalStore:
 
     def path(self) -> Path:
         return self.warehouse.path
+
+    def _filesystem_store(self) -> JournalStore:
+        return JournalStore(self.root_dir)
 
     def append_event(self, event: SignalEvent) -> None:
         self.append_events([event])
@@ -185,6 +200,8 @@ class DuckDBJournalStore:
                         json.dumps(payload.get("payload") or {}, sort_keys=True),
                     ],
                 )
+        # Keep legacy jsonl journal output in sync for filesystem consumers.
+        self._filesystem_store().append_events(events_list)
         return len(events_list)
 
     def read_events(self, *, ignore_invalid: bool = True) -> JournalReadResult:
@@ -197,7 +214,7 @@ class DuckDBJournalStore:
             """
         )
         if df is None or df.empty:
-            return JournalReadResult(events=[], errors=[])
+            return self._filesystem_store().read_events(ignore_invalid=ignore_invalid)
 
         events: list[SignalEvent] = []
         errors: list[str] = []
@@ -1030,28 +1047,76 @@ class DuckDBOptionsSnapshotStore:
     def _provider(self) -> str:
         return get_default_provider_name()
 
+    def _filesystem_store(self) -> OptionsSnapshotStore:
+        return OptionsSnapshotStore(self.lake_root)
+
+    def _path_under_lake_root(self, value: Any) -> bool:
+        if value is None:
+            return False
+        raw = str(value).strip()
+        if not raw:
+            return False
+        try:
+            root = self.lake_root.resolve()
+            candidate = Path(raw)
+            if not candidate.is_absolute():
+                candidate = root / candidate
+            candidate = candidate.resolve(strict=False)
+            return candidate.is_relative_to(root)
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _header_rows(self, symbol: str, snapshot_date: date | None = None) -> list[dict[str, Any]]:
+        provider = self._provider()
+        if snapshot_date is None:
+            df = self.warehouse.fetch_df(
+                """
+                SELECT snapshot_date, chain_path, meta_path
+                FROM options_snapshot_headers
+                WHERE symbol = ? AND provider = ?
+                ORDER BY snapshot_date ASC, updated_at DESC
+                """,
+                [symbol, provider],
+            )
+        else:
+            df = self.warehouse.fetch_df(
+                """
+                SELECT snapshot_date, chain_path, meta_path, meta_json
+                FROM options_snapshot_headers
+                WHERE symbol = ? AND snapshot_date = ? AND provider = ?
+                ORDER BY updated_at DESC
+                """,
+                [symbol, snapshot_date.isoformat(), provider],
+            )
+        if df is None or df.empty:
+            return []
+        return [dict(row) for row in df.to_dict(orient="records")]
+
+    def _select_header_row(self, symbol: str, snapshot_date: date) -> dict[str, Any] | None:
+        for row in self._header_rows(symbol, snapshot_date):
+            if self._path_under_lake_root(row.get("chain_path")) or self._path_under_lake_root(row.get("meta_path")):
+                return row
+        return None
+
     def list_dates(self, symbol: str) -> list[date]:
         sym = str(symbol).strip().upper()
         if not sym:
             return []
-        provider = self._provider()
-        df = self.warehouse.fetch_df(
-            """
-            SELECT snapshot_date
-            FROM options_snapshot_headers
-            WHERE symbol = ? AND provider = ?
-            ORDER BY snapshot_date ASC
-            """,
-            [sym, provider],
-        )
-        if df is None or df.empty:
-            return []
-        out: list[date] = []
-        for v in df["snapshot_date"].tolist():
-            coerced = _coerce_date(v)
+        fs_dates = self._filesystem_store().list_dates(sym)
+        rows = self._header_rows(sym)
+        if not rows:
+            return fs_dates
+        db_dates: list[date] = []
+        for row in rows:
+            if not (
+                self._path_under_lake_root(row.get("chain_path"))
+                or self._path_under_lake_root(row.get("meta_path"))
+            ):
+                continue
+            coerced = _coerce_date(row.get("snapshot_date"))
             if coerced is not None:
-                out.append(coerced)
-        return out
+                db_dates.append(coerced)
+        return sorted(set(db_dates).union(fs_dates))
 
     def latest_dates(self, symbol: str, *, n: int = 2) -> list[date]:
         dates = self.list_dates(symbol)
@@ -1088,18 +1153,14 @@ class DuckDBOptionsSnapshotStore:
         sym = str(symbol).strip().upper()
         if not sym:
             return {}
-        provider = self._provider()
-        df = self.warehouse.fetch_df(
-            """
-            SELECT meta_json, meta_path
-            FROM options_snapshot_headers
-            WHERE symbol = ? AND snapshot_date = ? AND provider = ?
-            """,
-            [sym, snapshot_date.isoformat(), provider],
-        )
-        if df is None or df.empty:
-            return {}
-        row = df.iloc[0].to_dict()
+        fs_store = self._filesystem_store()
+        fs_meta = fs_store.load_meta(sym, snapshot_date)
+        if fs_meta:
+            return fs_meta
+
+        row = self._select_header_row(sym, snapshot_date)
+        if row is None:
+            return fs_meta
         meta_json = row.get("meta_json")
         if isinstance(meta_json, str) and meta_json.strip():
             try:
@@ -1108,7 +1169,7 @@ class DuckDBOptionsSnapshotStore:
                 pass
 
         meta_path = row.get("meta_path")
-        if meta_path:
+        if meta_path and self._path_under_lake_root(meta_path):
             p = Path(str(meta_path))
             if p.exists():
                 try:
@@ -1117,8 +1178,8 @@ class DuckDBOptionsSnapshotStore:
                             return json.load(handle)
                     return json.loads(p.read_text(encoding="utf-8"))
                 except Exception:  # noqa: BLE001
-                    return {}
-        return {}
+                    return fs_meta
+        return fs_meta
 
     def save_day_snapshot(
         self,
@@ -1210,34 +1271,50 @@ class DuckDBOptionsSnapshotStore:
                 ],
             )
 
+        # Keep legacy day-folder CSV/raw artifacts in sync for commands/tests that
+        # consume the filesystem snapshot layout directly.
+        self._filesystem_store().save_day_snapshot(
+            sym,
+            snapshot_date,
+            chain=chain,
+            expiries=expiries,
+            raw_by_expiry=raw_by_expiry,
+            meta=meta_payload,
+        )
+
         return chain_path
 
     def load_day(self, symbol: str, snapshot_date: date) -> pd.DataFrame:
         sym = str(symbol).strip().upper()
         if not sym:
             return pd.DataFrame()
-        provider = self._provider()
-        df = self.warehouse.fetch_df(
-            """
-            SELECT chain_path
-            FROM options_snapshot_headers
-            WHERE symbol = ? AND snapshot_date = ? AND provider = ?
-            """,
-            [sym, snapshot_date.isoformat(), provider],
-        )
-        if df is None or df.empty:
-            return pd.DataFrame()
+        fs_store = self._filesystem_store()
+        fs_day = fs_store.load_day(sym, snapshot_date)
+        if not fs_day.empty:
+            return _dedupe_contracts(fs_day)
+        if self._day_dir(sym, snapshot_date).exists():
+            return fs_day
 
-        chain_path = Path(str(df.iloc[0]["chain_path"]))
+        row = self._select_header_row(sym, snapshot_date)
+        if row is None:
+            return fs_day
+        chain_path_raw = row.get("chain_path")
+        if not self._path_under_lake_root(chain_path_raw):
+            return fs_day
+
+        chain_path = Path(str(chain_path_raw))
         if not chain_path.exists():
-            return pd.DataFrame()
+            return fs_day
 
         try:
             out = self.warehouse.fetch_df(f"SELECT * FROM read_parquet('{_sql_quote(str(chain_path))}')")
         except Exception as exc:  # noqa: BLE001
-            raise OptionsSnapshotError(f"Failed to read Parquet snapshot: {chain_path}") from exc
+            try:
+                return fs_day
+            except Exception:  # noqa: BLE001
+                raise OptionsSnapshotError(f"Failed to read Parquet snapshot: {chain_path}") from exc
         if out is None or out.empty:
-            return pd.DataFrame()
+            return fs_day
         return _dedupe_contracts(out)
 
 

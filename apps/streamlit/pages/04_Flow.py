@@ -152,6 +152,11 @@ if bounds_note:
 if min_as_of is None or max_as_of is None:
     st.info(f"No flow partitions found for {active_symbol} ({active_group}).")
     st.stop()
+    # `st.stop()` is a no-op in bare script execution (used by import smoke tests).
+    # Keep fallback values so the module remains import-safe in that mode.
+    today = date.today()
+    min_as_of = today
+    max_as_of = today
 
 default_start = max(min_as_of, max_as_of - timedelta(days=30))
 range_value = st.date_input(
@@ -180,88 +185,88 @@ if partitions_note:
 if partitions_df.empty:
     st.info("No persisted flow partitions match the selected filters.")
     st.stop()
-
-latest_partition = partitions_df.iloc[0]
-metric_cols = st.columns(4)
-metric_cols[0].metric("Partitions", value=f"{len(partitions_df)}")
-metric_cols[1].metric("Latest As-of", value=_fmt_date(latest_partition.get("as_of")))
-metric_cols[2].metric(
-    "Latest Net ΔOI Notional",
-    value=_fmt_number(latest_partition.get("net_delta_oi_notional"), digits=0),
-)
-metric_cols[3].metric(
-    "Latest Volume Notional",
-    value=_fmt_number(latest_partition.get("total_volume_notional"), digits=0),
-)
-
-st.subheader("Partition Timeseries")
-timeseries_df = build_flow_timeseries(partitions_df)
-if timeseries_df.empty:
-    st.info("Timeseries summary unavailable for selected filters.")
 else:
-    st.line_chart(
-        timeseries_df.set_index("as_of")[["net_delta_oi_notional", "total_volume_notional"]],
-        use_container_width=True,
+    latest_partition = partitions_df.iloc[0]
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Partitions", value=f"{len(partitions_df)}")
+    metric_cols[1].metric("Latest As-of", value=_fmt_date(latest_partition.get("as_of")))
+    metric_cols[2].metric(
+        "Latest Net ΔOI Notional",
+        value=_fmt_number(latest_partition.get("net_delta_oi_notional"), digits=0),
+    )
+    metric_cols[3].metric(
+        "Latest Volume Notional",
+        value=_fmt_number(latest_partition.get("total_volume_notional"), digits=0),
     )
 
-st.subheader("Partition Summary Table")
-display_partitions = partitions_df.copy()
-for column in ("as_of", "from_date", "to_date", "updated_at"):
-    display_partitions[column] = pd.to_datetime(display_partitions[column], errors="coerce").dt.date.astype(str)
-st.dataframe(display_partitions, hide_index=True, use_container_width=True)
+    st.subheader("Partition Timeseries")
+    timeseries_df = build_flow_timeseries(partitions_df)
+    if timeseries_df.empty:
+        st.info("Timeseries summary unavailable for selected filters.")
+    else:
+        st.line_chart(
+            timeseries_df.set_index("as_of")[["net_delta_oi_notional", "total_volume_notional"]],
+            use_container_width=True,
+        )
 
-partition_labels = [_partition_label(row) for _, row in partitions_df.iterrows()]
-selected_partition = st.selectbox(
-    "Inspect Partition Rows",
-    options=partition_labels,
-    index=0,
-    help="Loads top rows by absolute ΔOI notional from a single persisted partition.",
-)
-selected_row = partitions_df.iloc[partition_labels.index(selected_partition)]
+    st.subheader("Partition Summary Table")
+    display_partitions = partitions_df.copy()
+    for column in ("as_of", "from_date", "to_date", "updated_at"):
+        display_partitions[column] = pd.to_datetime(display_partitions[column], errors="coerce").dt.date.astype(str)
+    st.dataframe(display_partitions, hide_index=True, use_container_width=True)
 
-rows_df, rows_note = load_flow_rows_for_partition(
-    active_symbol,
-    as_of=selected_row.get("as_of"),
-    from_date=selected_row.get("from_date"),
-    to_date=selected_row.get("to_date"),
-    window=int(float(selected_row.get("window") or 1)),
-    group_by=active_group,
-    top_n=top_n,
-    database_path=database_arg,
-)
-if rows_note:
-    st.warning(f"Partition row query unavailable: {rows_note}")
-elif rows_df.empty:
-    st.info("No flow rows found for the selected partition.")
-else:
-    row_metrics = st.columns(4)
-    row_metrics[0].metric("Rows Loaded", value=f"{len(rows_df)}")
-    row_metrics[1].metric(
-        "Net ΔOI Notional",
-        value=_fmt_number(rows_df["delta_oi_notional"].sum(), digits=0),
+    partition_labels = [_partition_label(row) for _, row in partitions_df.iterrows()]
+    selected_partition = st.selectbox(
+        "Inspect Partition Rows",
+        options=partition_labels,
+        index=0,
+        help="Loads top rows by absolute ΔOI notional from a single persisted partition.",
     )
-    row_metrics[2].metric(
-        "Net Delta Notional",
-        value=_fmt_number(rows_df["delta_notional"].sum(), digits=0),
-    )
-    row_metrics[3].metric(
-        "Total Volume Notional",
-        value=_fmt_number(rows_df["volume_notional"].sum(), digits=0),
-    )
+    selected_row = partitions_df.iloc[partition_labels.index(selected_partition)]
 
-    option_summary = build_flow_option_type_summary(rows_df)
-    if not option_summary.empty:
-        st.markdown("**Call/Put Summary**")
-        st.dataframe(option_summary, hide_index=True, use_container_width=True)
-
-    chart_rows = rows_df.head(min(20, len(rows_df))).copy()
-    chart_rows["label"] = chart_rows.apply(_flow_row_label, axis=1)
-    st.markdown("**Top Rows by ΔOI Notional**")
-    st.bar_chart(
-        chart_rows.set_index("label")[["delta_oi_notional"]],
-        use_container_width=True,
+    rows_df, rows_note = load_flow_rows_for_partition(
+        active_symbol,
+        as_of=selected_row.get("as_of"),
+        from_date=selected_row.get("from_date"),
+        to_date=selected_row.get("to_date"),
+        window=int(float(selected_row.get("window") or 1)),
+        group_by=active_group,
+        top_n=top_n,
+        database_path=database_arg,
     )
+    if rows_note:
+        st.warning(f"Partition row query unavailable: {rows_note}")
+    elif rows_df.empty:
+        st.info("No flow rows found for the selected partition.")
+    else:
+        row_metrics = st.columns(4)
+        row_metrics[0].metric("Rows Loaded", value=f"{len(rows_df)}")
+        row_metrics[1].metric(
+            "Net ΔOI Notional",
+            value=_fmt_number(rows_df["delta_oi_notional"].sum(), digits=0),
+        )
+        row_metrics[2].metric(
+            "Net Delta Notional",
+            value=_fmt_number(rows_df["delta_notional"].sum(), digits=0),
+        )
+        row_metrics[3].metric(
+            "Total Volume Notional",
+            value=_fmt_number(rows_df["volume_notional"].sum(), digits=0),
+        )
 
-    display_rows = rows_df.copy()
-    display_rows["expiry"] = pd.to_datetime(display_rows["expiry"], errors="coerce").dt.date.astype(str)
-    st.dataframe(display_rows, hide_index=True, use_container_width=True)
+        option_summary = build_flow_option_type_summary(rows_df)
+        if not option_summary.empty:
+            st.markdown("**Call/Put Summary**")
+            st.dataframe(option_summary, hide_index=True, use_container_width=True)
+
+        chart_rows = rows_df.head(min(20, len(rows_df))).copy()
+        chart_rows["label"] = chart_rows.apply(_flow_row_label, axis=1)
+        st.markdown("**Top Rows by ΔOI Notional**")
+        st.bar_chart(
+            chart_rows.set_index("label")[["delta_oi_notional"]],
+            use_container_width=True,
+        )
+
+        display_rows = rows_df.copy()
+        display_rows["expiry"] = pd.to_datetime(display_rows["expiry"], errors="coerce").dt.date.astype(str)
+        st.dataframe(display_rows, hide_index=True, use_container_width=True)

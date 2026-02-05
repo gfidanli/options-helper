@@ -195,7 +195,7 @@ def _resolve_default_symbols(paths: DagsterPaths) -> tuple[list[str], list[str]]
     group_name="daily_visibility",
     required_resource_keys={"paths", "runtime_config"},
 )
-def candles_daily(context: AssetExecutionContext) -> MaterializeResult:
+def candles_daily(context) -> MaterializeResult:
     partition_day = _partition_date(context)
     partition_key = partition_day.isoformat()
     paths: DagsterPaths = context.resources.paths
@@ -320,7 +320,7 @@ def candles_daily(context: AssetExecutionContext) -> MaterializeResult:
     deps=["candles_daily"],
     required_resource_keys={"paths", "runtime_config"},
 )
-def options_bars(context: AssetExecutionContext) -> MaterializeResult:
+def options_bars(context) -> MaterializeResult:
     partition_day = _partition_date(context)
     partition_key = partition_day.isoformat()
     paths: DagsterPaths = context.resources.paths
@@ -480,7 +480,7 @@ def options_bars(context: AssetExecutionContext) -> MaterializeResult:
     deps=["options_bars"],
     required_resource_keys={"paths", "runtime_config"},
 )
-def options_snapshot_file(context: AssetExecutionContext) -> MaterializeResult:
+def options_snapshot_file(context) -> MaterializeResult:
     partition_day = _partition_date(context)
     partition_key = partition_day.isoformat()
     paths: DagsterPaths = context.resources.paths
@@ -611,7 +611,7 @@ def options_snapshot_file(context: AssetExecutionContext) -> MaterializeResult:
     deps=["options_snapshot_file"],
     required_resource_keys={"paths", "runtime_config"},
 )
-def options_flow(context: AssetExecutionContext) -> MaterializeResult:
+def options_flow(context) -> MaterializeResult:
     partition_day = _partition_date(context)
     partition_key = partition_day.isoformat()
     paths: DagsterPaths = context.resources.paths
@@ -729,7 +729,7 @@ def options_flow(context: AssetExecutionContext) -> MaterializeResult:
     deps=["options_flow"],
     required_resource_keys={"paths", "runtime_config"},
 )
-def derived_metrics(context: AssetExecutionContext) -> MaterializeResult:
+def derived_metrics(context) -> MaterializeResult:
     partition_day = _partition_date(context)
     partition_key = partition_day.isoformat()
     paths: DagsterPaths = context.resources.paths
@@ -858,7 +858,7 @@ def derived_metrics(context: AssetExecutionContext) -> MaterializeResult:
     deps=["derived_metrics"],
     required_resource_keys={"paths", "runtime_config"},
 )
-def briefing_markdown(context: AssetExecutionContext) -> MaterializeResult:
+def briefing_markdown(context) -> MaterializeResult:
     partition_day = _partition_date(context)
     partition_key = partition_day.isoformat()
     paths: DagsterPaths = context.resources.paths

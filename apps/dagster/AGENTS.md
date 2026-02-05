@@ -14,3 +14,6 @@
 ## Dependency and startup
 - Avoid importing Dagster modules from core CLI code paths.
 - Guard tests and runtime checks with `pytest.importorskip("dagster")` where appropriate.
+- For asset/asset-check function signatures, avoid strict `context: AssetExecutionContext` / `AssetCheckExecutionContext`
+  annotations in decorated callables; under newer Python runtimes this can break Dagster definition loading.
+  Prefer untyped `context` parameters in decorators and keep explicit typing in helper functions.

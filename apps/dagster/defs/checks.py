@@ -107,7 +107,7 @@ def _observed_check_run(
     name="candles_daily_quality",
     description="Run candles quality checks and persist rows to meta.asset_checks.",
 )
-def candles_daily_quality(context: AssetCheckExecutionContext) -> AssetCheckResult:
+def candles_daily_quality(context) -> AssetCheckResult:
     partition_key = _partition_key_for_check(context)
     paths: DagsterPaths = context.resources.paths
     symbols, warnings = _resolve_default_symbols(paths)
@@ -134,7 +134,7 @@ def candles_daily_quality(context: AssetCheckExecutionContext) -> AssetCheckResu
     name="options_bars_quality",
     description="Run option bars quality checks and persist rows to meta.asset_checks.",
 )
-def options_bars_quality(context: AssetCheckExecutionContext) -> AssetCheckResult:
+def options_bars_quality(context) -> AssetCheckResult:
     partition_key = _partition_key_for_check(context)
     paths: DagsterPaths = context.resources.paths
 
@@ -159,7 +159,7 @@ def options_bars_quality(context: AssetCheckExecutionContext) -> AssetCheckResul
     name="options_snapshot_file_quality",
     description="Validate snapshot contract-symbol parsing checks and persist rows.",
 )
-def options_snapshot_file_quality(context: AssetCheckExecutionContext) -> AssetCheckResult:
+def options_snapshot_file_quality(context) -> AssetCheckResult:
     partition_key = _partition_key_for_check(context)
     partition_day = _coerce_iso_date(partition_key)
     paths: DagsterPaths = context.resources.paths
@@ -197,7 +197,7 @@ def options_snapshot_file_quality(context: AssetCheckExecutionContext) -> AssetC
     name="options_flow_quality",
     description="Validate options_flow primary key guards and persist check rows.",
 )
-def options_flow_quality(context: AssetCheckExecutionContext) -> AssetCheckResult:
+def options_flow_quality(context) -> AssetCheckResult:
     partition_key = _partition_key_for_check(context)
     paths: DagsterPaths = context.resources.paths
     symbols, warnings = _resolve_default_symbols(paths)
@@ -220,7 +220,7 @@ def options_flow_quality(context: AssetCheckExecutionContext) -> AssetCheckResul
     name="derived_metrics_quality",
     description="Validate derived duplicate-key guards and persist check rows.",
 )
-def derived_metrics_quality(context: AssetCheckExecutionContext) -> AssetCheckResult:
+def derived_metrics_quality(context) -> AssetCheckResult:
     partition_key = _partition_key_for_check(context)
     paths: DagsterPaths = context.resources.paths
     symbols, warnings = _resolve_default_symbols(paths)
@@ -254,7 +254,7 @@ def derived_metrics_quality(context: AssetCheckExecutionContext) -> AssetCheckRe
     name="briefing_markdown_nonempty",
     description="Ensure daily briefing markdown exists and is not empty.",
 )
-def briefing_markdown_nonempty(context: AssetCheckExecutionContext) -> AssetCheckResult:
+def briefing_markdown_nonempty(context) -> AssetCheckResult:
     partition_key = _partition_key_for_check(context)
     paths: DagsterPaths = context.resources.paths
     markdown_path = paths.data_dir / "reports" / "daily" / f"{partition_key}.md"

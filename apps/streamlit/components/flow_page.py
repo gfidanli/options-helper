@@ -407,6 +407,11 @@ def _friendly_error(message: str) -> str:
 def _coerce_date(value: object) -> date | None:
     if value is None:
         return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:  # noqa: BLE001
+        pass
     if isinstance(value, datetime):
         return value.date()
     if isinstance(value, date):
