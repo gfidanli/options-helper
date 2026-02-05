@@ -47,9 +47,9 @@ def build_snapshot_store(cache_dir: Path) -> OptionsSnapshotStore:
 
 
 def build_derived_store(derived_dir: Path) -> DerivedStore:
-    from options_helper.data.derived import DerivedStore
+    from options_helper.data.store_factory import get_derived_store
 
-    return DerivedStore(derived_dir)
+    return get_derived_store(derived_dir)
 
 
 def build_earnings_store(cache_dir: Path) -> EarningsStore:
@@ -59,6 +59,6 @@ def build_earnings_store(cache_dir: Path) -> EarningsStore:
 
 
 def build_journal_store(journal_dir: Path) -> JournalStore:
-    from options_helper.data.journal import JournalStore
+    from options_helper.data.store_factory import get_journal_store
 
-    return JournalStore(journal_dir)
+    return get_journal_store(journal_dir)
