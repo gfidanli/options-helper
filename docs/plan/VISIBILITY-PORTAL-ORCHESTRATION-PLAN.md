@@ -94,9 +94,9 @@ T16 + T17 ───────────────────────�
 - **location**: `/Volumes/develop/options-helper/options_helper/data/flow_store.py` (new), `/Volumes/develop/options-helper/options_helper/data/store_factory.py`, `/Volumes/develop/options-helper/options_helper/cli_deps.py`
 - **description**: Add `DuckDBFlowStore` with partition upsert semantics by `(symbol, from_date, to_date, window, group_by)` and read APIs for portal pages; provide no-op behavior for filesystem backend.
 - **validation**: `./.venv/bin/python -m pytest tests/test_duckdb_flow_store.py`
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added `options_helper.data.flow_store` with `FlowStore` protocol, DuckDB-backed partition replace/upsert writes into `options_flow`, artifact/row/partition read APIs, and `NoopFlowStore` for filesystem mode. Wired stable builder seams through store factory and CLI deps, and added deterministic DuckDB + filesystem backend tests.
+- **files edited/created**: `/Volumes/develop/options-helper/options_helper/data/flow_store.py`, `/Volumes/develop/options-helper/options_helper/data/store_factory.py`, `/Volumes/develop/options-helper/options_helper/cli_deps.py`, `/Volumes/develop/options-helper/tests/test_duckdb_flow_store.py`, `/Volumes/develop/options-helper/docs/plan/VISIBILITY-PORTAL-ORCHESTRATION-PLAN.md`
 
 ### T5: Extract Shared Pipeline Service Functions
 - **depends_on**: []

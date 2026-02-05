@@ -7,6 +7,7 @@ if TYPE_CHECKING:
     from options_helper.data.candles import CandleStore, HistoryFetcher
     from options_helper.data.derived import DerivedStore
     from options_helper.data.earnings import EarningsStore
+    from options_helper.data.flow_store import FlowStore
     from options_helper.data.journal import JournalStore
     from options_helper.data.observability_meta import RunLogger
     from options_helper.data.option_bars import OptionBarsStore
@@ -65,6 +66,12 @@ def build_journal_store(journal_dir: Path) -> JournalStore:
     from options_helper.data.store_factory import get_journal_store
 
     return get_journal_store(journal_dir)
+
+
+def build_flow_store(flow_dir: Path) -> FlowStore:
+    from options_helper.data.store_factory import get_flow_store
+
+    return get_flow_store(flow_dir)
 
 
 def build_option_contracts_store(contracts_dir: Path) -> OptionContractsStore:

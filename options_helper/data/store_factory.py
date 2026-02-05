@@ -5,6 +5,7 @@ from typing import Any
 
 from options_helper.data.candles import CandleStore
 from options_helper.data.derived import DerivedStore
+from options_helper.data.flow_store import FlowStore
 from options_helper.data.journal import JournalStore
 from options_helper.data.option_bars import OptionBarsStoreError
 from options_helper.data.option_contracts import OptionContractsStoreError
@@ -70,6 +71,17 @@ def get_options_snapshot_store(root_dir: Path) -> OptionsSnapshotStore:
 
         return DuckDBOptionsSnapshotStore(lake_root=root_dir, warehouse=get_warehouse())
     return OptionsSnapshotStore(root_dir)
+
+
+def get_flow_store(root_dir: Path) -> FlowStore:
+    cfg = get_storage_runtime_config()
+    if cfg.backend == "duckdb":
+        from options_helper.data.flow_store import DuckDBFlowStore
+
+        return DuckDBFlowStore(root_dir=root_dir, warehouse=get_warehouse())
+    from options_helper.data.flow_store import NoopFlowStore
+
+    return NoopFlowStore(root_dir=root_dir)
 
 
 def get_option_contracts_store(root_dir: Path):
