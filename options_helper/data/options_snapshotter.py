@@ -12,11 +12,12 @@ import pandas as pd
 from options_helper.analysis.greeks import add_black_scholes_greeks_to_chain
 from options_helper.analysis.osi import format_osi, parse_contract_symbol
 from options_helper.analysis.quote_quality import compute_quote_quality
-from options_helper.data.candles import CandleStore, last_close
+from options_helper.data.candles import last_close
 from options_helper.data.options_snapshots import OptionsSnapshotStore
 from options_helper.data.market_types import DataFetchError
 from options_helper.data.providers import get_provider
 from options_helper.data.providers.base import MarketDataProvider
+from options_helper.data.store_factory import get_candle_store
 
 
 logger = logging.getLogger(__name__)
@@ -90,7 +91,7 @@ def snapshot_full_chain_for_symbols(
 ) -> list[SnapshotSymbolResult]:
     provider = provider or get_provider()
     store = OptionsSnapshotStore(cache_dir)
-    candle_store = CandleStore(candle_cache_dir, provider=provider)
+    candle_store = get_candle_store(candle_cache_dir, provider=provider)
     provider_name = getattr(provider, "name", "unknown")
     provider_version = (
         getattr(provider, "version", None)

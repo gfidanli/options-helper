@@ -5,7 +5,8 @@ import logging
 
 import pandas as pd
 
-from options_helper.data.candles import CandleCacheError, CandleStore
+from options_helper.data.candles import CandleCacheError
+from options_helper.data.store_factory import get_candle_store
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ def load_ohlc_from_cache(
     period: str = "max",
     raise_on_backfill_error: bool = False,
 ) -> pd.DataFrame:
-    store = CandleStore(cache_dir)
+    store = get_candle_store(cache_dir)
     history = store.load(symbol)
     if history.empty and backfill_if_missing:
         try:
