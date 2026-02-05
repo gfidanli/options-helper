@@ -178,9 +178,9 @@ T16 + T17 ───────────────────────�
 - **location**: `/Volumes/develop/options-helper/apps/streamlit/pages/04_Flow.py`, `/Volumes/develop/options-helper/apps/streamlit/pages/05_Derived_History.py`, `/Volumes/develop/options-helper/apps/streamlit/pages/06_Data_Explorer.py`
 - **description**: Add interactive Flow page from `options_flow`; Derived page from `derived_daily`; Data Explorer for schema/table/preview browsing. Keep portal read-only.
 - **validation**: `./.venv/bin/python -m pytest tests/portal/test_flow_queries.py tests/portal/test_derived_queries.py tests/portal/test_data_explorer_queries.py`
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Implemented read-only Flow, Derived History, and Data Explorer pages with symbol/group/date and window filters, chart/table summaries, and graceful missing DB/table messaging. Added reusable deterministic query helpers in Streamlit components for each page and offline portal tests for filtering, aggregation, preview, and error-handling behavior.
+- **files edited/created**: `/Volumes/develop/options-helper/apps/streamlit/pages/04_Flow.py`, `/Volumes/develop/options-helper/apps/streamlit/pages/05_Derived_History.py`, `/Volumes/develop/options-helper/apps/streamlit/pages/06_Data_Explorer.py`, `/Volumes/develop/options-helper/apps/streamlit/components/flow_page.py`, `/Volumes/develop/options-helper/apps/streamlit/components/derived_history_page.py`, `/Volumes/develop/options-helper/apps/streamlit/components/data_explorer_page.py`, `/Volumes/develop/options-helper/tests/portal/test_flow_queries.py`, `/Volumes/develop/options-helper/tests/portal/test_derived_queries.py`, `/Volumes/develop/options-helper/tests/portal/test_data_explorer_queries.py`, `/Volumes/develop/options-helper/docs/plan/VISIBILITY-PORTAL-ORCHESTRATION-PLAN.md`
 
 ### T13: Add `options-helper ui` Launcher Command
 - **depends_on**: [T1, T9]
