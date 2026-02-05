@@ -142,9 +142,9 @@ T16 + T17 ───────────────────────�
 - **location**: `/Volumes/develop/options-helper/options_helper/commands/db.py`
 - **description**: Add `db health` command with `--days`, `--limit`, `--stale-days`, `--json`; show latest run per job, recent failures, watermarks/freshness, and recent failed checks; graceful output when `meta.*` is absent.
 - **validation**: `./.venv/bin/python -m pytest tests/test_db_health_cli.py`
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added `db health` under the existing `db` CLI group with `--days`, `--limit`, `--stale-days`, and `--json`. The command reuses centralized observability query helpers to emit latest run per job, recent failed runs, watermark freshness, and recent failed checks. Added graceful behavior for missing DuckDB/meta tables in both human and JSON output modes.
+- **files edited/created**: `/Volumes/develop/options-helper/options_helper/commands/db.py`, `/Volumes/develop/options-helper/tests/test_db_health_cli.py`, `/Volumes/develop/options-helper/docs/plan/VISIBILITY-PORTAL-ORCHESTRATION-PLAN.md`
 
 ### T9: Streamlit Portal Scaffold + Shared Data Access
 - **depends_on**: [T1, T2]
