@@ -133,9 +133,9 @@ T16 + T17 ───────────────────────�
   - options bars: monotonic ts, no negative prices, duplicate PK
   - snapshots/flow/derived: parseable contract symbol, flow PK null guard, derived duplicate guard
 - **validation**: `./.venv/bin/python -m pytest tests/test_quality_checks.py tests/test_observability_checks_integration.py`
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added `options_helper.data.quality_checks` with deterministic candle/options-bars/snapshot/flow/derived checks, status/severity/metrics/message payloads, and persistence helpers wired to `RunLogger.log_check(...)`. Integrated auto-run check execution into producer pipeline jobs (`ingest_candles`, `ingest_options_bars`, `snapshot_options`, `compute_flow`, `compute_derived`) via shared visibility pipeline hooks. Check failures persist as `status='fail'` without failing successful runs; runtime exceptions during check execution still fail the run. Added focused unit tests for check calculations and integration tests proving observability persistence + non-blocking behavior.
+- **files edited/created**: `/Volumes/develop/options-helper/options_helper/data/quality_checks.py` (new), `/Volumes/develop/options-helper/options_helper/pipelines/visibility_jobs.py`, `/Volumes/develop/options-helper/tests/test_quality_checks.py` (new), `/Volumes/develop/options-helper/tests/test_observability_checks_integration.py` (new), `/Volumes/develop/options-helper/docs/plan/VISIBILITY-PORTAL-ORCHESTRATION-PLAN.md`
 
 ### T8: Add `db health` CLI Surface
 - **depends_on**: [T3, T7]

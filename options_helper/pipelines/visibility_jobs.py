@@ -39,9 +39,15 @@ from options_helper.data.ingestion.options_bars import (
     prepare_contracts_for_bars,
 )
 from options_helper.data.market_types import DataFetchError
-from options_helper.data.option_bars import OptionBarsStoreError
-from options_helper.data.option_contracts import OptionContractsStoreError
 from options_helper.data.options_snapshots import OptionsSnapshotStore
+from options_helper.data.quality_checks import (
+    persist_quality_checks,
+    run_candle_quality_checks,
+    run_derived_quality_checks,
+    run_flow_quality_checks,
+    run_options_bars_quality_checks,
+    run_snapshot_quality_checks,
+)
 from options_helper.data.technical_backtesting_config import load_technical_backtesting_config
 from options_helper.models import Position
 from options_helper.reporting_briefing import (
@@ -151,6 +157,38 @@ def _filesystem_compatible_candle_store(candle_cache_dir: Path, store: Any) -> A
     return store
 
 
+def _resolve_quality_run_logger(run_logger: Any | None = None) -> Any | None:
+    """
+    Resolve the active run logger for quality checks.
+
+    Producer jobs can be invoked directly (without a logger) or via CLI command wrappers
+    that keep a local `run_logger` variable. Accept explicit injection first, then
+    best-effort stack lookup to avoid widening command call signatures.
+    """
+    if run_logger is not None:
+        return run_logger
+
+    import inspect
+
+    frame = inspect.currentframe()
+    try:
+        current = frame.f_back if frame is not None else None
+        while current is not None:
+            candidate = current.f_locals.get("run_logger")
+            if candidate is not None and hasattr(candidate, "log_check"):
+                return candidate
+            current = current.f_back
+    finally:
+        del frame
+    return None
+
+
+def _persist_quality_results(run_logger: Any | None, checks: list[Any]) -> None:
+    if run_logger is None:
+        return
+    persist_quality_checks(run_logger=run_logger, checks=checks)
+
+
 def run_ingest_candles_job(
     *,
     watchlists_path: Path,
@@ -159,7 +197,9 @@ def run_ingest_candles_job(
     candle_cache_dir: Path,
     provider_builder: Callable[[], Any] = cli_deps.build_provider,
     candle_store_builder: Callable[..., Any] = cli_deps.build_candle_store,
+    run_logger: Any | None = None,
 ) -> IngestCandlesJobResult:
+    quality_logger = _resolve_quality_run_logger(run_logger)
     selection = resolve_symbols(
         watchlists_path=watchlists_path,
         watchlists=watchlist,
@@ -168,6 +208,10 @@ def run_ingest_candles_job(
     )
 
     if not selection.symbols:
+        _persist_quality_results(
+            quality_logger,
+            run_candle_quality_checks(candle_store=None, symbols=[], skip_reason="no_symbols"),
+        )
         return IngestCandlesJobResult(
             warnings=list(selection.warnings),
             symbols=[],
@@ -178,6 +222,10 @@ def run_ingest_candles_job(
     provider = provider_builder()
     store = candle_store_builder(candle_cache_dir, provider=provider)
     results = ingest_candles(store, selection.symbols, period="max", best_effort=True)
+    _persist_quality_results(
+        quality_logger,
+        run_candle_quality_checks(candle_store=store, symbols=selection.symbols),
+    )
     return IngestCandlesJobResult(
         warnings=list(selection.warnings),
         symbols=list(selection.symbols),
@@ -208,7 +256,9 @@ def run_ingest_options_bars_job(
     contracts_store_dir: Path = Path("data/option_contracts"),
     bars_store_dir: Path = Path("data/option_bars"),
     today: date | None = None,
+    run_logger: Any | None = None,
 ) -> IngestOptionsBarsJobResult:
+    quality_logger = _resolve_quality_run_logger(run_logger)
     selection = resolve_symbols(
         watchlists_path=watchlists_path,
         watchlists=watchlist,
@@ -217,6 +267,15 @@ def run_ingest_options_bars_job(
     )
 
     if not selection.symbols:
+        _persist_quality_results(
+            quality_logger,
+            run_options_bars_quality_checks(
+                bars_store=None,
+                contract_symbols=[],
+                dry_run=dry_run,
+                skip_reason="no_symbols",
+            ),
+        )
         return IngestOptionsBarsJobResult(
             warnings=list(selection.warnings),
             underlyings=[],
@@ -273,6 +332,15 @@ def run_ingest_options_bars_job(
     )
 
     if discovery.contracts.empty:
+        _persist_quality_results(
+            quality_logger,
+            run_options_bars_quality_checks(
+                bars_store=bars_store,
+                contract_symbols=[],
+                dry_run=dry_run,
+                skip_reason="no_contracts",
+            ),
+        )
         return IngestOptionsBarsJobResult(
             warnings=list(selection.warnings),
             underlyings=underlyings,
@@ -301,6 +369,15 @@ def run_ingest_options_bars_job(
     )
 
     if prepared.contracts.empty:
+        _persist_quality_results(
+            quality_logger,
+            run_options_bars_quality_checks(
+                bars_store=bars_store,
+                contract_symbols=[],
+                dry_run=dry_run,
+                skip_reason="no_eligible_contracts",
+            ),
+        )
         return IngestOptionsBarsJobResult(
             warnings=list(selection.warnings),
             underlyings=underlyings,
@@ -325,6 +402,22 @@ def run_ingest_options_bars_job(
         dry_run=dry_run,
         fail_fast=fail_fast,
         today=run_day,
+    )
+
+    contract_symbols: list[str] = []
+    if "contractSymbol" in prepared.contracts.columns:
+        contract_symbols = [
+            str(value).strip().upper()
+            for value in prepared.contracts["contractSymbol"].tolist()
+            if str(value or "").strip()
+        ]
+    _persist_quality_results(
+        quality_logger,
+        run_options_bars_quality_checks(
+            bars_store=bars_store,
+            contract_symbols=contract_symbols,
+            dry_run=dry_run,
+        ),
     )
 
     return IngestOptionsBarsJobResult(
@@ -362,10 +455,12 @@ def run_snapshot_options_job(
     candle_store_builder: Callable[..., Any] = cli_deps.build_candle_store,
     portfolio_loader: Callable[[Path], Any] = load_portfolio,
     watchlists_loader: Callable[[Path], Any] = load_watchlists,
+    run_logger: Any | None = None,
 ) -> SnapshotOptionsJobResult:
     import numpy as np
     import pandas as pd
 
+    quality_logger = _resolve_quality_run_logger(run_logger)
     portfolio = portfolio_loader(portfolio_path)
     store = _filesystem_compatible_snapshot_store(cache_dir, snapshot_store_builder(cache_dir))
     provider = provider_builder()
@@ -392,6 +487,14 @@ def run_snapshot_options_job(
             watchlists_used = sorted(wl.watchlists.keys())
             symbols = sorted({s for syms in wl.watchlists.values() for s in syms})
             if not symbols:
+                _persist_quality_results(
+                    quality_logger,
+                    run_snapshot_quality_checks(
+                        snapshot_store=store,
+                        snapshot_dates_by_symbol={},
+                        skip_reason="no_symbols",
+                    ),
+                )
                 return SnapshotOptionsJobResult(
                     messages=[f"No watchlists in {watchlists_path}"],
                     dates_used=[],
@@ -412,6 +515,14 @@ def run_snapshot_options_job(
             watchlists_used = sorted(set(watchlist))
     else:
         if not portfolio.positions:
+            _persist_quality_results(
+                quality_logger,
+                run_snapshot_quality_checks(
+                    snapshot_store=store,
+                    snapshot_dates_by_symbol={},
+                    skip_reason="no_symbols",
+                ),
+            )
             return SnapshotOptionsJobResult(
                 messages=["No positions."],
                 dates_used=[],
@@ -423,6 +534,7 @@ def run_snapshot_options_job(
         symbols = sorted(expiries_by_symbol.keys())
 
     dates_used: set[date] = set()
+    snapshot_dates_by_symbol: dict[str, date] = {}
 
     required_date: date | None = None
     if require_data_date is not None:
@@ -660,10 +772,20 @@ def run_snapshot_options_job(
             raw_by_expiry=raw_by_expiry if raw_by_expiry else None,
             meta=meta,
         )
+        snapshot_dates_by_symbol[symbol_value.upper()] = effective_snapshot_date
 
     if dates_used:
         days = ", ".join(sorted({d.isoformat() for d in dates_used}))
         messages.append(f"Snapshot complete. Data date(s): {days}.")
+
+    _persist_quality_results(
+        quality_logger,
+        run_snapshot_quality_checks(
+            snapshot_store=store,
+            snapshot_dates_by_symbol=snapshot_dates_by_symbol,
+            skip_reason="no_snapshots_saved" if not snapshot_dates_by_symbol else None,
+        ),
+    )
 
     return SnapshotOptionsJobResult(
         messages=messages,
@@ -687,21 +809,33 @@ def run_flow_report_job(
     out: Path | None,
     strict: bool,
     snapshot_store_builder: Callable[[Path], Any] = cli_deps.build_snapshot_store,
+    flow_store_builder: Callable[[Path], Any] = cli_deps.build_flow_store,
     portfolio_loader: Callable[[Path], Any] = load_portfolio,
     watchlists_loader: Callable[[Path], Any] = load_watchlists,
+    run_logger: Any | None = None,
 ) -> FlowReportJobResult:
     import pandas as pd
 
+    quality_logger = _resolve_quality_run_logger(run_logger)
     portfolio = portfolio_loader(portfolio_path)
     renderables: list[RenderableType] = []
 
     store = _filesystem_compatible_snapshot_store(cache_dir, snapshot_store_builder(cache_dir))
+    flow_store = flow_store_builder(cache_dir)
     use_watchlists = bool(watchlist) or all_watchlists
     if use_watchlists:
         wl = watchlists_loader(watchlists_path)
         if all_watchlists:
             symbols = sorted({s for syms in wl.watchlists.values() for s in syms})
             if not symbols:
+                _persist_quality_results(
+                    quality_logger,
+                    run_flow_quality_checks(
+                        flow_store=flow_store,
+                        symbols=[],
+                        skip_reason="no_symbols",
+                    ),
+                )
                 return FlowReportJobResult(
                     renderables=[f"No watchlists in {watchlists_path}"],
                     no_symbols=True,
@@ -720,6 +854,14 @@ def run_flow_report_job(
     else:
         symbols = sorted({p.symbol for p in portfolio.positions})
         if not symbols and symbol is None:
+            _persist_quality_results(
+                quality_logger,
+                run_flow_quality_checks(
+                    flow_store=flow_store,
+                    symbols=[],
+                    skip_reason="no_symbols",
+                ),
+            )
             return FlowReportJobResult(renderables=["No positions."], no_symbols=True)
 
     if symbol is not None:
@@ -966,6 +1108,10 @@ def run_flow_report_job(
             out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
             renderables.append(f"\nSaved: {out_path}")
 
+    _persist_quality_results(
+        quality_logger,
+        run_flow_quality_checks(flow_store=flow_store, symbols=symbols),
+    )
     return FlowReportJobResult(renderables=renderables, no_symbols=False)
 
 
@@ -979,7 +1125,9 @@ def run_derived_update_job(
     snapshot_store_builder: Callable[[Path], Any] = cli_deps.build_snapshot_store,
     derived_store_builder: Callable[[Path], Any] = cli_deps.build_derived_store,
     candle_store_builder: Callable[..., Any] = cli_deps.build_candle_store,
+    run_logger: Any | None = None,
 ) -> DerivedUpdateJobResult:
+    quality_logger = _resolve_quality_run_logger(run_logger)
     store = _filesystem_compatible_snapshot_store(cache_dir, snapshot_store_builder(cache_dir))
     derived = _filesystem_compatible_derived_store(derived_dir, derived_store_builder(derived_dir))
     candle_store = _filesystem_compatible_candle_store(candle_cache_dir, candle_store_builder(candle_cache_dir))
@@ -1005,6 +1153,10 @@ def run_derived_update_job(
     history = derived.load(symbol)
     row = DerivedRow.from_chain_report(report, candles=candles, derived_history=history)
     out_path = derived.upsert(symbol, row)
+    _persist_quality_results(
+        quality_logger,
+        run_derived_quality_checks(derived_store=derived, symbol=symbol.upper()),
+    )
     return DerivedUpdateJobResult(symbol=symbol.upper(), as_of_date=as_of_date, output_path=out_path)
 
 
