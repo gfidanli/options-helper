@@ -4,9 +4,9 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CRON_CMD="${REPO_DIR}/scripts/cron_offline_report_pack.sh"
 
-# Default: weekdays at 21:45 America/Chicago time (after scanner + checks, before bedtime).
+# Default: weekdays at 17:00 America/Chicago time (after scanner + checks).
 CRON_TZ="America/Chicago"
-SCHEDULE="45 21 * * 1-5"
+SCHEDULE="0 17 * * 1-5"
 
 BEGIN_MARK="# options-helper: daily offline report pack"
 END_MARK="# end options-helper: daily offline report pack"

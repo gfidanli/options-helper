@@ -204,5 +204,5 @@ separate watchlist snapshot job:
 - `scripts/install_cron_daily_monitor_options_snapshot.sh`
 
 Defaults:
-- Runs at **17:30 America/Chicago time**, Monday–Friday.
+- Runs at **16:05 America/Chicago time**, Monday–Friday.
 - Logs to `data/logs/monitor_snapshot.log`.

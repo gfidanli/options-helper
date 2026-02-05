@@ -4,9 +4,9 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CRON_CMD="${REPO_DIR}/scripts/cron_weekly_refresh_earnings.sh"
 
-# Default: Mondays at 15:20 America/Chicago time (after market close).
+# Default: Mondays at 12:00 America/Chicago time.
 CRON_TZ="America/Chicago"
-SCHEDULE="20 15 * * 1"
+SCHEDULE="0 12 * * 1"
 
 BEGIN_MARK="# options-helper: weekly earnings refresh"
 END_MARK="# end options-helper: weekly earnings refresh"

@@ -41,8 +41,8 @@ if [[ "${STATUS_LINE}" == "${RUN_DATE}::success" ]]; then
   exit 0
 fi
 
-if [[ "${STATUS_LINE}" == "${RUN_DATE}::running" ]]; then
-  echo "[$(date)] Full scanner still running for ${RUN_DATE}; skipping check retry." >> "${LOG_PATH}"
+if [[ "${STATUS_LINE}" == "${RUN_DATE}::running" || "${STATUS_LINE}" == "${RUN_DATE}::queued" || "${STATUS_LINE}" == "${RUN_DATE}::waiting_candle" ]]; then
+  echo "[$(date)] Full scanner still in progress for ${RUN_DATE}; skipping check retry." >> "${LOG_PATH}"
   exit 0
 fi
 

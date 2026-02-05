@@ -4,9 +4,9 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CRON_CMD="${REPO_DIR}/scripts/cron_daily_briefing.sh"
 
-# Default: weekdays at 18:00 America/Chicago time (gives snapshot jobs time to finish).
+# Default: weekdays at 16:10 America/Chicago time (gives snapshot jobs time to finish).
 CRON_TZ="America/Chicago"
-SCHEDULE="0 18 * * 1-5"
+SCHEDULE="10 16 * * 1-5"
 
 BEGIN_MARK="# options-helper: daily briefing"
 END_MARK="# end options-helper: daily briefing"

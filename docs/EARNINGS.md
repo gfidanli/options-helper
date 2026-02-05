@@ -66,5 +66,5 @@ Install automatically:
 ```
 
 Defaults:
-- Runs on **Mondays at 15:20 America/Chicago time**.
+- Runs on **Mondays at 12:00 America/Chicago time**.
 - Logs to `data/logs/earnings_refresh.log`.

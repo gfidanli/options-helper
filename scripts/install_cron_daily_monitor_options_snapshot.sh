@@ -4,9 +4,9 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CRON_CMD="${REPO_DIR}/scripts/cron_daily_monitor_options_snapshot.sh"
 
-# Default: weekdays at 17:30 America/Chicago time (after the main snapshot job).
+# Default: weekdays at 16:05 America/Chicago time (after the main snapshot job).
 CRON_TZ="America/Chicago"
-SCHEDULE="30 17 * * 1-5"
+SCHEDULE="5 16 * * 1-5"
 
 BEGIN_MARK="# options-helper: daily monitor options snapshot"
 END_MARK="# end options-helper: daily monitor options snapshot"

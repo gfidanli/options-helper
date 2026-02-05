@@ -4,9 +4,9 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CRON_CMD="${REPO_DIR}/scripts/cron_intraday_capture.sh"
 
-# Default: weekdays at 16:05 America/Chicago time (near market close).
+# Default: weekdays at 15:05 America/Chicago time (market close + 5m).
 CRON_TZ="America/Chicago"
-SCHEDULE="5 16 * * 1-5"
+SCHEDULE="5 15 * * 1-5"
 
 BEGIN_MARK="# options-helper: intraday capture"
 END_MARK="# end options-helper: intraday capture"

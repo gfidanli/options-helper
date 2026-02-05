@@ -30,25 +30,6 @@ STATUS_PATH="${LOG_DIR}/scanner_full_status.json"
 START_TS="$(TZ="${DATA_TZ}" date -Iseconds)"
 SCRIPT_START_TS="$(date +%s)"
 
-if ! "${VENV_BIN}/python" "${WAIT_SCRIPT}" \
-  --symbols "${CANARY_SYMBOLS}" \
-  --provider "${PROVIDER}" \
-  --tz "${DATA_TZ}" \
-  --expected-date today \
-  --timeout-seconds "${WAIT_TIMEOUT_SECONDS}" \
-  --poll-seconds "${WAIT_POLL_SECONDS}" \
-  >> "${LOG_PATH}" 2>&1
-then
-  echo "[$(date)] Daily candle not ready; skipping scanner run for ${RUN_ID}." >> "${LOG_PATH}"
-  exit 0
-fi
-
-if ! mkdir "${LOCK_PATH}" 2>/dev/null; then
-  echo "[$(date)] Lock already held (${LOCK_PATH}); skipping full scanner run." >> "${LOG_PATH}"
-  exit 0
-fi
-trap 'rmdir "${LOCK_PATH}" 2>/dev/null || true' EXIT
-
 write_status() {
   STATUS="${1}"
   FINISH_TS="${2}"
@@ -83,6 +64,37 @@ path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 PY
 }
+
+write_status "waiting_candle" "" ""
+if ! "${VENV_BIN}/python" "${WAIT_SCRIPT}" \
+  --symbols "${CANARY_SYMBOLS}" \
+  --provider "${PROVIDER}" \
+  --tz "${DATA_TZ}" \
+  --expected-date today \
+  --timeout-seconds "${WAIT_TIMEOUT_SECONDS}" \
+  --poll-seconds "${WAIT_POLL_SECONDS}" \
+  >> "${LOG_PATH}" 2>&1
+then
+  echo "[$(date)] Daily candle not ready; skipping scanner run for ${RUN_ID}." >> "${LOG_PATH}"
+  FINISH_TS="$(TZ="${DATA_TZ}" date -Iseconds)"
+  write_status "skipped" "${FINISH_TS}" "0"
+  exit 0
+fi
+
+write_status "queued" "" ""
+WAIT_SECONDS="${WAIT_SECONDS:-14400}"
+start_ts="$(date +%s)"
+while ! mkdir "${LOCK_PATH}" 2>/dev/null; do
+  now_ts="$(date +%s)"
+  if (( now_ts - start_ts >= WAIT_SECONDS )); then
+    echo "[$(date)] Timed out waiting for lock (${LOCK_PATH}); skipping full scanner run." >> "${LOG_PATH}"
+    FINISH_TS="$(TZ="${DATA_TZ}" date -Iseconds)"
+    write_status "lock_timeout" "${FINISH_TS}" "0"
+    exit 0
+  fi
+  sleep 30
+done
+trap 'rmdir "${LOCK_PATH}" 2>/dev/null || true' EXIT
 
 cd "${REPO_DIR}"
 
