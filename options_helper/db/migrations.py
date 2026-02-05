@@ -35,24 +35,40 @@ def current_schema_version(warehouse: DuckDBWarehouse) -> int:
 
 def ensure_schema(warehouse: DuckDBWarehouse) -> SchemaInfo:
     """Idempotently apply schema migrations up to the latest known version."""
-    sql_path = Path(__file__).with_name("schema_v1.sql")
+    v1_path = Path(__file__).with_name("schema_v1.sql")
+    v2_path = Path(__file__).with_name("schema_v2.sql")
     v = current_schema_version(warehouse)
-    if v >= 1:
-        return SchemaInfo(path=warehouse.path, schema_version=v)
 
-    schema_sql = sql_path.read_text(encoding="utf-8")
+    if v < 1:
+        schema_sql = v1_path.read_text(encoding="utf-8")
+        with warehouse.transaction() as tx:
+            _ensure_migrations_table(tx)
+            tx.execute(schema_sql)
 
-    with warehouse.transaction() as tx:
-        _ensure_migrations_table(tx)
-        tx.execute(schema_sql)
+            # Record that v1 is applied (idempotent).
+            tx.execute(
+                """
+                INSERT INTO schema_migrations(schema_version)
+                SELECT 1
+                WHERE NOT EXISTS (SELECT 1 FROM schema_migrations WHERE schema_version = 1);
+                """
+            )
+        v = 1
 
-        # Record that v1 is applied (idempotent).
-        tx.execute(
-            """
-            INSERT INTO schema_migrations(schema_version)
-            SELECT 1
-            WHERE NOT EXISTS (SELECT 1 FROM schema_migrations WHERE schema_version = 1);
-            """
-        )
+    if v < 2:
+        schema_sql = v2_path.read_text(encoding="utf-8")
+        with warehouse.transaction() as tx:
+            _ensure_migrations_table(tx)
+            tx.execute(schema_sql)
 
-    return SchemaInfo(path=warehouse.path, schema_version=1)
+            # Record that v2 is applied (idempotent).
+            tx.execute(
+                """
+                INSERT INTO schema_migrations(schema_version)
+                SELECT 2
+                WHERE NOT EXISTS (SELECT 1 FROM schema_migrations WHERE schema_version = 2);
+                """
+            )
+        v = 2
+
+    return SchemaInfo(path=warehouse.path, schema_version=v)

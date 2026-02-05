@@ -19,6 +19,8 @@ from options_helper.data.journal import (
     SignalEvent,
     filter_events,
 )
+from options_helper.data.option_bars import OptionBarsStoreError
+from options_helper.data.option_contracts import OptionContractsStoreError
 from options_helper.data.options_snapshots import OptionsSnapshotError, _dedupe_contracts
 from options_helper.data.providers.runtime import get_default_provider_name
 from options_helper.db.warehouse import DuckDBWarehouse
@@ -302,6 +304,8 @@ class DuckDBCandleStore(CandleStore):
                    low AS "Low",
                    close AS "Close",
                    volume AS "Volume",
+                   vwap AS "VWAP",
+                   trade_count AS "Trade Count",
                    dividends AS "Dividends",
                    splits AS "Stock Splits",
                    capital_gains AS "Capital Gains"
@@ -355,6 +359,8 @@ class DuckDBCandleStore(CandleStore):
             "Low": "low",
             "Close": "close",
             "Volume": "volume",
+            "VWAP": "vwap",
+            "Trade Count": "trade_count",
             "Dividends": "dividends",
             "Stock Splits": "splits",
             "Capital Gains": "capital_gains",
@@ -389,10 +395,10 @@ class DuckDBCandleStore(CandleStore):
                 """
                 INSERT INTO candles_daily(
                   symbol, interval, auto_adjust, back_adjust, ts,
-                  open, high, low, close, volume, dividends, splits, capital_gains
+                  open, high, low, close, volume, vwap, trade_count, dividends, splits, capital_gains
                 )
                 SELECT symbol, interval, auto_adjust, back_adjust, ts,
-                       open, high, low, close, volume, dividends, splits, capital_gains
+                       open, high, low, close, volume, vwap, trade_count, dividends, splits, capital_gains
                 FROM tmp_candles
                 """
             )
@@ -422,6 +428,568 @@ class DuckDBCandleStore(CandleStore):
                 ],
             )
 
+
+@dataclass(frozen=True)
+class DuckDBOptionContractsStore:
+    """DuckDB-backed option contracts store (dimension + snapshots)."""
+
+    root_dir: Path
+    warehouse: DuckDBWarehouse
+
+    def upsert_contracts(
+        self,
+        df_contracts: pd.DataFrame,
+        *,
+        provider: str,
+        as_of_date: date,
+        raw_by_contract_symbol: dict[str, Any] | None = None,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        if df_contracts is None or df_contracts.empty:
+            return
+
+        provider_name = str(provider or "").strip().lower()
+        if not provider_name:
+            raise OptionContractsStoreError("provider required")
+
+        as_of = _coerce_date(as_of_date)
+        if as_of is None:
+            raise OptionContractsStoreError("as_of_date required")
+
+        df = df_contracts.copy()
+        if df.empty:
+            return
+        df.columns = [str(c) for c in df.columns]
+
+        def _get_column(*names: str) -> pd.Series:
+            for name in names:
+                if name in df.columns:
+                    return df[name]
+            return pd.Series([None] * len(df), index=df.index)
+
+        def _clean_str(value: Any) -> str | None:
+            if value is None:
+                return None
+            try:
+                if pd.isna(value):
+                    return None
+            except Exception:  # noqa: BLE001
+                pass
+            text = str(value).strip()
+            return text or None
+
+        contract_symbol = _get_column("contractSymbol", "contract_symbol", "symbol", "contract")
+        underlying = _get_column("underlying", "underlyingSymbol", "underlying_symbol", "root_symbol")
+        expiry = _get_column("expiry", "expiration_date", "expiration", "exp")
+        option_type = _get_column("optionType", "option_type", "type")
+        strike = _get_column("strike", "strike_price")
+        multiplier = _get_column("multiplier")
+        open_interest = _get_column("openInterest", "open_interest")
+        open_interest_date = _get_column("openInterestDate", "open_interest_date")
+        close_price = _get_column("closePrice", "close_price")
+        close_price_date = _get_column("closePriceDate", "close_price_date")
+
+        contract_symbol = contract_symbol.map(_clean_str)
+        underlying = underlying.map(_clean_str).map(lambda v: v.upper() if v else None)
+        option_type = option_type.map(_clean_str).map(lambda v: v.lower() if v else None)
+
+        expiry = pd.to_datetime(expiry, errors="coerce").dt.date
+        open_interest_date = pd.to_datetime(open_interest_date, errors="coerce").dt.date
+        close_price_date = pd.to_datetime(close_price_date, errors="coerce").dt.date
+
+        strike = pd.to_numeric(strike, errors="coerce")
+        close_price = pd.to_numeric(close_price, errors="coerce")
+        open_interest = pd.to_numeric(open_interest, errors="coerce").astype("Int64")
+        multiplier = pd.to_numeric(multiplier, errors="coerce").astype("Int64")
+
+        normalized = pd.DataFrame(
+            {
+                "contract_symbol": contract_symbol,
+                "underlying": underlying,
+                "expiry": expiry,
+                "option_type": option_type,
+                "strike": strike,
+                "multiplier": multiplier,
+                "open_interest": open_interest,
+                "open_interest_date": open_interest_date,
+                "close_price": close_price,
+                "close_price_date": close_price_date,
+            }
+        )
+        normalized = normalized.dropna(subset=["contract_symbol"])
+        normalized = normalized[normalized["contract_symbol"].map(lambda v: bool(str(v).strip()))]
+        if normalized.empty:
+            return
+
+        now = datetime.now(timezone.utc)
+
+        contracts_df = normalized[
+            ["contract_symbol", "underlying", "expiry", "option_type", "strike", "multiplier"]
+        ].copy()
+        contracts_df["provider"] = provider_name
+        contracts_df["updated_at"] = now
+
+        snapshots_df = normalized[
+            ["contract_symbol", "open_interest", "open_interest_date", "close_price", "close_price_date"]
+        ].copy()
+        snapshots_df["as_of_date"] = as_of
+        snapshots_df["provider"] = provider_name
+        snapshots_df["updated_at"] = now
+
+        if raw_by_contract_symbol:
+            def _raw_payload(symbol: Any) -> str | None:
+                if symbol is None:
+                    return None
+                raw = raw_by_contract_symbol.get(symbol)
+                if raw is None:
+                    raw = raw_by_contract_symbol.get(str(symbol).upper())
+                if raw is None:
+                    return None
+                try:
+                    return json.dumps(raw, default=str)
+                except Exception:  # noqa: BLE001
+                    return None
+
+            snapshots_df["raw_json"] = snapshots_df["contract_symbol"].map(_raw_payload)
+        else:
+            snapshots_df["raw_json"] = None
+
+        mask = (
+            ~snapshots_df["open_interest"].isna()
+            | ~snapshots_df["open_interest_date"].isna()
+            | ~snapshots_df["close_price"].isna()
+            | ~snapshots_df["close_price_date"].isna()
+            | ~snapshots_df["raw_json"].isna()
+        )
+        snapshots_df = snapshots_df.loc[mask].copy()
+
+        with self.warehouse.transaction() as tx:
+            tx.register("tmp_contracts", contracts_df)
+            tx.execute(
+                """
+                DELETE FROM option_contracts
+                WHERE contract_symbol IN (SELECT contract_symbol FROM tmp_contracts)
+                """
+            )
+            tx.execute(
+                """
+                INSERT INTO option_contracts(
+                  contract_symbol, underlying, expiry, option_type, strike, multiplier, provider, updated_at
+                )
+                SELECT contract_symbol, underlying, expiry, option_type, strike, multiplier, provider, updated_at
+                FROM tmp_contracts
+                """
+            )
+            tx.unregister("tmp_contracts")
+
+            if not snapshots_df.empty:
+                tx.register("tmp_contract_snapshots", snapshots_df)
+                tx.execute(
+                    """
+                    DELETE FROM option_contract_snapshots
+                    WHERE provider = ? AND as_of_date = ?
+                      AND contract_symbol IN (SELECT contract_symbol FROM tmp_contract_snapshots)
+                    """,
+                    [provider_name, as_of],
+                )
+                tx.execute(
+                    """
+                    INSERT INTO option_contract_snapshots(
+                      contract_symbol, as_of_date, open_interest, open_interest_date,
+                      close_price, close_price_date, provider, updated_at, raw_json
+                    )
+                    SELECT contract_symbol, as_of_date, open_interest, open_interest_date,
+                           close_price, close_price_date, provider, updated_at, raw_json
+                    FROM tmp_contract_snapshots
+                    """
+                )
+                tx.unregister("tmp_contract_snapshots")
+
+    def list_contracts(
+        self,
+        underlying: str,
+        *,
+        exp_gte: date | None = None,
+        exp_lte: date | None = None,
+    ) -> pd.DataFrame:
+        sym = str(underlying).strip().upper()
+        cols = ["contractSymbol", "underlying", "expiry", "optionType", "strike", "multiplier", "provider", "updated_at"]
+        if not sym:
+            return pd.DataFrame(columns=cols)
+
+        gte = _coerce_date(exp_gte)
+        lte = _coerce_date(exp_lte)
+
+        sql = """
+            SELECT contract_symbol AS "contractSymbol",
+                   underlying,
+                   expiry,
+                   option_type AS "optionType",
+                   strike,
+                   multiplier,
+                   provider,
+                   updated_at
+            FROM option_contracts
+            WHERE underlying = ?
+        """
+        params: list[Any] = [sym]
+        if gte is not None:
+            sql += " AND expiry >= ?"
+            params.append(gte)
+        if lte is not None:
+            sql += " AND expiry <= ?"
+            params.append(lte)
+        sql += " ORDER BY expiry ASC, strike ASC, option_type ASC, contract_symbol ASC"
+
+        df = self.warehouse.fetch_df(sql, params)
+        if df is None or df.empty:
+            return pd.DataFrame(columns=cols)
+        return df
+
+
+@dataclass(frozen=True)
+class DuckDBOptionBarsStore:
+    """DuckDB-backed option bars store (daily bars + meta)."""
+
+    root_dir: Path
+    warehouse: DuckDBWarehouse
+
+    def _clean_symbol(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        try:
+            if pd.isna(value):
+                return None
+        except Exception:  # noqa: BLE001
+            pass
+        text = str(value).strip()
+        if not text:
+            return None
+        return text.upper()
+
+    def _normalize_provider(self, provider: str) -> str:
+        name = str(provider or "").strip().lower()
+        if not name:
+            raise OptionBarsStoreError("provider required")
+        return name
+
+    def _normalize_interval(self, interval: str) -> str:
+        name = str(interval or "").strip().lower()
+        if not name:
+            raise OptionBarsStoreError("interval required")
+        return name
+
+    def _normalize_contract_symbols(self, contract_symbols: Iterable[str] | str) -> list[str]:
+        if isinstance(contract_symbols, str):
+            values = [contract_symbols]
+        else:
+            values = list(contract_symbols)
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            symbol = self._clean_symbol(value)
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            cleaned.append(symbol)
+        return cleaned
+
+    def _raise_if_lock_error(self, exc: Exception) -> None:
+        msg = str(exc).lower()
+        lock_hint = (
+            ("lock" in msg or "locked" in msg)
+            and ("file" in msg or "database" in msg or "duckdb" in msg or "resource" in msg)
+        ) or "resource temporarily unavailable" in msg
+        if lock_hint:
+            raise OptionBarsStoreError(
+                "DuckDB database is locked. Avoid concurrent ingestion and retry."
+            ) from exc
+
+    def upsert_bars(
+        self,
+        df: pd.DataFrame,
+        *,
+        interval: str = "1d",
+        provider: str,
+        updated_at: datetime | None = None,
+    ) -> None:
+        if df is None or df.empty:
+            return
+
+        provider_name = self._normalize_provider(provider)
+        interval_name = self._normalize_interval(interval)
+
+        table = df.copy()
+        if table.empty:
+            return
+        table.columns = [str(c) for c in table.columns]
+
+        def _get_column(*names: str) -> pd.Series:
+            for name in names:
+                if name in table.columns:
+                    return table[name]
+            return pd.Series([None] * len(table), index=table.index)
+
+        contract_symbol = _get_column("contractSymbol", "contract_symbol", "symbol", "contract")
+        ts = _get_column("ts", "timestamp", "time")
+
+        contract_symbol = contract_symbol.map(self._clean_symbol)
+        ts = pd.to_datetime(ts, errors="coerce", utc=True).dt.tz_convert(None)
+
+        open_px = pd.to_numeric(_get_column("open", "Open"), errors="coerce")
+        high_px = pd.to_numeric(_get_column("high", "High"), errors="coerce")
+        low_px = pd.to_numeric(_get_column("low", "Low"), errors="coerce")
+        close_px = pd.to_numeric(_get_column("close", "Close"), errors="coerce")
+        volume = pd.to_numeric(_get_column("volume", "Volume"), errors="coerce")
+        vwap = pd.to_numeric(_get_column("vwap", "VWAP"), errors="coerce")
+        trade_count = pd.to_numeric(
+            _get_column("trade_count", "tradeCount", "Trade Count", "trade_count"),
+            errors="coerce",
+        ).astype("Int64")
+
+        normalized = pd.DataFrame(
+            {
+                "contract_symbol": contract_symbol,
+                "ts": ts,
+                "open": open_px,
+                "high": high_px,
+                "low": low_px,
+                "close": close_px,
+                "volume": volume,
+                "vwap": vwap,
+                "trade_count": trade_count,
+            }
+        )
+        normalized = normalized.dropna(subset=["contract_symbol", "ts"])
+        normalized = normalized[normalized["contract_symbol"].map(lambda v: bool(str(v).strip()))]
+        if normalized.empty:
+            return
+        normalized = normalized.drop_duplicates(subset=["contract_symbol", "ts"], keep="last")
+        if normalized.empty:
+            return
+
+        now = updated_at or datetime.now(timezone.utc)
+        normalized["interval"] = interval_name
+        normalized["provider"] = provider_name
+        normalized["updated_at"] = now
+
+        try:
+            with self.warehouse.transaction() as tx:
+                tx.register("tmp_option_bars", normalized)
+                tx.execute(
+                    """
+                    DELETE FROM option_bars
+                    WHERE (contract_symbol, interval, ts, provider) IN (
+                      SELECT contract_symbol, interval, ts, provider FROM tmp_option_bars
+                    )
+                    """
+                )
+                tx.execute(
+                    """
+                    INSERT INTO option_bars(
+                      contract_symbol, interval, ts,
+                      open, high, low, close, volume, vwap, trade_count,
+                      provider, updated_at
+                    )
+                    SELECT contract_symbol, interval, ts,
+                           open, high, low, close, volume, vwap, trade_count,
+                           provider, updated_at
+                    FROM tmp_option_bars
+                    """
+                )
+                tx.unregister("tmp_option_bars")
+        except Exception as exc:  # noqa: BLE001
+            self._raise_if_lock_error(exc)
+            raise
+
+    def mark_meta_success(
+        self,
+        contract_symbols: Iterable[str] | str,
+        interval: str,
+        provider: str,
+        *,
+        status: str = "ok",
+        rows: int | dict[str, int] | None = None,
+        start_ts: object | dict[str, object] | None = None,
+        end_ts: object | dict[str, object] | None = None,
+        last_success_at: datetime | None = None,
+        last_attempt_at: datetime | None = None,
+    ) -> None:
+        symbols = self._normalize_contract_symbols(contract_symbols)
+        if not symbols:
+            return
+
+        provider_name = self._normalize_provider(provider)
+        interval_name = self._normalize_interval(interval)
+        status_value = str(status or "ok").strip().lower() or "ok"
+
+        def _normalize_map(value: object | dict[str, object] | None) -> dict[str, object] | None:
+            if not isinstance(value, dict):
+                return None
+            out: dict[str, object] = {}
+            for key, item in value.items():
+                sym = self._clean_symbol(key)
+                if sym:
+                    out[sym] = item
+            return out
+
+        rows_map = _normalize_map(rows)
+        start_map = _normalize_map(start_ts)
+        end_map = _normalize_map(end_ts)
+
+        now = datetime.now(timezone.utc)
+        success_at = last_success_at or now
+        attempt_at = last_attempt_at or success_at
+
+        meta_rows: list[dict[str, object]] = []
+        for sym in symbols:
+            row_value = rows_map.get(sym) if rows_map is not None else rows
+            start_value = start_map.get(sym) if start_map is not None else start_ts
+            end_value = end_map.get(sym) if end_map is not None else end_ts
+            meta_rows.append(
+                {
+                    "contract_symbol": sym,
+                    "interval": interval_name,
+                    "provider": provider_name,
+                    "status": status_value,
+                    "rows": int(row_value) if row_value is not None else 0,
+                    "start_ts": _to_utc_naive(start_value),
+                    "end_ts": _to_utc_naive(end_value),
+                    "last_success_at": success_at,
+                    "last_attempt_at": attempt_at,
+                    "last_error": None,
+                    "error_count": 0,
+                }
+            )
+
+        meta_df = pd.DataFrame(meta_rows)
+
+        try:
+            with self.warehouse.transaction() as tx:
+                tx.register("tmp_option_bars_meta", meta_df)
+                tx.execute(
+                    """
+                    DELETE FROM option_bars_meta
+                    WHERE (contract_symbol, interval, provider) IN (
+                      SELECT contract_symbol, interval, provider FROM tmp_option_bars_meta
+                    )
+                    """
+                )
+                tx.execute(
+                    """
+                    INSERT INTO option_bars_meta(
+                      contract_symbol, interval, provider, status, rows, start_ts, end_ts,
+                      last_success_at, last_attempt_at, last_error, error_count
+                    )
+                    SELECT contract_symbol, interval, provider, status, rows, start_ts, end_ts,
+                           last_success_at, last_attempt_at, last_error, error_count
+                    FROM tmp_option_bars_meta
+                    """
+                )
+                tx.unregister("tmp_option_bars_meta")
+        except Exception as exc:  # noqa: BLE001
+            self._raise_if_lock_error(exc)
+            raise
+
+    def mark_meta_error(
+        self,
+        contract_symbols: Iterable[str] | str,
+        interval: str,
+        provider: str,
+        *,
+        error: str | None = None,
+        status: str = "error",
+    ) -> None:
+        symbols = self._normalize_contract_symbols(contract_symbols)
+        if not symbols:
+            return
+
+        provider_name = self._normalize_provider(provider)
+        interval_name = self._normalize_interval(interval)
+        status_value = str(status or "error").strip().lower() or "error"
+
+        attempt_at = datetime.now(timezone.utc)
+        error_text = str(error) if error else None
+
+        meta_df = pd.DataFrame(
+            {
+                "contract_symbol": symbols,
+                "interval": interval_name,
+                "provider": provider_name,
+                "status": status_value,
+                "rows": 0,
+                "start_ts": None,
+                "end_ts": None,
+                "last_success_at": None,
+                "last_attempt_at": attempt_at,
+                "last_error": error_text,
+                "error_count": 1,
+            }
+        )
+
+        try:
+            with self.warehouse.transaction() as tx:
+                tx.register("tmp_option_bars_meta", meta_df)
+                tx.execute(
+                    """
+                    UPDATE option_bars_meta
+                    SET status = tmp.status,
+                        last_attempt_at = tmp.last_attempt_at,
+                        last_error = tmp.last_error,
+                        error_count = option_bars_meta.error_count + tmp.error_count
+                    FROM tmp_option_bars_meta AS tmp
+                    WHERE option_bars_meta.contract_symbol = tmp.contract_symbol
+                      AND option_bars_meta.interval = tmp.interval
+                      AND option_bars_meta.provider = tmp.provider
+                    """
+                )
+                tx.execute(
+                    """
+                    INSERT INTO option_bars_meta(
+                      contract_symbol, interval, provider, status, rows, start_ts, end_ts,
+                      last_success_at, last_attempt_at, last_error, error_count
+                    )
+                    SELECT tmp.contract_symbol, tmp.interval, tmp.provider, tmp.status, tmp.rows,
+                           tmp.start_ts, tmp.end_ts, tmp.last_success_at, tmp.last_attempt_at,
+                           tmp.last_error, tmp.error_count
+                    FROM tmp_option_bars_meta AS tmp
+                    LEFT JOIN option_bars_meta AS meta
+                      ON meta.contract_symbol = tmp.contract_symbol
+                     AND meta.interval = tmp.interval
+                     AND meta.provider = tmp.provider
+                    WHERE meta.contract_symbol IS NULL
+                    """
+                )
+                tx.unregister("tmp_option_bars_meta")
+        except Exception as exc:  # noqa: BLE001
+            self._raise_if_lock_error(exc)
+            raise
+
+    def coverage(
+        self,
+        contract_symbol: str,
+        *,
+        interval: str = "1d",
+        provider: str,
+    ) -> dict[str, Any]:
+        symbol = self._clean_symbol(contract_symbol)
+        if not symbol:
+            return {}
+        provider_name = self._normalize_provider(provider)
+        interval_name = self._normalize_interval(interval)
+
+        df = self.warehouse.fetch_df(
+            """
+            SELECT contract_symbol, interval, provider, status, rows, start_ts, end_ts,
+                   last_success_at, last_attempt_at, last_error, error_count
+            FROM option_bars_meta
+            WHERE contract_symbol = ? AND interval = ? AND provider = ?
+            """,
+            [symbol, interval_name, provider_name],
+        )
+        if df is None or df.empty:
+            return {}
+        return df.iloc[0].to_dict()
 
 @dataclass(frozen=True)
 class DuckDBOptionsSnapshotStore:

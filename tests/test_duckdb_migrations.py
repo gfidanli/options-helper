@@ -10,7 +10,7 @@ def test_duckdb_migrations_v1(tmp_path):
 
     assert current_schema_version(wh) == 0
     info = ensure_schema(wh)
-    assert info.schema_version == 1
+    assert info.schema_version == 2
     assert info.path == db_path
 
-    assert current_schema_version(wh) == 1
+    assert current_schema_version(wh) == 2

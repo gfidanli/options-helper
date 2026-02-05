@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-_DEFAULT_STORAGE_BACKEND: ContextVar[str] = ContextVar("options_helper_default_storage_backend", default="filesystem")
+_DEFAULT_STORAGE_BACKEND: ContextVar[str] = ContextVar("options_helper_default_storage_backend", default="duckdb")
 _DEFAULT_DUCKDB_PATH: ContextVar[Path] = ContextVar(
     "options_helper_default_duckdb_path",
     default=Path("data/warehouse/options.duckdb"),
@@ -23,9 +23,9 @@ def get_default_storage_backend() -> str:
 
 
 def set_default_storage_backend(name: str | None) -> Token[str]:
-    cleaned = (name or "filesystem").strip().lower()
+    cleaned = (name or "duckdb").strip().lower()
     if cleaned not in {"filesystem", "duckdb"}:
-        cleaned = "filesystem"
+        cleaned = "duckdb"
     return _DEFAULT_STORAGE_BACKEND.set(cleaned)
 
 

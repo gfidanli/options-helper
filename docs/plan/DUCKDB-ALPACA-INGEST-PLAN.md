@@ -110,6 +110,9 @@ T2 ───────────┘
 - **validation**:
   - Add test `tests/test_duckdb_migrations_v2.py`:
     - initialize empty DB, run `ensure_schema`, assert version 2 and tables/columns exist.
+- **status**: Completed
+- **log**: Added v2 migration + schema file, updated migrations to apply v1→v2, and added v2 migration tests.
+- **files**: `options_helper/db/migrations.py`, `options_helper/db/schema_v2.sql`, `tests/test_duckdb_migrations.py`, `tests/test_duckdb_migrations_v2.py`
 
 ### T2: Flip default storage backend to DuckDB
 - **depends_on**: [T1]
@@ -123,6 +126,9 @@ T2 ───────────┘
   - Ensure `--storage filesystem` still behaves as before.
 - **validation**:
   - Update/add tests asserting default backend is duckdb and contextvars reset after CLI run (adapt `tests/test_duckdb_cli_db.py`).
+- **status**: Completed
+- **log**: Switched CLI/runtime defaults to duckdb, aligned storage runtime fallback behavior, and updated CLI tests for the new default/reset flow.
+- **files**: `options_helper/cli.py`, `options_helper/data/storage_runtime.py`, `tests/test_duckdb_cli_db.py`
 
 ### T3: Preserve + persist Alpaca `vwap` / `trade_count` in candle ingestion
 - **depends_on**: [T1]
@@ -139,6 +145,9 @@ T2 ───────────┘
     - Load: include those columns in SELECT (as `VWAP` / `Trade Count`).
 - **validation**:
   - Add test `tests/test_duckdb_candle_store_vwap_trade_count.py` verifying roundtrip.
+- **status**: Completed
+- **log**: Normalized Alpaca stock bars to keep VWAP/trade count, persisted in DuckDB, and added a roundtrip test.
+- **files**: `options_helper/data/alpaca_client.py`, `options_helper/data/stores_duckdb.py`, `tests/test_duckdb_candle_store_vwap_trade_count.py`
 
 ### T4: DuckDB option contracts store (metadata + daily snapshots)
 - **depends_on**: [T1]
@@ -156,6 +165,9 @@ T2 ───────────┘
   - For new ingestion paths: fail fast in filesystem mode with a clear error (“requires DuckDB backend”).
 - **validation**:
   - Test `tests/test_duckdb_option_contracts_store.py`: upsert + query + snapshot upsert idempotency.
+- **status**: Completed
+- **log**: Added DuckDB option contracts store (dimension + snapshots), wired factory/CLI deps with duckdb-only guard, and added coverage for upsert/list/idempotency.
+- **files**: `options_helper/data/stores_duckdb.py`, `options_helper/data/store_factory.py`, `options_helper/cli_deps.py`, `tests/test_duckdb_option_contracts_store.py`
 
 ### T5: Alpaca option daily bars fetcher (full OHLCV, paginated, resilient)
 - **depends_on**: [T1]
@@ -173,6 +185,9 @@ T2 ───────────┘
     - retry transient timeouts/5xx; do not retry other 4xx except 408/429.
 - **validation**:
   - Unit tests with a fake payload object are sufficient (offline). Add normalization tests ensuring MultiIndex → flat rows works.
+- **status**: Completed
+- **log**: Added paginated daily option bars fetcher with retry/backoff handling and full OHLCV normalization, plus tests for pagination/page limits.
+- **files**: `options_helper/data/alpaca_client.py`, `tests/test_alpaca_option_bars_daily_full.py`
 
 ### T6: DuckDB option bars store (upsert + resume metadata)
 - **depends_on**: [T1, T5]
@@ -192,7 +207,9 @@ T2 ───────────┘
     - catch DuckDB lock errors; emit a clear message instructing user to avoid concurrent ingestion.
 - **validation**:
   - Test `tests/test_duckdb_option_bars_store.py` verifies idempotent upsert + meta updates.
-
+- **status**: Completed
+- **log**: Added DuckDB option bars store with transactional upsert, meta success/error helpers, and lock guard; wired store factory/CLI deps and added store tests.
+- **files**: `options_helper/data/option_bars.py`, `options_helper/data/stores_duckdb.py`, `options_helper/data/store_factory.py`, `options_helper/cli_deps.py`, `tests/test_duckdb_option_bars_store.py`
 ### T7: Add `ingest` CLI group with candle + option-bars backfills
 - **depends_on**: [T2, T3, T4, T6]
 - **location**:
@@ -234,6 +251,9 @@ T2 ───────────┘
   - CLI tests with injected fakes:
     - `tests/test_ingest_candles_command.py` (MockProvider + DuckDBCandleStore)
     - `tests/test_ingest_options_bars_command.py` (FakeAlpacaClient returning deterministic contracts + bars)
+- **status**: Completed
+- **log**: Added ingest CLI group for candles/options bars with helper modules for watchlist resolution, contract discovery, resumable bars backfill (chunking + bisection), and CLI tests using fake providers/clients.
+- **files**: `options_helper/commands/ingest.py`, `options_helper/cli.py`, `options_helper/data/ingestion/__init__.py`, `options_helper/data/ingestion/common.py`, `options_helper/data/ingestion/candles.py`, `options_helper/data/ingestion/options_bars.py`, `tests/test_ingest_candles_command.py`, `tests/test_ingest_options_bars_command.py`
 
 ### T8: Documentation updates + runbook
 - **depends_on**: [T2, T7]
@@ -252,6 +272,9 @@ T2 ───────────┘
     - expected runtime/data volume caveats + “not financial advice”.
 - **validation**:
   - `mkdocs serve` renders without broken links (manual).
+- **status**: Completed
+- **log**: Documented DuckDB as the default backend and added ingestion runbook with prerequisites, commands, flags, and operational notes.
+- **files**: `README.md`, `docs/DUCKDB.md`, `docs/INGEST.md`
 
 ## Parallel execution groups
 
@@ -289,4 +312,3 @@ T2 ───────────┘
   - daily option bars in `option_bars`
   - progress + errors in `option_bars_meta`
 - All tests pass offline via `python -m pytest`.
-

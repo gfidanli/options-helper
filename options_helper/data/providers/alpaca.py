@@ -236,6 +236,8 @@ class AlpacaProvider(MarketDataProvider):
         auto_adjust: bool,
         back_adjust: bool,
     ) -> pd.DataFrame:
+        if start is None and end is None:
+            start = date(1970, 1, 1)
         adjustment = "all" if auto_adjust or back_adjust else "raw"
         if back_adjust and not self._warned_back_adjust:
             logger.warning("Alpaca does not support back_adjust; using adjustment='all'.")

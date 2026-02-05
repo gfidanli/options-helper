@@ -6,6 +6,8 @@ from typing import Any
 from options_helper.data.candles import CandleStore
 from options_helper.data.derived import DerivedStore
 from options_helper.data.journal import JournalStore
+from options_helper.data.option_bars import OptionBarsStoreError
+from options_helper.data.option_contracts import OptionContractsStoreError
 from options_helper.data.options_snapshots import OptionsSnapshotStore
 from options_helper.data.storage_runtime import get_storage_runtime_config
 
@@ -68,3 +70,21 @@ def get_options_snapshot_store(root_dir: Path) -> OptionsSnapshotStore:
 
         return DuckDBOptionsSnapshotStore(lake_root=root_dir, warehouse=get_warehouse())
     return OptionsSnapshotStore(root_dir)
+
+
+def get_option_contracts_store(root_dir: Path):
+    cfg = get_storage_runtime_config()
+    if cfg.backend != "duckdb":
+        raise OptionContractsStoreError("Option contracts ingestion requires DuckDB backend.")
+    from options_helper.data.stores_duckdb import DuckDBOptionContractsStore
+
+    return DuckDBOptionContractsStore(root_dir=root_dir, warehouse=get_warehouse())
+
+
+def get_option_bars_store(root_dir: Path):
+    cfg = get_storage_runtime_config()
+    if cfg.backend != "duckdb":
+        raise OptionBarsStoreError("Option bars ingestion requires DuckDB backend.")
+    from options_helper.data.stores_duckdb import DuckDBOptionBarsStore
+
+    return DuckDBOptionBarsStore(root_dir=root_dir, warehouse=get_warehouse())

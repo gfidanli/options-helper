@@ -78,6 +78,17 @@ Recommends short-dated (30–90 DTE) and long-dated (LEAPS) contracts to conside
 
 - Design/usage: `docs/CANDLE_CACHE.md`
 
+### Storage (DuckDB default)
+DuckDB is the default storage backend (use `--storage filesystem` to opt out).
+
+- Design/usage: `docs/DUCKDB.md`
+
+### Ingestion (candles + options bars)
+Bulk backfills for daily candles and Alpaca option bars (DuckDB).
+
+- Commands: `ingest candles`, `ingest options-bars`
+- Design/usage: `docs/INGEST.md`
+
 ### Market data providers
 All commands accept a global `--provider` option (default: `alpaca`; `yahoo` is available as a fallback).
 

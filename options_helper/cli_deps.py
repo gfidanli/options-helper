@@ -8,6 +8,8 @@ if TYPE_CHECKING:
     from options_helper.data.derived import DerivedStore
     from options_helper.data.earnings import EarningsStore
     from options_helper.data.journal import JournalStore
+    from options_helper.data.option_bars import OptionBarsStore
+    from options_helper.data.option_contracts import OptionContractsStore
     from options_helper.data.options_snapshots import OptionsSnapshotStore
     from options_helper.data.providers.base import MarketDataProvider
 
@@ -62,3 +64,15 @@ def build_journal_store(journal_dir: Path) -> JournalStore:
     from options_helper.data.store_factory import get_journal_store
 
     return get_journal_store(journal_dir)
+
+
+def build_option_contracts_store(contracts_dir: Path) -> OptionContractsStore:
+    from options_helper.data.store_factory import get_option_contracts_store
+
+    return get_option_contracts_store(contracts_dir)
+
+
+def build_option_bars_store(bars_dir: Path) -> OptionBarsStore:
+    from options_helper.data.store_factory import get_option_bars_store
+
+    return get_option_bars_store(bars_dir)

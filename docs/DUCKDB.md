@@ -10,6 +10,7 @@ but becomes painful when you start storing:
 - derived metrics histories and journal events
 
 DuckDB mode keeps the CLI UX the same while giving you a “real database” under the hood.
+It is now the **default** storage backend (opt out with `--storage filesystem`).
 
 ## What gets stored where
 
@@ -21,6 +22,7 @@ DuckDB stores:
 - candle cache tables
 - derived metrics table
 - journal events table
+- option contracts + option bars tables
 - option snapshot *headers/index* (what exists, where it lives)
 
 ### Lake (Parquet partitions)
@@ -37,19 +39,25 @@ The warehouse stores the **path** and metadata so it can find and load Parquet q
 Initialize the DB (optional but recommended):
 
 ```bash
-options-helper --storage duckdb db init
+options-helper db init
 ```
 
-Run any existing command in DuckDB mode:
+Run any existing command (DuckDB is default):
 
 ```bash
-options-helper --storage duckdb snapshot-options --watchlist core
-options-helper --storage duckdb analyze --symbol AAPL
+options-helper snapshot-options --watchlist core
+options-helper analyze --symbol AAPL
+```
+
+Opt out (legacy filesystem storage):
+
+```bash
+options-helper --storage filesystem analyze --symbol AAPL
 ```
 
 ## CLI flags
 
-- `--storage filesystem|duckdb`
+- `--storage filesystem|duckdb` (default: `duckdb`)
 - `--duckdb-path PATH` (only used in duckdb mode)
 
 ## Operational notes

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import inspect
 import os
+import random
 import time
 from datetime import date, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -371,6 +373,24 @@ def _option_bars_to_dataframe(payload: Any) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _extract_option_bars_page_token(payload: Any) -> str | None:
+    if payload is None:
+        return None
+    if isinstance(payload, dict):
+        token = (
+            payload.get("next_page_token")
+            or payload.get("next_token")
+            or payload.get("nextPageToken")
+            or payload.get("next")
+        )
+        return str(token) if token else None
+    for attr in ("next_page_token", "next_token", "nextPageToken", "next"):
+        token = getattr(payload, attr, None)
+        if token:
+            return str(token)
+    return None
+
+
 def _normalize_option_bars(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame(columns=["contractSymbol", "timestamp", "volume", "vwap", "trade_count"])
@@ -432,6 +452,75 @@ def _normalize_option_bars(df: pd.DataFrame) -> pd.DataFrame:
     return latest[["contractSymbol", "timestamp", "volume", "vwap", "trade_count"]].reset_index(drop=True)
 
 
+def _extract_status_code(exc: Exception) -> int | None:
+    for attr in ("status_code", "status", "http_status", "code"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    response = getattr(exc, "response", None)
+    if response is not None:
+        for attr in ("status_code", "status", "code"):
+            value = getattr(response, attr, None)
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str) and value.isdigit():
+                return int(value)
+    return None
+
+
+def _parse_retry_after(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value) if value >= 0 else None
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            parsed = float(raw)
+            return parsed if parsed >= 0 else None
+        except ValueError:
+            try:
+                parsed_dt = parsedate_to_datetime(raw)
+                if parsed_dt.tzinfo is None:
+                    parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+                now = datetime.now(timezone.utc)
+                delta = (parsed_dt - now).total_seconds()
+                return max(delta, 0.0)
+            except Exception:  # noqa: BLE001
+                return None
+    return None
+
+
+def _extract_retry_after_seconds(exc: Exception) -> float | None:
+    for attr in ("retry_after", "retry_after_seconds", "retry_after_sec"):
+        value = getattr(exc, attr, None)
+        parsed = _parse_retry_after(value)
+        if parsed is not None:
+            return parsed
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None) or getattr(exc, "headers", None)
+    if headers is not None:
+        try:
+            value = headers.get("Retry-After") or headers.get("retry-after")
+        except Exception:  # noqa: BLE001
+            value = None
+        parsed = _parse_retry_after(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _is_timeout_error(exc: Exception) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    message = str(exc).lower()
+    return "timeout" in message or "timed out" in message
+
+
 def _is_rate_limit_error(exc: Exception) -> bool:
     if getattr(exc, "status_code", None) == 429:
         return True
@@ -487,6 +576,11 @@ def _normalize_stock_bars(df: pd.DataFrame, *, symbol: str) -> pd.DataFrame:
         "close": "Close",
         "v": "Volume",
         "volume": "Volume",
+        "vw": "VWAP",
+        "vwap": "VWAP",
+        "n": "Trade Count",
+        "trade_count": "Trade Count",
+        "tradecount": "Trade Count",
     }
     for col in list(out.columns):
         key = col.lower()
@@ -648,6 +742,18 @@ def _normalize_intraday_option_bars(df: pd.DataFrame) -> pd.DataFrame:
     return out[
         ["contractSymbol", "timestamp", "open", "high", "low", "close", "volume", "trade_count", "vwap"]
     ].reset_index(drop=True)
+
+
+def _normalize_option_bars_daily_full(df: pd.DataFrame) -> pd.DataFrame:
+    out = _normalize_intraday_option_bars(df)
+    columns = ["contractSymbol", "ts", "open", "high", "low", "close", "volume", "vwap", "trade_count"]
+    if out is None or out.empty:
+        return pd.DataFrame(columns=columns)
+    out = out.rename(columns={"timestamp": "ts"})
+    for col in columns:
+        if col not in out.columns:
+            out[col] = pd.NA
+    return out[columns].reset_index(drop=True)
 
 
 def _normalize_corporate_action(item: Any, *, default_symbol: str | None = None) -> dict[str, Any]:
@@ -1475,6 +1581,129 @@ class AlpacaClient:
         combined = pd.concat(all_chunks, ignore_index=True)
         combined = combined.drop_duplicates(subset=["contractSymbol"], keep="last")
         return combined.reset_index(drop=True)
+
+    def get_option_bars_daily_full(
+        self,
+        symbols: list[str],
+        *,
+        start: date | datetime | None,
+        end: date | datetime | None = None,
+        interval: str = "1d",
+        feed: str | None = None,
+        chunk_size: int = 200,
+        max_retries: int = 3,
+        page_limit: int | None = None,
+    ) -> pd.DataFrame:
+        raw_symbols = [str(sym).strip() for sym in (symbols or []) if sym]
+        unique_symbols = sorted({sym for sym in raw_symbols if sym})
+        columns = ["contractSymbol", "ts", "open", "high", "low", "close", "volume", "vwap", "trade_count"]
+        if not unique_symbols:
+            return pd.DataFrame(columns=columns)
+
+        timeframe = _resolve_timeframe(interval)
+        start_dt = _coerce_datetime(start, end_of_day=False)
+        end_dt = self.effective_end(end, end_of_day=True)
+        if start_dt is not None and end_dt is not None and end_dt < start_dt:
+            raise DataFetchError("End date is before start date for Alpaca option bars request.")
+
+        client = self.option_client
+        method = getattr(client, "get_option_bars", None)
+        if method is None:
+            raise DataFetchError("Alpaca data client missing get_option_bars.")
+
+        request_cls = _load_option_bars_request()
+        feed_val = feed or self._options_feed
+        chunk_size = int(chunk_size) if chunk_size else 200
+        if chunk_size <= 0:
+            chunk_size = 200
+        max_retries = int(max_retries) if max_retries else 1
+        if max_retries < 1:
+            max_retries = 1
+
+        def _call_with_backoff(make_call):
+            for attempt in range(max_retries):
+                try:
+                    return make_call()
+                except Exception as exc:  # noqa: BLE001
+                    if attempt >= max_retries - 1:
+                        raise
+                    status_code = _extract_status_code(exc)
+                    retry_after = _extract_retry_after_seconds(exc)
+                    is_rate_limit = status_code == 429 or _is_rate_limit_error(exc)
+                    if status_code is not None:
+                        if 400 <= status_code < 500 and status_code not in (408, 429):
+                            raise
+                        should_retry = status_code >= 500 or status_code in (408, 429)
+                    else:
+                        should_retry = is_rate_limit or _is_timeout_error(exc)
+                    if not should_retry:
+                        raise
+                    base_delay = 0.5 * (2**attempt)
+                    delay = base_delay
+                    if is_rate_limit:
+                        delay += random.uniform(0, base_delay * 0.25)
+                    if retry_after is not None:
+                        delay = max(delay, retry_after)
+                    time.sleep(delay)
+            return None
+
+        all_chunks: list[pd.DataFrame] = []
+
+        for i in range(0, len(unique_symbols), chunk_size):
+            chunk = unique_symbols[i : i + chunk_size]
+            page_token: str | None = None
+            page_count = 0
+
+            while True:
+                page_count += 1
+                if page_limit is not None and page_count > page_limit:
+                    raise DataFetchError("Exceeded Alpaca option bars page limit.")
+
+                kwargs = {
+                    "symbol_or_symbols": chunk,
+                    "symbols": chunk,
+                    "timeframe": timeframe,
+                    "start": start_dt,
+                    "end": end_dt,
+                    "feed": feed_val,
+                    "limit": chunk_size,
+                    "page_token": page_token,
+                }
+
+                payload = None
+                if request_cls is not None:
+                    try:
+                        request_kwargs = _filter_kwargs(request_cls, kwargs)
+                        request = request_cls(**request_kwargs)
+                        payload = _call_with_backoff(lambda: method(request))
+                    except TypeError:
+                        payload = None
+
+                if payload is None:
+                    payload = _call_with_backoff(lambda: method(**_filter_kwargs(method, kwargs)))
+
+                if payload is None:
+                    break
+
+                df = _option_bars_to_dataframe(payload)
+                norm = _normalize_option_bars_daily_full(df)
+                if not norm.empty:
+                    all_chunks.append(norm)
+
+                page_token = _extract_option_bars_page_token(payload)
+                if not page_token:
+                    break
+
+        if not all_chunks:
+            return pd.DataFrame(columns=columns)
+
+        combined = pd.concat(all_chunks, ignore_index=True)
+        combined = combined.drop_duplicates(subset=["contractSymbol", "ts"], keep="last")
+        combined = combined.sort_values(["contractSymbol", "ts"], na_position="last")
+        for col in columns:
+            if col not in combined.columns:
+                combined[col] = pd.NA
+        return combined[columns].reset_index(drop=True)
 
     def get_option_bars_intraday(
         self,

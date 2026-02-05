@@ -42,6 +42,7 @@ def test_cli_resets_storage_runtime_contextvars(tmp_path: Path) -> None:
     runner = CliRunner()
     default_backend = get_default_storage_backend()
     default_duckdb_path = get_default_duckdb_path()
+    assert default_backend == "duckdb"
     storage_token = set_default_storage_backend("filesystem")
     duckdb_token = set_default_duckdb_path(default_duckdb_path)
 

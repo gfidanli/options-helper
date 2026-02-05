@@ -9,6 +9,7 @@ from options_helper.commands.backtest import app as backtest_app
 from options_helper.commands.db import app as db_app
 from options_helper.commands.derived import app as derived_app
 from options_helper.commands.events import app as events_app
+from options_helper.commands.ingest import app as ingest_app
 from options_helper.commands.intraday import app as intraday_app
 from options_helper.commands.journal import app as journal_app
 from options_helper.commands.portfolio import register as register_portfolio_commands
@@ -44,6 +45,7 @@ app.add_typer(intraday_app, name="intraday")
 app.add_typer(events_app, name="events")
 app.add_typer(stream_app, name="stream")
 app.add_typer(db_app, name="db")
+app.add_typer(ingest_app, name="ingest")
 register_portfolio_commands(app)
 register_report_commands(app)
 register_workflow_commands(app)
@@ -63,7 +65,7 @@ def main(
         help="Market data provider (default: alpaca).",
     ),
     storage: StorageBackend = typer.Option(
-        StorageBackend.filesystem,
+        StorageBackend.duckdb,
         "--storage",
         help="Storage backend (filesystem or duckdb).",
     ),
