@@ -29,7 +29,7 @@ from options_helper.analysis.research import (
     suggest_trade_levels,
 )
 from options_helper.commands.common import _build_stress_scenarios, _parse_date
-from options_helper.commands.position_metrics import _extract_float, _mark_price, _position_metrics
+from options_helper.commands.position_metrics import _extract_float, _position_metrics
 from options_helper.data.candles import close_asof, last_close
 from options_helper.data.confluence_config import ConfigError as ConfluenceConfigError, load_confluence_config
 from options_helper.data.earnings import EarningsRecord, safe_next_earnings_date

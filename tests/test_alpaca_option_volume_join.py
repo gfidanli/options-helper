@@ -4,7 +4,6 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pandas as pd
-import pytest
 
 from options_helper.data.market_types import DataFetchError
 from options_helper.data.option_contracts import OptionContractsStore

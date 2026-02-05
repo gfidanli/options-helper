@@ -27,7 +27,7 @@ def _default_position_id(symbol: str, expiry: date, strike: float, option_type: 
 
 
 def _default_multileg_id(symbol: str, legs: list[Leg]) -> str:
-    sorted_legs = sorted(legs, key=lambda l: (l.expiry, l.option_type, l.strike, l.side))
+    sorted_legs = sorted(legs, key=lambda leg: (leg.expiry, leg.option_type, leg.strike, leg.side))
     tokens: list[str] = []
     for leg in sorted_legs:
         strike_str = f"{leg.strike:g}".replace(".", "p")

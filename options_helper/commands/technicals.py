@@ -1490,6 +1490,7 @@ def technicals_run_all(
 ) -> None:
     """Run both strategies for a list of tickers."""
     from options_helper.data.technical_backtesting_artifacts import write_artifacts
+    from options_helper.data.technical_backtesting_io import load_ohlc_from_cache
     from options_helper.technicals_backtesting.backtest.optimizer import optimize_params
     from options_helper.technicals_backtesting.backtest.walk_forward import walk_forward_optimize
     from options_helper.technicals_backtesting.feature_selection import required_feature_columns_for_strategy
