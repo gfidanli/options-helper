@@ -160,9 +160,9 @@ T16 + T17 ───────────────────────�
 - **location**: `/Volumes/develop/options-helper/apps/streamlit/pages/01_Health.py`, `/Volumes/develop/options-helper/apps/streamlit/components/gap_planner.py`
 - **description**: Build Health page using centralized observability query helpers: latest runs timeline, grouped recurring failures, watermark freshness, recent failed checks, and deterministic backfill command suggestions (display-only).
 - **validation**: `./.venv/bin/python -m pytest tests/portal/test_health_queries.py tests/portal/test_gap_planner.py`
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Implemented a full read-only Health page that loads centralized observability data through shared helpers (latest runs, recurring failure aggregation by stack hash, watermark freshness, recent failed checks), includes resilient missing DB/meta guidance, and renders a deterministic display-only gap backfill planner with dependency-aware command ordering. Added offline deterministic portal tests for health query loading/normalization and gap planner command generation/order.
+- **files edited/created**: `/Volumes/develop/options-helper/apps/streamlit/pages/01_Health.py`, `/Volumes/develop/options-helper/apps/streamlit/components/health_page.py`, `/Volumes/develop/options-helper/apps/streamlit/components/gap_planner.py`, `/Volumes/develop/options-helper/tests/portal/test_health_queries.py`, `/Volumes/develop/options-helper/tests/portal/test_gap_planner.py`, `/Volumes/develop/options-helper/docs/plan/VISIBILITY-PORTAL-ORCHESTRATION-PLAN.md`
 
 ### T11: Implement Portfolio + Symbol Explorer Pages
 - **depends_on**: [T9]

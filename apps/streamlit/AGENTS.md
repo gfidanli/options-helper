@@ -9,6 +9,8 @@
 - Keep pages thin and move query/transform logic into `components/*`.
 - Use cached helpers (`st.cache_resource`, `st.cache_data`) through shared modules.
 - Use query-parameter sync for shareable state where relevant.
+- For observability views, consume centralized query helpers from `options_helper.data.observability_meta` through a component adapter module.
+- Keep gap/backfill planners display-only (show copy/paste commands, do not execute writes from the page).
 
 ## Resilience
 - Handle missing DuckDB/database/table states gracefully (warnings/info, not crashes).
