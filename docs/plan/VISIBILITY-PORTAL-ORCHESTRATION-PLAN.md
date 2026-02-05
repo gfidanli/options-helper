@@ -239,9 +239,12 @@ T16 + T17 ───────────────────────�
   - Streamlit query/helper tests
   - Dagster defs/asset smoke tests (skipped when extra absent)
 - **validation**: targeted pytest matrix and full suite.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
-- **files edited/created**:
+  - Audited deterministic offline coverage for all T17 goals and confirmed existing tests already cover delivered features without gaps requiring new tests.
+  - Confirmed coverage mapping: migration upgrade (`tests/test_duckdb_migrations_v2.py::test_duckdb_migrations_upgrade_v2_to_v3`), command run ledger + watermarks + filesystem noop (`tests/test_command_run_ledger_instrumentation.py`), non-blocking checks (`tests/test_observability_checks_integration.py`, `tests/test_quality_checks.py`), `db health` output (`tests/test_db_health_cli.py`), flow persistence table (`tests/test_duckdb_flow_store.py`), UI launcher (`tests/test_ui_cli.py`, `tests/test_cli_contract.py`), Streamlit helpers (`tests/portal/test_health_queries.py`, `tests/portal/test_gap_planner.py`, `tests/portal/test_portfolio_page_queries.py`, `tests/portal/test_symbol_explorer_queries.py`, `tests/portal/test_flow_queries.py`, `tests/portal/test_derived_queries.py`, `tests/portal/test_data_explorer_queries.py`, `tests/portal/test_streamlit_scaffold.py`), Dagster optional smoke/materialization (`tests/test_dagster_defs_scaffold.py`, `tests/test_dagster_daily_assets.py`).
+  - Ran targeted pytest matrix for T6/T7/T8/T10/T11/T12/T13/T15 plus migration/flow persistence confirmations; all selected tests passed (Dagster tests skipped when `dagster` extra was absent).
+- **files edited/created**: `/Volumes/develop/options-helper/docs/plan/VISIBILITY-PORTAL-ORCHESTRATION-PLAN.md`
 
 ### T18: End-to-End Validation and Release Gate
 - **depends_on**: [T16, T17]
