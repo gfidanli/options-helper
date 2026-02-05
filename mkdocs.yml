@@ -49,6 +49,7 @@ nav:
   - Docs Site: DOCS_SITE.md
   - Reference:
       - Providers: PROVIDERS.md
+      - Alpaca Rate Limits: ALPACA_RATE_LIMITS.md
       - Multi-leg: MULTI_LEG.md
       - Roll Plan: ROLL_PLAN.md
       - Earnings: EARNINGS.md

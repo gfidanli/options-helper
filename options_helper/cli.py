@@ -7,6 +7,7 @@ import typer
 
 from options_helper.commands.backtest import app as backtest_app
 from options_helper.commands.db import app as db_app
+from options_helper.commands.debug import app as debug_app
 from options_helper.commands.derived import app as derived_app
 from options_helper.commands.events import app as events_app
 from options_helper.commands.ingest import app as ingest_app
@@ -36,6 +37,7 @@ class StorageBackend(str, Enum):
 
 app = typer.Typer(add_completion=False)
 app.add_typer(watchlists_app, name="watchlists")
+app.add_typer(debug_app, name="debug")
 app.add_typer(derived_app, name="derived")
 app.add_typer(technicals_app, name="technicals")
 app.add_typer(scanner_app, name="scanner")
