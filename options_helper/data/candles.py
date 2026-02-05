@@ -51,9 +51,9 @@ def _default_fetcher(symbol: str, start: date | None, end: date | None) -> pd.Da
     # custom fetcher. New code should prefer CandleStore(auto_adjust=..., back_adjust=...).
     ticker = yf.Ticker(symbol)
     if start is None and end is None:
-        return ticker.history(period="max", interval="1d", auto_adjust=False, back_adjust=False)
+        return ticker.history(period="max", interval="1d", auto_adjust=True, back_adjust=False)
 
-    kwargs = {"interval": "1d", "auto_adjust": False, "back_adjust": False}
+    kwargs = {"interval": "1d", "auto_adjust": True, "back_adjust": False}
     if start is not None:
         kwargs["start"] = start.isoformat()
     if end is not None:

@@ -266,7 +266,7 @@ class AlpacaProvider(MarketDataProvider):
             start=start,
             end=None,
             interval=interval,
-            auto_adjust=False,
+            auto_adjust=True,
             back_adjust=False,
         )
         last_price = _last_close(history)

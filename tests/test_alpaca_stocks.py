@@ -224,3 +224,4 @@ def test_alpaca_provider_underlying_uses_history() -> None:
     assert underlying.symbol == "BRK-B"
     assert underlying.last_price == 201.0
     assert not underlying.history.empty
+    assert stub.last_bars_kwargs["adjustment"] == "all"

@@ -34,6 +34,14 @@ Recommended defaults for technical backtests:
 Alternative for “raw tape”:
 - `auto_adjust=False`, `back_adjust=False` (requires handling splits/divs effects)
 
+## 2b) Alpaca Adjustment Settings
+
+Alpaca stock bars support an `adjustment` parameter.
+
+**Policy for this project:**
+- When using the Alpaca provider for daily candles, request adjusted bars (`adjustment="all"`) by default.
+- Use raw bars (`adjustment="raw"`) only when you explicitly want an unadjusted series.
+
 ## 3) Adapter Rules (yfinance -> CandleFrame)
 - If input columns include extras (e.g., `Dividends`, `Stock Splits`), ignore/drop unless explicitly configured to keep them.
 - Normalize column names to `Open/High/Low/Close/Volume` (title case).
