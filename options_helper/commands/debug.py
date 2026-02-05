@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 from typing import Any
 
@@ -32,11 +33,44 @@ def _parse_kv_tokens(message: str) -> dict[str, Any]:
 
 
 def _iter_tail_lines(path: Path, *, max_lines: int) -> list[str]:
-    out: deque[str] = deque(maxlen=max_lines)
-    with path.open("r", encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            out.append(line.rstrip("\n"))
-    return list(out)
+    if max_lines <= 0:
+        return []
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            position = handle.tell()
+            block_size = 8192
+            buf = b""
+            while position > 0 and buf.count(b"\n") <= max_lines:
+                read_size = min(block_size, position)
+                position -= read_size
+                handle.seek(position)
+                buf = handle.read(read_size) + buf
+    except FileNotFoundError:
+        return []
+    except Exception:  # noqa: BLE001
+        out: deque[str] = deque(maxlen=max_lines)
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                out.append(line.rstrip("\n"))
+        return list(out)
+
+    lines = buf.splitlines()[-max_lines:]
+    return [line.decode("utf-8", errors="replace") for line in lines]
+
+
+def _find_latest_log_with_token(log_dir: Path, *, token: str, scan_lines: int) -> Path | None:
+    if not log_dir.exists():
+        return None
+    candidates = [path for path in log_dir.glob("*.log") if path.is_file()]
+    if not candidates:
+        return None
+    candidates = sorted(candidates, key=lambda path: path.stat().st_mtime, reverse=True)
+    for path in candidates:
+        lines = _iter_tail_lines(path, max_lines=max(scan_lines, 1))
+        if any(token in line for line in lines):
+            return path
+    return None
 
 
 @app.command("rate-limits")
@@ -73,7 +107,9 @@ def rate_limits(
         console.print("[red]Error:[/red] only --provider alpaca is supported for now.")
         raise typer.Exit(2)
 
-    path = log_path or _latest_log_file(log_dir)
+    path = log_path or _find_latest_log_with_token(log_dir, token="ALPACA_RATELIMIT", scan_lines=scan_lines)
+    if path is None:
+        path = _latest_log_file(log_dir)
     if path is None:
         console.print("[red]Error:[/red] no log files found.")
         console.print("Tip: run any command with OH_ALPACA_LOG_RATE_LIMITS=1 to emit ratelimit lines.")
@@ -131,4 +167,3 @@ def rate_limits(
                 reset_in_s=item.get("reset_in_s", "?"),
             )
         )
-

@@ -45,6 +45,7 @@ def test_debug_rate_limits_uses_latest_log(tmp_path: Path) -> None:
 
     older = inspect_dir / "older.log"
     newer = inspect_dir / "newer.log"
+    newest_no_rl = inspect_dir / "newest_debug.log"
 
     older.write_text(
         "2026-02-05 00:00:00,000 INFO options_helper.cli: ALPACA_RATELIMIT client=stock method=GET path=/v2/stocks/bars status=200 limit=200 remaining=199 reset_epoch=1700000000 reset_in_s=10.000\n",
@@ -54,9 +55,14 @@ def test_debug_rate_limits_uses_latest_log(tmp_path: Path) -> None:
         "2026-02-05 00:00:01,000 INFO options_helper.cli: ALPACA_RATELIMIT client=option method=GET path=/v2/options/bars status=200 limit=200 remaining=2 reset_epoch=1700000000 reset_in_s=1.234\n",
         encoding="utf-8",
     )
+    newest_no_rl.write_text(
+        "2026-02-05 00:00:02,000 INFO options_helper.cli: Start options-helper debug rate-limits\n",
+        encoding="utf-8",
+    )
 
     os.utime(older, (1, 1))
     os.utime(newer, (2, 2))
+    os.utime(newest_no_rl, (3, 3))
 
     res = runner.invoke(
         app,
@@ -75,4 +81,3 @@ def test_debug_rate_limits_uses_latest_log(tmp_path: Path) -> None:
     assert res.exit_code == 0, res.output
     assert "newer.log" in res.output
     assert "remaining=2" in res.output
-
