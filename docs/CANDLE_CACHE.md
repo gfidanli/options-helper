@@ -3,7 +3,7 @@
 ## Goal
 Make technical analysis efficient and consistent by:
 
-1) Downloading historical candles **once** per symbol (daily OHLCV from `yfinance`)
+1) Downloading historical candles **once** per symbol (daily OHLCV from the selected provider; default: Alpaca)
 2) Persisting those candles locally
 3) On every analysis run, downloading **only missing / recent candles** (incremental update)
 4) Reshaping (resampling) daily candles into higher timeframes (3‑business‑day and weekly) for indicators
@@ -12,7 +12,8 @@ This avoids repeatedly fetching large history windows and enables computing high
 a deeper candle set (e.g., weekly EMA50, weekly RSI, breakout lookbacks).
 
 ## Data source / caveats
-- Uses `yfinance` (Yahoo Finance) daily history. Data quality and timeliness are “best effort”.
+- Candles come from the active **market data provider** (`--provider`, default: `alpaca`).
+- `yahoo` uses `yfinance` (Yahoo Finance). Data quality and timeliness are “best effort”.
 - Daily candles may update after the close; the cache update strategy intentionally re-fetches a small number of recent
   candles to pick up revisions.
 
@@ -21,16 +22,17 @@ By default the cache is stored relative to the current working directory:
 
 - `data/candles/`
   - `{SYMBOL}.csv`
-  - `{SYMBOL}.meta.json` (cache metadata: interval + yfinance adjustment settings)
+  - `{SYMBOL}.meta.json` (cache metadata: interval + adjustment settings)
 
-Each file contains a date-time index and the OHLCV columns returned by `yfinance` (commonly: `Open`, `High`, `Low`,
-`Close`, `Volume`, and sometimes `Dividends`, `Stock Splits`, `Capital Gains`).
+Each file contains a date-time index and the OHLCV columns returned by the provider (commonly: `Open`, `High`, `Low`,
+`Close`, `Volume`). Some providers may include additional columns (e.g. `Dividends`/`Stock Splits` from Yahoo, or
+`trade_count`/`vwap` from Alpaca).
 
-By default this project uses **adjusted OHLC** when pulling candles from Yahoo via `yfinance`:
+By default this project uses **adjusted OHLC**:
 - `auto_adjust=True`
 - `back_adjust=False`
 
-In this mode, `yfinance` typically omits the `Adj Close` column because `Close` is already the adjusted series.
+In this mode, Yahoo/`yfinance` typically omits the `Adj Close` column because `Close` is already the adjusted series.
 (Legacy caches may still include `Adj Close`; the cache can be upgraded on refresh.)
 
 You can override the cache directory with the CLI option:

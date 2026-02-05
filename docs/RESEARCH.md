@@ -9,8 +9,8 @@ Given a ticker (or a watchlist), produce **best-effort** option ideas:
 This is a rule-based “idea generator”, not financial advice.
 
 ## Inputs
-- Daily candles (from the local candle cache; fetched from `yfinance` as needed)
-- `yfinance` option chains (expiries + strikes + bid/ask/IV/OI/volume)
+- Daily candles (from the local candle cache; fetched from the active provider as needed)
+- Option chains (expiries + strikes + bid/ask/IV/OI/volume) from the active provider (`--provider`, default: `alpaca`)
 - Your `portfolio.json` risk profile for:
   - breakout lookback window (`breakout_lookback_weeks`)
   - liquidity thresholds (`min_open_interest`, `min_volume`)

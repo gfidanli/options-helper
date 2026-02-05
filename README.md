@@ -68,12 +68,11 @@ Recommends short-dated (30–90 DTE) and long-dated (LEAPS) contracts to conside
 - Design/usage: `docs/CANDLE_CACHE.md`
 
 ### Market data providers
-All commands accept a global `--provider` option (currently `yahoo` plus a scaffolded `alpaca` provider).
+All commands accept a global `--provider` option (default: `alpaca`; `yahoo` is available as a fallback).
 
 - Design/usage: `docs/PROVIDERS.md`
 
-### Alpaca provider setup (scaffold)
-The Alpaca provider is scaffolded (client wiring + config). Data endpoints land in follow-on IMPs.
+### Alpaca provider setup
 
 Install Alpaca extras:
 ```bash

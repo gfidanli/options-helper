@@ -9,13 +9,13 @@ This repo’s market data access is routed through a small **provider interface*
 All commands accept a global `--provider` option:
 
 ```bash
-options-helper --provider yahoo analyze portfolio.json
-options-helper --provider yahoo snapshot-options portfolio.json
+options-helper --provider alpaca analyze portfolio.json
+options-helper --provider alpaca snapshot-options portfolio.json
 ```
 
 Currently implemented providers:
-- `yahoo` (default)
-- `alpaca` (stocks + options chain snapshots; volume/intraday follow-on IMPs)
+- `alpaca` (default)
+- `yahoo` (fallback for Yahoo Finance via `yfinance`)
 
 Aliases:
 - `yf`

@@ -10,6 +10,7 @@ This tool is for informational/educational use only and is not financial advice.
 - **Idempotent by design:** re-running jobs should update/overwrite the latest day rather than creating duplicates.
 - **Non-overlap:** cron jobs use a shared lock directory under `data/locks/` to avoid concurrent writes to caches.
 - **Per-command logs:** every CLI command accepts `--log-dir` (default `data/logs/`) and writes a timestamped log file.
+- **Provider:** cron scripts default to Alpaca (`PROVIDER=alpaca`). Override per-run with `PROVIDER=yahoo` if needed.
 
 ## Current recurring jobs (defaults)
 
@@ -42,7 +43,7 @@ All times below are **America/Chicago** time (the installers write `CRON_TZ=Amer
   - snapshots: `data/options_snapshots/{SYMBOL}/{YYYY-MM-DD}/{EXPIRY}.csv` + `meta.json`
 - **Depends on:**
   - `.venv/bin/options-helper` installed
-  - network access (Yahoo via `yfinance`)
+  - network access (Alpaca via `alpaca-py`)
 - **Logs:** `data/logs/options_snapshot.log`
 
 ### 3) Daily watchlist (“monitor”) option snapshots (network, optional)
@@ -56,7 +57,7 @@ flow/chain reports work for them too.
 - **What it does:** `options-helper snapshot-options portfolio.json --watchlist monitor --watchlist positions --max-expiries 2 --windowed --position-expiries`
 - **Depends on:**
   - `data/watchlists.json` existing and containing a non-empty `monitor` and/or `positions` list (otherwise it skips)
-  - network access (Yahoo via `yfinance`)
+  - network access (Alpaca via `alpaca-py`)
 - **Logs:** `data/logs/monitor_snapshot.log`
 
 ### 4) Daily briefing report (offline-first, depends on snapshots)
@@ -87,7 +88,7 @@ flow/chain reports work for them too.
   - writes a status marker so the hourly checks only retry if the run didn’t finish
 - **Depends on:**
   - `.venv/bin/options-helper` installed
-  - network access (Yahoo via `yfinance`)
+  - network access (Alpaca via `alpaca-py`)
 - **Logs:** `data/logs/scanner_full_YYYY-MM-DD.log`
 - **Status:** `data/logs/scanner_full_status.json`
 
