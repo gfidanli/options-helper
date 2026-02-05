@@ -192,9 +192,9 @@ T16 + T17 ───────────────────────�
 - **location**: `/Volumes/develop/options-helper/apps/dagster/defs/__init__.py` (new), `/Volumes/develop/options-helper/apps/dagster/defs/resources.py` (new), `/Volumes/develop/options-helper/apps/dagster/defs/jobs.py` (new), `/Volumes/develop/options-helper/apps/dagster/defs/schedules.py` (new)
 - **description**: Create optional Dagster package layout and resource config wiring for paths/provider/portfolio/watchlists without impacting core CLI startup.
 - **validation**: `pytest.importorskip("dagster")` defs import smoke test.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added `apps/dagster/defs` scaffold with a minimal `Definitions` assembly, placeholder jobs/schedules registries, path/provider runtime resource placeholders, and a Dagster import smoke test guarded by `pytest.importorskip("dagster")`.
+- **files edited/created**: `/Volumes/develop/options-helper/apps/dagster/defs/__init__.py`, `/Volumes/develop/options-helper/apps/dagster/defs/resources.py`, `/Volumes/develop/options-helper/apps/dagster/defs/jobs.py`, `/Volumes/develop/options-helper/apps/dagster/defs/schedules.py`, `/Volumes/develop/options-helper/tests/test_dagster_defs_scaffold.py`, `/Volumes/develop/options-helper/docs/plan/VISIBILITY-PORTAL-ORCHESTRATION-PLAN.md`
 
 ### T15: Implement Full Dagster Daily Asset Graph + Checks
 - **depends_on**: [T2, T3, T4, T5, T7, T14]
