@@ -257,9 +257,18 @@ T16 + T17 ───────────────────────�
   - `./.venv/bin/options-helper ui --help`
   - `streamlit run /Volumes/develop/options-helper/apps/streamlit/streamlit_app.py` (with `.[ui]`)
   - `dagster dev -m apps.dagster.defs` (with `.[orchestrator]`)
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
-- **files edited/created**:
+  - Ran full test suite: `./.venv/bin/python -m pytest` → `328 passed, 6 skipped, 17 failed`. Failures were concentrated in legacy offline snapshot/report/journal paths outside this plan scope.
+  - Verified these failing tests are baseline by running the same failing subset in a temporary `origin/main` worktree (detached at `88984ba`): same `17 failed, 1 passed` result, confirming they are pre-existing and not introduced by T1–T17 changes.
+  - Ran release-gate CLI checks:
+    - `./.venv/bin/options-helper --duckdb-path <tmp> db init` (schema v3 created)
+    - `./.venv/bin/options-helper --duckdb-path <tmp> db health` and `--json` (healthy empty-state output)
+    - `./.venv/bin/options-helper ui --help` (launcher/options surfaced correctly)
+  - Verified optional runtime availability:
+    - `streamlit run ...` skipped (Streamlit extra not installed in current venv)
+    - `dagster dev -m apps.dagster.defs` skipped (Dagster extra not installed in current venv)
+- **files edited/created**: `/Volumes/develop/options-helper/docs/plan/VISIBILITY-PORTAL-ORCHESTRATION-PLAN.md`
 
 ## Parallel Execution Groups
 
