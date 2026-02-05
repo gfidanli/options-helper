@@ -212,9 +212,9 @@ T16 + T17 ───────────────────────�
   - `briefing_markdown`
   Reuse pipeline service layer; persist run ledger with `triggered_by='dagster'` and parent Dagster run id; include Dagster asset checks that also write to `meta.asset_checks`.
 - **validation**: `pytest.importorskip("dagster")` tests for Definitions load, dependency order, and one partitioned materialization with mocked providers.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added full daily-partitioned Dagster asset graph (`candles_daily` → `options_bars` → `options_snapshot_file` → `options_flow` → `derived_metrics` → `briefing_markdown`) that reuses `options_helper.pipelines.visibility_jobs` service functions, writes DuckDB run-ledger rows with `triggered_by='dagster'` and Dagster `run_id` as `parent_run_id`, and emits persisted watermarks/events. Added Dagster asset checks that run existing quality-check evaluators and persist equivalent check rows to `meta.asset_checks`. Wired Definitions/jobs/schedules to expose the graph and daily partitioned job schedule, and added Dagster `importorskip` tests for defs load plus one partitioned materialization order/ledger path with mocked service calls.
+- **files edited/created**: `/Volumes/develop/options-helper/apps/dagster/defs/assets.py`, `/Volumes/develop/options-helper/apps/dagster/defs/checks.py`, `/Volumes/develop/options-helper/apps/dagster/defs/jobs.py`, `/Volumes/develop/options-helper/apps/dagster/defs/schedules.py`, `/Volumes/develop/options-helper/apps/dagster/defs/__init__.py`, `/Volumes/develop/options-helper/tests/test_dagster_daily_assets.py`, `/Volumes/develop/options-helper/apps/dagster/AGENTS.md`, `/Volumes/develop/options-helper/docs/plan/VISIBILITY-PORTAL-ORCHESTRATION-PLAN.md`
 
 ### T16: Documentation and MkDocs Navigation Updates
 - **depends_on**: [T8, T10, T11, T12, T13, T15]
