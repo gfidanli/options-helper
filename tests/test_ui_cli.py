@@ -60,6 +60,10 @@ def test_ui_launcher_shells_out_to_streamlit(monkeypatch, tmp_path: Path) -> Non
         "0.0.0.0",
         "--server.port",
         "8765",
+        "--server.headless",
+        "true",
+        "--server.showEmailPrompt",
+        "false",
     ]
     assert captured["check"] is False
 

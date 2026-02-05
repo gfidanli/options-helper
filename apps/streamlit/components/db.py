@@ -5,12 +5,11 @@ from pathlib import Path
 import duckdb
 import streamlit as st
 
-DEFAULT_DUCKDB_PATH = Path("data/options_helper.duckdb")
+from apps.streamlit.components.duckdb_path import resolve_duckdb_path as _resolve_duckdb_path
 
 
 def resolve_duckdb_path(database_path: str | Path | None = None) -> Path:
-    candidate = DEFAULT_DUCKDB_PATH if database_path is None else Path(database_path)
-    return candidate.expanduser().resolve()
+    return _resolve_duckdb_path(database_path)
 
 
 @st.cache_resource(show_spinner=False)

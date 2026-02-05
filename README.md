@@ -105,6 +105,7 @@ Install and run:
 
 ```bash
 pip install -e ".[dev,ui]"
+export OPTIONS_HELPER_DUCKDB_PATH=/path/to/options.duckdb  # optional
 options-helper ui
 ```
 

@@ -6,6 +6,7 @@ from typing import Any
 
 import pandas as pd
 
+from apps.streamlit.components.duckdb_path import resolve_duckdb_path as _resolve_duckdb_path
 from options_helper.data.observability_meta import (
     has_observability_tables,
     query_latest_runs,
@@ -14,8 +15,6 @@ from options_helper.data.observability_meta import (
     query_watermarks,
 )
 from options_helper.db.warehouse import DuckDBWarehouse
-
-DEFAULT_DUCKDB_PATH = Path("data/options_helper.duckdb")
 
 LATEST_RUN_COLUMNS = [
     "run_id",
@@ -82,9 +81,7 @@ class HealthSnapshot:
 
 
 def resolve_duckdb_path(database_path: str | Path | None = None) -> Path:
-    raw = "" if database_path is None else str(database_path).strip()
-    candidate = DEFAULT_DUCKDB_PATH if not raw else Path(raw)
-    return candidate.expanduser().resolve()
+    return _resolve_duckdb_path(database_path)
 
 
 def load_health_snapshot(

@@ -60,7 +60,11 @@ st.info("Read-only view. This page does not trigger ingestion or modify stored a
 
 with st.sidebar:
     st.markdown("### Data Sources")
-    database_path = st.text_input("DuckDB path", value="")
+    database_path = st.text_input(
+        "DuckDB path",
+        value="",
+        help="Optional. Leave blank to use OPTIONS_HELPER_DUCKDB_PATH or data/warehouse/options.duckdb.",
+    )
 
 available_symbols, symbol_notes = list_available_symbols(database_path=database_path or None)
 query_symbol = normalize_symbol(st.query_params.get("symbol"), default="SPY")

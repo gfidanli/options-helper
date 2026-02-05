@@ -55,7 +55,11 @@ st.info("Read-only view. This page does not run derived jobs or modify stored ro
 
 with st.sidebar:
     st.markdown("### Data Sources")
-    database_path = st.text_input("DuckDB path", value="")
+    database_path = st.text_input(
+        "DuckDB path",
+        value="",
+        help="Optional. Leave blank to use OPTIONS_HELPER_DUCKDB_PATH or data/warehouse/options.duckdb.",
+    )
     window_days = st.select_slider("Time window (days)", options=[30, 60, 90, 180, 365, 730], value=180)
     preview_rows = st.slider("Preview rows", min_value=5, max_value=100, value=20, step=5)
 

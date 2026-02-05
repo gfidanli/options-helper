@@ -61,9 +61,18 @@ Any command examples shown in Health are copy/paste suggestions only.
 ## DuckDB path behavior
 
 - CLI `db` commands default to: `data/warehouse/options.duckdb`
-- Streamlit page helpers currently default to: `data/options_helper.duckdb` when the sidebar path is left blank
+- Streamlit page helpers resolve DuckDB path in this order:
+  1) sidebar `DuckDB path` input (if provided),
+  2) `OPTIONS_HELPER_DUCKDB_PATH` environment variable (if set),
+  3) fallback `data/warehouse/options.duckdb`.
 
-For consistency with CLI defaults, set the DuckDB path explicitly in the page sidebar when needed.
+Set once for your shell/session:
+
+```bash
+export OPTIONS_HELPER_DUCKDB_PATH=/Volumes/develop/options-helper/data/warehouse/options.duckdb
+```
+
+You can still set an explicit DuckDB path in the page sidebar when needed.
 
 ## Health page disclaimer
 

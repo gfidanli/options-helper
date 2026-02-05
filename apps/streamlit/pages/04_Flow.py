@@ -92,7 +92,11 @@ st.info("Read-only view. This page does not trigger ingestion or write to DuckDB
 
 with st.sidebar:
     st.markdown("### Data Sources")
-    database_path = st.text_input("DuckDB path", value="")
+    database_path = st.text_input(
+        "DuckDB path",
+        value="",
+        help="Optional. Leave blank to use OPTIONS_HELPER_DUCKDB_PATH or data/warehouse/options.duckdb.",
+    )
     top_n = st.slider("Top rows in partition", min_value=10, max_value=200, value=60, step=10)
 
 database_arg = database_path or None

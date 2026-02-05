@@ -8,7 +8,8 @@ from typing import Any
 import duckdb
 import pandas as pd
 
-DEFAULT_DUCKDB_PATH = Path("data/options_helper.duckdb")
+from apps.streamlit.components.duckdb_path import resolve_duckdb_path as _resolve_duckdb_path
+
 DEFAULT_FLOW_GROUP = "expiry-strike"
 FLOW_GROUP_VALUES = ("contract", "strike", "expiry", "expiry-strike")
 
@@ -38,9 +39,7 @@ _ROW_COLUMNS = [
 
 
 def resolve_duckdb_path(database_path: str | Path | None = None) -> Path:
-    raw = "" if database_path is None else str(database_path).strip()
-    candidate = DEFAULT_DUCKDB_PATH if not raw else Path(raw)
-    return candidate.expanduser().resolve()
+    return _resolve_duckdb_path(database_path)
 
 
 def normalize_symbol(value: Any, *, default: str = "SPY") -> str:

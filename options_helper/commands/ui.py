@@ -47,6 +47,10 @@ def _launch_ui(*, host: str, port: int, path: Path) -> None:
         host,
         "--server.port",
         str(port),
+        "--server.headless",
+        "true",
+        "--server.showEmailPrompt",
+        "false",
     ]
     result = subprocess.run(command, check=False)
     if result.returncode != 0:

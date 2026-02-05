@@ -12,7 +12,11 @@ st.info("Read-only ingestion visibility view. This page does not trigger writes.
 
 with st.sidebar:
     st.markdown("### Data Sources")
-    database_path = st.text_input("DuckDB path", value="")
+    database_path = st.text_input(
+        "DuckDB path",
+        value="",
+        help="Optional. Leave blank to use OPTIONS_HELPER_DUCKDB_PATH or data/warehouse/options.duckdb.",
+    )
     lookback_days = st.slider("Lookback days", min_value=1, max_value=120, value=30, step=1)
     stale_days = st.slider("Stale watermark threshold (days)", min_value=0, max_value=45, value=3, step=1)
     row_limit = st.slider("Rows per section", min_value=10, max_value=500, value=200, step=10)

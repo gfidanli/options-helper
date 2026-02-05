@@ -6,15 +6,14 @@ from typing import Any
 import duckdb
 import pandas as pd
 
-DEFAULT_DUCKDB_PATH = Path("data/options_helper.duckdb")
+from apps.streamlit.components.duckdb_path import resolve_duckdb_path as _resolve_duckdb_path
+
 _TABLE_COLUMNS = ["table_schema", "table_name", "table_type", "row_count"]
 _COLUMN_SCHEMA = ["column_name", "data_type", "is_nullable", "column_default", "ordinal_position"]
 
 
 def resolve_duckdb_path(database_path: str | Path | None = None) -> Path:
-    raw = "" if database_path is None else str(database_path).strip()
-    candidate = DEFAULT_DUCKDB_PATH if not raw else Path(raw)
-    return candidate.expanduser().resolve()
+    return _resolve_duckdb_path(database_path)
 
 
 def list_database_schemas(*, database_path: str | Path | None = None) -> tuple[list[str], str | None]:
