@@ -13,6 +13,17 @@ def _assert_tokens(output: str, tokens: list[str]) -> None:
     assert not missing, f"Missing tokens in help output: {missing}\n\nOutput:\n{output}"
 
 
+def _run_python_script(script: str) -> subprocess.CompletedProcess:
+    repo_root = Path(__file__).resolve().parents[1]
+    return subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def test_cli_help_includes_core_commands() -> None:
     from options_helper.cli import app
 
@@ -74,7 +85,6 @@ def test_analyze_help_has_offline_contract_flags() -> None:
 
 
 def test_cli_help_avoids_backtest_imports() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
     script = textwrap.dedent(
         """
         import sys
@@ -101,11 +111,53 @@ def test_cli_help_avoids_backtest_imports() -> None:
         """
     )
 
-    proc = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-        check=False,
+    proc = _run_python_script(script)
+    assert proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
+
+
+def test_ui_help_includes_run_command() -> None:
+    from options_helper.cli import app
+
+    runner = CliRunner()
+    res = runner.invoke(app, ["ui", "--help"])
+    assert res.exit_code == 0, res.output
+    _assert_tokens(res.output, ["run", "Streamlit portal commands"])
+
+
+def test_cli_help_avoids_optional_ui_orchestrator_imports() -> None:
+    script = textwrap.dedent(
+        """
+        import sys
+        from typer.testing import CliRunner
+
+        def is_optional(name: str) -> bool:
+            return (
+                name == "streamlit"
+                or name.startswith("streamlit.")
+                or name == "dagster"
+                or name.startswith("dagster.")
+            )
+
+        baseline = {name for name in sys.modules if is_optional(name)}
+
+        from options_helper.cli import app
+
+        imported_on_cli_import = sorted({name for name in sys.modules if is_optional(name)} - baseline)
+        if imported_on_cli_import:
+            raise SystemExit(f"Optional modules imported by options_helper.cli import: {imported_on_cli_import}")
+
+        runner = CliRunner()
+        for args in (["--help"], ["ui", "--help"]):
+            res = runner.invoke(app, args)
+            if res.exit_code != 0:
+                print(res.output)
+                raise SystemExit(res.exit_code)
+
+        imported = sorted({name for name in sys.modules if is_optional(name)} - baseline)
+        if imported:
+            raise SystemExit(f"Optional modules imported during CLI help calls: {imported}")
+        """
     )
+
+    proc = _run_python_script(script)
     assert proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")

@@ -36,6 +36,14 @@ docs = [
 alpaca = [
   "alpaca-py>=0.30.0",
 ]
+ui = [
+  "streamlit>=1.44.2",
+  "altair>=5",
+]
+orchestrator = [
+  "dagster",
+  "dagster-webserver",
+]
 
 [project.scripts]
 options-helper = "options_helper.cli:app"

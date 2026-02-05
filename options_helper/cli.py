@@ -18,6 +18,7 @@ from options_helper.commands.reports import register as register_report_commands
 from options_helper.commands.scanner import app as scanner_app
 from options_helper.commands.stream import app as stream_app
 from options_helper.commands.technicals import app as technicals_app
+from options_helper.commands.ui import register as register_ui_commands
 from options_helper.commands.watchlists import app as watchlists_app
 from options_helper.commands.workflows import register as register_workflow_commands
 from options_helper.data.providers.runtime import reset_default_provider_name, set_default_provider_name
@@ -51,6 +52,7 @@ app.add_typer(ingest_app, name="ingest")
 register_portfolio_commands(app)
 register_report_commands(app)
 register_workflow_commands(app)
+register_ui_commands(app)
 
 
 @app.callback()

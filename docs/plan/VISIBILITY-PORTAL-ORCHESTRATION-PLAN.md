@@ -54,9 +54,9 @@ T16 + T17 ───────────────────────�
 - **location**: `/Volumes/develop/options-helper/pyproject.toml`, `/Volumes/develop/options-helper/options_helper/cli.py`, `/Volumes/develop/options-helper/options_helper/commands/ui.py` (new)
 - **description**: Add `ui` and `orchestrator` extras; ensure CLI help/startup does not import Streamlit or Dagster modules unless command is invoked.
 - **validation**: `./.venv/bin/python -m pytest tests/test_cli_contract.py`
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added `ui` + `orchestrator` extras, wired a lightweight `ui` CLI group with no optional-dependency imports at module import time, and added CLI contract tests asserting `streamlit`/`dagster` are not imported during `--help` or `ui --help`.
+- **files edited/created**: `/Volumes/develop/options-helper/pyproject.toml`, `/Volumes/develop/options-helper/options_helper/cli.py`, `/Volumes/develop/options-helper/options_helper/commands/ui.py`, `/Volumes/develop/options-helper/tests/test_cli_contract.py`, `/Volumes/develop/options-helper/docs/plan/VISIBILITY-PORTAL-ORCHESTRATION-PLAN.md`
 
 ### T2: Create DuckDB Migration v3 (Observability + Flow Table)
 - **depends_on**: []
