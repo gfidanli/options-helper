@@ -120,9 +120,9 @@ T16 + T17 ───────────────────────�
   - `build_dashboard`
   Log per-asset success/fail/skipped records and watermarks. Use `NoopRunLogger` for filesystem mode with one warning and no failures.
 - **validation**: `./.venv/bin/python -m pytest tests/test_ingest_candles_command.py tests/test_ingest_options_bars_command.py tests/test_snapshot_options_full.py tests/test_flow_artifact_cli.py tests/test_derived_cli.py tests/test_briefing_cli.py tests/test_dashboard_cli.py`
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added run-ledger instrumentation wrappers to producer commands with stable T6 job names, explicit run success/failure finalization, per-asset success/fail/skipped events, and watermarks where available. Filesystem storage now emits a single Noop-run-ledger warning per command without crashing. Added focused command-level observability tests validating DuckDB run/asset/watermark writes, failure-run error fields, and filesystem Noop behavior.
+- **files edited/created**: `/Volumes/develop/options-helper/options_helper/commands/ingest.py`, `/Volumes/develop/options-helper/options_helper/commands/workflows.py`, `/Volumes/develop/options-helper/options_helper/commands/reports.py`, `/Volumes/develop/options-helper/options_helper/commands/derived.py`, `/Volumes/develop/options-helper/tests/test_command_run_ledger_instrumentation.py`, `/Volumes/develop/options-helper/docs/plan/VISIBILITY-PORTAL-ORCHESTRATION-PLAN.md`
 
 ### T7: Implement Non-Blocking Data Quality Checks and Auto-Run
 - **depends_on**: [T3, T4, T6]

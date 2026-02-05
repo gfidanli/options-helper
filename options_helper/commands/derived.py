@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -8,6 +11,7 @@ from rich.console import Console
 import options_helper.cli_deps as cli_deps
 from options_helper.analysis.chain_metrics import compute_chain_report
 from options_helper.analysis.derived_metrics import DerivedRow, compute_derived_stats
+from options_helper.data.providers.runtime import get_default_provider_name
 from options_helper.pipelines.visibility_jobs import (
     VisibilityJobExecutionError,
     run_derived_update_job,
@@ -15,6 +19,12 @@ from options_helper.pipelines.visibility_jobs import (
 from options_helper.data.derived import DERIVED_COLUMNS, DERIVED_SCHEMA_VERSION
 
 app = typer.Typer(help="Persist derived metrics from local snapshots.")
+
+JOB_COMPUTE_DERIVED = "compute_derived"
+ASSET_DERIVED_DAILY = "derived_daily"
+NOOP_LEDGER_WARNING = (
+    "Run ledger disabled for filesystem storage backend (NoopRunLogger active)."
+)
 
 pd: object | None = None
 
@@ -48,6 +58,45 @@ def _spot_from_meta(meta: dict) -> float | None:
     return None
 
 
+def _is_noop_run_logger(run_logger: object) -> bool:
+    return run_logger.__class__.__name__ == "NoopRunLogger"
+
+
+def _coerce_iso_date(value: object) -> date | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw[:10])
+    except Exception:  # noqa: BLE001
+        return None
+
+
+@contextmanager
+def _observed_run(*, console: Console, job_name: str, args: dict[str, Any]):
+    run_logger = cli_deps.build_run_logger(
+        job_name=job_name,
+        provider=get_default_provider_name(),
+        args=args,
+    )
+    if _is_noop_run_logger(run_logger):
+        console.print(f"[yellow]Warning:[/yellow] {NOOP_LEDGER_WARNING}")
+    try:
+        yield run_logger
+    except typer.Exit as exc:
+        exit_code = int(getattr(exc, "exit_code", 1) or 0)
+        if exit_code == 0:
+            run_logger.finalize_success()
+        else:
+            run_logger.finalize_failure(exc.__cause__ if exc.__cause__ is not None else exc)
+        raise
+    except Exception as exc:  # noqa: BLE001
+        run_logger.finalize_failure(exc)
+        raise
+    else:
+        run_logger.finalize_success()
+
+
 @app.command("update")
 def derived_update(
     symbol: str = typer.Option(..., "--symbol", help="Symbol to update."),
@@ -70,25 +119,52 @@ def derived_update(
 ) -> None:
     """Append or upsert a derived-metrics row for a symbol/day (offline)."""
     console = Console(width=200)
-
-    try:
-        result = run_derived_update_job(
-            symbol=symbol,
-            as_of=as_of,
-            cache_dir=cache_dir,
-            derived_dir=derived_dir,
-            candle_cache_dir=candle_cache_dir,
-            snapshot_store_builder=cli_deps.build_snapshot_store,
-            derived_store_builder=cli_deps.build_derived_store,
-            candle_store_builder=cli_deps.build_candle_store,
-        )
-        console.print(f"Derived schema v{DERIVED_SCHEMA_VERSION} updated: {result.output_path}")
-    except VisibilityJobExecutionError as exc:
-        console.print(f"[red]Error:[/red] {exc}")
-        raise typer.Exit(1)
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"[red]Error:[/red] {exc}")
-        raise typer.Exit(1)
+    with _observed_run(
+        console=console,
+        job_name=JOB_COMPUTE_DERIVED,
+        args={
+            "symbol": symbol,
+            "as_of": as_of,
+            "cache_dir": str(cache_dir),
+            "derived_dir": str(derived_dir),
+            "candle_cache_dir": str(candle_cache_dir),
+        },
+    ) as run_logger:
+        try:
+            result = run_derived_update_job(
+                symbol=symbol,
+                as_of=as_of,
+                cache_dir=cache_dir,
+                derived_dir=derived_dir,
+                candle_cache_dir=candle_cache_dir,
+                snapshot_store_builder=cli_deps.build_snapshot_store,
+                derived_store_builder=cli_deps.build_derived_store,
+                candle_store_builder=cli_deps.build_candle_store,
+            )
+            derived_day = _coerce_iso_date(result.as_of_date)
+            bytes_written = result.output_path.stat().st_size if result.output_path.exists() else None
+            run_logger.log_asset_success(
+                asset_key=ASSET_DERIVED_DAILY,
+                asset_kind="table",
+                partition_key=result.symbol.upper(),
+                rows_inserted=1,
+                bytes_written=bytes_written,
+                min_event_ts=derived_day,
+                max_event_ts=derived_day,
+            )
+            if derived_day is not None:
+                run_logger.upsert_watermark(
+                    asset_key=ASSET_DERIVED_DAILY,
+                    scope_key=result.symbol.upper(),
+                    watermark_ts=derived_day,
+                )
+            console.print(f"Derived schema v{DERIVED_SCHEMA_VERSION} updated: {result.output_path}")
+        except VisibilityJobExecutionError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(1) from exc
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(1) from exc
 
 
 @app.command("show")

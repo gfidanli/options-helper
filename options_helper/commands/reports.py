@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
+import re
 from datetime import date, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
 import typer
@@ -27,6 +29,7 @@ from options_helper.data.candles import close_asof, last_close
 from options_helper.data.confluence_config import ConfigError as ConfluenceConfigError, load_confluence_config
 from options_helper.data.derived import DERIVED_COLUMNS
 from options_helper.data.earnings import safe_next_earnings_date
+from options_helper.data.providers.runtime import get_default_provider_name
 from options_helper.data.technical_backtesting_config import load_technical_backtesting_config
 from options_helper.models import MultiLegPosition, Position
 from options_helper.pipelines.visibility_jobs import (
@@ -65,6 +68,28 @@ if TYPE_CHECKING:
 
 pd: object | None = None
 
+JOB_COMPUTE_FLOW = "compute_flow"
+JOB_BUILD_BRIEFING = "build_briefing"
+JOB_BUILD_DASHBOARD = "build_dashboard"
+
+ASSET_OPTIONS_FLOW = "options_flow"
+ASSET_BRIEFING_MARKDOWN = "briefing_markdown"
+ASSET_BRIEFING_JSON = "briefing_json"
+ASSET_DASHBOARD = "dashboard_view"
+
+NOOP_LEDGER_WARNING = (
+    "Run ledger disabled for filesystem storage backend (NoopRunLogger active)."
+)
+
+_FLOW_HEADER_RE = re.compile(
+    (
+        r"^([A-Z0-9._-]+)\s+flow"
+        r"(?:\s+net\s+window=\d+\s+\((\d{4}-\d{2}-\d{2})\s+→\s+(\d{4}-\d{2}-\d{2})\)"
+        r"|\s+(\d{4}-\d{2}-\d{2})\s+→\s+(\d{4}-\d{2}-\d{2}))"
+    )
+)
+_FLOW_NO_DATA_RE = re.compile(r"^No flow data for\s+([A-Z0-9._-]+):")
+
 
 def _ensure_pandas() -> None:
     global pd
@@ -72,6 +97,76 @@ def _ensure_pandas() -> None:
         import pandas as _pd
 
         pd = _pd
+
+
+def _is_noop_run_logger(run_logger: object) -> bool:
+    return run_logger.__class__.__name__ == "NoopRunLogger"
+
+
+def _strip_rich_markup(text: str) -> str:
+    return re.sub(r"\[[^\]]+\]", "", text).strip()
+
+
+def _coerce_iso_date(value: object) -> date | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw[:10])
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _flow_renderable_statuses(renderables: list[object]) -> tuple[dict[str, date | None], set[str]]:
+    success_by_symbol: dict[str, date | None] = {}
+    skipped_symbols: set[str] = set()
+    for renderable in renderables:
+        if not isinstance(renderable, str):
+            continue
+        plain = _strip_rich_markup(renderable)
+        no_data_match = _FLOW_NO_DATA_RE.match(plain)
+        if no_data_match:
+            sym = no_data_match.group(1).upper()
+            if sym not in success_by_symbol:
+                skipped_symbols.add(sym)
+            continue
+
+        header_match = _FLOW_HEADER_RE.match(plain)
+        if not header_match:
+            continue
+        sym = header_match.group(1).upper()
+        end_date = (
+            _coerce_iso_date(header_match.group(3))
+            or _coerce_iso_date(header_match.group(5))
+        )
+        success_by_symbol[sym] = end_date
+        skipped_symbols.discard(sym)
+    return success_by_symbol, skipped_symbols
+
+
+@contextmanager
+def _observed_run(*, console: Console, job_name: str, args: dict[str, Any]):
+    run_logger = cli_deps.build_run_logger(
+        job_name=job_name,
+        provider=get_default_provider_name(),
+        args=args,
+    )
+    if _is_noop_run_logger(run_logger):
+        console.print(f"[yellow]Warning:[/yellow] {NOOP_LEDGER_WARNING}")
+    try:
+        yield run_logger
+    except typer.Exit as exc:
+        exit_code = int(getattr(exc, "exit_code", 1) or 0)
+        if exit_code == 0:
+            run_logger.finalize_success()
+        else:
+            run_logger.finalize_failure(exc.__cause__ if exc.__cause__ is not None else exc)
+        raise
+    except Exception as exc:  # noqa: BLE001
+        run_logger.finalize_failure(exc)
+        raise
+    else:
+        run_logger.finalize_success()
 
 
 def register(app: typer.Typer) -> None:
@@ -137,32 +232,95 @@ def flow_report(
 ) -> None:
     """Report OI/volume deltas from locally captured snapshots (single-day or windowed)."""
     console = Console()
-    try:
-        result = run_flow_report_job(
-            portfolio_path=portfolio_path,
-            symbol=symbol,
-            watchlists_path=watchlists_path,
-            watchlist=watchlist,
-            all_watchlists=all_watchlists,
-            cache_dir=cache_dir,
-            window=window,
-            group_by=group_by,
-            top=top,
-            out=out,
-            strict=strict,
-            snapshot_store_builder=cli_deps.build_snapshot_store,
-            portfolio_loader=load_portfolio,
-            watchlists_loader=load_watchlists,
-        )
-    except VisibilityJobParameterError as exc:
-        if exc.param_hint:
-            raise typer.BadParameter(str(exc), param_hint=exc.param_hint) from exc
-        raise typer.BadParameter(str(exc)) from exc
+    with _observed_run(
+        console=console,
+        job_name=JOB_COMPUTE_FLOW,
+        args={
+            "portfolio_path": str(portfolio_path),
+            "symbol": symbol,
+            "watchlists_path": str(watchlists_path),
+            "watchlist": watchlist,
+            "all_watchlists": all_watchlists,
+            "cache_dir": str(cache_dir),
+            "window": window,
+            "group_by": group_by,
+            "top": top,
+            "out": None if out is None else str(out),
+            "strict": strict,
+        },
+    ) as run_logger:
+        try:
+            result = run_flow_report_job(
+                portfolio_path=portfolio_path,
+                symbol=symbol,
+                watchlists_path=watchlists_path,
+                watchlist=watchlist,
+                all_watchlists=all_watchlists,
+                cache_dir=cache_dir,
+                window=window,
+                group_by=group_by,
+                top=top,
+                out=out,
+                strict=strict,
+                snapshot_store_builder=cli_deps.build_snapshot_store,
+                portfolio_loader=load_portfolio,
+                watchlists_loader=load_watchlists,
+            )
+        except VisibilityJobParameterError as exc:
+            if exc.param_hint:
+                raise typer.BadParameter(str(exc), param_hint=exc.param_hint) from exc
+            raise typer.BadParameter(str(exc)) from exc
 
-    for renderable in result.renderables:
-        console.print(renderable)
-    if result.no_symbols:
-        raise typer.Exit(0)
+        for renderable in result.renderables:
+            console.print(renderable)
+
+        if result.no_symbols:
+            run_logger.log_asset_skipped(
+                asset_key=ASSET_OPTIONS_FLOW,
+                asset_kind="file",
+                partition_key="ALL",
+                extra={"reason": "no_symbols"},
+            )
+            raise typer.Exit(0)
+
+        success_by_symbol, skipped_symbols = _flow_renderable_statuses(result.renderables)
+        for sym, flow_end_date in sorted(success_by_symbol.items()):
+            run_logger.log_asset_success(
+                asset_key=ASSET_OPTIONS_FLOW,
+                asset_kind="file",
+                partition_key=sym,
+                min_event_ts=flow_end_date,
+                max_event_ts=flow_end_date,
+            )
+            if flow_end_date is not None:
+                run_logger.upsert_watermark(
+                    asset_key=ASSET_OPTIONS_FLOW,
+                    scope_key=sym,
+                    watermark_ts=flow_end_date,
+                )
+
+        for sym in sorted(skipped_symbols):
+            run_logger.log_asset_skipped(
+                asset_key=ASSET_OPTIONS_FLOW,
+                asset_kind="file",
+                partition_key=sym,
+                extra={"reason": "insufficient_snapshots"},
+            )
+
+        if success_by_symbol:
+            latest = max((d for d in success_by_symbol.values() if d is not None), default=None)
+            if latest is not None:
+                run_logger.upsert_watermark(
+                    asset_key=ASSET_OPTIONS_FLOW,
+                    scope_key="ALL",
+                    watermark_ts=latest,
+                )
+        elif not skipped_symbols:
+            run_logger.log_asset_success(
+                asset_key=ASSET_OPTIONS_FLOW,
+                asset_kind="file",
+                partition_key="ALL",
+            )
 
 
 def chain_report(
@@ -790,36 +948,99 @@ def briefing(
 ) -> None:
     """Generate a daily Markdown briefing for portfolio + optional watchlists (offline-first)."""
     console = Console(width=200)
-    try:
-        result = run_briefing_job(
-            portfolio_path=portfolio_path,
-            watchlists_path=watchlists_path,
-            watchlist=watchlist,
-            symbol=symbol,
-            as_of=as_of,
-            compare=compare,
-            cache_dir=cache_dir,
-            candle_cache_dir=candle_cache_dir,
-            technicals_config=technicals_config,
-            out=out,
-            print_to_console=print_to_console,
-            write_json=write_json,
-            strict=strict,
-            update_derived=update_derived,
-            derived_dir=derived_dir,
-            top=top,
-            snapshot_store_builder=cli_deps.build_snapshot_store,
-            derived_store_builder=cli_deps.build_derived_store,
-            candle_store_builder=cli_deps.build_candle_store,
-            earnings_store_builder=cli_deps.build_earnings_store,
-            safe_next_earnings_date_fn=safe_next_earnings_date,
-        )
-    except VisibilityJobExecutionError as exc:
-        console.print(f"[red]Error:[/red] {exc}")
-        raise typer.Exit(1) from exc
+    with _observed_run(
+        console=console,
+        job_name=JOB_BUILD_BRIEFING,
+        args={
+            "portfolio_path": str(portfolio_path),
+            "watchlists_path": str(watchlists_path),
+            "watchlist": watchlist,
+            "symbol": symbol,
+            "as_of": as_of,
+            "compare": compare,
+            "cache_dir": str(cache_dir),
+            "candle_cache_dir": str(candle_cache_dir),
+            "technicals_config": str(technicals_config),
+            "out": None if out is None else str(out),
+            "print_to_console": print_to_console,
+            "write_json": write_json,
+            "strict": strict,
+            "update_derived": update_derived,
+            "derived_dir": str(derived_dir),
+            "top": top,
+        },
+    ) as run_logger:
+        try:
+            result = run_briefing_job(
+                portfolio_path=portfolio_path,
+                watchlists_path=watchlists_path,
+                watchlist=watchlist,
+                symbol=symbol,
+                as_of=as_of,
+                compare=compare,
+                cache_dir=cache_dir,
+                candle_cache_dir=candle_cache_dir,
+                technicals_config=technicals_config,
+                out=out,
+                print_to_console=print_to_console,
+                write_json=write_json,
+                strict=strict,
+                update_derived=update_derived,
+                derived_dir=derived_dir,
+                top=top,
+                snapshot_store_builder=cli_deps.build_snapshot_store,
+                derived_store_builder=cli_deps.build_derived_store,
+                candle_store_builder=cli_deps.build_candle_store,
+                earnings_store_builder=cli_deps.build_earnings_store,
+                safe_next_earnings_date_fn=safe_next_earnings_date,
+            )
+        except VisibilityJobExecutionError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(1) from exc
 
-    for renderable in result.renderables:
-        console.print(renderable)
+        report_day = _coerce_iso_date(result.report_date)
+        md_bytes = result.markdown_path.stat().st_size if result.markdown_path.exists() else None
+        run_logger.log_asset_success(
+            asset_key=ASSET_BRIEFING_MARKDOWN,
+            asset_kind="file",
+            partition_key=result.report_date,
+            bytes_written=md_bytes,
+            min_event_ts=report_day,
+            max_event_ts=report_day,
+        )
+        if report_day is not None:
+            run_logger.upsert_watermark(
+                asset_key=ASSET_BRIEFING_MARKDOWN,
+                scope_key="ALL",
+                watermark_ts=report_day,
+            )
+
+        if result.json_path is not None:
+            json_bytes = result.json_path.stat().st_size if result.json_path.exists() else None
+            run_logger.log_asset_success(
+                asset_key=ASSET_BRIEFING_JSON,
+                asset_kind="file",
+                partition_key=result.report_date,
+                bytes_written=json_bytes,
+                min_event_ts=report_day,
+                max_event_ts=report_day,
+            )
+            if report_day is not None:
+                run_logger.upsert_watermark(
+                    asset_key=ASSET_BRIEFING_JSON,
+                    scope_key="ALL",
+                    watermark_ts=report_day,
+                )
+        else:
+            run_logger.log_asset_skipped(
+                asset_key=ASSET_BRIEFING_JSON,
+                asset_kind="file",
+                partition_key=result.report_date,
+                extra={"reason": "write_json_disabled"},
+            )
+
+        for renderable in result.renderables:
+            console.print(renderable)
 
 
 def dashboard(
@@ -853,23 +1074,61 @@ def dashboard(
 ) -> None:
     """Render a read-only daily dashboard from briefing JSON + artifacts."""
     console = Console(width=200)
-    try:
-        result = run_dashboard_job(
-            report_date=report_date,
-            reports_dir=reports_dir,
-        )
-    except VisibilityJobExecutionError as exc:
-        console.print(f"[red]Error:[/red] {exc}")
-        raise typer.Exit(1) from exc
+    with _observed_run(
+        console=console,
+        job_name=JOB_BUILD_DASHBOARD,
+        args={
+            "report_date": report_date,
+            "reports_dir": str(reports_dir),
+            "scanner_run_dir": str(scanner_run_dir),
+            "scanner_run_id": scanner_run_id,
+            "max_shortlist_rows": max_shortlist_rows,
+        },
+    ) as run_logger:
+        try:
+            result = run_dashboard_job(
+                report_date=report_date,
+                reports_dir=reports_dir,
+            )
+        except VisibilityJobExecutionError as exc:
+            console.print(f"[red]Error:[/red] {exc}")
+            raise typer.Exit(1) from exc
 
-    render_dashboard_report(
-        result=result,
-        reports_dir=reports_dir,
-        scanner_run_dir=scanner_run_dir,
-        scanner_run_id=scanner_run_id,
-        max_shortlist_rows=max_shortlist_rows,
-        render_console=console,
-    )
+        report_day = _coerce_iso_date(report_date)
+        if report_day is None:
+            artifact = result.artifact
+            if isinstance(artifact, dict):
+                report_day = _coerce_iso_date(artifact.get("as_of") or artifact.get("report_date"))
+            else:
+                report_day = _coerce_iso_date(getattr(artifact, "as_of", None))
+                if report_day is None:
+                    report_day = _coerce_iso_date(getattr(artifact, "report_date", None))
+
+        json_bytes = result.json_path.stat().st_size if result.json_path.exists() else None
+        partition_key = report_day.isoformat() if report_day is not None else str(report_date)
+        run_logger.log_asset_success(
+            asset_key=ASSET_DASHBOARD,
+            asset_kind="view",
+            partition_key=partition_key,
+            bytes_written=json_bytes,
+            min_event_ts=report_day,
+            max_event_ts=report_day,
+        )
+        if report_day is not None:
+            run_logger.upsert_watermark(
+                asset_key=ASSET_DASHBOARD,
+                scope_key="ALL",
+                watermark_ts=report_day,
+            )
+
+        render_dashboard_report(
+            result=result,
+            reports_dir=reports_dir,
+            scanner_run_dir=scanner_run_dir,
+            scanner_run_id=scanner_run_id,
+            max_shortlist_rows=max_shortlist_rows,
+            render_console=console,
+        )
 
 
 def roll_plan(

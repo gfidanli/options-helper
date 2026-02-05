@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
+import re
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 import typer
@@ -35,6 +37,7 @@ from options_helper.data.confluence_config import ConfigError as ConfluenceConfi
 from options_helper.data.earnings import EarningsRecord, safe_next_earnings_date
 from options_helper.data.market_types import DataFetchError
 from options_helper.data.options_snapshots import OptionsSnapshotStore, find_snapshot_row
+from options_helper.data.providers.runtime import get_default_provider_name
 from options_helper.data.technical_backtesting_config import (
     ConfigError as TechnicalConfigError,
     load_technical_backtesting_config,
@@ -55,6 +58,17 @@ if TYPE_CHECKING:
 
 pd: object | None = None
 
+JOB_SNAPSHOT_OPTIONS = "snapshot_options"
+ASSET_OPTIONS_SNAPSHOTS = "options_snapshots"
+
+NOOP_LEDGER_WARNING = (
+    "Run ledger disabled for filesystem storage backend (NoopRunLogger active)."
+)
+
+_SAVED_SNAPSHOT_RE = re.compile(r"^([A-Z0-9._-]+)\s+\d{4}-\d{2}-\d{2}: saved\b")
+_WARNING_SYMBOL_RE = re.compile(r"warning:\s*([A-Z0-9._-]+):", flags=re.IGNORECASE)
+_ERROR_SYMBOL_RE = re.compile(r"error:\s*([A-Z0-9._-]+):", flags=re.IGNORECASE)
+
 
 def _ensure_pandas() -> None:
     global pd
@@ -62,6 +76,61 @@ def _ensure_pandas() -> None:
         import pandas as _pd
 
         pd = _pd
+
+
+def _is_noop_run_logger(run_logger: object) -> bool:
+    return run_logger.__class__.__name__ == "NoopRunLogger"
+
+
+def _strip_rich_markup(text: str) -> str:
+    return re.sub(r"\[[^\]]+\]", "", text).strip()
+
+
+def _snapshot_status_by_symbol(*, symbols: list[str], messages: list[str]) -> dict[str, str]:
+    status_by_symbol = {sym.upper(): "skipped" for sym in symbols}
+    for message in messages:
+        plain = _strip_rich_markup(message)
+        saved_match = _SAVED_SNAPSHOT_RE.match(plain)
+        if saved_match:
+            status_by_symbol[saved_match.group(1).upper()] = "success"
+            continue
+
+        error_match = _ERROR_SYMBOL_RE.search(plain)
+        if error_match:
+            status_by_symbol[error_match.group(1).upper()] = "failed"
+            continue
+
+        if "skipping snapshot" not in plain.lower():
+            continue
+        warning_match = _WARNING_SYMBOL_RE.search(plain)
+        if warning_match and status_by_symbol.get(warning_match.group(1).upper()) != "success":
+            status_by_symbol[warning_match.group(1).upper()] = "skipped"
+    return status_by_symbol
+
+
+@contextmanager
+def _observed_run(*, console: Console, job_name: str, args: dict[str, Any]):
+    run_logger = cli_deps.build_run_logger(
+        job_name=job_name,
+        provider=get_default_provider_name(),
+        args=args,
+    )
+    if _is_noop_run_logger(run_logger):
+        console.print(f"[yellow]Warning:[/yellow] {NOOP_LEDGER_WARNING}")
+    try:
+        yield run_logger
+    except typer.Exit as exc:
+        exit_code = int(getattr(exc, "exit_code", 1) or 0)
+        if exit_code == 0:
+            run_logger.finalize_success()
+        else:
+            run_logger.finalize_failure(exc.__cause__ if exc.__cause__ is not None else exc)
+        raise
+    except Exception as exc:  # noqa: BLE001
+        run_logger.finalize_failure(exc)
+        raise
+    else:
+        run_logger.finalize_success()
 
 
 def register(app: typer.Typer) -> None:
@@ -237,37 +306,105 @@ def snapshot_options(
 ) -> None:
     """Save a once-daily options chain snapshot (full-chain + all expiries by default)."""
     console = Console()
-    try:
-        result = run_snapshot_options_job(
-            portfolio_path=portfolio_path,
-            cache_dir=cache_dir,
-            candle_cache_dir=candle_cache_dir,
-            window_pct=window_pct,
-            spot_period=spot_period,
-            require_data_date=require_data_date,
-            require_data_tz=require_data_tz,
-            watchlists_path=watchlists_path,
-            watchlist=watchlist,
-            all_watchlists=all_watchlists,
-            all_expiries=all_expiries,
-            full_chain=full_chain,
-            max_expiries=max_expiries,
-            risk_free_rate=risk_free_rate,
-            provider_builder=cli_deps.build_provider,
-            snapshot_store_builder=cli_deps.build_snapshot_store,
-            candle_store_builder=cli_deps.build_candle_store,
-            portfolio_loader=load_portfolio,
-            watchlists_loader=load_watchlists,
-        )
-    except VisibilityJobParameterError as exc:
-        if exc.param_hint:
-            raise typer.BadParameter(str(exc), param_hint=exc.param_hint) from exc
-        raise typer.BadParameter(str(exc)) from exc
+    with _observed_run(
+        console=console,
+        job_name=JOB_SNAPSHOT_OPTIONS,
+        args={
+            "portfolio_path": str(portfolio_path),
+            "cache_dir": str(cache_dir),
+            "candle_cache_dir": str(candle_cache_dir),
+            "window_pct": window_pct,
+            "spot_period": spot_period,
+            "require_data_date": require_data_date,
+            "require_data_tz": require_data_tz,
+            "watchlists_path": str(watchlists_path),
+            "watchlist": watchlist,
+            "all_watchlists": all_watchlists,
+            "all_expiries": all_expiries,
+            "full_chain": full_chain,
+            "max_expiries": max_expiries,
+            "risk_free_rate": risk_free_rate,
+        },
+    ) as run_logger:
+        try:
+            result = run_snapshot_options_job(
+                portfolio_path=portfolio_path,
+                cache_dir=cache_dir,
+                candle_cache_dir=candle_cache_dir,
+                window_pct=window_pct,
+                spot_period=spot_period,
+                require_data_date=require_data_date,
+                require_data_tz=require_data_tz,
+                watchlists_path=watchlists_path,
+                watchlist=watchlist,
+                all_watchlists=all_watchlists,
+                all_expiries=all_expiries,
+                full_chain=full_chain,
+                max_expiries=max_expiries,
+                risk_free_rate=risk_free_rate,
+                provider_builder=cli_deps.build_provider,
+                snapshot_store_builder=cli_deps.build_snapshot_store,
+                candle_store_builder=cli_deps.build_candle_store,
+                portfolio_loader=load_portfolio,
+                watchlists_loader=load_watchlists,
+            )
+        except VisibilityJobParameterError as exc:
+            if exc.param_hint:
+                raise typer.BadParameter(str(exc), param_hint=exc.param_hint) from exc
+            raise typer.BadParameter(str(exc)) from exc
 
-    for message in result.messages:
-        console.print(message)
-    if result.no_symbols:
-        raise typer.Exit(0)
+        for message in result.messages:
+            console.print(message)
+
+        if result.no_symbols:
+            run_logger.log_asset_skipped(
+                asset_key=ASSET_OPTIONS_SNAPSHOTS,
+                asset_kind="file",
+                partition_key="ALL",
+                extra={"reason": "no_symbols"},
+            )
+            raise typer.Exit(0)
+
+        max_data_date = max(result.dates_used) if result.dates_used else None
+        status_by_symbol = _snapshot_status_by_symbol(symbols=result.symbols, messages=result.messages)
+
+        for sym in result.symbols:
+            status = status_by_symbol.get(sym.upper(), "skipped")
+            if status == "success":
+                run_logger.log_asset_success(
+                    asset_key=ASSET_OPTIONS_SNAPSHOTS,
+                    asset_kind="file",
+                    partition_key=sym.upper(),
+                    min_event_ts=max_data_date,
+                    max_event_ts=max_data_date,
+                )
+                if max_data_date is not None:
+                    run_logger.upsert_watermark(
+                        asset_key=ASSET_OPTIONS_SNAPSHOTS,
+                        scope_key=sym.upper(),
+                        watermark_ts=max_data_date,
+                    )
+            elif status == "failed":
+                run_logger.log_asset_failure(
+                    asset_key=ASSET_OPTIONS_SNAPSHOTS,
+                    asset_kind="file",
+                    partition_key=sym.upper(),
+                    extra={"reason": "snapshot_failed"},
+                )
+            else:
+                run_logger.log_asset_skipped(
+                    asset_key=ASSET_OPTIONS_SNAPSHOTS,
+                    asset_kind="file",
+                    partition_key=sym.upper(),
+                    extra={"reason": "snapshot_skipped"},
+                )
+
+        if max_data_date is not None:
+            run_logger.upsert_watermark(
+                asset_key=ASSET_OPTIONS_SNAPSHOTS,
+                scope_key="ALL",
+                watermark_ts=max_data_date,
+            )
 
 
 def earnings(
