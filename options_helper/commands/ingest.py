@@ -120,12 +120,6 @@ def ingest_options_bars_command(
         min=1,
         help="Years of daily bars to backfill per expiry.",
     ),
-    chunk_size: int = typer.Option(
-        200,
-        "--chunk-size",
-        min=1,
-        help="Max contract symbols per Alpaca bars request.",
-    ),
     page_limit: int = typer.Option(
         200,
         "--page-limit",
@@ -270,7 +264,6 @@ def ingest_options_bars_command(
         prepared.contracts,
         provider="alpaca",
         lookback_years=lookback_years,
-        chunk_size=chunk_size,
         page_limit=page_limit,
         resume=resume,
         dry_run=dry_run,
@@ -282,12 +275,12 @@ def ingest_options_bars_command(
         console.print(
             "Dry run summary: "
             f"{summary.planned_contracts} planned, {summary.skipped_contracts} skipped, "
-            f"{summary.chunks_attempted} chunk(s) across {summary.total_expiries} expiry group(s)."
+            f"{summary.requests_attempted} request(s) across {summary.total_expiries} expiry group(s)."
         )
     else:
         console.print(
             "Bars backfill summary: "
             f"{summary.ok_contracts} ok, {summary.error_contracts} error(s), "
             f"{summary.skipped_contracts} skipped, {summary.bars_rows} bars, "
-            f"{summary.chunks_attempted} chunk(s) across {summary.total_expiries} expiry group(s)."
+            f"{summary.requests_attempted} request(s) across {summary.total_expiries} expiry group(s)."
         )

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Any, Iterable
 
 import pandas as pd
@@ -13,6 +13,8 @@ from options_helper.data.ingestion.common import shift_years
 
 
 _MIN_START_DATE = date(2000, 1, 1)
+_REFRESH_TAIL_DAYS = 30
+_REFRESH_OVERLAP_DAYS = 3
 
 
 @dataclass(frozen=True)
@@ -47,7 +49,7 @@ class BarsBackfillSummary:
     ok_contracts: int
     error_contracts: int
     bars_rows: int
-    chunks_attempted: int
+    requests_attempted: int
 
 
 def _contract_symbol_from_raw(raw: dict[str, Any]) -> str | None:
@@ -117,8 +119,6 @@ def _coverage_satisfies(meta: dict[str, Any] | None, *, start: date, end: date) 
     if not meta:
         return False
     status = str(meta.get("status") or "").strip().lower()
-    if status in {"forbidden", "not_found"}:
-        return True
     if status not in {"ok", "partial"}:
         return False
 
@@ -137,14 +137,34 @@ def _coverage_satisfies(meta: dict[str, Any] | None, *, start: date, end: date) 
             return parsed.replace(tzinfo=None)
         return None
 
-    start_ts = _coerce_dt(meta.get("start_ts") or meta.get("start"))
     end_ts = _coerce_dt(meta.get("end_ts") or meta.get("end"))
-    if start_ts is None or end_ts is None:
+    if end_ts is None:
         return False
 
-    desired_start = datetime.combine(start, time.min)
     desired_end = datetime.combine(end, time.max)
-    return start_ts <= desired_start and end_ts >= desired_end
+    return end_ts >= desired_end
+
+
+def _coerce_meta_dt(meta: dict[str, Any] | None, *keys: str) -> datetime | None:
+    if not meta:
+        return None
+    for key in keys:
+        if not key:
+            continue
+        value = meta.get(key)
+        if value is None:
+            continue
+        try:
+            parsed = pd.to_datetime(value, errors="coerce")
+        except Exception:  # noqa: BLE001
+            continue
+        if parsed is pd.NaT:
+            continue
+        if isinstance(parsed, pd.Timestamp):
+            parsed = parsed.to_pydatetime()
+        if isinstance(parsed, datetime):
+            return parsed.replace(tzinfo=None)
+    return None
 
 
 def _error_status(exc: Exception) -> str:
@@ -173,6 +193,7 @@ def discover_option_contracts(
     summaries: list[UnderlyingDiscoverySummary] = []
 
     total_contracts = 0
+    today = date.today()
     windows = _year_windows(exp_start, exp_end)
 
     for raw_symbol in underlyings:
@@ -207,9 +228,12 @@ def discover_option_contracts(
                 break
 
             if not contracts:
-                empty_years += 1
-                if empty_years >= 3:
-                    break
+                # Alpaca may not list far-dated expiries; don't let empty *future* windows
+                # stop the scan before reaching current/past years.
+                if window_start <= today:
+                    empty_years += 1
+                    if empty_years >= 3:
+                        break
                 continue
             empty_years = 0
             raw_contracts.extend(contracts)
@@ -301,7 +325,6 @@ def backfill_option_bars(
     *,
     provider: str,
     lookback_years: int = 10,
-    chunk_size: int = 200,
     page_limit: int | None = None,
     resume: bool = True,
     dry_run: bool = False,
@@ -317,7 +340,7 @@ def backfill_option_bars(
             ok_contracts=0,
             error_contracts=0,
             bars_rows=0,
-            chunks_attempted=0,
+            requests_attempted=0,
         )
 
     df = contracts.copy()
@@ -343,7 +366,7 @@ def backfill_option_bars(
     ok_contracts = 0
     error_contracts = 0
     bars_rows = 0
-    chunks_attempted = 0
+    requests_attempted = 0
     planned_contracts = 0
 
     for expiry in sorted(expiry_groups.keys(), reverse=True):
@@ -355,73 +378,89 @@ def backfill_option_bars(
             continue
 
         desired_symbols = sorted({s for s in expiry_groups.get(expiry, []) if s})
-        if resume:
-            filtered: list[str] = []
-            for sym in desired_symbols:
-                try:
-                    meta = store.coverage(sym, interval="1d", provider=provider)
-                except Exception:  # noqa: BLE001
-                    meta = None
-                if _coverage_satisfies(meta, start=start, end=end):
-                    skipped_contracts += 1
-                    continue
-                filtered.append(sym)
-            desired_symbols = filtered
-
         if not desired_symbols:
             continue
 
         planned_contracts += len(desired_symbols)
 
-        def _process_chunk(chunk: list[str]) -> None:
-            nonlocal ok_contracts, error_contracts, bars_rows, chunks_attempted
-            if not chunk:
-                return
-            if dry_run:
-                chunks_attempted += 1
-                return
+        is_expired = expiry < today
 
-            chunks_attempted += 1
+        for sym in desired_symbols:
+            meta: dict[str, Any] | None
+            if resume:
+                try:
+                    meta = store.coverage(sym, interval="1d", provider=provider)
+                except Exception:  # noqa: BLE001
+                    meta = None
+            else:
+                meta = None
+
+            status = str((meta or {}).get("status") or "").strip().lower()
+            last_attempt = _coerce_meta_dt(meta, "last_attempt_at", "last_attempt")
+            covered_end = _coerce_meta_dt(meta, "end_ts", "end")
+            has_coverage = bool(_coerce_meta_dt(meta, "start_ts", "start") or covered_end)
+
+            if resume and meta:
+                if status == "forbidden":
+                    skipped_contracts += 1
+                    continue
+                if is_expired and status in {"ok", "partial", "not_found", "forbidden"}:
+                    skipped_contracts += 1
+                    continue
+                if last_attempt is not None and last_attempt.date() == today:
+                    skipped_contracts += 1
+                    continue
+                if not is_expired and _coverage_satisfies(meta, start=start, end=end):
+                    skipped_contracts += 1
+                    continue
+
+            fetch_start = start
+            if not is_expired:
+                tail_floor = max(start, end - timedelta(days=_REFRESH_TAIL_DAYS))
+                if covered_end is not None and status in {"ok", "partial"}:
+                    overlap_start = covered_end.date() - timedelta(days=_REFRESH_OVERLAP_DAYS)
+                    fetch_start = max(tail_floor, overlap_start)
+                else:
+                    fetch_start = tail_floor
+
+            if dry_run:
+                requests_attempted += 1
+                continue
+
+            requests_attempted += 1
             try:
                 df_bars = client.get_option_bars_daily_full(
-                    chunk,
-                    start=start,
+                    [sym],
+                    start=fetch_start,
                     end=end,
                     interval="1d",
-                    chunk_size=max(len(chunk), 1),
                     page_limit=page_limit,
                 )
             except Exception as exc:  # noqa: BLE001
+                store.mark_meta_error(
+                    [sym],
+                    interval="1d",
+                    provider=provider,
+                    error=str(exc),
+                    status=_error_status(exc),
+                )
+                error_contracts += 1
                 if fail_fast:
-                    if len(chunk) == 1:
-                        store.mark_meta_error(
-                            chunk,
-                            interval="1d",
-                            provider=provider,
-                            error=str(exc),
-                            status=_error_status(exc),
-                        )
-                        error_contracts += 1
                     raise
-                if len(chunk) == 1:
-                    store.mark_meta_error(
-                        chunk,
-                        interval="1d",
-                        provider=provider,
-                        error=str(exc),
-                        status=_error_status(exc),
-                    )
-                    error_contracts += 1
-                    if fail_fast:
-                        raise
-                else:
-                    mid = len(chunk) // 2
-                    _process_chunk(chunk[:mid])
-                    _process_chunk(chunk[mid:])
-                return
+                continue
 
             if df_bars is None or df_bars.empty:
-                for sym in chunk:
+                if has_coverage:
+                    store.mark_meta_success(
+                        [sym],
+                        interval="1d",
+                        provider=provider,
+                        rows=0,
+                        start_ts=None,
+                        end_ts=None,
+                    )
+                    ok_contracts += 1
+                else:
                     store.mark_meta_error(
                         [sym],
                         interval="1d",
@@ -430,7 +469,7 @@ def backfill_option_bars(
                         status="not_found",
                     )
                     error_contracts += 1
-                return
+                continue
 
             store.upsert_bars(df_bars, interval="1d", provider=provider)
             bars_rows += int(len(df_bars))
@@ -440,25 +479,26 @@ def backfill_option_bars(
                 lambda v: str(v).strip().upper() if v is not None else None
             )
             df_bars = df_bars.dropna(subset=["contractSymbol"])
-            grouped = df_bars.groupby("contractSymbol")
-            stats: dict[str, dict[str, Any]] = {}
-            for sym, rows in grouped:
-                stats[str(sym).upper()] = {
-                    "rows": int(len(rows)),
-                    "start": rows["ts"].min(),
-                    "end": rows["ts"].max(),
-                }
-
-            for sym in chunk:
-                info = stats.get(sym)
-                if info:
+            rows = df_bars[df_bars["contractSymbol"] == sym]
+            if not rows.empty:
+                store.mark_meta_success(
+                    [sym],
+                    interval="1d",
+                    provider=provider,
+                    rows=int(len(rows)),
+                    start_ts=rows["ts"].min(),
+                    end_ts=rows["ts"].max(),
+                )
+                ok_contracts += 1
+            else:
+                if has_coverage:
                     store.mark_meta_success(
                         [sym],
                         interval="1d",
                         provider=provider,
-                        rows=info["rows"],
-                        start_ts=info["start"],
-                        end_ts=info["end"],
+                        rows=0,
+                        start_ts=None,
+                        end_ts=None,
                     )
                     ok_contracts += 1
                 else:
@@ -471,9 +511,6 @@ def backfill_option_bars(
                     )
                     error_contracts += 1
 
-        for i in range(0, len(desired_symbols), max(1, chunk_size)):
-            _process_chunk(desired_symbols[i : i + max(1, chunk_size)])
-
     return BarsBackfillSummary(
         total_contracts=total_contracts,
         total_expiries=total_expiries,
@@ -482,5 +519,5 @@ def backfill_option_bars(
         ok_contracts=ok_contracts,
         error_contracts=error_contracts,
         bars_rows=bars_rows,
-        chunks_attempted=chunks_attempted,
+        requests_attempted=requests_attempted,
     )

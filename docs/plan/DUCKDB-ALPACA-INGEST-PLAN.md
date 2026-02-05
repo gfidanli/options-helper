@@ -225,7 +225,7 @@ T2 ───────────┘
     - Enforce provider == `alpaca` (fail fast otherwise).
     - Contract discovery (expired + active, “max available”):
       - Use **expiration-year windows** from `(today.year + 5)` down to `2000`, querying Alpaca contracts per-year.
-      - Stop early after **3 consecutive empty years**.
+      - Stop early after **3 consecutive empty years** (once scanning reaches current/past years; ignore empty *future* windows).
       - Persist:
         - `option_contracts` dimension
         - `option_contract_snapshots` for `as_of=today`
@@ -234,14 +234,13 @@ T2 ───────────┘
       - For each expiry group:
         - `end = min(today, expiry)`
         - `start = max(2000-01-01, min(today, expiry - lookback_years))` with `lookback_years` default **10**.
-      - Chunk symbols (default 200).
-      - On chunk failure: **bisect chunk** until isolating bad contract(s); record per-contract errors in `option_bars_meta` and continue.
+      - Fetch bars **per contract symbol** for maximum coverage (slower but avoids incomplete batch responses).
+      - Use `option_bars_meta` to skip already-attempted contracts and avoid re-fetching historical data.
       - Store bars to DuckDB via `DuckDBOptionBarsStore`.
     - Flags to keep the job controllable:
       - `--watchlists-path`, `--watchlist`, `--symbol` (override)
       - `--contracts-exp-start`, `--contracts-exp-end` (defaults: 2000-01-01 → today+5y)
       - `--lookback-years` (default 10)
-      - `--chunk-size` (default 200)
       - `--page-limit` (default 200)
       - `--max-underlyings`, `--max-contracts`, `--max-expiries` (safety caps; default none)
       - `--resume/--no-resume` (default resume)

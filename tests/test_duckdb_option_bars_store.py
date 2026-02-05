@@ -147,3 +147,50 @@ def test_duckdb_option_bars_store_upsert_and_meta(tmp_path):
     assert str(row["status"]) == "error"
     assert int(row["error_count"]) == 1
     assert "boom" in str(row["last_error"])
+
+
+def test_duckdb_option_bars_meta_success_merges_ranges(tmp_path):
+    wh = DuckDBWarehouse(tmp_path / "options.duckdb")
+    ensure_schema(wh)
+
+    store = DuckDBOptionBarsStore(root_dir=tmp_path / "option_bars", warehouse=wh)
+
+    sym = "AAPL260315C00100000"
+    store.mark_meta_success(
+        [sym],
+        interval="1d",
+        provider="alpaca",
+        rows=10,
+        start_ts=datetime(2026, 2, 1, tzinfo=timezone.utc),
+        end_ts=datetime(2026, 2, 2, tzinfo=timezone.utc),
+    )
+    store.mark_meta_success(
+        [sym],
+        interval="1d",
+        provider="alpaca",
+        rows=0,
+        start_ts=None,
+        end_ts=None,
+    )
+    store.mark_meta_success(
+        [sym],
+        interval="1d",
+        provider="alpaca",
+        rows=1,
+        start_ts=datetime(2026, 1, 31, tzinfo=timezone.utc),
+        end_ts=datetime(2026, 2, 3, tzinfo=timezone.utc),
+    )
+
+    meta = wh.fetch_df(
+        """
+        SELECT rows, start_ts, end_ts
+        FROM option_bars_meta
+        WHERE contract_symbol = ? AND interval = ? AND provider = ?
+        """,
+        [sym, "1d", "alpaca"],
+    )
+    assert len(meta) == 1
+    row = meta.iloc[0].to_dict()
+    assert int(row["rows"]) == 10
+    assert row["start_ts"] == datetime(2026, 1, 31, 0, 0)
+    assert row["end_ts"] == datetime(2026, 2, 3, 0, 0)

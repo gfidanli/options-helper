@@ -869,10 +869,27 @@ class DuckDBOptionBarsStore:
                 tx.register("tmp_option_bars_meta", meta_df)
                 tx.execute(
                     """
-                    DELETE FROM option_bars_meta
-                    WHERE (contract_symbol, interval, provider) IN (
-                      SELECT contract_symbol, interval, provider FROM tmp_option_bars_meta
-                    )
+                    UPDATE option_bars_meta AS meta
+                    SET status = tmp.status,
+                        rows = greatest(coalesce(meta.rows, 0), coalesce(tmp.rows, 0)),
+                        start_ts = CASE
+                          WHEN meta.start_ts IS NULL THEN tmp.start_ts
+                          WHEN tmp.start_ts IS NULL THEN meta.start_ts
+                          ELSE least(meta.start_ts, tmp.start_ts)
+                        END,
+                        end_ts = CASE
+                          WHEN meta.end_ts IS NULL THEN tmp.end_ts
+                          WHEN tmp.end_ts IS NULL THEN meta.end_ts
+                          ELSE greatest(meta.end_ts, tmp.end_ts)
+                        END,
+                        last_success_at = tmp.last_success_at,
+                        last_attempt_at = tmp.last_attempt_at,
+                        last_error = NULL,
+                        error_count = 0
+                    FROM tmp_option_bars_meta AS tmp
+                    WHERE meta.contract_symbol = tmp.contract_symbol
+                      AND meta.interval = tmp.interval
+                      AND meta.provider = tmp.provider
                     """
                 )
                 tx.execute(
@@ -881,9 +898,15 @@ class DuckDBOptionBarsStore:
                       contract_symbol, interval, provider, status, rows, start_ts, end_ts,
                       last_success_at, last_attempt_at, last_error, error_count
                     )
-                    SELECT contract_symbol, interval, provider, status, rows, start_ts, end_ts,
-                           last_success_at, last_attempt_at, last_error, error_count
-                    FROM tmp_option_bars_meta
+                    SELECT tmp.contract_symbol, tmp.interval, tmp.provider, tmp.status, tmp.rows,
+                           tmp.start_ts, tmp.end_ts, tmp.last_success_at, tmp.last_attempt_at,
+                           tmp.last_error, tmp.error_count
+                    FROM tmp_option_bars_meta AS tmp
+                    LEFT JOIN option_bars_meta AS meta
+                      ON meta.contract_symbol = tmp.contract_symbol
+                     AND meta.interval = tmp.interval
+                     AND meta.provider = tmp.provider
+                    WHERE meta.contract_symbol IS NULL
                     """
                 )
                 tx.unregister("tmp_option_bars_meta")

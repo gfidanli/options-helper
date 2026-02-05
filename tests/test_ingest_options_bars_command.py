@@ -115,9 +115,10 @@ class _FakeAlpacaClient:
         return pd.DataFrame(rows)
 
 
-def test_ingest_options_bars_bisects_and_records_errors(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_ingest_options_bars_per_symbol_records_errors(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda: _StubProvider())
-    monkeypatch.setattr(ingest, "AlpacaClient", _FakeAlpacaClient)
+    fake_client = _FakeAlpacaClient()
+    monkeypatch.setattr(ingest, "AlpacaClient", lambda: fake_client)
 
     runner = CliRunner()
     duckdb_path = tmp_path / "options.duckdb"
@@ -138,8 +139,6 @@ def test_ingest_options_bars_bisects_and_records_errors(tmp_path: Path, monkeypa
             "2026-12-31",
             "--lookback-years",
             "1",
-            "--chunk-size",
-            "2",
         ],
     )
 
@@ -176,3 +175,6 @@ def test_ingest_options_bars_bisects_and_records_errors(tmp_path: Path, monkeypa
     assert statuses["AAA_BAD260117C00100000"] == "error"
     assert statuses["BBB_GOOD260117C00100000"] == "ok"
     assert statuses["CCC_GOOD260117P00100000"] == "ok"
+
+    assert len(fake_client.bars_calls) == 3
+    assert all(len(call["symbols"]) == 1 for call in fake_client.bars_calls)

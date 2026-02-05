@@ -26,7 +26,8 @@ Common flags:
 - `--candle-cache-dir PATH`
 
 ### Options bars (daily OHLCV + vwap + trade_count)
-Discovers Alpaca option contracts (expired + active) and backfills daily bars.
+Discovers Alpaca option contracts (expired + active) and backfills daily bars. Bars are fetched
+per-contract symbol to maximize coverage (slower but more complete).
 
 ```bash
 options-helper ingest options-bars --watchlist positions --watchlist monitor
@@ -36,7 +37,6 @@ Common flags:
 - `--contracts-exp-start YYYY-MM-DD`
 - `--contracts-exp-end YYYY-MM-DD` (default: today + 5y)
 - `--lookback-years N` (default: 10)
-- `--chunk-size N` (default: 200)
 - `--page-limit N` (default: 200)
 - `--max-underlyings N`, `--max-contracts N`, `--max-expiries N`
 - `--resume/--no-resume` (uses `option_bars_meta` coverage)
@@ -56,4 +56,3 @@ All ingestion writes to the DuckDB warehouse (default: `data/warehouse/options.d
 - Large universes can take time; start with `--max-underlyings` or `--dry-run`.
 - If you see 403/402 errors, your data entitlement likely needs adjustment.
 - Avoid running multiple ingestion jobs concurrently (DuckDB is single-writer).
-
