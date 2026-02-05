@@ -55,9 +55,7 @@ def test_snapshotter_passes_snapshot_date(tmp_path: Path, monkeypatch: pytest.Mo
         idx = pd.to_datetime([candle_day.replace(day=candle_day.day - 1), candle_day])
         return pd.DataFrame({"Close": [100.0, 101.0]}, index=idx)
 
-    monkeypatch.setattr(
-        "options_helper.data.options_snapshotter.CandleStore.get_daily_history", _stub_history
-    )
+    monkeypatch.setattr("options_helper.data.candles.CandleStore.get_daily_history", _stub_history)
 
     provider = _StubProvider()
     snapshot_dir = tmp_path / "snapshots"

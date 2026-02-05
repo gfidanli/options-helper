@@ -41,9 +41,9 @@ def build_candle_store(
 
 
 def build_snapshot_store(cache_dir: Path) -> OptionsSnapshotStore:
-    from options_helper.data.options_snapshots import OptionsSnapshotStore
+    from options_helper.data.store_factory import get_options_snapshot_store
 
-    return OptionsSnapshotStore(cache_dir)
+    return get_options_snapshot_store(cache_dir)
 
 
 def build_derived_store(derived_dir: Path) -> DerivedStore:

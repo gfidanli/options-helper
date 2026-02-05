@@ -457,13 +457,9 @@ class DuckDBOptionsSnapshotStore:
             return []
         out: list[date] = []
         for v in df["snapshot_date"].tolist():
-            if isinstance(v, date):
-                out.append(v)
-            else:
-                try:
-                    out.append(date.fromisoformat(str(v)))
-                except Exception:  # noqa: BLE001
-                    continue
+            coerced = _coerce_date(v)
+            if coerced is not None:
+                out.append(coerced)
         return out
 
     def latest_dates(self, symbol: str, *, n: int = 2) -> list[date]:

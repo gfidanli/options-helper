@@ -46,9 +46,7 @@ def test_snapshot_full_chain_with_alpaca_provider(
         idx = pd.to_datetime([candle_day.replace(day=candle_day.day - 1), candle_day])
         return pd.DataFrame({"Close": [100.0, 101.0]}, index=idx)
 
-    monkeypatch.setattr(
-        "options_helper.data.options_snapshotter.CandleStore.get_daily_history", _stub_history
-    )
+    monkeypatch.setattr("options_helper.data.candles.CandleStore.get_daily_history", _stub_history)
 
     payload = {
         "data": {

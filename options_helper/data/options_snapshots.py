@@ -148,6 +148,77 @@ class OptionsSnapshotStore:
 
         return out_path
 
+    def save_day_snapshot(
+        self,
+        symbol: str,
+        snapshot_date: date,
+        *,
+        chain: pd.DataFrame,
+        expiries: list[date],
+        raw_by_expiry: dict[date, dict[str, Any]] | None = None,
+        meta: dict[str, Any] | None = None,
+    ) -> Path:
+        day_dir = self._day_dir(symbol, snapshot_date)
+        day_dir.mkdir(parents=True, exist_ok=True)
+
+        expiry_set = {exp.isoformat() for exp in expiries}
+
+        def _is_expiry_name(value: str) -> bool:
+            try:
+                date.fromisoformat(value)
+            except ValueError:
+                return False
+            return True
+
+        for p in day_dir.glob("*.csv"):
+            if not _is_expiry_name(p.stem):
+                continue
+            if p.stem not in expiry_set:
+                p.unlink()
+                raw_path = day_dir / f"{p.stem}.raw.json"
+                if raw_path.exists():
+                    raw_path.unlink()
+
+        for p in day_dir.glob("*.raw.json"):
+            name = p.name[:-len(".raw.json")]
+            if not _is_expiry_name(name):
+                continue
+            if name not in expiry_set:
+                p.unlink()
+
+        chain_df = chain if chain is not None else pd.DataFrame()
+        expiry_series = None
+        if not chain_df.empty and "expiry" in chain_df.columns:
+            expiry_series = chain_df["expiry"].astype(str)
+
+        for exp in expiries:
+            exp_str = exp.isoformat()
+            if chain_df.empty:
+                exp_df = chain_df
+            elif expiry_series is not None:
+                exp_df = chain_df[expiry_series == exp_str]
+            elif len(expiries) == 1:
+                exp_df = chain_df
+            else:
+                exp_df = chain_df.iloc[0:0].copy()
+
+            out_path = day_dir / f"{exp_str}.csv"
+            exp_df.to_csv(out_path, index=False)
+
+            if raw_by_expiry:
+                raw_payload = raw_by_expiry.get(exp)
+                if raw_payload is not None:
+                    raw_path = day_dir / f"{exp_str}.raw.json"
+                    raw_path.write_text(
+                        json.dumps(raw_payload, indent=2, default=str),
+                        encoding="utf-8",
+                    )
+
+        if meta is not None:
+            self._upsert_meta(day_dir, meta)
+
+        return day_dir
+
     def load_day(self, symbol: str, snapshot_date: date) -> pd.DataFrame:
         day_dir = self._day_dir(symbol, snapshot_date)
         if not day_dir.exists():
