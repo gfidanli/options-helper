@@ -573,8 +573,10 @@ def earnings(
     else:
         record = store.load(sym)
         if refresh or record is None:
+            # Earnings data is sourced from Yahoo via yfinance (best-effort).
+            provider = cli_deps.build_provider("yahoo")
             try:
-                ev = cli_deps.build_provider().get_next_earnings_event(sym)
+                ev = provider.get_next_earnings_event(sym)
             except DataFetchError as exc:
                 console.print(f"[red]Data error:[/red] {exc}")
                 raise typer.Exit(1)
@@ -650,7 +652,8 @@ def refresh_earnings(
         raise typer.Exit(0)
 
     store = cli_deps.build_earnings_store(cache_dir)
-    provider = cli_deps.build_provider()
+    # Earnings data is sourced from Yahoo via yfinance (best-effort).
+    provider = cli_deps.build_provider("yahoo")
 
     ok = 0
     err = 0

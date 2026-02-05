@@ -43,9 +43,9 @@ def main(
         help="Directory to write per-command logs.",
     ),
     provider: str = typer.Option(
-        "yahoo",
+        "alpaca",
         "--provider",
-        help="Market data provider (default: yahoo).",
+        help="Market data provider (default: alpaca).",
     ),
 ) -> None:
     command_name = ctx.info_name or "options-helper"
