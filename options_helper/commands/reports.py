@@ -927,6 +927,15 @@ def report_pack(
                     write_json=True,
                     write_md=True,
                     print_to_console=False,
+                    divergence_window_days=14,
+                    divergence_min_extension_days=5,
+                    divergence_min_extension_percentile=None,
+                    divergence_max_extension_percentile=None,
+                    divergence_min_price_delta_pct=0.0,
+                    divergence_min_rsi_delta=0.0,
+                    rsi_overbought=70.0,
+                    rsi_oversold=30.0,
+                    require_rsi_extreme=False,
                 )
                 counts["technicals_ok"] += 1
             except Exception as exc:  # noqa: BLE001
