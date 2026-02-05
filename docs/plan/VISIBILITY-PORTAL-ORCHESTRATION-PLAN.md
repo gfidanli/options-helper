@@ -187,9 +187,9 @@ T16 + T17 ───────────────────────�
 - **location**: `/Volumes/develop/options-helper/options_helper/commands/ui.py` (new), `/Volumes/develop/options-helper/options_helper/cli.py`
 - **description**: Add thin launcher that shells out to `python -m streamlit run /Volumes/develop/options-helper/apps/streamlit/streamlit_app.py`; include host/port/path flags; provide install guidance when Streamlit extra is missing.
 - **validation**: `./.venv/bin/python -m pytest tests/test_ui_cli.py`
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Finalized the launcher so `options-helper ui` runs Streamlit directly (with `run` alias kept), added `--host`/`--port`/`--path` options, and added explicit install guidance when Streamlit is unavailable before subprocess invocation.
+- **files edited/created**: `/Volumes/develop/options-helper/options_helper/commands/ui.py`, `/Volumes/develop/options-helper/tests/test_ui_cli.py`, `/Volumes/develop/options-helper/docs/plan/VISIBILITY-PORTAL-ORCHESTRATION-PLAN.md`
 
 ### T14: Add Dagster Definitions Scaffold
 - **depends_on**: [T1]
