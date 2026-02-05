@@ -56,3 +56,4 @@ All ingestion writes to the DuckDB warehouse (default: `data/warehouse/options.d
 - Large universes can take time; start with `--max-underlyings` or `--dry-run`.
 - If you see 403/402 errors, your data entitlement likely needs adjustment.
 - Avoid running multiple ingestion jobs concurrently (DuckDB is single-writer).
+- `ingest options-bars` is resumable: it records per-contract attempts in `option_bars_meta`, skips contracts already attempted today, and avoids refetching historical data for expired expiries.
