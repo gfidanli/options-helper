@@ -56,7 +56,10 @@ def _fmt_pct(value: object) -> str:
 
 st.title("Symbol Explorer")
 st.caption("Informational and educational use only. Not financial advice.")
-st.info("Read-only view. This page does not trigger ingestion or modify stored artifacts.")
+st.info(
+    "DuckDB-first view. If snapshot/derived rows are missing, this page may run a best-effort "
+    "Alpaca sync for the selected symbol."
+)
 
 with st.sidebar:
     st.markdown("### Data Sources")

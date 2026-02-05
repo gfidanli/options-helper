@@ -6,6 +6,7 @@ import duckdb
 import pandas as pd
 import pytest
 
+import apps.streamlit.components.symbol_explorer_page as symbol_explorer_page
 from apps.streamlit.components.symbol_explorer_page import (
     build_derived_snippet,
     build_snapshot_strike_table,
@@ -142,3 +143,69 @@ def test_symbol_explorer_queries_roundtrip(tmp_path: Path) -> None:
     assert snippet["spot"] == 101.0
     assert snippet["spot_change_1d"] == 0.01
     assert snippet["atm_iv_change_1d"] == pytest.approx(0.01)
+
+
+def test_snapshot_header_triggers_alpaca_backfill_hook(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "options.duckdb"
+    chain_path = tmp_path / "chain.parquet"
+    _seed_chain_parquet(chain_path)
+    warehouse = DuckDBWarehouse(db_path)
+    ensure_schema(warehouse)
+
+    calls: list[tuple[str, bool]] = []
+
+    def _fake_backfill(symbol: str, *, database_path: Path, include_derived: bool) -> str | None:
+        calls.append((symbol, include_derived))
+        with warehouse.transaction() as tx:
+            tx.execute(
+                """
+                INSERT INTO options_snapshot_headers(
+                  symbol, snapshot_date, provider, chain_path, meta_path, raw_path, spot, risk_free_rate, contracts
+                )
+                VALUES (?, '2026-02-05', 'alpaca', ?, NULL, NULL, 180.0, 0.0, 4)
+                """,
+                [symbol, str(chain_path)],
+            )
+        return None
+
+    monkeypatch.setattr(symbol_explorer_page, "_maybe_backfill_symbol_from_alpaca", _fake_backfill)
+
+    header, note = load_latest_snapshot_header("CVX", database_path=db_path)
+    assert note is None
+    assert header is not None
+    assert str(header["snapshot_date"]).startswith("2026-02-05")
+    assert header["provider"] == "alpaca"
+    assert calls == [("CVX", False)]
+
+
+def test_derived_history_triggers_alpaca_backfill_hook(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "options.duckdb"
+    warehouse = DuckDBWarehouse(db_path)
+    ensure_schema(warehouse)
+
+    calls: list[tuple[str, bool]] = []
+
+    def _fake_backfill(symbol: str, *, database_path: Path, include_derived: bool) -> str | None:
+        calls.append((symbol, include_derived))
+        with warehouse.transaction() as tx:
+            tx.execute(
+                """
+                INSERT INTO derived_daily(
+                  symbol, date, spot, pc_oi, pc_vol, call_wall, put_wall, gamma_peak_strike, atm_iv_near,
+                  em_near_pct, skew_near_pp, rv_20d, rv_60d, iv_rv_20d, atm_iv_near_percentile, iv_term_slope
+                )
+                VALUES
+                  (?, '2026-02-04', 180.0, 0.9, 1.1, 185, 170, 180, 0.30, 0.02, -0.01, 0.20, 0.24, 1.5, 0.7, -0.02),
+                  (?, '2026-02-05', 182.0, 1.0, 1.0, 190, 172, 180, 0.32, 0.03, -0.01, 0.21, 0.25, 1.52, 0.8, -0.01)
+                """,
+                [symbol, symbol],
+            )
+        return None
+
+    monkeypatch.setattr(symbol_explorer_page, "_maybe_backfill_symbol_from_alpaca", _fake_backfill)
+
+    derived_df, note = load_derived_history("CVX", database_path=db_path, limit=10)
+    assert note is None
+    assert len(derived_df) == 2
+    assert list(derived_df["date"].dt.date.astype(str)) == ["2026-02-04", "2026-02-05"]
+    assert calls == [("CVX", True)]

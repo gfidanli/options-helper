@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import re
+import time
 from collections.abc import MutableMapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +11,19 @@ import duckdb
 import pandas as pd
 
 from apps.streamlit.components.duckdb_path import resolve_duckdb_path as _resolve_duckdb_path
+
+_DERIVED_COLUMNS = [
+    "date",
+    "spot",
+    "pc_oi",
+    "pc_vol",
+    "atm_iv_near",
+    "iv_rv_20d",
+    "atm_iv_near_percentile",
+    "iv_term_slope",
+]
+_BACKFILL_RETRY_SECONDS = 45.0
+_BACKFILL_ATTEMPTS: dict[tuple[str, str, str], float] = {}
 
 
 def resolve_duckdb_path(database_path: str | Path | None = None) -> Path:
@@ -131,29 +147,20 @@ def load_latest_snapshot_header(
     database_path: str | Path | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     sym = normalize_symbol(symbol)
-    df, note = _run_query_safe(
-        """
-        SELECT
-          symbol,
-          snapshot_date,
-          provider,
-          chain_path,
-          spot,
-          risk_free_rate,
-          contracts,
-          updated_at
-        FROM options_snapshot_headers
-        WHERE UPPER(symbol) = ?
-        ORDER BY snapshot_date DESC, updated_at DESC
-        LIMIT 1
-        """,
-        params=[sym],
-        database_path=database_path,
-    )
+    df, note = _query_latest_snapshot_header(sym, database_path=database_path)
     if note:
         return None, note
     if df.empty:
-        return None, None
+        backfill_note = _maybe_backfill_symbol_from_alpaca(
+            sym,
+            database_path=database_path,
+            include_derived=False,
+        )
+        df, note = _query_latest_snapshot_header(sym, database_path=database_path)
+        if note:
+            return None, note
+        if df.empty:
+            return None, backfill_note
     return df.iloc[0].to_dict(), None
 
 
@@ -289,32 +296,27 @@ def load_derived_history(
     limit: int = 90,
 ) -> tuple[pd.DataFrame, str | None]:
     sym = normalize_symbol(symbol)
-    df, note = _run_query_safe(
-        """
-        SELECT
-          date,
-          spot,
-          pc_oi,
-          pc_vol,
-          atm_iv_near,
-          iv_rv_20d,
-          atm_iv_near_percentile,
-          iv_term_slope
-        FROM derived_daily
-        WHERE UPPER(symbol) = ?
-        ORDER BY date DESC
-        LIMIT ?
-        """,
-        params=[sym, max(1, int(limit))],
-        database_path=database_path,
-    )
+    window = max(1, int(limit))
+    df, note = _query_derived_history(sym, limit=window, database_path=database_path)
     if note:
         return pd.DataFrame(), note
     if df.empty:
-        return pd.DataFrame(), None
+        backfill_note = _maybe_backfill_symbol_from_alpaca(
+            sym,
+            database_path=database_path,
+            include_derived=True,
+        )
+        df, note = _query_derived_history(sym, limit=window, database_path=database_path)
+        if note:
+            return pd.DataFrame(), note
+        if df.empty:
+            return pd.DataFrame(columns=_DERIVED_COLUMNS), backfill_note
     out = df.copy()
     out["date"] = pd.to_datetime(out["date"], errors="coerce")
     out = out.dropna(subset=["date"]).sort_values(by="date", kind="stable").reset_index(drop=True)
+    for column in _DERIVED_COLUMNS:
+        if column != "date" and column in out.columns:
+            out[column] = pd.to_numeric(out[column], errors="coerce")
     return out, None
 
 
@@ -371,6 +373,246 @@ def _run_query_safe(
         return frame, None
     except Exception as exc:  # noqa: BLE001
         return pd.DataFrame(), str(exc)
+
+
+def _query_latest_snapshot_header(
+    symbol: str,
+    *,
+    database_path: str | Path | None = None,
+) -> tuple[pd.DataFrame, str | None]:
+    return _run_query_safe(
+        """
+        SELECT
+          symbol,
+          snapshot_date,
+          provider,
+          chain_path,
+          spot,
+          risk_free_rate,
+          contracts,
+          updated_at
+        FROM options_snapshot_headers
+        WHERE UPPER(symbol) = ?
+        ORDER BY snapshot_date DESC, updated_at DESC
+        LIMIT 1
+        """,
+        params=[symbol],
+        database_path=database_path,
+    )
+
+
+def _query_derived_history(
+    symbol: str,
+    *,
+    limit: int,
+    database_path: str | Path | None = None,
+) -> tuple[pd.DataFrame, str | None]:
+    return _run_query_safe(
+        """
+        SELECT
+          date,
+          spot,
+          pc_oi,
+          pc_vol,
+          atm_iv_near,
+          iv_rv_20d,
+          atm_iv_near_percentile,
+          iv_term_slope
+        FROM derived_daily
+        WHERE UPPER(symbol) = ?
+        ORDER BY date DESC
+        LIMIT ?
+        """,
+        params=[symbol, max(1, int(limit))],
+        database_path=database_path,
+    )
+
+
+def _maybe_backfill_symbol_from_alpaca(
+    symbol: str,
+    *,
+    database_path: str | Path | None = None,
+    include_derived: bool,
+) -> str | None:
+    sym = normalize_symbol(symbol)
+    snapshot_note = _maybe_backfill_snapshot_from_alpaca(sym, database_path=database_path)
+    derived_note = None
+    if include_derived:
+        derived_note = _maybe_backfill_derived_from_alpaca(sym, database_path=database_path)
+
+    notes = [note for note in (snapshot_note, derived_note) if note]
+    if not notes:
+        return None
+    return " | ".join(notes)
+
+
+def _maybe_backfill_snapshot_from_alpaca(
+    symbol: str,
+    *,
+    database_path: str | Path | None = None,
+) -> str | None:
+    db_path = resolve_duckdb_path(database_path)
+    if not _should_backfill(db_path=db_path, symbol=symbol, kind="snapshot"):
+        return None
+
+    try:
+        import options_helper.cli_deps as cli_deps
+        from options_helper.models import Portfolio
+        from options_helper.pipelines.visibility_jobs import run_snapshot_options_job
+        from options_helper.watchlists import Watchlists
+    except Exception as exc:  # noqa: BLE001
+        return f"Unable to initialize Alpaca snapshot sync for {symbol}: {exc}"
+
+    data_root = _resolve_data_root(db_path)
+    watchlists = Watchlists(watchlists={"streamlit": [symbol]})
+
+    try:
+        with _duckdb_alpaca_runtime(db_path):
+            result = run_snapshot_options_job(
+                portfolio_path=data_root / "portfolio.json",
+                cache_dir=data_root / "options_snapshots",
+                candle_cache_dir=data_root / "candles",
+                window_pct=1.0,
+                spot_period="10d",
+                require_data_date=None,
+                require_data_tz="America/Chicago",
+                watchlists_path=data_root / "watchlists.json",
+                watchlist=["streamlit"],
+                all_watchlists=False,
+                all_expiries=False,
+                full_chain=True,
+                max_expiries=4,
+                risk_free_rate=0.0,
+                provider_builder=lambda: cli_deps.build_provider("alpaca"),
+                snapshot_store_builder=lambda root: _StoreProxy(cli_deps.build_snapshot_store(root)),
+                candle_store_builder=lambda root, **kwargs: _StoreProxy(
+                    cli_deps.build_candle_store(root, **kwargs)
+                ),
+                portfolio_loader=lambda _path: Portfolio(),
+                watchlists_loader=lambda _path: watchlists,
+            )
+    except Exception as exc:  # noqa: BLE001
+        return f"Alpaca snapshot sync failed for {symbol}: {exc}"
+
+    if _has_saved_snapshot_message(result.messages, symbol):
+        return None
+    warning = _extract_symbol_warning(result.messages, symbol)
+    if warning:
+        return f"Alpaca snapshot sync for {symbol} did not persist rows ({warning})"
+    return f"Alpaca snapshot sync for {symbol} did not persist rows."
+
+
+def _maybe_backfill_derived_from_alpaca(
+    symbol: str,
+    *,
+    database_path: str | Path | None = None,
+) -> str | None:
+    db_path = resolve_duckdb_path(database_path)
+    if not _should_backfill(db_path=db_path, symbol=symbol, kind="derived"):
+        return None
+
+    try:
+        import options_helper.cli_deps as cli_deps
+        from options_helper.pipelines.visibility_jobs import run_derived_update_job
+    except Exception as exc:  # noqa: BLE001
+        return f"Unable to initialize Alpaca derived sync for {symbol}: {exc}"
+
+    data_root = _resolve_data_root(db_path)
+    try:
+        with _duckdb_alpaca_runtime(db_path):
+            run_derived_update_job(
+                symbol=symbol,
+                as_of="latest",
+                cache_dir=data_root / "options_snapshots",
+                derived_dir=data_root / "derived",
+                candle_cache_dir=data_root / "candles",
+                snapshot_store_builder=lambda root: _StoreProxy(cli_deps.build_snapshot_store(root)),
+                derived_store_builder=lambda root: _StoreProxy(cli_deps.build_derived_store(root)),
+                candle_store_builder=lambda root, **kwargs: _StoreProxy(
+                    cli_deps.build_candle_store(root, **kwargs)
+                ),
+            )
+    except Exception as exc:  # noqa: BLE001
+        return f"Alpaca derived sync failed for {symbol}: {exc}"
+    return None
+
+
+def _should_backfill(*, db_path: Path, symbol: str, kind: str) -> bool:
+    key = (str(db_path), symbol.upper(), kind)
+    now = time.monotonic()
+    last = _BACKFILL_ATTEMPTS.get(key)
+    if last is not None and (now - last) < _BACKFILL_RETRY_SECONDS:
+        return False
+    _BACKFILL_ATTEMPTS[key] = now
+    return True
+
+
+def _resolve_data_root(db_path: Path) -> Path:
+    if db_path.parent.name.lower() == "warehouse":
+        return db_path.parent.parent.resolve()
+    return db_path.parent.resolve()
+
+
+def _extract_symbol_warning(messages: Sequence[str], symbol: str) -> str | None:
+    sym = symbol.upper()
+    for message in reversed(messages):
+        plain = _strip_rich_markup(message)
+        upper = plain.upper()
+        lower = plain.lower()
+        if sym not in upper:
+            continue
+        if "warning" in lower or "error" in lower or "failed" in lower or "skipping" in lower:
+            return plain
+    return None
+
+
+def _has_saved_snapshot_message(messages: Sequence[str], symbol: str) -> bool:
+    sym = symbol.upper()
+    for message in messages:
+        plain = _strip_rich_markup(message)
+        upper = plain.upper()
+        lower = plain.lower()
+        if sym not in upper:
+            continue
+        if ": saved " in lower:
+            return True
+    return False
+
+
+def _strip_rich_markup(text: str) -> str:
+    return re.sub(r"\[[^\]]+\]", "", str(text)).strip()
+
+
+class _StoreProxy:
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+@contextmanager
+def _duckdb_alpaca_runtime(db_path: Path):
+    from options_helper.data.providers.runtime import (
+        reset_default_provider_name,
+        set_default_provider_name,
+    )
+    from options_helper.data.storage_runtime import (
+        reset_default_duckdb_path,
+        reset_default_storage_backend,
+        set_default_duckdb_path,
+        set_default_storage_backend,
+    )
+
+    provider_token = set_default_provider_name("alpaca")
+    storage_token = set_default_storage_backend("duckdb")
+    duckdb_token = set_default_duckdb_path(db_path)
+    try:
+        yield
+    finally:
+        reset_default_duckdb_path(duckdb_token)
+        reset_default_storage_backend(storage_token)
+        reset_default_provider_name(provider_token)
 
 
 def _read_query_param(query_params: MutableMapping[str, Any], *, name: str) -> str | None:

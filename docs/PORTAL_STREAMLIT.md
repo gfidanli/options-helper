@@ -55,8 +55,11 @@ Implemented pages under `apps/streamlit/pages/`:
 
 ## Read-only behavior
 
-Portal pages do not run ingestion and do not mutate portfolio or data artifacts.
-Any command examples shown in Health are copy/paste suggestions only.
+Portal pages do not mutate portfolio state.
+Most pages are read-only and do not run ingestion.
+
+Exception:
+- `03_Symbol_Explorer.py` is DuckDB-first and can run a best-effort on-demand Alpaca sync for the selected symbol when `options_snapshot_headers` or `derived_daily` rows are missing in DuckDB.
 
 ## DuckDB path behavior
 
