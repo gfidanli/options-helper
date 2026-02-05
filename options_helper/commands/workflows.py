@@ -350,11 +350,6 @@ def snapshot_options(
         strike_min = spot * (1.0 - window_pct)
         strike_max = spot * (1.0 + window_pct)
 
-        total_contracts = 0
-        missing_bid_ask = 0
-        stale_quotes = 0
-        spread_pcts: list[float] = []
-
         meta = {
             "spot": spot,
             "spot_period": spot_period,
@@ -383,6 +378,12 @@ def snapshot_options(
             if effective_max_expiries is not None:
                 expiries = expiries[:effective_max_expiries]
 
+        chain_frames: list[pd.DataFrame] = []
+        quality_frames: list[pd.DataFrame] = []
+        saved_expiries: list[date] = []
+        raw_by_expiry: dict[date, dict[str, object]] = {}
+        underlying_payload: dict[str, object] | None = None
+
         for exp in expiries:
             if want_full_chain:
                 try:
@@ -393,9 +394,11 @@ def snapshot_options(
                     )
                     continue
 
-                # Capture the full payload (raw) + a denormalized CSV for convenience.
-                meta_with_underlying = dict(meta)
-                meta_with_underlying["underlying"] = raw.get("underlying", {})
+                underlying = raw.get("underlying")
+                if not isinstance(underlying, dict):
+                    underlying = {}
+                if underlying_payload is None or underlying:
+                    underlying_payload = underlying
 
                 calls = pd.DataFrame(raw.get("calls", []))
                 puts = pd.DataFrame(raw.get("puts", []))
@@ -413,34 +416,10 @@ def snapshot_options(
                     r=risk_free_rate,
                 )
 
-                quality = compute_quote_quality(
-                    df,
-                    min_volume=0,
-                    min_open_interest=0,
-                    as_of=effective_snapshot_date,
-                )
-                total_contracts += len(df)
-                if not quality.empty:
-                    q_warn = quality["quality_warnings"].tolist()
-                    missing_bid_ask += sum("quote_missing_bid_ask" in w for w in q_warn if isinstance(w, list))
-                    stale_quotes += sum("quote_stale" in w for w in q_warn if isinstance(w, list))
-                    spread_series = pd.to_numeric(quality["spread_pct"], errors="coerce")
-                    spread_series = spread_series.where(spread_series >= 0)
-                    spread_pcts.extend(spread_series.dropna().tolist())
-
-                store.save_expiry_snapshot(
-                    symbol,
-                    effective_snapshot_date,
-                    expiry=exp,
-                    snapshot=df,
-                    meta=meta_with_underlying,
-                )
-                store.save_expiry_snapshot_raw(
-                    symbol,
-                    effective_snapshot_date,
-                    expiry=exp,
-                    raw=raw,
-                )
+                chain_frames.append(df)
+                quality_frames.append(df)
+                raw_by_expiry[exp] = raw
+                saved_expiries.append(exp)
                 console.print(f"{symbol} {exp.isoformat()}: saved {len(df)} contracts (full)")
                 continue
 
@@ -473,20 +452,7 @@ def snapshot_options(
                 r=risk_free_rate,
             )
 
-            quality = compute_quote_quality(
-                df,
-                min_volume=0,
-                min_open_interest=0,
-                as_of=effective_snapshot_date,
-            )
-            total_contracts += len(df)
-            if not quality.empty:
-                q_warn = quality["quality_warnings"].tolist()
-                missing_bid_ask += sum("quote_missing_bid_ask" in w for w in q_warn if isinstance(w, list))
-                stale_quotes += sum("quote_stale" in w for w in q_warn if isinstance(w, list))
-                spread_series = pd.to_numeric(quality["spread_pct"], errors="coerce")
-                spread_series = spread_series.where(spread_series >= 0)
-                spread_pcts.extend(spread_series.dropna().tolist())
+            quality_frames.append(df)
 
             keep = [
                 "contractSymbol",
@@ -511,26 +477,57 @@ def snapshot_options(
             keep = [c for c in keep if c in df.columns]
             df = df[keep]
 
-            store.save_expiry_snapshot(symbol, effective_snapshot_date, expiry=exp, snapshot=df, meta=meta)
+            chain_frames.append(df)
+            saved_expiries.append(exp)
             console.print(f"{symbol} {exp.isoformat()}: saved {len(df)} contracts")
 
-        if want_full_chain and total_contracts > 0:
+        if not saved_expiries:
+            continue
+
+        chain_df = pd.concat(chain_frames, ignore_index=True) if chain_frames else pd.DataFrame()
+        quality_df = pd.concat(quality_frames, ignore_index=True) if quality_frames else pd.DataFrame()
+
+        total_contracts = int(len(quality_df))
+        if total_contracts > 0:
+            quality = compute_quote_quality(
+                quality_df,
+                min_volume=0,
+                min_open_interest=0,
+                as_of=effective_snapshot_date,
+            )
+            missing_bid_ask = 0
+            stale_quotes = 0
+            spread_pcts: list[float] = []
+            if not quality.empty:
+                q_warn = quality["quality_warnings"].tolist()
+                missing_bid_ask = sum("quote_missing_bid_ask" in w for w in q_warn if isinstance(w, list))
+                stale_quotes = sum("quote_stale" in w for w in q_warn if isinstance(w, list))
+                spread_series = pd.to_numeric(quality["spread_pct"], errors="coerce")
+                spread_series = spread_series.where(spread_series >= 0)
+                spread_pcts.extend(spread_series.dropna().tolist())
             spread_median = float(np.nanmedian(spread_pcts)) if spread_pcts else None
             spread_worst = float(np.nanmax(spread_pcts)) if spread_pcts else None
-            store._upsert_meta(
-                store._day_dir(symbol, effective_snapshot_date),
-                {
-                    "quote_quality": {
-                        "contracts": int(total_contracts),
-                        "missing_bid_ask_count": int(missing_bid_ask),
-                        "missing_bid_ask_pct": float(missing_bid_ask / total_contracts),
-                        "spread_pct_median": spread_median,
-                        "spread_pct_worst": spread_worst,
-                        "stale_quotes": int(stale_quotes),
-                        "stale_pct": float(stale_quotes / total_contracts),
-                    }
-                },
-            )
+            meta["quote_quality"] = {
+                "contracts": total_contracts,
+                "missing_bid_ask_count": int(missing_bid_ask),
+                "missing_bid_ask_pct": float(missing_bid_ask / total_contracts),
+                "spread_pct_median": spread_median,
+                "spread_pct_worst": spread_worst,
+                "stale_quotes": int(stale_quotes),
+                "stale_pct": float(stale_quotes / total_contracts),
+            }
+
+        if want_full_chain and underlying_payload is not None:
+            meta["underlying"] = underlying_payload
+
+        store.save_day_snapshot(
+            symbol,
+            effective_snapshot_date,
+            chain=chain_df,
+            expiries=saved_expiries,
+            raw_by_expiry=raw_by_expiry if raw_by_expiry else None,
+            meta=meta,
+        )
 
     if dates_used:
         days = ", ".join(sorted({d.isoformat() for d in dates_used}))

@@ -42,6 +42,24 @@ def _to_utc_naive(ts: object) -> pd.Timestamp | None:
             return None
 
 
+def _coerce_date(value: object) -> date | None:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:  # noqa: BLE001
+        pass
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 @dataclass(frozen=True)
 class DuckDBDerivedStore:
     """DuckDB-backed replacement for DerivedStore (CSV)."""
@@ -194,11 +212,11 @@ class DuckDBJournalStore:
 
                 raw = {
                     "schema_version": 1,
-                    "date": row.get("date"),
+                    "date": _coerce_date(row.get("date")),
                     "symbol": row.get("symbol"),
                     "context": row.get("context"),
                     "payload": payload,
-                    "snapshot_date": row.get("snapshot_date"),
+                    "snapshot_date": _coerce_date(row.get("snapshot_date")),
                     "contract_symbol": row.get("contract_symbol"),
                 }
                 event = SignalEvent.model_validate(raw)
@@ -439,13 +457,9 @@ class DuckDBOptionsSnapshotStore:
             return []
         out: list[date] = []
         for v in df["snapshot_date"].tolist():
-            if isinstance(v, date):
-                out.append(v)
-            else:
-                try:
-                    out.append(date.fromisoformat(str(v)))
-                except Exception:  # noqa: BLE001
-                    continue
+            coerced = _coerce_date(v)
+            if coerced is not None:
+                out.append(coerced)
         return out
 
     def latest_dates(self, symbol: str, *, n: int = 2) -> list[date]:

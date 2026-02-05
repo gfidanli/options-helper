@@ -31,6 +31,7 @@ nav:
       - Scanner: SCANNER.md
   - Data & Artifacts:
       - Candle Cache: CANDLE_CACHE.md
+      - DuckDB: DUCKDB.md
       - Chain Report: CHAIN_REPORT.md
       - Options Flow: OPTIONS_FLOW.md
       - Derived Metrics: DERIVED.md

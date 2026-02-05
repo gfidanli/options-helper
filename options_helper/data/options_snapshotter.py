@@ -12,11 +12,11 @@ import pandas as pd
 from options_helper.analysis.greeks import add_black_scholes_greeks_to_chain
 from options_helper.analysis.osi import format_osi, parse_contract_symbol
 from options_helper.analysis.quote_quality import compute_quote_quality
-from options_helper.data.candles import CandleStore, last_close
-from options_helper.data.options_snapshots import OptionsSnapshotStore
+from options_helper.data.candles import last_close
 from options_helper.data.market_types import DataFetchError
 from options_helper.data.providers import get_provider
 from options_helper.data.providers.base import MarketDataProvider
+from options_helper.data.store_factory import get_candle_store, get_options_snapshot_store
 
 
 logger = logging.getLogger(__name__)
@@ -89,8 +89,8 @@ def snapshot_full_chain_for_symbols(
     provider: MarketDataProvider | None = None,
 ) -> list[SnapshotSymbolResult]:
     provider = provider or get_provider()
-    store = OptionsSnapshotStore(cache_dir)
-    candle_store = CandleStore(candle_cache_dir, provider=provider)
+    store = get_options_snapshot_store(cache_dir)
+    candle_store = get_candle_store(candle_cache_dir, provider=provider)
     provider_name = getattr(provider, "name", "unknown")
     provider_version = (
         getattr(provider, "version", None)
@@ -182,11 +182,11 @@ def snapshot_full_chain_for_symbols(
             if provider_version:
                 meta["provider_version"] = provider_version
 
-            ok_expiries = 0
-            total_contracts = 0
-            missing_bid_ask = 0
-            stale_quotes = 0
-            spread_pcts: list[float] = []
+            chain_frames: list[pd.DataFrame] = []
+            quality_frames: list[pd.DataFrame] = []
+            raw_by_expiry: dict[date, dict] = {}
+            saved_expiries: list[date] = []
+            underlying_payload: dict | None = None
             for exp in expiries:
                 try:
                     raw = _fetch_chain_raw(provider, sym, exp, snapshot_date)
@@ -194,8 +194,11 @@ def snapshot_full_chain_for_symbols(
                     logger.warning("%s %s: %s", sym, exp.isoformat(), exc)
                     continue
 
-                meta_with_underlying = dict(meta)
-                meta_with_underlying["underlying"] = raw.get("underlying", {})
+                underlying = raw.get("underlying")
+                if not isinstance(underlying, dict):
+                    underlying = {}
+                if underlying_payload is None or underlying:
+                    underlying_payload = underlying
 
                 calls = pd.DataFrame(raw.get("calls", []))
                 puts = pd.DataFrame(raw.get("puts", []))
@@ -214,55 +217,73 @@ def snapshot_full_chain_for_symbols(
                     r=risk_free_rate,
                 )
 
-                quality = compute_quote_quality(df, min_volume=0, min_open_interest=0, as_of=snapshot_date)
-                total_contracts += len(df)
+                chain_frames.append(df)
+                quality_frames.append(df)
+                raw_by_expiry[exp] = raw
+                saved_expiries.append(exp)
+
+            if not saved_expiries:
+                results.append(
+                    SnapshotSymbolResult(
+                        symbol=sym,
+                        snapshot_date=snapshot_date,
+                        expiries=0,
+                        status="ok",
+                        error=None,
+                    )
+                )
+                continue
+
+            chain_df = pd.concat(chain_frames, ignore_index=True) if chain_frames else pd.DataFrame()
+            quality_df = pd.concat(quality_frames, ignore_index=True) if quality_frames else pd.DataFrame()
+
+            total_contracts = int(len(quality_df))
+            if total_contracts > 0:
+                quality = compute_quote_quality(
+                    quality_df,
+                    min_volume=0,
+                    min_open_interest=0,
+                    as_of=snapshot_date,
+                )
+                missing_bid_ask = 0
+                stale_quotes = 0
+                spread_pcts: list[float] = []
                 if not quality.empty:
                     warnings = quality["quality_warnings"].tolist()
-                    missing_bid_ask += sum("quote_missing_bid_ask" in w for w in warnings if isinstance(w, list))
-                    stale_quotes += sum("quote_stale" in w for w in warnings if isinstance(w, list))
+                    missing_bid_ask = sum("quote_missing_bid_ask" in w for w in warnings if isinstance(w, list))
+                    stale_quotes = sum("quote_stale" in w for w in warnings if isinstance(w, list))
                     spread_series = pd.to_numeric(quality["spread_pct"], errors="coerce")
                     spread_series = spread_series.where(spread_series >= 0)
                     spread_pcts.extend(spread_series.dropna().tolist())
-
-                store.save_expiry_snapshot(
-                    sym,
-                    snapshot_date,
-                    expiry=exp,
-                    snapshot=df,
-                    meta=meta_with_underlying,
-                )
-                store.save_expiry_snapshot_raw(
-                    sym,
-                    snapshot_date,
-                    expiry=exp,
-                    raw=raw,
-                    meta=meta_with_underlying,
-                )
-                ok_expiries += 1
-
-            if total_contracts > 0:
                 spread_median = float(np.nanmedian(spread_pcts)) if spread_pcts else None
                 spread_worst = float(np.nanmax(spread_pcts)) if spread_pcts else None
-                store._upsert_meta(
-                    store._day_dir(sym, snapshot_date),
-                    {
-                        "quote_quality": {
-                            "contracts": int(total_contracts),
-                            "missing_bid_ask_count": int(missing_bid_ask),
-                            "missing_bid_ask_pct": float(missing_bid_ask / total_contracts),
-                            "spread_pct_median": spread_median,
-                            "spread_pct_worst": spread_worst,
-                            "stale_quotes": int(stale_quotes),
-                            "stale_pct": float(stale_quotes / total_contracts),
-                        }
-                    },
-                )
+                meta["quote_quality"] = {
+                    "contracts": total_contracts,
+                    "missing_bid_ask_count": int(missing_bid_ask),
+                    "missing_bid_ask_pct": float(missing_bid_ask / total_contracts),
+                    "spread_pct_median": spread_median,
+                    "spread_pct_worst": spread_worst,
+                    "stale_quotes": int(stale_quotes),
+                    "stale_pct": float(stale_quotes / total_contracts),
+                }
+
+            if underlying_payload is not None:
+                meta["underlying"] = underlying_payload
+
+            store.save_day_snapshot(
+                sym,
+                snapshot_date,
+                chain=chain_df,
+                expiries=saved_expiries,
+                raw_by_expiry=raw_by_expiry or None,
+                meta=meta,
+            )
 
             results.append(
                 SnapshotSymbolResult(
                     symbol=sym,
                     snapshot_date=snapshot_date,
-                    expiries=ok_expiries,
+                    expiries=len(saved_expiries),
                     status="ok",
                     error=None,
                 )

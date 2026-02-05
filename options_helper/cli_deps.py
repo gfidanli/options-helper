@@ -26,7 +26,7 @@ def build_candle_store(
     auto_adjust: bool | None = None,
     back_adjust: bool | None = None,
 ) -> CandleStore:
-    from options_helper.data.candles import CandleStore
+    from options_helper.data.store_factory import get_candle_store
 
     kwargs: dict[str, object] = {}
     if provider is not None:
@@ -37,19 +37,19 @@ def build_candle_store(
         kwargs["auto_adjust"] = bool(auto_adjust)
     if back_adjust is not None:
         kwargs["back_adjust"] = bool(back_adjust)
-    return CandleStore(cache_dir, **kwargs)
+    return get_candle_store(cache_dir, **kwargs)
 
 
 def build_snapshot_store(cache_dir: Path) -> OptionsSnapshotStore:
-    from options_helper.data.options_snapshots import OptionsSnapshotStore
+    from options_helper.data.store_factory import get_options_snapshot_store
 
-    return OptionsSnapshotStore(cache_dir)
+    return get_options_snapshot_store(cache_dir)
 
 
 def build_derived_store(derived_dir: Path) -> DerivedStore:
-    from options_helper.data.derived import DerivedStore
+    from options_helper.data.store_factory import get_derived_store
 
-    return DerivedStore(derived_dir)
+    return get_derived_store(derived_dir)
 
 
 def build_earnings_store(cache_dir: Path) -> EarningsStore:
@@ -59,6 +59,6 @@ def build_earnings_store(cache_dir: Path) -> EarningsStore:
 
 
 def build_journal_store(journal_dir: Path) -> JournalStore:
-    from options_helper.data.journal import JournalStore
+    from options_helper.data.store_factory import get_journal_store
 
-    return JournalStore(journal_dir)
+    return get_journal_store(journal_dir)
