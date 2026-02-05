@@ -1,140 +1,65 @@
-# Next Stage: Visibility + Portal + Orchestration (Design Context)
+# Next Stage: Visibility + Portal + Orchestration
 
-Status: Draft (working doc)  
-Owner: `options-helper` maintainers  
-Audience: contributors implementing ingestion visibility, Streamlit portal dashboards, and optional Dagster orchestration.
+Status: Implemented foundation (M1-M7 code complete; docs aligned in T16)
 
----
+This project now ships a DuckDB-backed visibility control plane, a read-only Streamlit portal, and optional Dagster orchestration, while keeping the CLI-first workflow.
 
-## Current state (baseline)
+This tool is informational/educational only and is not financial advice.
 
-`options-helper` is already shaped like a small “local data platform”:
+## Delivered user-facing surfaces
 
-- **CLI-first workflows** for portfolio analysis and research.
-- **DuckDB is the default storage backend** (filesystem remains supported).
-- **Ingestion commands**:
-  - `ingest candles`
-  - `ingest options-bars`
-- **Snapshot-driven analysis**:
-  - `snapshot-options` → saves option-chain snapshots (offline / repeatable)
-  - `flow` → computes ΔOI/volume-based positioning proxies
-  - `derived` → maintains compact per-symbol derived-metrics history
-  - `briefing` → daily Markdown artifact
-  - `dashboard` → current read-only dashboard output
-- **Provider abstraction**:
-  - Global `--provider` (default: `alpaca`, `yahoo` fallback)
+### CLI
 
-This next stage does **not** replace these; it makes them observable and easier to use.
+- `options-helper db health`
+  - operational health summary from DuckDB `meta.*`
+  - human and JSON output modes
+  - graceful handling when DB or `meta.*` tables are missing
+- `options-helper ui` / `options-helper ui run`
+  - launches `apps/streamlit/streamlit_app.py`
+  - optional dependency path with clear install guidance
 
----
+### Streamlit portal
 
-## What “professionalize” means here
+Implemented pages:
 
-### 1) Visibility / Observability
-You should be able to answer, instantly:
+- `01 Health`
+- `02 Portfolio`
+- `03 Symbol Explorer`
+- `04 Flow`
+- `05 Derived History`
+- `06 Data Explorer`
 
-- What ran? When? With what parameters?
-- What failed, and what’s the recurring failure mode?
-- Which datasets are **stale** relative to expected cadence?
-- Where are the **gaps** (missing days, missing symbols)?
-- Are there **quality issues** (duplicates, invalid timestamps, negative prices, suspicious null rates)?
+Portal is read-only and does not run ingestion jobs.
 
-### 2) Portal UI (Streamlit)
-A product-like UI that:
-- keeps the project **one-laptop friendly**
-- provides the best parts of the existing CLI outputs as interactive dashboards
-- includes an “Ops / Health” page (ingestion visibility tool)
+### Optional Dagster
 
-### 3) Optional orchestration (Dagster)
-Dagster is a good fit because the CLI steps already form an asset graph:
-- ingest → snapshot → flow → derived → briefing
+Daily partitioned asset graph + checks in `apps/dagster/defs`:
 
-But Dagster should remain **optional**:
-- the CLI remains the canonical interface
-- metadata must still be written to DuckDB so that:
-  - Streamlit can read it
-  - CLI-only runs (cron/manual) show up in the same health UI
+- assets: `candles_daily` -> `options_bars` -> `options_snapshot_file` -> `options_flow` -> `derived_metrics` -> `briefing_markdown`
+- checks: `*_quality` checks plus `briefing_markdown_nonempty`
+- job/schedule: `daily_visibility_job`, `daily_visibility_schedule`
 
----
+## Control-plane data model
 
-## Key decisions
+All health surfaces read from DuckDB `meta.*` tables:
 
-### D1 — “Hybrid visibility”
-- Dagster UI (if enabled) is helpful for deep debugging and backfills.
-- But the **source of truth** for run history and health is persisted in DuckDB (`meta.*`).
-- Streamlit reads from DuckDB; it should not scrape Dagster.
-
-### D2 — Store operational metadata next to analytical data
-- Add a `meta` schema inside the same DuckDB file.
-- Benefits:
-  - portable (copy DB = copy state)
-  - no extra infrastructure
-  - easy SQL queries for health dashboards
-
-### D3 — Partitioning: date-first
-Most assets have a natural daily cadence.
-- Start with daily partitions: `YYYY-MM-DD`
-- Add symbol scoping only where you need it (watermarks, coverage heatmaps)
-
----
-
-## Asset model (conceptual)
-
-Think in “assets” (tables/files) even if you don’t use Dagster yet.
-
-### Raw market data assets
-- `candles_daily` (DuckDB table)
-- `options_bars` (DuckDB table)
-
-### Snapshot artifacts (offline-first)
-- `options_snapshot_file` (files under `data/options_snapshots/`)
-- optionally also: `options_snapshot_table` (if/when mirrored into DuckDB)
-
-### Derived assets (from snapshots)
-- `options_flow` (DuckDB table)
-- `derived_metrics` (DuckDB table)
-- `briefing_markdown` (file artifact)
-- `dashboard_views` (views or precomputed tables for UI)
-
-### Operational assets (new)
 - `meta.ingestion_runs`
 - `meta.ingestion_run_assets`
 - `meta.asset_watermarks`
 - `meta.asset_checks`
 
-See: `docs/OBSERVABILITY.md`
+Producer commands and optional Dagster both write to this shared ledger.
 
----
+## Important implementation notes
 
-## New user-facing surfaces
+- Storage mode behavior:
+  - DuckDB storage writes observability rows
+  - Filesystem storage uses `NoopRunLogger` (warning + no ledger writes)
+- Some asset-key names differ between CLI and Dagster (`option_bars` vs `options_bars`, `options_snapshots` vs `options_snapshot_file`, `derived_daily` vs `derived_metrics`)
+- Streamlit helper defaults and CLI default DuckDB paths are different unless explicitly set; use explicit sidebar paths for consistency.
 
-### A) Streamlit “Portal”
-Multipage app with:
-- **Health**: runs, freshness, gaps, quality checks
-- Portfolio: positions + Greeks/stress + daily performance
-- Symbol explorer: candles + snapshot + derived signals
-- Flow: ΔOI/volume positioning proxy views
-- Data explorer: DuckDB schema/table browser
+## Current source plan
 
-See: `docs/PORTAL_STREAMLIT.md` and `docs/PORTAL_STOCKPEERS_STYLE.md`
+Execution plan and task status:
 
-### B) Dagster UI (optional)
-Used for:
-- scheduled runs
-- partition backfills
-- asset graph visualization
-- asset checks as first-class citizens
-
-See: `docs/DAGSTER_OPTIONAL.md`
-
----
-
-## Rollout plan (high-level)
-
-1) Add `meta.*` schema + write run ledger from existing CLI commands  
-2) Build Streamlit MVP with Health + Portfolio + Symbol Explorer  
-3) Add persisted data-quality checks and display in UI  
-4) Add Dagster assets/schedules/backfills (optional)  
-5) Expand dashboards and “gap backfill planner” UX  
-
-Detailed tasks: `docs/plans/VISIBILITY_PORTAL_IMPLEMENTATION_PLAN.md`
+- `docs/plan/VISIBILITY-PORTAL-ORCHESTRATION-PLAN.md`

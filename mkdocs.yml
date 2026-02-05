@@ -42,6 +42,11 @@ nav:
       - Confluence Score: CONFLUENCE_SCORE.md
       - Technical Extension (Percentiles): TECHNICAL_EXTENSION_PERCENTILES.md
       - Technical Extension (RSI Divergence): TECHNICAL_EXTENSION_RSI_DIVERGENCE.md
+  - Visibility & Portal:
+      - Next Stage Overview: NEXT_STAGE_VISIBILITY_PORTAL.md
+      - Observability + Health: OBSERVABILITY.md
+      - Streamlit Portal: PORTAL_STREAMLIT.md
+      - Dagster (Optional): DAGSTER_OPTIONAL.md
   - Planning:
       - Backlog: BACKLOG.md
       - Repo Improvements: REPO_IMPROVEMENTS.md

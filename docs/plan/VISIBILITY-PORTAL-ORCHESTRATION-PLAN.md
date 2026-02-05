@@ -221,9 +221,9 @@ T16 + T17 ───────────────────────�
 - **location**: `/Volumes/develop/options-helper/README.md`, `/Volumes/develop/options-helper/mkdocs.yml`, `/Volumes/develop/options-helper/docs/OBSERVABILITY.md`, `/Volumes/develop/options-helper/docs/PORTAL_STREAMLIT.md`, `/Volumes/develop/options-helper/docs/DAGSTER_OPTIONAL.md`, `/Volumes/develop/options-helper/docs/NEXT_STAGE_VISIBILITY_PORTAL.md`, `/Volumes/develop/options-helper/docs/MKDOCS_NAV_PATCH.md`
 - **description**: Update docs to match actual behavior/commands; wire new docs into nav; include explicit “not financial advice” disclaimer in portal and health docs.
 - **validation**: `mkdocs build` and docs-link sanity checks.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Updated README and visibility/portal/orchestration docs to match shipped behavior (`db health`, `ui`, implemented Streamlit pages, DuckDB observability runtime, optional Dagster assets/checks), added explicit not-financial-advice messaging in portal/health docs, and added a coherent `Visibility & Portal` MkDocs nav section.
+- **files edited/created**: `/Volumes/develop/options-helper/README.md`, `/Volumes/develop/options-helper/mkdocs.yml`, `/Volumes/develop/options-helper/docs/OBSERVABILITY.md`, `/Volumes/develop/options-helper/docs/PORTAL_STREAMLIT.md`, `/Volumes/develop/options-helper/docs/DAGSTER_OPTIONAL.md`, `/Volumes/develop/options-helper/docs/NEXT_STAGE_VISIBILITY_PORTAL.md`, `/Volumes/develop/options-helper/docs/MKDOCS_NAV_PATCH.md`, `/Volumes/develop/options-helper/docs/plan/VISIBILITY-PORTAL-ORCHESTRATION-PLAN.md`
 
 ### T17: Add/Update Deterministic Offline Tests
 - **depends_on**: [T6, T7, T8, T10, T11, T12, T13, T15]

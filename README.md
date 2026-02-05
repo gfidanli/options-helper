@@ -83,6 +83,45 @@ DuckDB is the default storage backend (use `--storage filesystem` to opt out).
 
 - Design/usage: `docs/DUCKDB.md`
 
+### Observability health (DuckDB `meta.*`)
+Operational run history, watermarks, and failed checks are persisted in DuckDB and exposed via:
+
+- Command: `options-helper db health` (`--days`, `--limit`, `--stale-days`, `--json`, `--duckdb-path`)
+- Design/usage: `docs/OBSERVABILITY.md`
+
+Health output is informational/operational only and is not financial advice.
+
+### Streamlit portal (optional)
+Read-only portal pages for visibility and research:
+
+- `01 Health`
+- `02 Portfolio`
+- `03 Symbol Explorer`
+- `04 Flow`
+- `05 Derived History`
+- `06 Data Explorer`
+
+Install and run:
+
+```bash
+pip install -e ".[dev,ui]"
+options-helper ui
+```
+
+`options-helper ui` is informational and educational only, not financial advice.
+More: `docs/PORTAL_STREAMLIT.md`
+
+### Dagster orchestration (optional)
+Daily partitioned asset graph + asset checks (all optional):
+
+```bash
+pip install -e ".[dev,orchestrator]"
+dagster dev -m apps.dagster.defs
+```
+
+Dagster writes run/check metadata to the same DuckDB `meta.*` control-plane tables used by CLI health and the portal.
+More: `docs/DAGSTER_OPTIONAL.md`
+
 ### Ingestion (candles + options bars)
 Bulk backfills for daily candles and Alpaca option bars (DuckDB).
 
