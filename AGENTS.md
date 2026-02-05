@@ -33,6 +33,11 @@ This repo is an information/decision-support tool. Keep outputs and docs clear t
   - docs (one feature per doc in `docs/`),
   - tests (offline, deterministic).
 
+## Context7 (Library/API docs)
+- Always use the Context7 MCP tools when you need library/API documentation, code generation, or setup/configuration steps (even if the user doesn’t explicitly ask).
+- Call `mcp__context7__resolve-library-id` first, then `mcp__context7__query-docs`, and prefer official/primary docs surfaced there.
+- If Context7 doesn’t have the library or the results are insufficient, say so and fall back to other primary sources (and ask for clarification if needed).
+
 ## Data reliability rules
 - `yfinance` data is “best effort”; assume missing fields, zeros, stale quotes, and inconsistent timezones.
 - Prefer cached daily candles as the “source of truth” for technical indicators.
