@@ -8,6 +8,7 @@ DATA_TZ="${DATA_TZ:-America/Chicago}"
 CANARY_SYMBOLS="${CANARY_SYMBOLS:-SPY,QQQ}"
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-3600}"  # 1h
 WAIT_POLL_SECONDS="${WAIT_POLL_SECONDS:-300}"         # 5m
+PROVIDER="${PROVIDER:-alpaca}"
 
 LOG_DIR="${REPO_DIR}/data/logs"
 mkdir -p "${LOG_DIR}"
@@ -27,9 +28,11 @@ RUN_ID="scanner-full-${RUN_DATE}"
 LOG_PATH="${LOG_DIR}/scanner_full_${RUN_DATE}.log"
 STATUS_PATH="${LOG_DIR}/scanner_full_status.json"
 START_TS="$(TZ="${DATA_TZ}" date -Iseconds)"
+SCRIPT_START_TS="$(date +%s)"
 
 if ! "${VENV_BIN}/python" "${WAIT_SCRIPT}" \
   --symbols "${CANARY_SYMBOLS}" \
+  --provider "${PROVIDER}" \
   --tz "${DATA_TZ}" \
   --expected-date today \
   --timeout-seconds "${WAIT_TIMEOUT_SECONDS}" \
@@ -87,7 +90,7 @@ echo "[$(date)] Starting full scanner run (run_id=${RUN_ID})..." >> "${LOG_PATH}
 write_status "running" "" ""
 
 set +e
-"${VENV_BIN}/options-helper" --log-dir "${LOG_DIR}" scanner run \
+"${VENV_BIN}/options-helper" --provider "${PROVIDER}" --log-dir "${LOG_DIR}" scanner run \
   --universe "file:${REPO_DIR}/data/universe/sec_company_tickers.json" \
   --no-skip-scanned \
   --no-write-scanned \
@@ -109,5 +112,10 @@ else
   echo "[$(date)] Full scanner run failed (exit ${EXIT_CODE})." >> "${LOG_PATH}"
   write_status "failed" "${FINISH_TS}" "${EXIT_CODE}"
 fi
+
+SCRIPT_FINISH_TS="$(date +%s)"
+SCRIPT_ELAPSED="$((SCRIPT_FINISH_TS - SCRIPT_START_TS))"
+echo "[$(date)] Full scanner runtime ${SCRIPT_ELAPSED}s (provider=${PROVIDER}, exit=${EXIT_CODE})." \
+  >> "${LOG_PATH}"
 
 exit "${EXIT_CODE}"

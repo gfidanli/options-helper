@@ -10,9 +10,11 @@ DATA_TZ="${DATA_TZ:-America/Chicago}"
 CANARY_SYMBOLS="${CANARY_SYMBOLS:-SPY,QQQ}"
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-7200}"   # 2h
 WAIT_POLL_SECONDS="${WAIT_POLL_SECONDS:-300}"          # 5m
+PROVIDER="${PROVIDER:-alpaca}"
 
 LOG_DIR="${REPO_DIR}/data/logs"
 mkdir -p "${LOG_DIR}"
+SCRIPT_START_TS="$(date +%s)"
 
 LOCKS_DIR="${REPO_DIR}/data/locks"
 LOCK_PATH="${LOCKS_DIR}/options_helper_cron.lock"
@@ -73,6 +75,7 @@ echo "[$(date)] Running watchlist options snapshot (monitor + positions)..." >> 
 
 if ! "${VENV_BIN}/python" "${WAIT_SCRIPT}" \
   --symbols "${CANARY_SYMBOLS}" \
+  --provider "${PROVIDER}" \
   --tz "${DATA_TZ}" \
   --expected-date today \
   --timeout-seconds "${WAIT_TIMEOUT_SECONDS}" \
@@ -84,7 +87,7 @@ then
   exit 0
 fi
 
-"${VENV_BIN}/options-helper" --log-dir "${LOG_DIR}" snapshot-options "${PORTFOLIO}" \
+"${VENV_BIN}/options-helper" --provider "${PROVIDER}" --log-dir "${LOG_DIR}" snapshot-options "${PORTFOLIO}" \
   --cache-dir "${REPO_DIR}/data/options_snapshots" \
   --candle-cache-dir "${REPO_DIR}/data/candles" \
   --watchlists-path "${WATCHLISTS}" \
@@ -97,3 +100,8 @@ fi
   --position-expiries \
   --window-pct 1.0 \
   >> "${LOG_DIR}/monitor_snapshot.log" 2>&1
+
+SCRIPT_FINISH_TS="$(date +%s)"
+SCRIPT_ELAPSED="$((SCRIPT_FINISH_TS - SCRIPT_START_TS))"
+echo "[$(date)] Monitor snapshot complete in ${SCRIPT_ELAPSED}s (provider=${PROVIDER})." \
+  >> "${LOG_DIR}/monitor_snapshot.log"

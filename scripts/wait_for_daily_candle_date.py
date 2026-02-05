@@ -5,9 +5,11 @@ from dataclasses import dataclass
 from datetime import date, datetime
 import sys
 import time
+from datetime import timedelta
 from zoneinfo import ZoneInfo
 
-import yfinance as yf
+from options_helper.data.market_types import DataFetchError
+from options_helper.data.providers import get_provider
 
 
 @dataclass(frozen=True)
@@ -17,17 +19,33 @@ class CandleCheckResult:
     error: str | None = None
 
 
-def _fetch_last_daily_candle_date(symbol: str, *, period: str) -> CandleCheckResult:
+def _parse_period_to_start(period: str, *, today: date) -> date | None:
+    period = period.strip().lower()
+    if period == "max":
+        return None
+    if period == "ytd":
+        return date(today.year, 1, 1)
+
+    units = {"d": 1, "wk": 7, "mo": 30, "y": 365}
+
+    if period.endswith("wk"):
+        n = int(period[:-2])
+        return today - timedelta(days=n * units["wk"])
+
+    for suffix in ("d", "mo", "y"):
+        if period.endswith(suffix):
+            n = int(period[: -len(suffix)])
+            return today - timedelta(days=n * units[suffix])
+
+    raise ValueError(f"Unsupported period format: {period}")
+
+
+def _fetch_last_daily_candle_date(provider, symbol: str, *, start: date | None, end: date | None) -> CandleCheckResult:  # noqa: ANN001
     sym = (symbol or "").strip().upper()
     if not sym:
         return CandleCheckResult(symbol=sym, last_date=None, error="empty symbol")
     try:
-        df = yf.Ticker(sym).history(
-            period=period,
-            interval="1d",
-            auto_adjust=True,
-            back_adjust=False,
-        )
+        df = provider.get_history(sym, start=start, end=end, interval="1d", auto_adjust=True, back_adjust=False)
         if df is None or df.empty:
             return CandleCheckResult(symbol=sym, last_date=None, error="empty history")
         ts = df.index.max()
@@ -37,6 +55,8 @@ def _fetch_last_daily_candle_date(symbol: str, *, period: str) -> CandleCheckRes
             # Last resort: parse YYYY-MM-DD from string form.
             s = str(ts)[:10]
             return CandleCheckResult(symbol=sym, last_date=date.fromisoformat(s))
+    except DataFetchError as exc:
+        return CandleCheckResult(symbol=sym, last_date=None, error=str(exc))
     except Exception as exc:  # noqa: BLE001
         return CandleCheckResult(symbol=sym, last_date=None, error=str(exc))
 
@@ -49,16 +69,21 @@ def _resolve_expected_date(spec: str, *, tz: str) -> date:
 
 
 def main(argv: list[str]) -> int:
-    p = argparse.ArgumentParser(description="Wait until Yahoo daily candles are published for an expected date.")
+    p = argparse.ArgumentParser(description="Wait until daily candles are published for an expected date.")
     p.add_argument(
         "--symbols",
         default="SPY",
         help="Comma-separated list of canary symbols (default: SPY).",
     )
     p.add_argument(
+        "--provider",
+        default="alpaca",
+        help="Market data provider for candles (default: alpaca).",
+    )
+    p.add_argument(
         "--period",
         default="10d",
-        help="yfinance period to request (default: 10d).",
+        help="Period window to request (yfinance-style: 10d/1mo/3mo/1y/ytd/max; default: 10d).",
     )
     p.add_argument(
         "--expected-date",
@@ -95,14 +120,30 @@ def main(argv: list[str]) -> int:
         print(f"Error: invalid --expected-date: {exc}", file=sys.stderr)
         return 2
 
+    provider_name = str(args.provider or "").strip().lower()
+    if not provider_name:
+        print("Error: empty --provider", file=sys.stderr)
+        return 2
+    try:
+        provider = get_provider(provider_name)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Error: failed to initialize provider '{provider_name}': {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        start_date = _parse_period_to_start(args.period, today=expected)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Error: invalid --period: {exc}", file=sys.stderr)
+        return 2
+
     timeout = max(0, int(args.timeout_seconds))
     poll = max(1, int(args.poll_seconds))
 
-    start = time.time()
+    start_ts = time.time()
     attempt = 0
     while True:
         attempt += 1
-        results = [_fetch_last_daily_candle_date(sym, period=args.period) for sym in symbols]
+        results = [_fetch_last_daily_candle_date(provider, sym, start=start_date, end=None) for sym in symbols]
         ready = [r for r in results if r.last_date is not None and r.last_date >= expected]
 
         parts: list[str] = []
@@ -117,22 +158,22 @@ def main(argv: list[str]) -> int:
 
         if ready:
             print(
-                f"ready expected={expected.isoformat()} tz={args.tz} attempts={attempt} last=[{status}]",
+                f"ready provider={provider_name} expected={expected.isoformat()} tz={args.tz} attempts={attempt} last=[{status}]",
                 flush=True,
             )
             return 0
 
-        elapsed = time.time() - start
+        elapsed = time.time() - start_ts
         if elapsed >= timeout:
             print(
-                f"timeout expected={expected.isoformat()} tz={args.tz} attempts={attempt} last=[{status}]",
+                f"timeout provider={provider_name} expected={expected.isoformat()} tz={args.tz} attempts={attempt} last=[{status}]",
                 file=sys.stderr,
                 flush=True,
             )
             return 1
 
         print(
-            f"waiting expected={expected.isoformat()} tz={args.tz} attempts={attempt} last=[{status}]",
+            f"waiting provider={provider_name} expected={expected.isoformat()} tz={args.tz} attempts={attempt} last=[{status}]",
             flush=True,
         )
         time.sleep(min(poll, max(1, timeout - int(elapsed))))
@@ -140,4 +181,3 @@ def main(argv: list[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-

@@ -6,9 +6,11 @@ VENV_BIN="${REPO_DIR}/.venv/bin"
 PORTFOLIO="${REPO_DIR}/portfolio.json"
 WATCHLISTS="${REPO_DIR}/data/watchlists.json"
 DATA_TZ="${DATA_TZ:-America/Chicago}"
+PROVIDER="${PROVIDER:-alpaca}"
 
 LOG_DIR="${REPO_DIR}/data/logs"
 mkdir -p "${LOG_DIR}"
+SCRIPT_START_TS="$(date +%s)"
 
 LOCKS_DIR="${REPO_DIR}/data/locks"
 LOCK_PATH="${LOCKS_DIR}/options_helper_cron.lock"
@@ -53,7 +55,7 @@ then
 fi
 
 if [[ -f "${WATCHLISTS}" ]]; then
-  "${VENV_BIN}/options-helper" --log-dir "${LOG_DIR}" briefing "${PORTFOLIO}" \
+  "${VENV_BIN}/options-helper" --provider "${PROVIDER}" --log-dir "${LOG_DIR}" briefing "${PORTFOLIO}" \
     --watchlists-path "${WATCHLISTS}" \
     --watchlist positions \
     --watchlist monitor \
@@ -62,9 +64,13 @@ if [[ -f "${WATCHLISTS}" ]]; then
     --out "${REPO_DIR}/data/reports/daily" \
     >> "${LOG_DIR}/briefing.log" 2>&1
 else
-  "${VENV_BIN}/options-helper" --log-dir "${LOG_DIR}" briefing "${PORTFOLIO}" \
+  "${VENV_BIN}/options-helper" --provider "${PROVIDER}" --log-dir "${LOG_DIR}" briefing "${PORTFOLIO}" \
     --as-of latest \
     --compare -1 \
     --out "${REPO_DIR}/data/reports/daily" \
     >> "${LOG_DIR}/briefing.log" 2>&1
 fi
+
+SCRIPT_FINISH_TS="$(date +%s)"
+SCRIPT_ELAPSED="$((SCRIPT_FINISH_TS - SCRIPT_START_TS))"
+echo "[$(date)] Briefing complete in ${SCRIPT_ELAPSED}s (provider=${PROVIDER})." >> "${LOG_DIR}/briefing.log"

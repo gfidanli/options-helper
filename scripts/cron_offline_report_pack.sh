@@ -5,9 +5,11 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_BIN="${REPO_DIR}/.venv/bin"
 PORTFOLIO="${REPO_DIR}/portfolio.json"
 WATCHLISTS="${REPO_DIR}/data/watchlists.json"
+PROVIDER="${PROVIDER:-alpaca}"
 
 LOG_DIR="${REPO_DIR}/data/logs"
 mkdir -p "${LOG_DIR}"
+SCRIPT_START_TS="$(date +%s)"
 
 LOCKS_DIR="${REPO_DIR}/data/locks"
 LOCK_PATH="${LOCKS_DIR}/options_helper_cron.lock"
@@ -79,6 +81,7 @@ echo "[$(date)] Running offline report pack for ${RUN_DATE} (include_scanner=${I
   >> "${LOG_DIR}/report_pack.log"
 
 args=(
+  --provider "${PROVIDER}"
   --log-dir "${LOG_DIR}"
   report-pack
   "${PORTFOLIO}"
@@ -100,3 +103,7 @@ if [[ "${INCLUDE_SCANNER}" -eq 1 ]]; then
 fi
 
 "${VENV_BIN}/options-helper" "${args[@]}" >> "${LOG_DIR}/report_pack.log" 2>&1
+
+SCRIPT_FINISH_TS="$(date +%s)"
+SCRIPT_ELAPSED="$((SCRIPT_FINISH_TS - SCRIPT_START_TS))"
+echo "[$(date)] Report pack complete in ${SCRIPT_ELAPSED}s (provider=${PROVIDER})." >> "${LOG_DIR}/report_pack.log"
