@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import os
 import random
 import time
+from urllib.parse import urlparse
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from importlib import metadata
@@ -15,7 +17,13 @@ import pandas as pd
 
 from options_helper.analysis.osi import parse_contract_symbol
 from options_helper.data.alpaca_symbols import to_alpaca_symbol, to_repo_symbol
+from options_helper.data.alpaca_rate_limits import (
+    AlpacaRateLimitSnapshot,
+    parse_alpaca_rate_limit_headers,
+)
 from options_helper.data.market_types import DataFetchError
+
+logger = logging.getLogger("options_helper.cli")
 
 try:  # pragma: no cover - import guard
     from alpaca.data.historical import OptionHistoricalDataClient, StockHistoricalDataClient
@@ -42,6 +50,11 @@ NewsRequest = None
 
 def _clean_env(value: str | None) -> str:
     return (value or "").strip()
+
+
+def _env_truthy(name: str) -> bool:
+    raw = _clean_env(os.getenv(name)).lower()
+    return raw in {"1", "true", "yes", "y", "on"}
 
 
 _DEFAULT_MARKET_TZ = "America/New_York"
@@ -1312,6 +1325,62 @@ class AlpacaClient:
         self._trading_client = None
         self._corporate_actions_client = None
         self._news_client = None
+        self._log_rate_limits = _env_truthy("OH_ALPACA_LOG_RATE_LIMITS")
+        self._last_rate_limit: AlpacaRateLimitSnapshot | None = None
+
+    @property
+    def last_rate_limit(self) -> AlpacaRateLimitSnapshot | None:
+        return self._last_rate_limit
+
+    def _install_rate_limit_hook(self, client: Any, *, client_name: str) -> None:
+        if not self._log_rate_limits or client is None:
+            return
+        session = getattr(client, "_session", None)
+        hooks = getattr(session, "hooks", None)
+        if hooks is None:
+            return
+        if getattr(session, "_oh_rate_limit_hook_installed", False):
+            return
+
+        def _hook(response, *args, **kwargs):  # noqa: ANN001
+            try:
+                snapshot = parse_alpaca_rate_limit_headers(getattr(response, "headers", None))
+                if snapshot is None:
+                    return response
+                self._last_rate_limit = snapshot
+                request = getattr(response, "request", None)
+                method = getattr(request, "method", None) or "?"
+                url = getattr(response, "url", None) or getattr(request, "url", None) or ""
+                parsed = urlparse(str(url))
+                path = parsed.path or "/"
+                status = getattr(response, "status_code", None)
+                reset_in = snapshot.reset_in_seconds()
+                logger.info(
+                    "ALPACA_RATELIMIT client=%s method=%s path=%s status=%s limit=%s remaining=%s reset_epoch=%s reset_in_s=%.3f",
+                    client_name,
+                    method,
+                    path,
+                    status,
+                    snapshot.limit,
+                    snapshot.remaining,
+                    snapshot.reset_epoch,
+                    -1.0 if reset_in is None else reset_in,
+                )
+            except Exception:  # noqa: BLE001
+                return response
+            return response
+
+        try:
+            existing = hooks.get("response")
+            if existing is None:
+                hooks["response"] = [_hook]
+            elif isinstance(existing, list):
+                hooks["response"] = [*existing, _hook]
+            else:
+                hooks["response"] = [existing, _hook]
+            setattr(session, "_oh_rate_limit_hook_installed", True)
+        except Exception:  # noqa: BLE001
+            return
 
     @property
     def provider_version(self) -> str | None:
@@ -1352,6 +1421,7 @@ class AlpacaClient:
                 **self._credential_kwargs(),
                 **self._feed_kwargs(self._stock_feed),
             )
+            self._install_rate_limit_hook(self._stock_client, client_name="stock")
         return self._stock_client
 
     @property
@@ -1364,6 +1434,7 @@ class AlpacaClient:
                 **self._credential_kwargs(),
                 **self._feed_kwargs(self._options_feed),
             )
+            self._install_rate_limit_hook(self._option_client, client_name="option")
         return self._option_client
 
     @property
@@ -1375,6 +1446,7 @@ class AlpacaClient:
             if self._api_base_url:
                 kwargs.update({"base_url": self._api_base_url, "url_override": self._api_base_url})
             self._trading_client = self._construct_client(TradingClient, **kwargs)
+            self._install_rate_limit_hook(self._trading_client, client_name="trading")
         return self._trading_client
 
     @property
@@ -1385,6 +1457,7 @@ class AlpacaClient:
             if client_cls is None:
                 _raise_missing_optional_client("corporate actions")
             self._corporate_actions_client = self._construct_client(client_cls, **self._credential_kwargs())
+            self._install_rate_limit_hook(self._corporate_actions_client, client_name="corporate_actions")
         return self._corporate_actions_client
 
     @property
@@ -1395,6 +1468,7 @@ class AlpacaClient:
             if client_cls is None:
                 _raise_missing_optional_client("news")
             self._news_client = self._construct_client(client_cls, **self._credential_kwargs())
+            self._install_rate_limit_hook(self._news_client, client_name="news")
         return self._news_client
 
     def get_stock_bars(
