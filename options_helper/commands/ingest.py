@@ -8,15 +8,14 @@ from rich.console import Console
 
 import options_helper.cli_deps as cli_deps
 from options_helper.data.alpaca_client import AlpacaClient
-from options_helper.data.ingestion.candles import ingest_candles
-from options_helper.data.ingestion.common import DEFAULT_WATCHLISTS, parse_date, resolve_symbols, shift_years
-from options_helper.data.ingestion.options_bars import (
-    backfill_option_bars,
-    discover_option_contracts,
-    prepare_contracts_for_bars,
-)
+from options_helper.data.ingestion.common import DEFAULT_WATCHLISTS
 from options_helper.data.option_bars import OptionBarsStoreError
 from options_helper.data.option_contracts import OptionContractsStoreError
+from options_helper.pipelines.visibility_jobs import (
+    VisibilityJobParameterError,
+    run_ingest_candles_job,
+    run_ingest_options_bars_job,
+)
 
 
 app = typer.Typer(help="Ingestion utilities (not financial advice).")
@@ -48,41 +47,38 @@ def ingest_candles_command(
 ) -> None:
     """Backfill daily candles for watchlist symbols (period=max)."""
     console = Console(width=200)
-    selection = resolve_symbols(
+    result = run_ingest_candles_job(
         watchlists_path=watchlists_path,
-        watchlists=watchlist,
-        symbols=symbol,
-        default_watchlists=DEFAULT_WATCHLISTS,
+        watchlist=watchlist,
+        symbol=symbol,
+        candle_cache_dir=candle_cache_dir,
+        provider_builder=cli_deps.build_provider,
+        candle_store_builder=cli_deps.build_candle_store,
     )
 
-    for warning in selection.warnings:
+    for warning in result.warnings:
         console.print(f"[yellow]Warning:[/yellow] {warning}")
 
-    if not selection.symbols:
+    if result.no_symbols:
         console.print("No symbols found (empty watchlists and no --symbol override).")
         raise typer.Exit(0)
-
-    provider = cli_deps.build_provider()
-    store = cli_deps.build_candle_store(candle_cache_dir, provider=provider)
-
-    results = ingest_candles(store, selection.symbols, period="max", best_effort=True)
 
     ok = 0
     empty = 0
     error = 0
-    for result in results:
-        if result.status == "ok":
+    for item in result.results:
+        if item.status == "ok":
             ok += 1
-            console.print(f"{result.symbol}: cached through {result.last_date.isoformat()}")
-        elif result.status == "empty":
+            console.print(f"{item.symbol}: cached through {item.last_date.isoformat()}")
+        elif item.status == "empty":
             empty += 1
-            console.print(f"[yellow]Warning:[/yellow] {result.symbol}: no candles returned.")
+            console.print(f"[yellow]Warning:[/yellow] {item.symbol}: no candles returned.")
         else:
             error += 1
-            console.print(f"[red]Error:[/red] {result.symbol}: {result.error}")
+            console.print(f"[red]Error:[/red] {item.symbol}: {item.error}")
 
     console.print(
-        f"Summary: {ok} ok, {empty} empty, {error} error(s) for {len(results)} symbol(s)."
+        f"Summary: {ok} ok, {empty} empty, {error} error(s) for {len(result.results)} symbol(s)."
     )
 
 
@@ -162,65 +158,49 @@ def ingest_options_bars_command(
 ) -> None:
     """Discover Alpaca option contracts and backfill daily bars."""
     console = Console(width=200)
-
-    selection = resolve_symbols(
-        watchlists_path=watchlists_path,
-        watchlists=watchlist,
-        symbols=symbol,
-        default_watchlists=DEFAULT_WATCHLISTS,
-    )
-    for warning in selection.warnings:
-        console.print(f"[yellow]Warning:[/yellow] {warning}")
-
-    if not selection.symbols:
-        console.print("No symbols found (empty watchlists and no --symbol override).")
-        raise typer.Exit(0)
-
-    underlyings = selection.symbols
-    if max_underlyings is not None:
-        underlyings = underlyings[:max_underlyings]
-        console.print(f"[yellow]Limiting to {len(underlyings)} underlyings (--max-underlyings).[/yellow]")
-
-    provider = cli_deps.build_provider()
-    provider_name = getattr(provider, "name", None)
-    if provider_name != "alpaca":
-        raise typer.BadParameter("Options bars ingestion requires --provider alpaca.")
-
-    today = date.today()
     try:
-        exp_start = parse_date(contracts_exp_start, label="contracts-exp-start")
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc), param_hint="--contracts-exp-start") from exc
-
-    if contracts_exp_end:
-        try:
-            exp_end = parse_date(contracts_exp_end, label="contracts-exp-end")
-        except ValueError as exc:
-            raise typer.BadParameter(str(exc), param_hint="--contracts-exp-end") from exc
-    else:
-        exp_end = shift_years(today, 5)
-
-    if exp_end < exp_start:
-        raise typer.BadParameter("contracts-exp-end must be >= contracts-exp-start")
-
-    try:
-        contracts_store = cli_deps.build_option_contracts_store(Path("data/option_contracts"))
-        bars_store = cli_deps.build_option_bars_store(Path("data/option_bars"))
+        result = run_ingest_options_bars_job(
+            watchlists_path=watchlists_path,
+            watchlist=watchlist,
+            symbol=symbol,
+            contracts_exp_start=contracts_exp_start,
+            contracts_exp_end=contracts_exp_end,
+            lookback_years=lookback_years,
+            page_limit=page_limit,
+            max_underlyings=max_underlyings,
+            max_contracts=max_contracts,
+            max_expiries=max_expiries,
+            resume=resume,
+            dry_run=dry_run,
+            fail_fast=fail_fast,
+            provider_builder=cli_deps.build_provider,
+            contracts_store_builder=cli_deps.build_option_contracts_store,
+            bars_store_builder=cli_deps.build_option_bars_store,
+            client_factory=AlpacaClient,
+            contracts_store_dir=Path("data/option_contracts"),
+            bars_store_dir=Path("data/option_bars"),
+            today=date.today(),
+        )
+    except VisibilityJobParameterError as exc:
+        if exc.param_hint:
+            raise typer.BadParameter(str(exc), param_hint=exc.param_hint) from exc
+        raise typer.BadParameter(str(exc)) from exc
     except (OptionContractsStoreError, OptionBarsStoreError) as exc:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
-    client = AlpacaClient()
-    discovery = discover_option_contracts(
-        client,
-        underlyings=underlyings,
-        exp_start=exp_start,
-        exp_end=exp_end,
-        page_limit=page_limit,
-        max_contracts=max_contracts,
-        fail_fast=fail_fast,
-    )
+    for warning in result.warnings:
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
 
+    if result.no_symbols:
+        console.print("No symbols found (empty watchlists and no --symbol override).")
+        raise typer.Exit(0)
+
+    if result.limited_underlyings:
+        console.print(f"[yellow]Limiting to {len(result.underlyings)} underlyings (--max-underlyings).[/yellow]")
+
+    discovery = result.discovery
+    assert discovery is not None
     for summary in discovery.summaries:
         if summary.status == "ok":
             console.print(
@@ -232,7 +212,7 @@ def ingest_options_bars_command(
                 f"[red]Error:[/red] {summary.underlying}: {summary.error or 'contract discovery failed'}"
             )
 
-    if discovery.contracts.empty:
+    if result.no_contracts:
         console.print("No contracts discovered; nothing to ingest.")
         raise typer.Exit(0)
 
@@ -240,37 +220,13 @@ def ingest_options_bars_command(
         console.print(
             f"[yellow]Dry run:[/yellow] skipping writes (would upsert {len(discovery.contracts)} contracts)."
         )
-    else:
-        contracts_store.upsert_contracts(
-            discovery.contracts,
-            provider="alpaca",
-            as_of_date=today,
-            raw_by_contract_symbol=discovery.raw_by_symbol,
-        )
 
-    prepared = prepare_contracts_for_bars(
-        discovery.contracts,
-        max_expiries=max_expiries,
-        max_contracts=max_contracts,
-    )
-
-    if prepared.contracts.empty:
+    if result.no_eligible_contracts:
         console.print("No contracts eligible for bars ingestion after filtering.")
         raise typer.Exit(0)
 
-    summary = backfill_option_bars(
-        client,
-        bars_store,
-        prepared.contracts,
-        provider="alpaca",
-        lookback_years=lookback_years,
-        page_limit=page_limit,
-        resume=resume,
-        dry_run=dry_run,
-        fail_fast=fail_fast,
-        today=today,
-    )
-
+    summary = result.summary
+    assert summary is not None
     if dry_run:
         console.print(
             "Dry run summary: "

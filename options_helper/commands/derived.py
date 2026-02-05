@@ -8,6 +8,10 @@ from rich.console import Console
 import options_helper.cli_deps as cli_deps
 from options_helper.analysis.chain_metrics import compute_chain_report
 from options_helper.analysis.derived_metrics import DerivedRow, compute_derived_stats
+from options_helper.pipelines.visibility_jobs import (
+    VisibilityJobExecutionError,
+    run_derived_update_job,
+)
 from options_helper.data.derived import DERIVED_COLUMNS, DERIVED_SCHEMA_VERSION
 
 app = typer.Typer(help="Persist derived metrics from local snapshots.")
@@ -66,33 +70,22 @@ def derived_update(
 ) -> None:
     """Append or upsert a derived-metrics row for a symbol/day (offline)."""
     console = Console(width=200)
-    store = cli_deps.build_snapshot_store(cache_dir)
-    derived = cli_deps.build_derived_store(derived_dir)
-    candle_store = cli_deps.build_candle_store(candle_cache_dir)
 
     try:
-        as_of_date = store.resolve_date(symbol, as_of)
-        df = store.load_day(symbol, as_of_date)
-        meta = store.load_meta(symbol, as_of_date)
-        spot = _spot_from_meta(meta)
-        if spot is None:
-            raise ValueError("missing spot price in meta.json (run snapshot-options first)")
-
-        report = compute_chain_report(
-            df,
+        result = run_derived_update_job(
             symbol=symbol,
-            as_of=as_of_date,
-            spot=spot,
-            expiries_mode="near",
-            top=10,
-            best_effort=True,
+            as_of=as_of,
+            cache_dir=cache_dir,
+            derived_dir=derived_dir,
+            candle_cache_dir=candle_cache_dir,
+            snapshot_store_builder=cli_deps.build_snapshot_store,
+            derived_store_builder=cli_deps.build_derived_store,
+            candle_store_builder=cli_deps.build_candle_store,
         )
-
-        candles = candle_store.load(symbol)
-        history = derived.load(symbol)
-        row = DerivedRow.from_chain_report(report, candles=candles, derived_history=history)
-        out_path = derived.upsert(symbol, row)
-        console.print(f"Derived schema v{DERIVED_SCHEMA_VERSION} updated: {out_path}")
+        console.print(f"Derived schema v{DERIVED_SCHEMA_VERSION} updated: {result.output_path}")
+    except VisibilityJobExecutionError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1)
     except Exception as exc:  # noqa: BLE001
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1)

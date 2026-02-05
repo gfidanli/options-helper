@@ -99,9 +99,9 @@ T16 + T17 ───────────────────────�
 - **location**: `/Volumes/develop/options-helper/options_helper/pipelines/visibility_jobs.py` (new), `/Volumes/develop/options-helper/options_helper/commands/ingest.py`, `/Volumes/develop/options-helper/options_helper/commands/workflows.py`, `/Volumes/develop/options-helper/options_helper/commands/reports.py`, `/Volumes/develop/options-helper/options_helper/commands/derived.py`
 - **description**: Move command bodies into reusable service functions returning structured results; CLI commands become thin wrappers for arguments/rendering; this is the shared execution layer for Dagster.
 - **validation**: Existing command tests for ingest/snapshot/flow/briefing/dashboard/derived remain green.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added shared pipeline services in `options_helper/pipelines/visibility_jobs.py` and rewired producer command entrypoints (`ingest`, `snapshot-options`, `flow`, `briefing`, `dashboard`, `derived update`) to call reusable service functions while preserving CLI output semantics. Added filesystem-compatible snapshot/derived/candle fallbacks in the service layer to maintain existing offline artifact behavior and command test compatibility.
+- **files edited/created**: `/Volumes/develop/options-helper/options_helper/pipelines/__init__.py`, `/Volumes/develop/options-helper/options_helper/pipelines/visibility_jobs.py`, `/Volumes/develop/options-helper/options_helper/commands/ingest.py`, `/Volumes/develop/options-helper/options_helper/commands/workflows.py`, `/Volumes/develop/options-helper/options_helper/commands/reports.py`, `/Volumes/develop/options-helper/options_helper/commands/derived.py`, `/Volumes/develop/options-helper/docs/plan/VISIBILITY-PORTAL-ORCHESTRATION-PLAN.md`
 
 ### T6: Instrument Producer Commands with Run Ledger + Asset Events
 - **depends_on**: [T3, T5]

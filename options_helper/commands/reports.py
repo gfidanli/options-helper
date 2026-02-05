@@ -29,6 +29,14 @@ from options_helper.data.derived import DERIVED_COLUMNS
 from options_helper.data.earnings import safe_next_earnings_date
 from options_helper.data.technical_backtesting_config import load_technical_backtesting_config
 from options_helper.models import MultiLegPosition, Position
+from options_helper.pipelines.visibility_jobs import (
+    VisibilityJobExecutionError,
+    VisibilityJobParameterError,
+    render_dashboard_report,
+    run_briefing_job,
+    run_dashboard_job,
+    run_flow_report_job,
+)
 from options_helper.reporting_briefing import (
     BriefingSymbolSection,
     build_briefing_payload,
@@ -128,275 +136,33 @@ def flow_report(
     ),
 ) -> None:
     """Report OI/volume deltas from locally captured snapshots (single-day or windowed)."""
-    _ensure_pandas()
-    portfolio = load_portfolio(portfolio_path)
     console = Console()
-
-    store = cli_deps.build_snapshot_store(cache_dir)
-    use_watchlists = bool(watchlist) or all_watchlists
-    if use_watchlists:
-        wl = load_watchlists(watchlists_path)
-        if all_watchlists:
-            symbols = sorted({s for syms in wl.watchlists.values() for s in syms})
-            if not symbols:
-                console.print(f"No watchlists in {watchlists_path}")
-                raise typer.Exit(0)
-        else:
-            symbols_set: set[str] = set()
-            for name in watchlist:
-                syms = wl.get(name)
-                if not syms:
-                    raise typer.BadParameter(
-                        f"Watchlist '{name}' is empty or missing in {watchlists_path}",
-                        param_hint="--watchlist",
-                    )
-                symbols_set.update(syms)
-            symbols = sorted(symbols_set)
-    else:
-        symbols = sorted({p.symbol for p in portfolio.positions})
-        if not symbols and symbol is None:
-            console.print("No positions.")
-            raise typer.Exit(0)
-
-    if symbol is not None:
-        symbols = [symbol.upper()]
-
-    pos_keys = {(p.symbol, p.expiry.isoformat(), float(p.strike), p.option_type) for p in portfolio.positions}
-
-    from rich.table import Table
-
-    group_by_norm = group_by.strip().lower()
-    valid_group_by = {"contract", "strike", "expiry", "expiry-strike"}
-    if group_by_norm not in valid_group_by:
-        raise typer.BadParameter(
-            f"Invalid --group-by (use {', '.join(sorted(valid_group_by))})",
-            param_hint="--group-by",
+    try:
+        result = run_flow_report_job(
+            portfolio_path=portfolio_path,
+            symbol=symbol,
+            watchlists_path=watchlists_path,
+            watchlist=watchlist,
+            all_watchlists=all_watchlists,
+            cache_dir=cache_dir,
+            window=window,
+            group_by=group_by,
+            top=top,
+            out=out,
+            strict=strict,
+            snapshot_store_builder=cli_deps.build_snapshot_store,
+            portfolio_loader=load_portfolio,
+            watchlists_loader=load_watchlists,
         )
-    group_by_val = cast(FlowGroupBy, group_by_norm)
+    except VisibilityJobParameterError as exc:
+        if exc.param_hint:
+            raise typer.BadParameter(str(exc), param_hint=exc.param_hint) from exc
+        raise typer.BadParameter(str(exc)) from exc
 
-    for sym in symbols:
-        need = window + 1
-        dates = store.latest_dates(sym, n=need)
-        if len(dates) < need:
-            console.print(f"[yellow]No flow data for {sym}:[/yellow] need at least {need} snapshots.")
-            continue
-
-        pair_flows: list[pd.DataFrame] = []
-        for prev_date, today_date in zip(dates[:-1], dates[1:], strict=False):
-            today_df = store.load_day(sym, today_date)
-            prev_df = store.load_day(sym, prev_date)
-            if today_df.empty or prev_df.empty:
-                console.print(f"[yellow]No flow data for {sym}:[/yellow] empty snapshot(s) in window.")
-                pair_flows = []
-                break
-
-            spot = _spot_from_meta(store.load_meta(sym, today_date))
-            pair_flows.append(compute_flow(today_df, prev_df, spot=spot))
-
-        if not pair_flows:
-            continue
-
-        start_date, end_date = dates[0], dates[-1]
-
-        if window == 1 and group_by_norm == "contract":
-            prev_date, today_date = dates[-2], dates[-1]
-            flow = pair_flows[-1]
-            summary = summarize_flow(flow)
-
-            console.print(
-                f"\n[bold]{sym}[/bold] flow {prev_date.isoformat()} → {today_date.isoformat()} | "
-                f"calls ΔOI$={summary['calls_delta_oi_notional']:,.0f} | puts ΔOI$={summary['puts_delta_oi_notional']:,.0f}"
-            )
-
-            if flow.empty:
-                console.print("No flow rows.")
-                continue
-
-            if "deltaOI_notional" in flow.columns:
-                flow = flow.assign(_abs=flow["deltaOI_notional"].abs())
-                flow = flow.sort_values("_abs", ascending=False).drop(columns=["_abs"])
-
-            table = Table(title=f"{sym} top {top} contracts by |ΔOI_notional|")
-            table.add_column("*")
-            table.add_column("Expiry")
-            table.add_column("Type")
-            table.add_column("Strike", justify="right")
-            table.add_column("ΔOI", justify="right")
-            table.add_column("OI", justify="right")
-            table.add_column("Vol", justify="right")
-            table.add_column("ΔOI$", justify="right")
-            table.add_column("Class")
-
-            for _, row in flow.head(top).iterrows():
-                expiry = str(row.get("expiry", "-"))
-                opt_type = str(row.get("optionType", "-"))
-                strike = row.get("strike")
-                strike_val = float(strike) if strike is not None and not pd.isna(strike) else None
-                key = (sym, expiry, strike_val if strike_val is not None else float("nan"), opt_type)
-                in_port = key in pos_keys if strike_val is not None else False
-
-                table.add_row(
-                    "*" if in_port else "",
-                    expiry,
-                    opt_type,
-                    "-" if strike_val is None else f"{strike_val:g}",
-                    "-" if pd.isna(row.get("deltaOI")) else f"{row.get('deltaOI'):+.0f}",
-                    "-" if pd.isna(row.get("openInterest")) else f"{row.get('openInterest'):.0f}",
-                    "-" if pd.isna(row.get("volume")) else f"{row.get('volume'):.0f}",
-                    "-" if pd.isna(row.get("deltaOI_notional")) else f"{row.get('deltaOI_notional'):+.0f}",
-                    str(row.get("flow_class", "-")),
-                )
-
-            console.print(table)
-
-            if out is not None:
-                net = aggregate_flow_window(pair_flows, group_by="contract")
-                net = net.assign(_abs=net["deltaOI_notional"].abs() if "deltaOI_notional" in net.columns else 0.0)
-                sort_cols = ["_abs"]
-                ascending = [False]
-                for c in ["expiry", "strike", "optionType", "contractSymbol"]:
-                    if c in net.columns:
-                        sort_cols.append(c)
-                        ascending.append(True)
-                net = net.sort_values(sort_cols, ascending=ascending, na_position="last").drop(columns=["_abs"])
-
-                base = out / "flow" / sym.upper()
-                base.mkdir(parents=True, exist_ok=True)
-                out_path = base / f"{prev_date.isoformat()}_to_{today_date.isoformat()}_w1_contract.json"
-                artifact_net = net.rename(
-                    columns={
-                        "contractSymbol": "contract_symbol",
-                        "optionType": "option_type",
-                        "deltaOI": "delta_oi",
-                        "deltaOI_notional": "delta_oi_notional",
-                        "size": "n_pairs",
-                    }
-                )
-                payload = FlowArtifact(
-                    schema_version=1,
-                    generated_at=utc_now(),
-                    as_of=today_date.isoformat(),
-                    symbol=sym.upper(),
-                    from_date=prev_date.isoformat(),
-                    to_date=today_date.isoformat(),
-                    window=1,
-                    group_by="contract",
-                    snapshot_dates=[prev_date.isoformat(), today_date.isoformat()],
-                    net=artifact_net.where(pd.notna(artifact_net), None).to_dict(orient="records"),
-                ).to_dict()
-                if strict:
-                    FlowArtifact.model_validate(payload)
-                out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-                console.print(f"\nSaved: {out_path}")
-            continue
-
-        net = aggregate_flow_window(pair_flows, group_by=group_by_val)
-        if net.empty:
-            console.print(f"\n[bold]{sym}[/bold] flow net window={window} ({start_date.isoformat()} → {end_date.isoformat()})")
-            console.print("No net flow rows.")
-            continue
-
-        calls_premium = float(net[net["optionType"] == "call"]["deltaOI_notional"].sum()) if "deltaOI_notional" in net.columns else 0.0
-        puts_premium = float(net[net["optionType"] == "put"]["deltaOI_notional"].sum()) if "deltaOI_notional" in net.columns else 0.0
-
-        console.print(
-            f"\n[bold]{sym}[/bold] flow net window={window} ({start_date.isoformat()} → {end_date.isoformat()}) | "
-            f"group-by={group_by_norm} | calls ΔOI$={calls_premium:,.0f} | puts ΔOI$={puts_premium:,.0f}"
-        )
-
-        net = net.assign(_abs=net["deltaOI_notional"].abs() if "deltaOI_notional" in net.columns else 0.0)
-        sort_cols = ["_abs"]
-        ascending = [False]
-        for c in ["expiry", "strike", "optionType", "contractSymbol"]:
-            if c in net.columns:
-                sort_cols.append(c)
-                ascending.append(True)
-
-        net = net.sort_values(sort_cols, ascending=ascending, na_position="last").drop(columns=["_abs"])
-
-        def _render_zone_table(title: str):
-            t = Table(title=title)
-            if group_by_norm == "contract":
-                t.add_column("*")
-            if group_by_norm in {"expiry", "expiry-strike", "contract"}:
-                t.add_column("Expiry")
-            if group_by_norm in {"strike", "expiry-strike", "contract"}:
-                t.add_column("Strike", justify="right")
-            t.add_column("Type")
-            t.add_column("Net ΔOI", justify="right")
-            t.add_column("Net ΔOI$", justify="right")
-            t.add_column("Net Δ$", justify="right")
-            t.add_column("N", justify="right")
-            return t
-
-        def _add_zone_row(t, row) -> None:  # noqa: ANN001
-            expiry = str(row.get("expiry", "-"))
-            opt_type = str(row.get("optionType", "-"))
-            strike = row.get("strike")
-            strike_val = float(strike) if strike is not None and not pd.isna(strike) else None
-            key = (sym, expiry, strike_val if strike_val is not None else float("nan"), opt_type)
-            in_port = key in pos_keys if strike_val is not None else False
-
-            cells: list[str] = []
-            if group_by_norm == "contract":
-                cells.append("*" if in_port else "")
-            if group_by_norm in {"expiry", "expiry-strike", "contract"}:
-                cells.append(expiry)
-            if group_by_norm in {"strike", "expiry-strike", "contract"}:
-                cells.append("-" if strike_val is None else f"{strike_val:g}")
-            cells.extend(
-                [
-                    opt_type,
-                    "-" if pd.isna(row.get("deltaOI")) else f"{row.get('deltaOI'):+.0f}",
-                    "-" if pd.isna(row.get("deltaOI_notional")) else f"{row.get('deltaOI_notional'):+.0f}",
-                    "-" if pd.isna(row.get("delta_notional")) else f"{row.get('delta_notional'):+.0f}",
-                    "-" if pd.isna(row.get("size")) else f"{int(row.get('size')):d}",
-                ]
-            )
-            t.add_row(*cells)
-
-        building = net[net["deltaOI_notional"] > 0].head(top)
-        unwinding = net[net["deltaOI_notional"] < 0].head(top)
-
-        t_build = _render_zone_table(f"{sym} building zones (top {top} by |net ΔOI$|)")
-        for _, row in building.iterrows():
-            _add_zone_row(t_build, row)
-        console.print(t_build)
-
-        t_unwind = _render_zone_table(f"{sym} unwinding zones (top {top} by |net ΔOI$|)")
-        for _, row in unwinding.iterrows():
-            _add_zone_row(t_unwind, row)
-        console.print(t_unwind)
-
-        if out is not None:
-            base = out / "flow" / sym.upper()
-            base.mkdir(parents=True, exist_ok=True)
-            out_path = base / f"{start_date.isoformat()}_to_{end_date.isoformat()}_w{window}_{group_by_norm}.json"
-            artifact_net = net.rename(
-                columns={
-                    "contractSymbol": "contract_symbol",
-                    "optionType": "option_type",
-                    "deltaOI": "delta_oi",
-                    "deltaOI_notional": "delta_oi_notional",
-                    "size": "n_pairs",
-                }
-            )
-            payload = FlowArtifact(
-                schema_version=1,
-                generated_at=utc_now(),
-                as_of=end_date.isoformat(),
-                symbol=sym.upper(),
-                from_date=start_date.isoformat(),
-                to_date=end_date.isoformat(),
-                window=window,
-                group_by=group_by_norm,
-                snapshot_dates=[d.isoformat() for d in dates],
-                net=artifact_net.where(pd.notna(artifact_net), None).to_dict(orient="records"),
-            ).to_dict()
-            if strict:
-                FlowArtifact.model_validate(payload)
-            out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-            console.print(f"\nSaved: {out_path}")
+    for renderable in result.renderables:
+        console.print(renderable)
+    if result.no_symbols:
+        raise typer.Exit(0)
 
 
 def chain_report(
@@ -1023,457 +789,37 @@ def briefing(
     top: int = typer.Option(3, "--top", min=1, max=10, help="Top rows to include in compare/flow sections."),
 ) -> None:
     """Generate a daily Markdown briefing for portfolio + optional watchlists (offline-first)."""
-    _ensure_pandas()
     console = Console(width=200)
-    portfolio = load_portfolio(portfolio_path)
-    rp = portfolio.risk_profile
-
-    positions_by_symbol: dict[str, list[Position]] = {}
-    for p in portfolio.positions:
-        positions_by_symbol.setdefault(p.symbol.upper(), []).append(p)
-
-    portfolio_symbols = sorted({p.symbol.upper() for p in portfolio.positions})
-    watch_symbols: list[str] = []
-    watchlist_symbols_by_name: dict[str, list[str]] = {}
-    if watchlist:
-        try:
-            wl = load_watchlists(watchlists_path)
-            for name in watchlist:
-                wl_symbols = wl.get(name)
-                watch_symbols.extend(wl_symbols)
-                watchlist_symbols_by_name[name] = wl_symbols
-        except Exception as exc:  # noqa: BLE001
-            console.print(f"[yellow]Warning:[/yellow] failed to load watchlists: {exc}")
-
-    symbols = sorted(set(portfolio_symbols).union({s.upper() for s in watch_symbols if s}))
-    if symbol is not None:
-        symbols = [symbol.upper().strip()]
-
-    if symbol is not None:
-        sym = symbols[0] if symbols else ""
-        symbol_sources_map: dict[str, set[str]] = {}
-        if sym:
-            if sym in portfolio_symbols:
-                symbol_sources_map.setdefault(sym, set()).add("portfolio")
-            symbol_sources_map.setdefault(sym, set()).add("manual")
-        symbol_sources_payload = [
-            {"symbol": sym, "sources": sorted(symbol_sources_map.get(sym, set()))}
-            for sym in symbols
-        ]
-        watchlists_payload: list[dict[str, object]] = []
-    else:
-        symbol_sources_map = {}
-        for sym in portfolio_symbols:
-            symbol_sources_map.setdefault(sym, set()).add("portfolio")
-        for name, syms in watchlist_symbols_by_name.items():
-            for sym in syms:
-                symbol_sources_map.setdefault(sym, set()).add(f"watchlist:{name}")
-
-        symbol_sources_payload = [
-            {"symbol": sym, "sources": sorted(symbol_sources_map.get(sym, set()))} for sym in symbols
-        ]
-        watchlists_payload = [
-            {"name": name, "symbols": watchlist_symbols_by_name.get(name, [])}
-            for name in watchlist
-            if name in watchlist_symbols_by_name
-        ]
-
-    if not symbols:
-        console.print("[red]Error:[/red] no symbols selected (empty portfolio and no watchlists)")
-        raise typer.Exit(1)
-
-    store = cli_deps.build_snapshot_store(cache_dir)
-    derived_store = cli_deps.build_derived_store(derived_dir)
-    candle_store = cli_deps.build_candle_store(candle_cache_dir)
-    earnings_store = cli_deps.build_earnings_store(Path("data/earnings"))
-
-    technicals_cfg: dict | None = None
-    technicals_cfg_error: str | None = None
     try:
-        technicals_cfg = load_technical_backtesting_config(technicals_config)
-    except Exception as exc:  # noqa: BLE001
-        technicals_cfg_error = str(exc)
-    confluence_cfg = None
-    confluence_cfg_error = None
-    try:
-        confluence_cfg = load_confluence_config()
-    except ConfluenceConfigError as exc:
-        confluence_cfg_error = str(exc)
-    if confluence_cfg_error:
-        console.print(f"[yellow]Warning:[/yellow] confluence config unavailable: {confluence_cfg_error}")
-
-    day_cache: dict[str, tuple[date, pd.DataFrame]] = {}
-    candles_by_symbol: dict[str, pd.DataFrame] = {}
-    next_earnings_by_symbol: dict[str, date | None] = {}
-
-    sections: list[BriefingSymbolSection] = []
-    resolved_to_dates: list[date] = []
-    compare_norm = compare.strip().lower()
-    compare_enabled = compare_norm not in {"none", "off", "false", "0"}
-
-    def _trend_from_weekly_flag(flag: bool | None) -> str | None:
-        if flag is True:
-            return "up"
-        if flag is False:
-            return "down"
-        return None
-
-    def _extension_percentile_from_snapshot(snapshot: TechnicalSnapshot | None) -> float | None:
-        if snapshot is None or snapshot.extension_percentiles is None:
-            return None
-        daily = snapshot.extension_percentiles.daily
-        if daily is None or not daily.current_percentiles:
-            return None
-        items: list[tuple[float, float]] = []
-        for key, value in daily.current_percentiles.items():
-            try:
-                items.append((float(key), float(value)))
-            except Exception:  # noqa: BLE001
-                continue
-        if not items:
-            return None
-        return sorted(items, key=lambda t: t[0])[-1][1]
-
-    def _net_flow_delta_oi_notional(flow_net: pd.DataFrame | None) -> float | None:
-        if flow_net is None or flow_net.empty:
-            return None
-        if "deltaOI_notional" not in flow_net.columns or "optionType" not in flow_net.columns:
-            return None
-        df = flow_net.copy()
-        df["deltaOI_notional"] = pd.to_numeric(df["deltaOI_notional"], errors="coerce")
-        df["optionType"] = df["optionType"].astype(str).str.lower()
-        calls = df[df["optionType"] == "call"]["deltaOI_notional"].dropna()
-        puts = df[df["optionType"] == "put"]["deltaOI_notional"].dropna()
-        if calls.empty and puts.empty:
-            return None
-        return float(calls.sum()) - float(puts.sum())
-
-    for sym in symbols:
-        errors: list[str] = []
-        warnings: list[str] = []
-        chain = None
-        compare_report = None
-        flow_net = None
-        technicals = None
-        candles = None
-        derived_updated = False
-        derived_row = None
-        confluence_score = None
-        quote_quality = None
-        next_earnings_date = safe_next_earnings_date(earnings_store, sym)
-        next_earnings_by_symbol[sym] = next_earnings_date
-
-        try:
-            to_date = store.resolve_date(sym, as_of)
-            resolved_to_dates.append(to_date)
-
-            event_warnings: set[str] = set()
-            base_risk = earnings_event_risk(
-                today=to_date,
-                expiry=None,
-                next_earnings_date=next_earnings_date,
-                warn_days=rp.earnings_warn_days,
-                avoid_days=rp.earnings_avoid_days,
-            )
-            event_warnings.update(base_risk["warnings"])
-            for pos in positions_by_symbol.get(sym, []):
-                pos_risk = earnings_event_risk(
-                    today=to_date,
-                    expiry=pos.expiry,
-                    next_earnings_date=next_earnings_date,
-                    warn_days=rp.earnings_warn_days,
-                    avoid_days=rp.earnings_avoid_days,
-                )
-                event_warnings.update(pos_risk["warnings"])
-            if event_warnings:
-                warnings.extend(sorted(event_warnings))
-
-            df_to = store.load_day(sym, to_date)
-            meta_to = store.load_meta(sym, to_date)
-            spot_to = _spot_from_meta(meta_to)
-            quote_quality = meta_to.get("quote_quality") if isinstance(meta_to, dict) else None
-            if spot_to is None:
-                raise ValueError("missing spot price in meta.json (run snapshot-options first)")
-
-            day_cache[sym] = (to_date, df_to)
-
-            if technicals_cfg is None:
-                if technicals_cfg_error is not None:
-                    warnings.append(f"technicals unavailable: {technicals_cfg_error}")
-            else:
-                try:
-                    candles = candle_store.load(sym)
-                    if candles.empty:
-                        warnings.append("technicals unavailable: missing candle cache (run refresh-candles)")
-                    else:
-                        technicals = compute_technical_snapshot(candles, technicals_cfg)
-                        if technicals is None:
-                            warnings.append("technicals unavailable: insufficient candle history / warmup")
-                except Exception as exc:  # noqa: BLE001
-                    warnings.append(f"technicals unavailable: {exc}")
-
-            if candles is None:
-                candles = pd.DataFrame()
-            candles_by_symbol[sym] = candles
-
-            chain = compute_chain_report(
-                df_to,
-                symbol=sym,
-                as_of=to_date,
-                spot=spot_to,
-                expiries_mode="near",
-                top=10,
-                best_effort=True,
-            )
-
-            if update_derived:
-                if candles is None:
-                    candles = candle_store.load(sym)
-                history = derived_store.load(sym)
-                row = DerivedRow.from_chain_report(chain, candles=candles, derived_history=history)
-                try:
-                    derived_store.upsert(sym, row)
-                    derived_updated = True
-                    derived_row = row
-                except Exception as exc:  # noqa: BLE001
-                    warnings.append(f"derived update failed: {exc}")
-
-            if compare_enabled:
-                from_date: date | None = None
-                if compare_norm.startswith("-") and compare_norm[1:].isdigit():
-                    try:
-                        from_date = store.resolve_relative_date(sym, to_date=to_date, offset=int(compare_norm))
-                    except Exception as exc:  # noqa: BLE001
-                        warnings.append(f"compare unavailable: {exc}")
-                else:
-                    from_date = store.resolve_date(sym, compare_norm)
-
-                if from_date is not None and from_date != to_date:
-                    df_from = store.load_day(sym, from_date)
-                    meta_from = store.load_meta(sym, from_date)
-                    spot_from = _spot_from_meta(meta_from)
-                    if spot_from is None:
-                        warnings.append("compare unavailable: missing spot in from-date meta.json")
-                    elif df_from.empty or df_to.empty:
-                        warnings.append("compare unavailable: missing snapshot CSVs for from/to date")
-                    else:
-                        compare_report, _, _ = compute_compare_report(
-                            symbol=sym,
-                            from_date=from_date,
-                            to_date=to_date,
-                            from_df=df_from,
-                            to_df=df_to,
-                            spot_from=spot_from,
-                            spot_to=spot_to,
-                            top=top,
-                        )
-
-                        try:
-                            flow = compute_flow(df_to, df_from, spot=spot_to)
-                            flow_net = aggregate_flow_window([flow], group_by="strike")
-                        except Exception:  # noqa: BLE001
-                            warnings.append("flow unavailable: compute failed")
-
-            try:
-                trend = _trend_from_weekly_flag(technicals.weekly_trend_up if technicals is not None else None)
-                ext_pct = _extension_percentile_from_snapshot(technicals)
-                flow_notional = _net_flow_delta_oi_notional(flow_net)
-                iv_rv = derived_row.iv_rv_20d if derived_row is not None else None
-                inputs = ConfluenceInputs(
-                    weekly_trend=trend,
-                    extension_percentile=ext_pct,
-                    rsi_divergence=None,
-                    flow_delta_oi_notional=flow_notional,
-                    iv_rv_20d=iv_rv,
-                )
-                confluence_score = score_confluence(inputs, cfg=confluence_cfg)
-            except Exception as exc:  # noqa: BLE001
-                warnings.append(f"confluence unavailable: {exc}")
-        except Exception as exc:  # noqa: BLE001
-            errors.append(str(exc))
-
-        as_of_label = "-" if sym not in day_cache else day_cache[sym][0].isoformat()
-        sections.append(
-            BriefingSymbolSection(
-                symbol=sym,
-                as_of=as_of_label,
-                chain=chain,
-                compare=compare_report,
-                flow_net=flow_net,
-                technicals=technicals,
-                confluence=confluence_score,
-                errors=errors,
-                warnings=warnings,
-                quote_quality=quote_quality,
-                derived_updated=derived_updated,
-                derived=derived_row,
-                next_earnings_date=next_earnings_date,
-            )
-        )
-
-    if not resolved_to_dates:
-        console.print("[red]Error:[/red] no snapshots found for selected symbols")
-        raise typer.Exit(1)
-    report_date = max(resolved_to_dates).isoformat()
-    portfolio_rows: list[dict[str, str]] = []
-    portfolio_rows_payload: list[dict[str, object]] = []
-    portfolio_rows_with_pnl: list[tuple[float, dict[str, str]]] = []
-    portfolio_metrics: list[PositionMetrics] = []
-    for p in portfolio.positions:
-        sym = p.symbol.upper()
-        to_date, df_to = day_cache.get(sym, (None, pd.DataFrame()))
-
-        mark = None
-        spr_pct = None
-        snapshot_row = None
-        if not df_to.empty:
-            sub = df_to.copy()
-            if "expiry" in sub.columns:
-                sub = sub[sub["expiry"].astype(str) == p.expiry.isoformat()]
-            if "optionType" in sub.columns:
-                sub = sub[sub["optionType"].astype(str).str.lower() == p.option_type]
-            if "strike" in sub.columns:
-                strike = pd.to_numeric(sub["strike"], errors="coerce")
-                sub = sub.assign(_strike=strike)
-                sub = sub[(sub["_strike"] - float(p.strike)).abs() < 1e-9]
-            if not sub.empty:
-                snapshot_row = sub.iloc[0]
-                bid = _extract_float(snapshot_row, "bid")
-                ask = _extract_float(snapshot_row, "ask")
-                mark = _mark_price(bid=bid, ask=ask, last=_extract_float(snapshot_row, "lastPrice"))
-                if bid is not None and ask is not None and bid > 0 and ask > 0:
-                    mid = (bid + ask) / 2.0
-                    if mid > 0:
-                        spr_pct = (ask - bid) / mid
-
-        history = candles_by_symbol.get(sym)
-        if history is None or history.empty:
-            try:
-                history = candle_store.load(sym)
-            except Exception:  # noqa: BLE001
-                history = pd.DataFrame()
-            candles_by_symbol[sym] = history
-
-        try:
-            last_price = close_asof(history, to_date) if to_date is not None else last_close(history)
-            metrics = _position_metrics(
-                None,
-                p,
-                risk_profile=rp,
-                underlying_history=history,
-                underlying_last_price=last_price,
-                as_of=to_date,
-                next_earnings_date=next_earnings_by_symbol.get(sym),
-                snapshot_row=snapshot_row if snapshot_row is not None else {},
-            )
-            portfolio_metrics.append(metrics)
-        except Exception as exc:  # noqa: BLE001
-            console.print(f"[yellow]Warning:[/yellow] portfolio exposure skipped for {p.id}: {exc}")
-
-        pnl_abs = None
-        pnl_pct = None
-        if mark is not None:
-            pnl_abs = (mark - p.cost_basis) * 100.0 * p.contracts
-            pnl_pct = ((mark / p.cost_basis) - 1.0) if p.cost_basis > 0 else None
-
-        portfolio_rows.append(
-            {
-                "id": p.id,
-                "symbol": sym,
-                "type": p.option_type,
-                "expiry": p.expiry.isoformat(),
-                "strike": f"{p.strike:g}",
-                "ct": str(p.contracts),
-                "cost": f"{p.cost_basis:.2f}",
-                "mark": "-" if mark is None else f"{mark:.2f}",
-                "pnl_$": "-" if pnl_abs is None else f"{pnl_abs:+.0f}",
-                "pnl_%": "-" if pnl_pct is None else f"{pnl_pct * 100.0:+.1f}%",
-                "spr_%": "-" if spr_pct is None else f"{spr_pct * 100.0:.1f}%",
-                "as_of": "-" if to_date is None else to_date.isoformat(),
-            }
-        )
-        portfolio_rows_payload.append(
-            {
-                "id": p.id,
-                "symbol": sym,
-                "option_type": p.option_type,
-                "expiry": p.expiry.isoformat(),
-                "strike": float(p.strike),
-                "contracts": int(p.contracts),
-                "cost_basis": float(p.cost_basis),
-                "mark": None if mark is None else float(mark),
-                "pnl": None if pnl_abs is None else float(pnl_abs),
-                "pnl_pct": None if pnl_pct is None else float(pnl_pct),
-                "spr_pct": None if spr_pct is None else float(spr_pct),
-                "as_of": None if to_date is None else to_date.isoformat(),
-            }
-        )
-        pnl_sort = float(pnl_pct) if pnl_pct is not None else float("-inf")
-        portfolio_rows_with_pnl.append((pnl_sort, portfolio_rows[-1]))
-
-    portfolio_table_md = None
-    if portfolio_rows:
-        portfolio_rows_sorted = [row for _, row in sorted(portfolio_rows_with_pnl, key=lambda r: r[0], reverse=True)]
-        include_spread = any(r.get("spr_%") not in (None, "-") for r in portfolio_rows_sorted)
-        portfolio_table_md = render_portfolio_table_markdown(portfolio_rows_sorted, include_spread=include_spread)
-
-    portfolio_exposure = None
-    portfolio_stress = None
-    if portfolio_metrics:
-        portfolio_exposure = compute_portfolio_exposure(portfolio_metrics)
-        portfolio_stress = run_stress(
-            portfolio_exposure,
-            _build_stress_scenarios(stress_spot_pct=[], stress_vol_pp=5.0, stress_days=7),
-        )
-
-    md = render_briefing_markdown(
-        report_date=report_date,
-        portfolio_path=str(portfolio_path),
-        symbol_sections=sections,
-        portfolio_table_md=portfolio_table_md,
-        top=top,
-    )
-
-    if out is None:
-        out_path = Path("data/reports/daily") / f"{report_date}.md"
-    else:
-        out_path = out
-        if out_path.suffix.lower() != ".md":
-            out_path = out_path / f"{report_date}.md"
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(md, encoding="utf-8")
-    console.print(f"Saved: {out_path}")
-
-    if write_json:
-        payload = build_briefing_payload(
-            report_date=report_date,
-            as_of=report_date,
-            portfolio_path=str(portfolio_path),
-            symbol_sections=sections,
+        result = run_briefing_job(
+            portfolio_path=portfolio_path,
+            watchlists_path=watchlists_path,
+            watchlist=watchlist,
+            symbol=symbol,
+            as_of=as_of,
+            compare=compare,
+            cache_dir=cache_dir,
+            candle_cache_dir=candle_cache_dir,
+            technicals_config=technicals_config,
+            out=out,
+            print_to_console=print_to_console,
+            write_json=write_json,
+            strict=strict,
+            update_derived=update_derived,
+            derived_dir=derived_dir,
             top=top,
-            technicals_config=str(technicals_config),
-            portfolio_exposure=portfolio_exposure,
-            portfolio_stress=portfolio_stress,
-            portfolio_rows=portfolio_rows_payload,
-            symbol_sources=symbol_sources_payload,
-            watchlists=watchlists_payload,
+            snapshot_store_builder=cli_deps.build_snapshot_store,
+            derived_store_builder=cli_deps.build_derived_store,
+            candle_store_builder=cli_deps.build_candle_store,
+            earnings_store_builder=cli_deps.build_earnings_store,
+            safe_next_earnings_date_fn=safe_next_earnings_date,
         )
-        if strict:
-            BriefingArtifact.model_validate(payload)
-        json_path = out_path.with_suffix(".json")
-        json_path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True, allow_nan=False), encoding="utf-8"
-        )
-        console.print(f"Saved: {json_path}")
+    except VisibilityJobExecutionError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
 
-    if print_to_console:
-        try:
-            from rich.markdown import Markdown
-
-            console.print(Markdown(md))
-        except Exception:  # noqa: BLE001
-            console.print(md)
+    for renderable in result.renderables:
+        console.print(renderable)
 
 
 def dashboard(
@@ -1508,25 +854,21 @@ def dashboard(
     """Render a read-only daily dashboard from briefing JSON + artifacts."""
     console = Console(width=200)
     try:
-        paths = resolve_briefing_paths(reports_dir, report_date)
-    except Exception as exc:  # noqa: BLE001
+        result = run_dashboard_job(
+            report_date=report_date,
+            reports_dir=reports_dir,
+        )
+    except VisibilityJobExecutionError as exc:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
-    try:
-        artifact = load_briefing_artifact(paths.json_path)
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"[red]Error:[/red] failed to load briefing JSON: {exc}")
-        raise typer.Exit(1) from exc
-
-    console.print(f"Briefing JSON: {paths.json_path}")
-    render_dashboard(
-        artifact=artifact,
-        console=console,
+    render_dashboard_report(
+        result=result,
         reports_dir=reports_dir,
         scanner_run_dir=scanner_run_dir,
         scanner_run_id=scanner_run_id,
         max_shortlist_rows=max_shortlist_rows,
+        render_console=console,
     )
 
 
