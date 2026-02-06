@@ -54,6 +54,15 @@ def _fmt_pct(value: object) -> str:
         return "-"
 
 
+def _fmt_pct_100(value: object) -> str:
+    try:
+        if value is None:
+            return "-"
+        return f"{float(value):.0f}%"
+    except (TypeError, ValueError):
+        return "-"
+
+
 st.title("Symbol Explorer")
 st.caption("Informational and educational use only. Not financial advice.")
 st.info(
@@ -189,7 +198,7 @@ else:
         snippet_cols2[1].metric("IV/RV20", value=_fmt_float(derived_snippet.get("iv_rv_20d"), 2))
         snippet_cols2[2].metric(
             "IV Percentile",
-            value=_fmt_pct(derived_snippet.get("atm_iv_near_percentile")),
+            value=_fmt_pct_100(derived_snippet.get("atm_iv_near_percentile")),
         )
         snippet_cols2[3].metric("IV Term Slope", value=_fmt_float(derived_snippet.get("iv_term_slope"), 3))
 

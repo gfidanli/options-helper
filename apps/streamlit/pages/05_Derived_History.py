@@ -49,6 +49,18 @@ def _fmt_pct(value: object, *, digits: int = 2) -> str:
     return f"{number * 100.0:.{digits}f}%"
 
 
+def _fmt_pct_100(value: object, *, digits: int = 0) -> str:
+    try:
+        if value is None:
+            return "-"
+        number = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if pd.isna(number):
+        return "-"
+    return f"{number:.{digits}f}%"
+
+
 st.title("Derived History")
 st.caption("Informational and educational use only. Not financial advice.")
 st.info("Read-only view. This page does not run derived jobs or modify stored rows.")
@@ -113,7 +125,7 @@ if summary is not None:
     metric_cols2[1].metric("IV/RV20", value=_fmt_float(summary.get("iv_rv_20d"), digits=2))
     metric_cols2[2].metric(
         "IV Percentile",
-        value=_fmt_pct(summary.get("atm_iv_near_percentile")),
+        value=_fmt_pct_100(summary.get("atm_iv_near_percentile")),
     )
     metric_cols2[3].metric("IV Term Slope", value=_fmt_float(summary.get("iv_term_slope"), digits=3))
 

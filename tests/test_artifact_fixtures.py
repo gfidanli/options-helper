@@ -10,6 +10,7 @@ from options_helper.schemas.chain_report import ChainReportArtifact
 from options_helper.schemas.compare import CompareArtifact
 from options_helper.schemas.flow import FlowArtifact
 from options_helper.schemas.scanner_shortlist import ScannerShortlistArtifact
+from options_helper.schemas.tail_risk import TailRiskArtifact
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "artifacts"
@@ -23,6 +24,7 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures" / "artifacts"
         ("compare.json", CompareArtifact),
         ("flow.json", FlowArtifact),
         ("scanner_shortlist.json", ScannerShortlistArtifact),
+        ("tail_risk.json", TailRiskArtifact),
     ],
 )
 def test_artifact_fixture_validates(filename: str, model) -> None:  # noqa: ANN001

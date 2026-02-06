@@ -37,6 +37,11 @@ All artifacts include:
 - Source: `options-helper scanner run ... --write-shortlist`
 - Schema: `options_helper.schemas.scanner_shortlist.ScannerShortlistArtifact`
 
+### Tail risk
+- Path: `data/reports/tail_risk/{SYMBOL}/tail_risk_{ASOF}_h{H}_n{N}_seed{SEED}.json` (when `--out` is used)
+- Source: `options-helper market-analysis tail-risk ... --out ...`
+- Schema: `options_helper.schemas.tail_risk.TailRiskArtifact`
+
 ## Validation
 
 - Offline fixtures live under `tests/fixtures/artifacts/`.

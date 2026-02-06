@@ -16,6 +16,7 @@ PAGE_FILES = [
     STREAMLIT_DIR / "pages" / "04_Flow.py",
     STREAMLIT_DIR / "pages" / "05_Derived_History.py",
     STREAMLIT_DIR / "pages" / "06_Data_Explorer.py",
+    STREAMLIT_DIR / "pages" / "07_Market_Analysis.py",
 ]
 
 

@@ -52,6 +52,9 @@ Implemented pages under `apps/streamlit/pages/`:
   - derived history windows and regime metrics from `derived_daily`
 - `06_Data_Explorer.py`
   - schema/table browser with preview rows and SQL snippet helper
+- `07_Market_Analysis.py`
+  - Monte Carlo tail-risk fan chart + horizon percentile table
+  - move-percentile calculator and IV regime context from `derived_daily`
 
 ## Read-only behavior
 

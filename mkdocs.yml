@@ -38,6 +38,7 @@ nav:
       - Artifact Schemas: ARTIFACT_SCHEMAS.md
   - Research & Analysis:
       - Research: RESEARCH.md
+      - Market Analysis: MARKET_ANALYSIS.md
       - Backtesting: BACKTESTING.md
       - Confluence Score: CONFLUENCE_SCORE.md
       - Technical Extension (Percentiles): TECHNICAL_EXTENSION_PERCENTILES.md

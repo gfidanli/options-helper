@@ -26,6 +26,7 @@ st.page_link("pages/03_Symbol_Explorer.py", label="03 Symbol Explorer")
 st.page_link("pages/04_Flow.py", label="04 Flow")
 st.page_link("pages/05_Derived_History.py", label="05 Derived History")
 st.page_link("pages/06_Data_Explorer.py", label="06 Data Explorer")
+st.page_link("pages/07_Market_Analysis.py", label="07 Market Analysis")
 
 with st.sidebar:
     st.markdown("### Portal")
