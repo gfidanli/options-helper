@@ -31,6 +31,8 @@ nav:
       - Dashboard: DASHBOARD.md
       - Scanner: SCANNER.md
   - Data & Artifacts:
+      - Ingestion: INGEST.md
+      - Ingestion Optimization: INGEST_OPTIMIZATION.md
       - Candle Cache: CANDLE_CACHE.md
       - DuckDB: DUCKDB.md
       - Chain Report: CHAIN_REPORT.md

@@ -69,3 +69,4 @@ All ingestion writes to the DuckDB warehouse (default: `data/warehouse/options.d
 - Throughput tuning loop: enable `--log-rate-limits`, increase bars knobs until you first observe bars `status=429`, then back off to ~80% of that setting.
 - If bars throughput plateaus before any 429s, raise Alpaca HTTP pool sizes (for example `--alpaca-http-pool-maxsize 256 --alpaca-http-pool-connections 256`) before pushing concurrency/RPS higher.
 - Use `--fetch-only` for benchmarking raw fetch throughput without DuckDB write overhead.
+- For endpoint-by-endpoint tuning status and DuckDB optimization details, see [Ingestion optimization playbook](INGEST_OPTIMIZATION.md).
