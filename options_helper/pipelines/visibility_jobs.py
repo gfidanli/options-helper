@@ -136,6 +136,25 @@ class DashboardJobResult:
     artifact: Any
 
 
+class _FetchOnlyOptionBarsStore:
+    """No-op bars store for benchmark/fetch-only runs."""
+
+    def upsert_bars(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+        return
+
+    def mark_meta_success(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+        return
+
+    def mark_meta_error(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+        return
+
+    def coverage(self, *args: Any, **kwargs: Any) -> dict[str, Any] | None:  # noqa: ANN401
+        return None
+
+    def coverage_bulk(self, *args: Any, **kwargs: Any) -> dict[str, dict[str, Any]]:  # noqa: ANN401
+        return {}
+
+
 def _filesystem_compatible_snapshot_store(cache_dir: Path, store: Any) -> Any:
     # The CLI snapshot/report flows are offline-file-first and tests exercise CSV/meta.json
     # directories. If storage runtime resolved a DuckDB snapshot store, switch to filesystem
@@ -253,6 +272,7 @@ def run_ingest_options_bars_job(
     resume: bool,
     dry_run: bool,
     fail_fast: bool,
+    fetch_only: bool = False,
     provider_builder: Callable[[], Any] = cli_deps.build_provider,
     contracts_store_builder: Callable[[Path], Any] = cli_deps.build_option_contracts_store,
     bars_store_builder: Callable[[Path], Any] = cli_deps.build_option_bars_store,
@@ -263,6 +283,11 @@ def run_ingest_options_bars_job(
     run_logger: Any | None = None,
 ) -> IngestOptionsBarsJobResult:
     quality_logger = _resolve_quality_run_logger(run_logger)
+    if dry_run and fetch_only:
+        raise VisibilityJobParameterError("fetch-only and dry-run are mutually exclusive.")
+
+    quality_dry_run = dry_run or fetch_only
+    effective_resume = resume and not fetch_only
     selection = resolve_symbols(
         watchlists_path=watchlists_path,
         watchlists=watchlist,
@@ -276,7 +301,7 @@ def run_ingest_options_bars_job(
             run_options_bars_quality_checks(
                 bars_store=None,
                 contract_symbols=[],
-                dry_run=dry_run,
+                dry_run=quality_dry_run,
                 skip_reason="no_symbols",
             ),
         )
@@ -321,8 +346,12 @@ def run_ingest_options_bars_job(
     if exp_end < exp_start:
         raise VisibilityJobParameterError("contracts-exp-end must be >= contracts-exp-start")
 
-    contracts_store = contracts_store_builder(contracts_store_dir)
-    bars_store = bars_store_builder(bars_store_dir)
+    contracts_store = contracts_store_builder(contracts_store_dir) if not dry_run and not fetch_only else None
+    bars_store: Any
+    if fetch_only:
+        bars_store = _FetchOnlyOptionBarsStore()
+    else:
+        bars_store = bars_store_builder(bars_store_dir)
 
     client = client_factory()
     discovery = discover_option_contracts(
@@ -342,7 +371,7 @@ def run_ingest_options_bars_job(
             run_options_bars_quality_checks(
                 bars_store=bars_store,
                 contract_symbols=[],
-                dry_run=dry_run,
+                dry_run=quality_dry_run,
                 skip_reason="no_contracts",
             ),
         )
@@ -359,7 +388,7 @@ def run_ingest_options_bars_job(
             no_eligible_contracts=False,
         )
 
-    if not dry_run:
+    if contracts_store is not None:
         contracts_store.upsert_contracts(
             discovery.contracts,
             provider="alpaca",
@@ -379,7 +408,7 @@ def run_ingest_options_bars_job(
             run_options_bars_quality_checks(
                 bars_store=bars_store,
                 contract_symbols=[],
-                dry_run=dry_run,
+                dry_run=quality_dry_run,
                 skip_reason="no_eligible_contracts",
             ),
         )
@@ -406,7 +435,7 @@ def run_ingest_options_bars_job(
         bars_concurrency=bars_concurrency,
         bars_max_requests_per_second=bars_max_requests_per_second,
         bars_write_batch_size=bars_write_batch_size,
-        resume=resume,
+        resume=effective_resume,
         dry_run=dry_run,
         fail_fast=fail_fast,
         today=run_day,
@@ -424,7 +453,7 @@ def run_ingest_options_bars_job(
         run_options_bars_quality_checks(
             bars_store=bars_store,
             contract_symbols=contract_symbols,
-            dry_run=dry_run,
+            dry_run=quality_dry_run,
         ),
     )
 

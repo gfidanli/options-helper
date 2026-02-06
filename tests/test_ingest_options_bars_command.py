@@ -221,3 +221,73 @@ def test_ingest_options_bars_passes_http_pool_flags(tmp_path: Path, monkeypatch)
     assert seen_kwargs, "expected AlpacaClient to receive keyword args"
     assert seen_kwargs[0]["http_pool_maxsize"] == 128
     assert seen_kwargs[0]["http_pool_connections"] == 64
+
+
+def test_ingest_options_bars_fetch_only_skips_warehouse_writes(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda: _StubProvider())
+    fake_client = _FakeAlpacaClient()
+    monkeypatch.setattr(ingest, "AlpacaClient", lambda: fake_client)
+
+    runner = CliRunner()
+    duckdb_path = tmp_path / "options.duckdb"
+    result = runner.invoke(
+        app,
+        [
+            "--provider",
+            "alpaca",
+            "--duckdb-path",
+            str(duckdb_path),
+            "ingest",
+            "options-bars",
+            "--symbol",
+            "SPY",
+            "--contracts-exp-start",
+            "2025-01-01",
+            "--contracts-exp-end",
+            "2026-12-31",
+            "--lookback-years",
+            "1",
+            "--fetch-only",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Fetch-only summary:" in result.output
+
+    wh = DuckDBWarehouse(duckdb_path)
+    ensure_schema(wh)
+
+    contracts = wh.fetch_df("SELECT COUNT(*) AS n FROM option_contracts")
+    bars = wh.fetch_df("SELECT COUNT(*) AS n FROM option_bars")
+    meta = wh.fetch_df("SELECT COUNT(*) AS n FROM option_bars_meta")
+
+    assert int(contracts.iloc[0]["n"]) == 0
+    assert int(bars.iloc[0]["n"]) == 0
+    assert int(meta.iloc[0]["n"]) == 0
+    assert len(fake_client.bars_calls) == 3
+
+
+def test_ingest_options_bars_fetch_only_conflicts_with_dry_run(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda: _StubProvider())
+    monkeypatch.setattr(ingest, "AlpacaClient", lambda: _FakeAlpacaClient())
+
+    runner = CliRunner()
+    duckdb_path = tmp_path / "options.duckdb"
+    result = runner.invoke(
+        app,
+        [
+            "--provider",
+            "alpaca",
+            "--duckdb-path",
+            str(duckdb_path),
+            "ingest",
+            "options-bars",
+            "--symbol",
+            "SPY",
+            "--dry-run",
+            "--fetch-only",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Choose either --dry-run or --fetch-only, not both." in result.output

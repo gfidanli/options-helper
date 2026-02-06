@@ -48,6 +48,7 @@ Common flags:
 - `--log-rate-limits/--no-log-rate-limits` (override per-request Alpaca rate-limit logging)
 - `--resume/--no-resume` (uses `option_bars_meta` coverage)
 - `--dry-run` (no writes)
+- `--fetch-only` (benchmark mode: fetches contracts/bars, skips warehouse writes)
 - `--fail-fast/--best-effort`
 
 ## What gets stored
@@ -67,3 +68,4 @@ All ingestion writes to the DuckDB warehouse (default: `data/warehouse/options.d
 - Endpoint tuning baseline (Alpaca): keep `--contracts-max-rps` around `2.5` and start bars at `--bars-concurrency 8 --bars-max-rps 30.0`.
 - Throughput tuning loop: enable `--log-rate-limits`, increase bars knobs until you first observe bars `status=429`, then back off to ~80% of that setting.
 - If bars throughput plateaus before any 429s, raise Alpaca HTTP pool sizes (for example `--alpaca-http-pool-maxsize 256 --alpaca-http-pool-connections 256`) before pushing concurrency/RPS higher.
+- Use `--fetch-only` for benchmarking raw fetch throughput without DuckDB write overhead.
