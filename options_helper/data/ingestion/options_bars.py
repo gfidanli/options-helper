@@ -549,6 +549,8 @@ def backfill_option_bars(
     pending_success_start: dict[str, datetime] = {}
     pending_success_end: dict[str, datetime] = {}
     pending_success_count = 0
+    pending_errors: dict[tuple[str, str], list[str]] = {}
+    pending_error_count = 0
 
     def _fetch_bars(plan: _BarsFetchPlan) -> pd.DataFrame:
         rate_limiter.wait_turn()
@@ -581,6 +583,27 @@ def backfill_option_bars(
             pending_success_end.clear()
             pending_success_count = 0
 
+    def _flush_error_buffers() -> None:
+        nonlocal pending_error_count
+        if not pending_errors:
+            return
+        for (status, error_text), symbols in pending_errors.items():
+            if not symbols:
+                continue
+            store.mark_meta_error(
+                symbols,
+                interval="1d",
+                provider=provider,
+                error=error_text,
+                status=status,
+            )
+        pending_errors.clear()
+        pending_error_count = 0
+
+    def _flush_buffers() -> None:
+        _flush_success_buffers()
+        _flush_error_buffers()
+
     def _queue_success(
         *,
         symbol: str,
@@ -602,14 +625,20 @@ def backfill_option_bars(
         if pending_success_count >= write_batch_size:
             _flush_success_buffers()
 
+    def _queue_error(*, symbol: str, status: str, error_text: str) -> None:
+        nonlocal pending_error_count
+        key = (str(status or "error").strip().lower() or "error", str(error_text))
+        pending_errors.setdefault(key, []).append(symbol)
+        pending_error_count += 1
+        if pending_error_count >= write_batch_size:
+            _flush_error_buffers()
+
     def _record_error(plan: _BarsFetchPlan, exc: Exception) -> None:
         nonlocal error_contracts
-        store.mark_meta_error(
-            [plan.symbol],
-            interval="1d",
-            provider=provider,
-            error=str(exc),
+        _queue_error(
+            symbol=plan.symbol,
             status=_error_status(exc),
+            error_text=str(exc),
         )
         error_contracts += 1
 
@@ -625,12 +654,10 @@ def backfill_option_bars(
                 )
                 ok_contracts += 1
             else:
-                store.mark_meta_error(
-                    [plan.symbol],
-                    interval="1d",
-                    provider=provider,
-                    error="no bars returned",
+                _queue_error(
+                    symbol=plan.symbol,
                     status="not_found",
+                    error_text="no bars returned",
                 )
                 error_contracts += 1
             return
@@ -665,12 +692,10 @@ def backfill_option_bars(
             ok_contracts += 1
             return
 
-        store.mark_meta_error(
-            [plan.symbol],
-            interval="1d",
-            provider=provider,
-            error="no bars returned",
+        _queue_error(
+            symbol=plan.symbol,
             status="not_found",
+            error_text="no bars returned",
         )
         error_contracts += 1
 
@@ -681,7 +706,7 @@ def backfill_option_bars(
             except Exception as exc:  # noqa: BLE001
                 _record_error(plan, exc)
                 if fail_fast:
-                    _flush_success_buffers()
+                    _flush_buffers()
                     raise
                 continue
             _record_success(plan, df_bars)
@@ -697,7 +722,7 @@ def backfill_option_bars(
                     continue
                 _record_success(plan, df_bars)
 
-    _flush_success_buffers()
+    _flush_buffers()
 
     return BarsBackfillSummary(
         total_contracts=total_contracts,

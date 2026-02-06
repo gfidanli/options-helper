@@ -107,6 +107,7 @@ class _FakeStoreWithBatchCounters(_FakeStore):
         super().__init__()
         self.upsert_calls = 0
         self.success_calls = 0
+        self.error_calls = 0
 
     def upsert_bars(
         self,
@@ -143,6 +144,26 @@ class _FakeStoreWithBatchCounters(_FakeStore):
             updated_at=updated_at,
         )
 
+    def mark_meta_error(
+        self,
+        contract_symbols,
+        *,
+        interval: str = "1d",  # noqa: ARG002
+        provider: str,  # noqa: ARG002
+        error,  # noqa: ANN001,ARG002
+        status: str = "error",  # noqa: ARG002
+        updated_at=None,  # noqa: ANN001,ARG002
+    ) -> None:
+        self.error_calls += 1
+        super().mark_meta_error(
+            contract_symbols,
+            interval=interval,
+            provider=provider,
+            error=error,
+            status=status,
+            updated_at=updated_at,
+        )
+
 
 class _FakeStoreWithBulkCoverage(_FakeStore):
     def __init__(self) -> None:
@@ -170,6 +191,24 @@ class _FakeStoreWithBulkCoverage(_FakeStore):
     ) -> dict[str, dict[str, Any]]:
         self.bulk_calls += 1
         return {str(sym).strip().upper(): {} for sym in contract_symbols}
+
+
+class _AlwaysErrorClient(_FakeClient):
+    def get_option_bars_daily_full(
+        self,
+        symbols: list[str],
+        *,
+        start,  # noqa: ANN001
+        end,  # noqa: ANN001
+        interval: str = "1d",  # noqa: ARG002
+        feed: str | None = None,  # noqa: ARG002
+        chunk_size: int = 200,  # noqa: ARG002
+        max_retries: int = 3,  # noqa: ARG002
+        page_limit: int | None = None,  # noqa: ARG002
+    ) -> pd.DataFrame:
+        self.call_starts.append(time.monotonic())
+        self.calls.append({"symbols": list(symbols), "start": start, "end": end})
+        raise RuntimeError("boom")
 
 
 def _contracts_frame() -> pd.DataFrame:
@@ -285,3 +324,35 @@ def test_backfill_option_bars_batches_writes() -> None:
     assert summary.ok_contracts == 3
     assert store.upsert_calls == 2
     assert store.success_calls == 2
+
+
+def test_backfill_option_bars_batches_error_meta_writes() -> None:
+    client = _AlwaysErrorClient(sleep_seconds=0.0)
+    store = _FakeStoreWithBatchCounters()
+
+    summary = backfill_option_bars(
+        client,  # type: ignore[arg-type]
+        store,  # type: ignore[arg-type]
+        _contracts_frame(),
+        provider="alpaca",
+        lookback_years=1,
+        bars_concurrency=1,
+        bars_max_requests_per_second=None,
+        bars_write_batch_size=2,
+        resume=False,
+        dry_run=False,
+        fail_fast=False,
+        today=date(2026, 1, 20),
+    )
+
+    assert summary.requests_attempted == 3
+    assert summary.ok_contracts == 0
+    assert summary.error_contracts == 3
+    assert store.upsert_calls == 0
+    assert store.success_calls == 0
+    assert store.error_calls == 2
+    assert set(store.error_symbols) == {
+        "AAA260117C00100000",
+        "BBB260117C00100000",
+        "CCC260117P00100000",
+    }

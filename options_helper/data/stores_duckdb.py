@@ -795,14 +795,6 @@ class DuckDBOptionBarsStore:
                 tx.register("tmp_option_bars", normalized)
                 tx.execute(
                     """
-                    DELETE FROM option_bars
-                    WHERE (contract_symbol, interval, ts, provider) IN (
-                      SELECT contract_symbol, interval, ts, provider FROM tmp_option_bars
-                    )
-                    """
-                )
-                tx.execute(
-                    """
                     INSERT INTO option_bars(
                       contract_symbol, interval, ts,
                       open, high, low, close, volume, vwap, trade_count,
@@ -812,6 +804,16 @@ class DuckDBOptionBarsStore:
                            open, high, low, close, volume, vwap, trade_count,
                            provider, updated_at
                     FROM tmp_option_bars
+                    ON CONFLICT(contract_symbol, interval, ts, provider)
+                    DO UPDATE SET
+                      open = EXCLUDED.open,
+                      high = EXCLUDED.high,
+                      low = EXCLUDED.low,
+                      close = EXCLUDED.close,
+                      volume = EXCLUDED.volume,
+                      vwap = EXCLUDED.vwap,
+                      trade_count = EXCLUDED.trade_count,
+                      updated_at = EXCLUDED.updated_at
                     """
                 )
                 tx.unregister("tmp_option_bars")

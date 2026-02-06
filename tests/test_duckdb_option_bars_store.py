@@ -93,6 +93,7 @@ def test_duckdb_option_bars_store_upsert_and_meta(tmp_path):
         """,
         ["alpaca", "1d"],
     )
+    assert len(bars2) == 3
     updated = bars2[bars2["contract_symbol"] == "AAPL260221P00095000"].iloc[0]
     assert float(updated["close"]) == 2.2
 
