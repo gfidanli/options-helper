@@ -4,6 +4,7 @@ from collections import deque
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import re
 from typing import Any
 
 import typer
@@ -12,11 +13,27 @@ from rich.console import Console
 
 app = typer.Typer(help="Diagnostics helpers (not financial advice).")
 
+_DATE_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _iter_log_files(log_dir: Path) -> list[Path]:
+    if not log_dir.exists():
+        return []
+    candidates = [path for path in log_dir.glob("*.log") if path.is_file()]
+    try:
+        for entry in log_dir.iterdir():
+            if not entry.is_dir():
+                continue
+            if not _DATE_DIR_RE.match(entry.name):
+                continue
+            candidates.extend([path for path in entry.glob("*.log") if path.is_file()])
+    except Exception:  # noqa: BLE001
+        return candidates
+    return candidates
+
 
 def _latest_log_file(log_dir: Path) -> Path | None:
-    if not log_dir.exists():
-        return None
-    candidates = [path for path in log_dir.glob("*.log") if path.is_file()]
+    candidates = _iter_log_files(log_dir)
     if not candidates:
         return None
     return max(candidates, key=lambda path: path.stat().st_mtime)
@@ -60,9 +77,7 @@ def _iter_tail_lines(path: Path, *, max_lines: int) -> list[str]:
 
 
 def _find_latest_log_with_token(log_dir: Path, *, token: str, scan_lines: int) -> Path | None:
-    if not log_dir.exists():
-        return None
-    candidates = [path for path in log_dir.glob("*.log") if path.is_file()]
+    candidates = _iter_log_files(log_dir)
     if not candidates:
         return None
     candidates = sorted(candidates, key=lambda path: path.stat().st_mtime, reverse=True)

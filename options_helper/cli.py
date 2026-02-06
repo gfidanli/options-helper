@@ -65,6 +65,11 @@ def main(
         "--log-dir",
         help="Directory to write per-command logs.",
     ),
+    log_path: Path | None = typer.Option(
+        None,
+        "--log-path",
+        help="Write logs to this file (overrides --log-dir).",
+    ),
     provider: str = typer.Option(
         "alpaca",
         "--provider",
@@ -84,7 +89,7 @@ def main(
     command_name = ctx.info_name or "options-helper"
     if ctx.invoked_subcommand:
         command_name = f"{command_name} {ctx.invoked_subcommand}"
-    run_logger = setup_run_logger(log_dir, command_name)
+    run_logger = setup_run_logger(log_dir, command_name, log_path=log_path)
     provider_token = set_default_provider_name(provider)
     storage_token = set_default_storage_backend(storage.value)
     duckdb_path_token = set_default_duckdb_path(duckdb_path)
