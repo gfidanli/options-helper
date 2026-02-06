@@ -28,8 +28,8 @@ if [[ "${INSTALL}" -eq 0 ]]; then
   echo "${SCHEDULE_CHECK} ${CRON_CMD_CHECK}"
   echo "${END_MARK}"
   echo
-  echo "Logs: ${REPO_DIR}/data/logs/scanner_full_YYYY-MM-DD.log"
-  echo "Status: ${REPO_DIR}/data/logs/scanner_full_status.json"
+  echo "Logs: ${REPO_DIR}/data/logs/YYYY-MM-DD/scanner_full.log"
+  echo "Status: ${REPO_DIR}/data/logs/YYYY-MM-DD/scanner_full_status.json"
   exit 0
 fi
 
@@ -94,6 +94,6 @@ subprocess.run(["crontab", tmp_path], check=True, timeout=10)
 print("Installed cron job:")
 print(f"  {schedule_run} {cron_cmd_run}")
 print(f"  {schedule_check} {cron_cmd_check}")
-print(f"Logs: {repo_dir}/data/logs/scanner_full_YYYY-MM-DD.log")
-print(f"Status: {repo_dir}/data/logs/scanner_full_status.json")
+print(f"Logs: {repo_dir}/data/logs/YYYY-MM-DD/scanner_full.log")
+print(f"Status: {repo_dir}/data/logs/YYYY-MM-DD/scanner_full_status.json")
 PY

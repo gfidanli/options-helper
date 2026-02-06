@@ -6,8 +6,11 @@ VENV_BIN="${REPO_DIR}/.venv/bin"
 PORTFOLIO="${REPO_DIR}/portfolio.json"
 WATCHLISTS="${REPO_DIR}/data/watchlists.json"
 PROVIDER="${PROVIDER:-alpaca}"
+DATA_TZ="${DATA_TZ:-America/Chicago}"
+RUN_DATE="$(TZ="${DATA_TZ}" date +%F)"
 
-LOG_DIR="${REPO_DIR}/data/logs"
+LOG_DIR="${REPO_DIR}/data/logs/${RUN_DATE}"
+LOG_PATH="${LOG_DIR}/report_pack.log"
 mkdir -p "${LOG_DIR}"
 SCRIPT_START_TS="$(date +%s)"
 
@@ -21,7 +24,7 @@ start_ts="$(date +%s)"
 while ! mkdir "${LOCK_PATH}" 2>/dev/null; do
   now_ts="$(date +%s)"
   if (( now_ts - start_ts >= WAIT_SECONDS )); then
-    echo "[$(date)] Timed out waiting for lock (${LOCK_PATH}); skipping report pack." >> "${LOG_DIR}/report_pack.log"
+    echo "[$(date)] Timed out waiting for lock (${LOCK_PATH}); skipping report pack." >> "${LOG_PATH}"
     exit 0
   fi
   sleep 30
@@ -36,23 +39,20 @@ fi
 
 cd "${REPO_DIR}"
 
-DATA_TZ="${DATA_TZ:-America/Chicago}"
-RUN_DATE="$(TZ="${DATA_TZ}" date +%F)"
-
 SNAPSHOT_ROOT="${REPO_DIR}/data/options_snapshots"
 if [[ ! -d "${SNAPSHOT_ROOT}" ]]; then
-  echo "[$(date)] No snapshot directory at ${SNAPSHOT_ROOT}; skipping report pack." >> "${LOG_DIR}/report_pack.log"
+  echo "[$(date)] No snapshot directory at ${SNAPSHOT_ROOT}; skipping report pack." >> "${LOG_PATH}"
   exit 0
 fi
 
 if ! find "${SNAPSHOT_ROOT}" -mindepth 2 -maxdepth 2 -type d -name "${RUN_DATE}" -print -quit | grep -q .; then
-  echo "[$(date)] No snapshot folders found for ${RUN_DATE}; skipping report pack." >> "${LOG_DIR}/report_pack.log"
+  echo "[$(date)] No snapshot folders found for ${RUN_DATE}; skipping report pack." >> "${LOG_PATH}"
   exit 0
 fi
 
 # Only include "Scanner - Shortlist" if today's scanner run succeeded; otherwise it's often stale.
 INCLUDE_SCANNER=0
-STATUS_PATH="${REPO_DIR}/data/logs/scanner_full_status.json"
+STATUS_PATH="${REPO_DIR}/data/logs/${RUN_DATE}/scanner_full_status.json"
 if [[ -f "${STATUS_PATH}" ]]; then
   if python3 - <<'PY' "${STATUS_PATH}" "${RUN_DATE}"
 from __future__ import annotations
@@ -78,11 +78,12 @@ PY
 fi
 
 echo "[$(date)] Running offline report pack for ${RUN_DATE} (include_scanner=${INCLUDE_SCANNER})..." \
-  >> "${LOG_DIR}/report_pack.log"
+  >> "${LOG_PATH}"
 
 args=(
   --provider "${PROVIDER}"
   --log-dir "${LOG_DIR}"
+  --log-path "${LOG_PATH}"
   report-pack
   "${PORTFOLIO}"
   --watchlists-path "${WATCHLISTS}"
@@ -102,8 +103,8 @@ if [[ "${INCLUDE_SCANNER}" -eq 1 ]]; then
   args+=(--watchlist "Scanner - Shortlist")
 fi
 
-"${VENV_BIN}/options-helper" "${args[@]}" >> "${LOG_DIR}/report_pack.log" 2>&1
+"${VENV_BIN}/options-helper" "${args[@]}" >> "${LOG_PATH}" 2>&1
 
 SCRIPT_FINISH_TS="$(date +%s)"
 SCRIPT_ELAPSED="$((SCRIPT_FINISH_TS - SCRIPT_START_TS))"
-echo "[$(date)] Report pack complete in ${SCRIPT_ELAPSED}s (provider=${PROVIDER})." >> "${LOG_DIR}/report_pack.log"
+echo "[$(date)] Report pack complete in ${SCRIPT_ELAPSED}s (provider=${PROVIDER})." >> "${LOG_PATH}"

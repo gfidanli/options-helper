@@ -8,7 +8,9 @@ WATCHLISTS="${REPO_DIR}/data/watchlists.json"
 DATA_TZ="${DATA_TZ:-America/Chicago}"
 PROVIDER="${PROVIDER:-alpaca}"
 
-LOG_DIR="${REPO_DIR}/data/logs"
+RUN_DATE="$(TZ="${DATA_TZ}" date +%F)"
+LOG_DIR="${REPO_DIR}/data/logs/${RUN_DATE}"
+LOG_PATH="${LOG_DIR}/briefing.log"
 mkdir -p "${LOG_DIR}"
 SCRIPT_START_TS="$(date +%s)"
 
@@ -22,7 +24,7 @@ start_ts="$(date +%s)"
 while ! mkdir "${LOCK_PATH}" 2>/dev/null; do
   now_ts="$(date +%s)"
   if (( now_ts - start_ts >= WAIT_SECONDS )); then
-    echo "[$(date)] Timed out waiting for lock (${LOCK_PATH}); skipping briefing." >> "${LOG_DIR}/briefing.log"
+    echo "[$(date)] Timed out waiting for lock (${LOCK_PATH}); skipping briefing." >> "${LOG_PATH}"
     exit 0
   fi
   sleep 30
@@ -37,12 +39,12 @@ fi
 
 cd "${REPO_DIR}"
 
-echo "[$(date)] Running daily briefing..." >> "${LOG_DIR}/briefing.log"
+echo "[$(date)] Running daily briefing..." >> "${LOG_PATH}"
 
 EXPECTED_DATE="$(TZ="${DATA_TZ}" date +%F)"
 SNAPSHOT_ROOT="${REPO_DIR}/data/options_snapshots"
 if [[ ! -d "${SNAPSHOT_ROOT}" ]]; then
-  echo "[$(date)] No snapshot directory at ${SNAPSHOT_ROOT}; skipping briefing." >> "${LOG_DIR}/briefing.log"
+  echo "[$(date)] No snapshot directory at ${SNAPSHOT_ROOT}; skipping briefing." >> "${LOG_PATH}"
   exit 0
 fi
 
@@ -50,27 +52,27 @@ if ! find "${SNAPSHOT_ROOT}" -mindepth 2 -maxdepth 2 -type d -name "${EXPECTED_D
   | grep -q .
 then
   echo "[$(date)] No snapshot folders found for ${EXPECTED_DATE}; skipping briefing to avoid overwriting an older report." \
-    >> "${LOG_DIR}/briefing.log"
+    >> "${LOG_PATH}"
   exit 0
 fi
 
 if [[ -f "${WATCHLISTS}" ]]; then
-  "${VENV_BIN}/options-helper" --provider "${PROVIDER}" --log-dir "${LOG_DIR}" briefing "${PORTFOLIO}" \
+  "${VENV_BIN}/options-helper" --provider "${PROVIDER}" --log-dir "${LOG_DIR}" --log-path "${LOG_PATH}" briefing "${PORTFOLIO}" \
     --watchlists-path "${WATCHLISTS}" \
     --watchlist positions \
     --watchlist monitor \
     --as-of latest \
     --compare -1 \
     --out "${REPO_DIR}/data/reports/daily" \
-    >> "${LOG_DIR}/briefing.log" 2>&1
+    >> "${LOG_PATH}" 2>&1
 else
-  "${VENV_BIN}/options-helper" --provider "${PROVIDER}" --log-dir "${LOG_DIR}" briefing "${PORTFOLIO}" \
+  "${VENV_BIN}/options-helper" --provider "${PROVIDER}" --log-dir "${LOG_DIR}" --log-path "${LOG_PATH}" briefing "${PORTFOLIO}" \
     --as-of latest \
     --compare -1 \
     --out "${REPO_DIR}/data/reports/daily" \
-    >> "${LOG_DIR}/briefing.log" 2>&1
+    >> "${LOG_PATH}" 2>&1
 fi
 
 SCRIPT_FINISH_TS="$(date +%s)"
 SCRIPT_ELAPSED="$((SCRIPT_FINISH_TS - SCRIPT_START_TS))"
-echo "[$(date)] Briefing complete in ${SCRIPT_ELAPSED}s (provider=${PROVIDER})." >> "${LOG_DIR}/briefing.log"
+echo "[$(date)] Briefing complete in ${SCRIPT_ELAPSED}s (provider=${PROVIDER})." >> "${LOG_PATH}"

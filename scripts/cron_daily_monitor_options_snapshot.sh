@@ -12,7 +12,9 @@ WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-7200}"   # 2h
 WAIT_POLL_SECONDS="${WAIT_POLL_SECONDS:-300}"          # 5m
 PROVIDER="${PROVIDER:-alpaca}"
 
-LOG_DIR="${REPO_DIR}/data/logs"
+RUN_DATE="$(TZ="${DATA_TZ}" date +%F)"
+LOG_DIR="${REPO_DIR}/data/logs/${RUN_DATE}"
+LOG_PATH="${LOG_DIR}/monitor_snapshot.log"
 mkdir -p "${LOG_DIR}"
 SCRIPT_START_TS="$(date +%s)"
 
@@ -26,7 +28,7 @@ start_ts="$(date +%s)"
 while ! mkdir "${LOCK_PATH}" 2>/dev/null; do
   now_ts="$(date +%s)"
   if (( now_ts - start_ts >= WAIT_SECONDS )); then
-    echo "[$(date)] Timed out waiting for lock (${LOCK_PATH}); skipping monitor snapshot." >> "${LOG_DIR}/monitor_snapshot.log"
+    echo "[$(date)] Timed out waiting for lock (${LOCK_PATH}); skipping monitor snapshot." >> "${LOG_PATH}"
     exit 0
   fi
   sleep 30
@@ -42,7 +44,7 @@ fi
 cd "${REPO_DIR}"
 
 if [[ ! -f "${WATCHLISTS}" ]]; then
-  echo "[$(date)] No watchlists file at ${WATCHLISTS}; skipping monitor snapshot." >> "${LOG_DIR}/monitor_snapshot.log"
+  echo "[$(date)] No watchlists file at ${WATCHLISTS}; skipping monitor snapshot." >> "${LOG_PATH}"
   exit 0
 fi
 
@@ -67,11 +69,11 @@ clean = {s.strip().upper() for s in symbols if isinstance(s, str) and s.strip()}
 sys.exit(0 if clean else 1)
 PY
 then
-  echo "[$(date)] Watchlists 'monitor'/'positions' missing/empty in ${WATCHLISTS}; skipping watchlist snapshot." >> "${LOG_DIR}/monitor_snapshot.log"
+  echo "[$(date)] Watchlists 'monitor'/'positions' missing/empty in ${WATCHLISTS}; skipping watchlist snapshot." >> "${LOG_PATH}"
   exit 0
 fi
 
-echo "[$(date)] Running watchlist options snapshot (monitor + positions)..." >> "${LOG_DIR}/monitor_snapshot.log"
+echo "[$(date)] Running watchlist options snapshot (monitor + positions)..." >> "${LOG_PATH}"
 
 if ! "${VENV_BIN}/python" "${WAIT_SCRIPT}" \
   --symbols "${CANARY_SYMBOLS}" \
@@ -80,14 +82,14 @@ if ! "${VENV_BIN}/python" "${WAIT_SCRIPT}" \
   --expected-date today \
   --timeout-seconds "${WAIT_TIMEOUT_SECONDS}" \
   --poll-seconds "${WAIT_POLL_SECONDS}" \
-  >> "${LOG_DIR}/monitor_snapshot.log" 2>&1
+  >> "${LOG_PATH}" 2>&1
 then
   echo "[$(date)] Timed out waiting for daily candle update; skipping watchlist snapshot to avoid mis-dating." \
-    >> "${LOG_DIR}/monitor_snapshot.log"
+    >> "${LOG_PATH}"
   exit 0
 fi
 
-"${VENV_BIN}/options-helper" --provider "${PROVIDER}" --log-dir "${LOG_DIR}" snapshot-options "${PORTFOLIO}" \
+"${VENV_BIN}/options-helper" --provider "${PROVIDER}" --log-dir "${LOG_DIR}" --log-path "${LOG_PATH}" snapshot-options "${PORTFOLIO}" \
   --cache-dir "${REPO_DIR}/data/options_snapshots" \
   --candle-cache-dir "${REPO_DIR}/data/candles" \
   --watchlists-path "${WATCHLISTS}" \
@@ -99,9 +101,9 @@ fi
   --windowed \
   --position-expiries \
   --window-pct 1.0 \
-  >> "${LOG_DIR}/monitor_snapshot.log" 2>&1
+  >> "${LOG_PATH}" 2>&1
 
 SCRIPT_FINISH_TS="$(date +%s)"
 SCRIPT_ELAPSED="$((SCRIPT_FINISH_TS - SCRIPT_START_TS))"
 echo "[$(date)] Monitor snapshot complete in ${SCRIPT_ELAPSED}s (provider=${PROVIDER})." \
-  >> "${LOG_DIR}/monitor_snapshot.log"
+  >> "${LOG_PATH}"

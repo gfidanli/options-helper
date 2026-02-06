@@ -27,6 +27,7 @@ nav:
       - Briefing: BRIEFING.md
       - Report Pack: REPORT_PACK.md
       - Automation: AUTOMATION.md
+      - Logging: LOGGING.md
       - Dashboard: DASHBOARD.md
       - Scanner: SCANNER.md
   - Data & Artifacts:

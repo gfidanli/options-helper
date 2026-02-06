@@ -9,7 +9,9 @@ This tool is for informational/educational use only and is not financial advice.
 - **Data first, reports second:** `briefing` (and most offline reports) depend on snapshot files under `data/`.
 - **Idempotent by design:** re-running jobs should update/overwrite the latest day rather than creating duplicates.
 - **Non-overlap:** cron jobs use a shared lock directory under `data/locks/` to avoid concurrent writes to caches.
-- **Per-command logs:** every CLI command accepts `--log-dir` (default `data/logs/`) and writes a timestamped log file.
+- **Logs:** every CLI command accepts `--log-dir` (default `data/logs/`) and writes a timestamped log file under
+  `data/logs/{YYYY-MM-DD}/` (America/Chicago). Use `--log-path` to write to a specific file (cron uses this to keep one
+  log file per job/day).
 - **Provider:** cron scripts default to Alpaca (`PROVIDER=alpaca`). Override per-run with `PROVIDER=yahoo` if needed.
 - **Adjusted candles:** daily candle caches are fetched using split/dividend-adjusted prices by default (for indicator/backtest continuity).
 
@@ -24,14 +26,14 @@ corresponding `scripts/install_cron_*.sh` first, then keep this table in sync (t
 
 | Job | Installer | Cron schedule (CRON_TZ=America/Chicago) | Script(s) | Primary outputs | Logs / status |
 |---|---|---|---|---|---|
-| Weekly earnings refresh | `scripts/install_cron_weekly_refresh_earnings.sh` | `0 12 * * 1` | `scripts/cron_weekly_refresh_earnings.sh` | `data/earnings/{SYMBOL}.json` | `data/logs/earnings_refresh.log` |
-| Daily options snapshot | `scripts/install_cron_daily_options_snapshot.sh` | `0 16 * * 1-5` | `scripts/cron_daily_options_snapshot.sh` | `data/candles/{SYMBOL}.csv`<br>`data/options_snapshots/{SYMBOL}/{YYYY-MM-DD}/{EXPIRY}.csv` | `data/logs/options_snapshot.log` |
-| Daily monitor snapshot | `scripts/install_cron_daily_monitor_options_snapshot.sh` | `5 16 * * 1-5` | `scripts/cron_daily_monitor_options_snapshot.sh` | `data/options_snapshots/{SYMBOL}/{YYYY-MM-DD}/{EXPIRY}.csv` | `data/logs/monitor_snapshot.log` |
-| Daily briefing | `scripts/install_cron_daily_briefing.sh` | `10 16 * * 1-5` | `scripts/cron_daily_briefing.sh` | `data/reports/daily/{YYYY-MM-DD}.md`<br>`data/derived/{SYMBOL}.csv` | `data/logs/briefing.log` |
-| Daily full scanner (run + check) | `scripts/install_cron_daily_scanner_full.sh` | run: `15 16 * * 1-5`<br>check: `30 16 * * 1-5` | `scripts/cron_daily_scanner_full.sh`<br>`scripts/cron_check_scanner_full.sh` | `data/scanner/runs/...` | `data/logs/scanner_full_YYYY-MM-DD.log`<br>`data/logs/scanner_full_status.json` |
-| Daily offline report pack | `scripts/install_cron_offline_report_pack.sh` | `0 17 * * 1-5` | `scripts/cron_offline_report_pack.sh` | `data/reports/**` | `data/logs/report_pack.log` |
-| Intraday capture (optional) | `scripts/install_cron_intraday_capture.sh` | `5 15 * * 1-5` | `scripts/cron_intraday_capture.sh` | `data/intraday/**` | `data/logs/intraday_capture.log` |
-| Stream capture session (optional) | (no installer) | (on-demand) | `scripts/cron_stream_capture.sh` | `data/intraday/**` | `data/logs/stream_capture.log` |
+| Weekly earnings refresh | `scripts/install_cron_weekly_refresh_earnings.sh` | `0 12 * * 1` | `scripts/cron_weekly_refresh_earnings.sh` | `data/earnings/{SYMBOL}.json` | `data/logs/{YYYY-MM-DD}/earnings_refresh.log` |
+| Daily options snapshot | `scripts/install_cron_daily_options_snapshot.sh` | `0 16 * * 1-5` | `scripts/cron_daily_options_snapshot.sh` | `data/candles/{SYMBOL}.csv`<br>`data/options_snapshots/{SYMBOL}/{YYYY-MM-DD}/{EXPIRY}.csv` | `data/logs/{YYYY-MM-DD}/options_snapshot.log` |
+| Daily monitor snapshot | `scripts/install_cron_daily_monitor_options_snapshot.sh` | `5 16 * * 1-5` | `scripts/cron_daily_monitor_options_snapshot.sh` | `data/options_snapshots/{SYMBOL}/{YYYY-MM-DD}/{EXPIRY}.csv` | `data/logs/{YYYY-MM-DD}/monitor_snapshot.log` |
+| Daily briefing | `scripts/install_cron_daily_briefing.sh` | `10 16 * * 1-5` | `scripts/cron_daily_briefing.sh` | `data/reports/daily/{YYYY-MM-DD}.md`<br>`data/derived/{SYMBOL}.csv` | `data/logs/{YYYY-MM-DD}/briefing.log` |
+| Daily full scanner (run + check) | `scripts/install_cron_daily_scanner_full.sh` | run: `15 16 * * 1-5`<br>check: `30 16 * * 1-5` | `scripts/cron_daily_scanner_full.sh`<br>`scripts/cron_check_scanner_full.sh` | `data/scanner/runs/...` | `data/logs/{YYYY-MM-DD}/scanner_full.log`<br>`data/logs/{YYYY-MM-DD}/scanner_full_status.json` |
+| Daily offline report pack | `scripts/install_cron_offline_report_pack.sh` | `0 17 * * 1-5` | `scripts/cron_offline_report_pack.sh` | `data/reports/**` | `data/logs/{YYYY-MM-DD}/report_pack.log` |
+| Intraday capture (optional) | `scripts/install_cron_intraday_capture.sh` | `5 15 * * 1-5` | `scripts/cron_intraday_capture.sh` | `data/intraday/**` | `data/logs/{YYYY-MM-DD}/intraday_capture.log` |
+| Stream capture session (optional) | (no installer) | (on-demand) | `scripts/cron_stream_capture.sh` | `data/intraday/**` | `data/logs/{YYYY-MM-DD}/stream_capture.log` |
 
 ### 1) Weekly earnings cache refresh (network)
 
@@ -44,7 +46,7 @@ corresponding `scripts/install_cron_*.sh` first, then keep this table in sync (t
 - **Depends on:**
   - `data/watchlists.json` existing and valid JSON
   - network access (Yahoo via `yfinance`)
-- **Logs:** `data/logs/earnings_refresh.log`
+- **Logs:** `data/logs/{YYYY-MM-DD}/earnings_refresh.log`
 
 ### 2) Daily portfolio candles + options snapshots (network)
 
@@ -61,7 +63,7 @@ corresponding `scripts/install_cron_*.sh` first, then keep this table in sync (t
 - **Depends on:**
   - `.venv/bin/options-helper` installed
   - network access (Alpaca via `alpaca-py`)
-- **Logs:** `data/logs/options_snapshot.log`
+- **Logs:** `data/logs/{YYYY-MM-DD}/options_snapshot.log`
 
 ### 3) Daily watchlist (“monitor”) option snapshots (network, optional)
 
@@ -75,7 +77,7 @@ flow/chain reports work for them too.
 - **Depends on:**
   - `data/watchlists.json` existing and containing a non-empty `monitor` and/or `positions` list (otherwise it skips)
   - network access (Alpaca via `alpaca-py`)
-- **Logs:** `data/logs/monitor_snapshot.log`
+- **Logs:** `data/logs/{YYYY-MM-DD}/monitor_snapshot.log`
 
 ### 4) Daily briefing report (offline-first, depends on snapshots)
 
@@ -91,7 +93,7 @@ flow/chain reports work for them too.
   - derived history (per symbol): `data/derived/{SYMBOL}.csv`
 - **Depends on:**
   - snapshot folders existing for the included symbols (it will emit per-symbol warnings when missing)
-- **Logs:** `data/logs/briefing.log`
+- **Logs:** `data/logs/{YYYY-MM-DD}/briefing.log`
 
 ### 5) Daily full scanner + completion checks (network, heavy)
 
@@ -106,8 +108,8 @@ flow/chain reports work for them too.
 - **Depends on:**
   - `.venv/bin/options-helper` installed
   - network access (Alpaca via `alpaca-py`)
-- **Logs:** `data/logs/scanner_full_YYYY-MM-DD.log`
-- **Status:** `data/logs/scanner_full_status.json`
+- **Logs:** `data/logs/{YYYY-MM-DD}/scanner_full.log`
+- **Status:** `data/logs/{YYYY-MM-DD}/scanner_full_status.json`
 
 ### 6) Daily offline report pack (offline-first, depends on snapshots/candles)
 
@@ -129,7 +131,7 @@ Generates per-symbol saved artifacts (JSON/Markdown) for offline review.
   - technicals extension-stats: `data/reports/technicals/extension/{SYMBOL}/{YYYY-MM-DD}.json` + `.md`
 - **Depends on:**
   - snapshots and candle cache being current for the day
-- **Logs:** `data/logs/report_pack.log`
+- **Logs:** `data/logs/{YYYY-MM-DD}/report_pack.log`
 
 ## Other optional jobs
 

@@ -24,7 +24,7 @@ if [[ "${INSTALL}" -eq 0 ]]; then
   echo "${SCHEDULE} ${CRON_CMD}"
   echo "${END_MARK}"
   echo
-  echo "Logs: ${REPO_DIR}/data/logs/briefing.log"
+  echo "Logs: ${REPO_DIR}/data/logs/YYYY-MM-DD/briefing.log"
   exit 0
 fi
 
@@ -77,5 +77,5 @@ subprocess.run(["crontab", tmp_path], check=True, timeout=10)
 print("Installed cron job:")
 print(f"  CRON_TZ={cron_tz}")
 print(f"  {schedule} {cron_cmd}")
-print(f"Logs: {repo_dir}/data/logs/briefing.log")
+print(f"Logs: {repo_dir}/data/logs/YYYY-MM-DD/briefing.log")
 PY

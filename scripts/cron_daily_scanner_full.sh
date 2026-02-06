@@ -10,7 +10,10 @@ WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-3600}"  # 1h
 WAIT_POLL_SECONDS="${WAIT_POLL_SECONDS:-300}"         # 5m
 PROVIDER="${PROVIDER:-alpaca}"
 
-LOG_DIR="${REPO_DIR}/data/logs"
+RUN_DATE="$(TZ="${DATA_TZ}" date +%F)"
+LOG_DIR="${REPO_DIR}/data/logs/${RUN_DATE}"
+LOG_PATH="${LOG_DIR}/scanner_full.log"
+STATUS_PATH="${LOG_DIR}/scanner_full_status.json"
 mkdir -p "${LOG_DIR}"
 
 LOCKS_DIR="${REPO_DIR}/data/locks"
@@ -23,10 +26,7 @@ if [[ ! -x "${VENV_BIN}/options-helper" ]]; then
   exit 1
 fi
 
-RUN_DATE="$(TZ="${DATA_TZ}" date +%F)"
 RUN_ID="scanner-full-${RUN_DATE}"
-LOG_PATH="${LOG_DIR}/scanner_full_${RUN_DATE}.log"
-STATUS_PATH="${LOG_DIR}/scanner_full_status.json"
 START_TS="$(TZ="${DATA_TZ}" date -Iseconds)"
 SCRIPT_START_TS="$(date +%s)"
 
@@ -103,6 +103,7 @@ write_status "running" "" ""
 
 set +e
 "${VENV_BIN}/options-helper" --provider "${PROVIDER}" --log-dir "${LOG_DIR}" scanner run \
+  --log-path "${LOG_PATH}" \
   --universe "file:${REPO_DIR}/data/universe/sec_company_tickers.json" \
   --no-skip-scanned \
   --no-write-scanned \

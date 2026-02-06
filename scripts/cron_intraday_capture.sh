@@ -4,9 +4,11 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_BIN="${REPO_DIR}/.venv/bin"
 
-LOG_DIR="${REPO_DIR}/data/logs"
-mkdir -p "${LOG_DIR}"
+DATA_TZ="${DATA_TZ:-America/Chicago}"
+RUN_DATE="$(TZ="${DATA_TZ}" date +%F)"
+LOG_DIR="${REPO_DIR}/data/logs/${RUN_DATE}"
 LOG_PATH="${LOG_DIR}/intraday_capture.log"
+mkdir -p "${LOG_DIR}"
 
 LOCKS_DIR="${REPO_DIR}/data/locks"
 LOCK_PATH="${LOCKS_DIR}/options_helper_intraday_capture.lock"
@@ -43,7 +45,7 @@ fi
 echo "[$(date)] Running intraday capture (day=${DAY}, timeframe=${TIMEFRAME}, market_tz=${MARKET_TZ})" >> "${LOG_PATH}"
 
 if [[ -n "${STOCK_SYMBOLS}" ]]; then
-  "${VENV_BIN}/options-helper" --log-dir "${LOG_DIR}" --provider alpaca intraday pull-stocks-bars \
+  "${VENV_BIN}/options-helper" --log-dir "${LOG_DIR}" --log-path "${LOG_PATH}" --provider alpaca intraday pull-stocks-bars \
     --symbols "${STOCK_SYMBOLS}" \
     --day "${DAY}" \
     --timeframe "${TIMEFRAME}" \
@@ -56,7 +58,7 @@ if [[ -n "${OPTION_UNDERLYINGS}" ]]; then
   if [[ -n "${OPTION_EXPIRIES}" ]]; then
     extra_expiries=(--expiries "${OPTION_EXPIRIES}")
   fi
-  "${VENV_BIN}/options-helper" --log-dir "${LOG_DIR}" --provider alpaca intraday pull-options-bars \
+  "${VENV_BIN}/options-helper" --log-dir "${LOG_DIR}" --log-path "${LOG_PATH}" --provider alpaca intraday pull-options-bars \
     --underlyings "${OPTION_UNDERLYINGS}" \
     --contracts-dir "${CONTRACTS_DIR}" \
     --contracts-as-of "${CONTRACTS_AS_OF}" \

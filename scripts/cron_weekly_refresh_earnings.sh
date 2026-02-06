@@ -6,8 +6,11 @@ VENV_BIN="${REPO_DIR}/.venv/bin"
 PORTFOLIO="${REPO_DIR}/portfolio.json"
 WATCHLISTS="${REPO_DIR}/data/watchlists.json"
 PROVIDER="${PROVIDER:-alpaca}"
+DATA_TZ="${DATA_TZ:-America/Chicago}"
 
-LOG_DIR="${REPO_DIR}/data/logs"
+RUN_DATE="$(TZ="${DATA_TZ}" date +%F)"
+LOG_DIR="${REPO_DIR}/data/logs/${RUN_DATE}"
+LOG_PATH="${LOG_DIR}/earnings_refresh.log"
 mkdir -p "${LOG_DIR}"
 SCRIPT_START_TS="$(date +%s)"
 
@@ -16,7 +19,7 @@ LOCK_PATH="${LOCKS_DIR}/options_helper_cron.lock"
 mkdir -p "${LOCKS_DIR}"
 
 if ! mkdir "${LOCK_PATH}" 2>/dev/null; then
-  echo "[$(date)] Lock already held (${LOCK_PATH}); skipping earnings refresh." >> "${LOG_DIR}/earnings_refresh.log"
+  echo "[$(date)] Lock already held (${LOCK_PATH}); skipping earnings refresh." >> "${LOG_PATH}"
   exit 0
 fi
 trap 'rmdir "${LOCK_PATH}" 2>/dev/null || true' EXIT
@@ -30,22 +33,22 @@ fi
 cd "${REPO_DIR}"
 
 if [[ ! -f "${WATCHLISTS}" ]]; then
-  echo "[$(date)] No watchlists file at ${WATCHLISTS}; skipping earnings refresh." >> "${LOG_DIR}/earnings_refresh.log"
+  echo "[$(date)] No watchlists file at ${WATCHLISTS}; skipping earnings refresh." >> "${LOG_PATH}"
   exit 0
 fi
 
-echo "[$(date)] Syncing positions watchlist + refreshing earnings..." >> "${LOG_DIR}/earnings_refresh.log"
+echo "[$(date)] Syncing positions watchlist + refreshing earnings..." >> "${LOG_PATH}"
 
-"${VENV_BIN}/options-helper" --provider "${PROVIDER}" --log-dir "${LOG_DIR}" watchlists sync-positions "${PORTFOLIO}" \
+"${VENV_BIN}/options-helper" --provider "${PROVIDER}" --log-dir "${LOG_DIR}" --log-path "${LOG_PATH}" watchlists sync-positions "${PORTFOLIO}" \
   --path "${WATCHLISTS}" \
   --name positions \
-  >> "${LOG_DIR}/earnings_refresh.log" 2>&1
+  >> "${LOG_PATH}" 2>&1
 
-"${VENV_BIN}/options-helper" --provider "${PROVIDER}" --log-dir "${LOG_DIR}" refresh-earnings \
+"${VENV_BIN}/options-helper" --provider "${PROVIDER}" --log-dir "${LOG_DIR}" --log-path "${LOG_PATH}" refresh-earnings \
   --watchlists-path "${WATCHLISTS}" \
   --cache-dir "${REPO_DIR}/data/earnings" \
-  >> "${LOG_DIR}/earnings_refresh.log" 2>&1
+  >> "${LOG_PATH}" 2>&1
 
 SCRIPT_FINISH_TS="$(date +%s)"
 SCRIPT_ELAPSED="$((SCRIPT_FINISH_TS - SCRIPT_START_TS))"
-echo "[$(date)] Earnings refresh complete in ${SCRIPT_ELAPSED}s (provider=${PROVIDER})." >> "${LOG_DIR}/earnings_refresh.log"
+echo "[$(date)] Earnings refresh complete in ${SCRIPT_ELAPSED}s (provider=${PROVIDER})." >> "${LOG_PATH}"

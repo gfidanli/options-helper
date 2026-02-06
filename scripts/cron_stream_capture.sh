@@ -4,9 +4,11 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_BIN="${REPO_DIR}/.venv/bin"
 
-LOG_DIR="${REPO_DIR}/data/logs"
-mkdir -p "${LOG_DIR}"
+DATA_TZ="${DATA_TZ:-America/Chicago}"
+RUN_DATE="$(TZ="${DATA_TZ}" date +%F)"
+LOG_DIR="${REPO_DIR}/data/logs/${RUN_DATE}"
 LOG_PATH="${LOG_DIR}/stream_capture.log"
+mkdir -p "${LOG_DIR}"
 
 LOCKS_DIR="${REPO_DIR}/data/locks"
 LOCK_PATH="${LOCKS_DIR}/options_helper_stream_capture.lock"
@@ -99,7 +101,7 @@ if [[ -n "${OPTION_UNDERLYINGS}" ]]; then
   extra_underlyings=(--options-underlyings "${OPTION_UNDERLYINGS}")
 fi
 
-"${VENV_BIN}/options-helper" --log-dir "${LOG_DIR}" --provider alpaca stream capture \
+"${VENV_BIN}/options-helper" --log-dir "${LOG_DIR}" --log-path "${LOG_PATH}" --provider alpaca stream capture \
   "${extra_stocks[@]}" \
   "${extra_contracts[@]}" \
   "${extra_underlyings[@]}" \

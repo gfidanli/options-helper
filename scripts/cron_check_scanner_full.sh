@@ -3,12 +3,12 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-LOG_DIR="${REPO_DIR}/data/logs"
-mkdir -p "${LOG_DIR}"
-
-RUN_DATE="$(TZ=America/Chicago date +%F)"
-LOG_PATH="${LOG_DIR}/scanner_full_${RUN_DATE}.log"
+DATA_TZ="${DATA_TZ:-America/Chicago}"
+RUN_DATE="$(TZ="${DATA_TZ}" date +%F)"
+LOG_DIR="${REPO_DIR}/data/logs/${RUN_DATE}"
+LOG_PATH="${LOG_DIR}/scanner_full.log"
 STATUS_PATH="${LOG_DIR}/scanner_full_status.json"
+mkdir -p "${LOG_DIR}"
 
 STATUS_LINE="$(STATUS_PATH="${STATUS_PATH}" RUN_DATE="${RUN_DATE}" python3 - <<'PY'
 from __future__ import annotations

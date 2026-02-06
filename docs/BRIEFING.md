@@ -133,4 +133,4 @@ Install automatically:
 
 Defaults:
 - Runs at **16:10 America/Chicago time**, Monday–Friday.
-- Logs to `data/logs/briefing.log`.
+- Logs to `data/logs/{YYYY-MM-DD}/briefing.log`.

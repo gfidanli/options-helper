@@ -186,7 +186,7 @@ Install (adds/updates a tagged entry in your crontab):
 
 Defaults:
 - Runs at **16:00 America/Chicago time**, Monday–Friday (close + 60m).
-- Logs to `data/logs/options_snapshot.log`.
+- Logs to `data/logs/{YYYY-MM-DD}/options_snapshot.log`.
 
 To automatically install (attempts `crontab` update with a timeout):
 
@@ -205,4 +205,4 @@ separate watchlist snapshot job:
 
 Defaults:
 - Runs at **16:05 America/Chicago time**, Monday–Friday.
-- Logs to `data/logs/monitor_snapshot.log`.
+- Logs to `data/logs/{YYYY-MM-DD}/monitor_snapshot.log`.
