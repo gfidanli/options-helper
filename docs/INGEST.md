@@ -39,6 +39,13 @@ Common flags:
 - `--lookback-years N` (default: 10)
 - `--page-limit N` (default: 200)
 - `--max-underlyings N`, `--max-contracts N`, `--max-expiries N`
+- `--contracts-max-rps FLOAT` (default: `2.5`, soft throttle for options-contracts requests/sec)
+- `--bars-concurrency N` (default: `8`; forced to `1` with `--fail-fast`)
+- `--bars-max-rps FLOAT` (default: `30.0`, soft throttle for options-bars requests/sec)
+- `--bars-write-batch-size N` (default: `200`, batches bars/meta writes to DuckDB)
+- `--alpaca-http-pool-maxsize N` (override Alpaca `requests` pool max size for this run)
+- `--alpaca-http-pool-connections N` (override Alpaca `requests` pool connection pools for this run)
+- `--log-rate-limits/--no-log-rate-limits` (override per-request Alpaca rate-limit logging)
 - `--resume/--no-resume` (uses `option_bars_meta` coverage)
 - `--dry-run` (no writes)
 - `--fail-fast/--best-effort`
@@ -57,3 +64,6 @@ All ingestion writes to the DuckDB warehouse (default: `data/warehouse/options.d
 - If you see 403/402 errors, your data entitlement likely needs adjustment.
 - Avoid running multiple ingestion jobs concurrently (DuckDB is single-writer).
 - `ingest options-bars` is resumable: it records per-contract attempts in `option_bars_meta`, skips contracts already attempted today, and avoids refetching historical data for expired expiries.
+- Endpoint tuning baseline (Alpaca): keep `--contracts-max-rps` around `2.5` and start bars at `--bars-concurrency 8 --bars-max-rps 30.0`.
+- Throughput tuning loop: enable `--log-rate-limits`, increase bars knobs until you first observe bars `status=429`, then back off to ~80% of that setting.
+- If bars throughput plateaus before any 429s, raise Alpaca HTTP pool sizes (for example `--alpaca-http-pool-maxsize 256 --alpaca-http-pool-connections 256`) before pushing concurrency/RPS higher.

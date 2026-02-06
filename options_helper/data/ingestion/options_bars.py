@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+import inspect
+import threading
+import time as time_mod
 from typing import Any, Iterable
 
 import pandas as pd
@@ -50,6 +54,36 @@ class BarsBackfillSummary:
     error_contracts: int
     bars_rows: int
     requests_attempted: int
+
+
+@dataclass(frozen=True)
+class _BarsFetchPlan:
+    symbol: str
+    fetch_start: date
+    fetch_end: date
+    has_coverage: bool
+
+
+class _RequestRateLimiter:
+    def __init__(self, max_requests_per_second: float | None) -> None:
+        if max_requests_per_second is None or max_requests_per_second <= 0:
+            self._min_interval_seconds = 0.0
+        else:
+            self._min_interval_seconds = 1.0 / float(max_requests_per_second)
+        self._next_allowed_at = 0.0
+        self._lock = threading.Lock()
+
+    def wait_turn(self) -> None:
+        if self._min_interval_seconds <= 0:
+            return
+        while True:
+            with self._lock:
+                now = time_mod.monotonic()
+                remaining = self._next_allowed_at - now
+                if remaining <= 0:
+                    self._next_allowed_at = now + self._min_interval_seconds
+                    return
+            time_mod.sleep(remaining)
 
 
 def _contract_symbol_from_raw(raw: dict[str, Any]) -> str | None:
@@ -178,6 +212,31 @@ def _error_status(exc: Exception) -> str:
     return "error"
 
 
+def _list_option_contracts(
+    client: AlpacaClient,
+    *,
+    underlying: str,
+    exp_gte: date,
+    exp_lte: date,
+    page_limit: int | None,
+    max_requests_per_second: float | None,
+) -> list[dict[str, Any]]:
+    method = getattr(client, "list_option_contracts")
+    kwargs: dict[str, Any] = {
+        "exp_gte": exp_gte,
+        "exp_lte": exp_lte,
+        "page_limit": page_limit,
+    }
+    if max_requests_per_second is not None:
+        try:
+            signature = inspect.signature(method)
+        except (TypeError, ValueError):
+            signature = None
+        if signature is not None and "max_requests_per_second" in signature.parameters:
+            kwargs["max_requests_per_second"] = max_requests_per_second
+    return method(underlying, **kwargs)
+
+
 def discover_option_contracts(
     client: AlpacaClient,
     *,
@@ -186,11 +245,13 @@ def discover_option_contracts(
     exp_end: date,
     page_limit: int | None = None,
     max_contracts: int | None = None,
+    max_requests_per_second: float | None = None,
     fail_fast: bool = False,
 ) -> ContractDiscoveryOutput:
     frames: list[pd.DataFrame] = []
     raw_by_symbol: dict[str, dict[str, Any]] = {}
     summaries: list[UnderlyingDiscoverySummary] = []
+    contracts_rate_limiter = _RequestRateLimiter(max_requests_per_second)
 
     total_contracts = 0
     today = date.today()
@@ -214,11 +275,14 @@ def discover_option_contracts(
                 break
             years_scanned += 1
             try:
-                contracts = client.list_option_contracts(
-                    underlying,
+                contracts_rate_limiter.wait_turn()
+                contracts = _list_option_contracts(
+                    client,
+                    underlying=underlying,
                     exp_gte=window_start,
                     exp_lte=window_end,
                     page_limit=page_limit,
+                    max_requests_per_second=max_requests_per_second,
                 )
             except Exception as exc:  # noqa: BLE001
                 error = str(exc)
@@ -326,6 +390,9 @@ def backfill_option_bars(
     provider: str,
     lookback_years: int = 10,
     page_limit: int | None = None,
+    bars_concurrency: int = 1,
+    bars_max_requests_per_second: float | None = None,
+    bars_write_batch_size: int = 200,
     resume: bool = True,
     dry_run: bool = False,
     fail_fast: bool = False,
@@ -368,6 +435,25 @@ def backfill_option_bars(
     bars_rows = 0
     requests_attempted = 0
     planned_contracts = 0
+    fetch_plans: list[_BarsFetchPlan] = []
+    bulk_coverage_available = False
+    coverage_by_symbol: dict[str, dict[str, Any]] = {}
+
+    if resume:
+        bulk_loader = getattr(store, "coverage_bulk", None)
+        if callable(bulk_loader):
+            symbols_for_coverage = sorted({sym for syms in expiry_groups.values() for sym in syms if sym})
+            try:
+                payload = bulk_loader(symbols_for_coverage, interval="1d", provider=provider)
+                if isinstance(payload, dict):
+                    coverage_by_symbol = {
+                        str(sym).strip().upper(): meta
+                        for sym, meta in payload.items()
+                        if str(sym or "").strip() and isinstance(meta, dict)
+                    }
+                    bulk_coverage_available = True
+            except Exception:  # noqa: BLE001
+                bulk_coverage_available = False
 
     for expiry in sorted(expiry_groups.keys(), reverse=True):
         end = min(today, expiry)
@@ -388,10 +474,13 @@ def backfill_option_bars(
         for sym in desired_symbols:
             meta: dict[str, Any] | None
             if resume:
-                try:
-                    meta = store.coverage(sym, interval="1d", provider=provider)
-                except Exception:  # noqa: BLE001
-                    meta = None
+                if bulk_coverage_available:
+                    meta = coverage_by_symbol.get(sym)
+                else:
+                    try:
+                        meta = store.coverage(sym, interval="1d", provider=provider)
+                    except Exception:  # noqa: BLE001
+                        meta = None
             else:
                 meta = None
 
@@ -427,89 +516,188 @@ def backfill_option_bars(
                 requests_attempted += 1
                 continue
 
-            requests_attempted += 1
-            try:
-                df_bars = client.get_option_bars_daily_full(
-                    [sym],
-                    start=fetch_start,
-                    end=end,
-                    interval="1d",
-                    page_limit=page_limit,
+            fetch_plans.append(
+                _BarsFetchPlan(
+                    symbol=sym,
+                    fetch_start=fetch_start,
+                    fetch_end=end,
+                    has_coverage=has_coverage,
                 )
-            except Exception as exc:  # noqa: BLE001
-                store.mark_meta_error(
-                    [sym],
-                    interval="1d",
-                    provider=provider,
-                    error=str(exc),
-                    status=_error_status(exc),
-                )
-                error_contracts += 1
-                if fail_fast:
-                    raise
-                continue
-
-            if df_bars is None or df_bars.empty:
-                if has_coverage:
-                    store.mark_meta_success(
-                        [sym],
-                        interval="1d",
-                        provider=provider,
-                        rows=0,
-                        start_ts=None,
-                        end_ts=None,
-                    )
-                    ok_contracts += 1
-                else:
-                    store.mark_meta_error(
-                        [sym],
-                        interval="1d",
-                        provider=provider,
-                        error="no bars returned",
-                        status="not_found",
-                    )
-                    error_contracts += 1
-                continue
-
-            store.upsert_bars(df_bars, interval="1d", provider=provider)
-            bars_rows += int(len(df_bars))
-
-            df_bars = df_bars.copy()
-            df_bars["contractSymbol"] = df_bars["contractSymbol"].map(
-                lambda v: str(v).strip().upper() if v is not None else None
             )
-            df_bars = df_bars.dropna(subset=["contractSymbol"])
-            rows = df_bars[df_bars["contractSymbol"] == sym]
-            if not rows.empty:
-                store.mark_meta_success(
-                    [sym],
-                    interval="1d",
-                    provider=provider,
-                    rows=int(len(rows)),
-                    start_ts=rows["ts"].min(),
-                    end_ts=rows["ts"].max(),
+
+    if dry_run:
+        return BarsBackfillSummary(
+            total_contracts=total_contracts,
+            total_expiries=total_expiries,
+            planned_contracts=planned_contracts,
+            skipped_contracts=skipped_contracts,
+            ok_contracts=ok_contracts,
+            error_contracts=error_contracts,
+            bars_rows=bars_rows,
+            requests_attempted=requests_attempted,
+        )
+
+    requests_attempted += len(fetch_plans)
+    rate_limiter = _RequestRateLimiter(bars_max_requests_per_second)
+    max_workers = max(1, int(bars_concurrency))
+    write_batch_size = max(1, int(bars_write_batch_size))
+    if fail_fast:
+        max_workers = 1
+    pending_bars: list[pd.DataFrame] = []
+    pending_success_symbols: list[str] = []
+    pending_success_rows: dict[str, int] = {}
+    pending_success_start: dict[str, datetime] = {}
+    pending_success_end: dict[str, datetime] = {}
+    pending_success_count = 0
+
+    def _fetch_bars(plan: _BarsFetchPlan) -> pd.DataFrame:
+        rate_limiter.wait_turn()
+        return client.get_option_bars_daily_full(
+            [plan.symbol],
+            start=plan.fetch_start,
+            end=plan.fetch_end,
+            interval="1d",
+            page_limit=page_limit,
+        )
+
+    def _flush_success_buffers() -> None:
+        nonlocal pending_success_count
+        if pending_bars:
+            merged = pd.concat(pending_bars, ignore_index=True)
+            store.upsert_bars(merged, interval="1d", provider=provider)
+            pending_bars.clear()
+        if pending_success_symbols:
+            store.mark_meta_success(
+                pending_success_symbols,
+                interval="1d",
+                provider=provider,
+                rows=pending_success_rows or None,
+                start_ts=pending_success_start or None,
+                end_ts=pending_success_end or None,
+            )
+            pending_success_symbols.clear()
+            pending_success_rows.clear()
+            pending_success_start.clear()
+            pending_success_end.clear()
+            pending_success_count = 0
+
+    def _queue_success(
+        *,
+        symbol: str,
+        rows: int,
+        start_ts: datetime | None,
+        end_ts: datetime | None,
+        bars_df: pd.DataFrame | None = None,
+    ) -> None:
+        nonlocal pending_success_count
+        if bars_df is not None and not bars_df.empty:
+            pending_bars.append(bars_df)
+        pending_success_symbols.append(symbol)
+        pending_success_rows[symbol] = int(rows)
+        if start_ts is not None:
+            pending_success_start[symbol] = start_ts
+        if end_ts is not None:
+            pending_success_end[symbol] = end_ts
+        pending_success_count += 1
+        if pending_success_count >= write_batch_size:
+            _flush_success_buffers()
+
+    def _record_error(plan: _BarsFetchPlan, exc: Exception) -> None:
+        nonlocal error_contracts
+        store.mark_meta_error(
+            [plan.symbol],
+            interval="1d",
+            provider=provider,
+            error=str(exc),
+            status=_error_status(exc),
+        )
+        error_contracts += 1
+
+    def _record_success(plan: _BarsFetchPlan, df_bars: pd.DataFrame | None) -> None:
+        nonlocal bars_rows, ok_contracts, error_contracts
+        if df_bars is None or df_bars.empty:
+            if plan.has_coverage:
+                _queue_success(
+                    symbol=plan.symbol,
+                    rows=0,
+                    start_ts=None,
+                    end_ts=None,
                 )
                 ok_contracts += 1
             else:
-                if has_coverage:
-                    store.mark_meta_success(
-                        [sym],
-                        interval="1d",
-                        provider=provider,
-                        rows=0,
-                        start_ts=None,
-                        end_ts=None,
-                    )
-                    ok_contracts += 1
-                else:
-                    store.mark_meta_error(
-                        [sym],
-                        interval="1d",
-                        provider=provider,
-                        error="no bars returned",
-                        status="not_found",
-                    )
-                    error_contracts += 1
+                store.mark_meta_error(
+                    [plan.symbol],
+                    interval="1d",
+                    provider=provider,
+                    error="no bars returned",
+                    status="not_found",
+                )
+                error_contracts += 1
+            return
+
+        bars_rows += int(len(df_bars))
+
+        normalized = df_bars.copy()
+        normalized["contractSymbol"] = normalized["contractSymbol"].map(
+            lambda v: str(v).strip().upper() if v is not None else None
+        )
+        normalized = normalized.dropna(subset=["contractSymbol"])
+        rows = normalized[normalized["contractSymbol"] == plan.symbol]
+        if not rows.empty:
+            _queue_success(
+                symbol=plan.symbol,
+                rows=int(len(rows)),
+                start_ts=rows["ts"].min(),
+                end_ts=rows["ts"].max(),
+                bars_df=df_bars,
+            )
+            ok_contracts += 1
+            return
+
+        if plan.has_coverage:
+            _queue_success(
+                symbol=plan.symbol,
+                rows=0,
+                start_ts=None,
+                end_ts=None,
+                bars_df=df_bars,
+            )
+            ok_contracts += 1
+            return
+
+        store.mark_meta_error(
+            [plan.symbol],
+            interval="1d",
+            provider=provider,
+            error="no bars returned",
+            status="not_found",
+        )
+        error_contracts += 1
+
+    if max_workers <= 1:
+        for plan in fetch_plans:
+            try:
+                df_bars = _fetch_bars(plan)
+            except Exception as exc:  # noqa: BLE001
+                _record_error(plan, exc)
+                if fail_fast:
+                    _flush_success_buffers()
+                    raise
+                continue
+            _record_success(plan, df_bars)
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_fetch_bars, plan): plan for plan in fetch_plans}
+            for future in as_completed(futures):
+                plan = futures[future]
+                try:
+                    df_bars = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    _record_error(plan, exc)
+                    continue
+                _record_success(plan, df_bars)
+
+    _flush_success_buffers()
 
     return BarsBackfillSummary(
         total_contracts=total_contracts,

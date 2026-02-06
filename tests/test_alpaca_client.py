@@ -32,6 +32,26 @@ class _StubStockHistoricalDataClient:
         self.data_feed = data_feed
 
 
+class _StubSession:
+    def __init__(self) -> None:
+        self.mount_calls: list[tuple[str, object]] = []
+        self.hooks: dict[str, object] = {}
+
+    def mount(self, prefix: str, adapter: object) -> None:
+        self.mount_calls.append((prefix, adapter))
+
+
+class _StubOptionHistoricalDataClientWithSession:
+    def __init__(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        self.kwargs = kwargs
+        self._session = _StubSession()
+
+
+class _StubHTTPAdapter:
+    def __init__(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        self.kwargs = kwargs
+
+
 def test_alpaca_client_missing_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("APCA_API_KEY_ID", raising=False)
     monkeypatch.delenv("APCA_API_SECRET_KEY", raising=False)
@@ -159,3 +179,53 @@ def test_alpaca_client_loads_env_file(monkeypatch: pytest.MonkeyPatch, tmp_path)
     assert stock_client.api_key_id == "test_key"
     assert stock_client.api_secret_key == "test_secret"
     assert stock_client.feed == "sip"
+
+
+def test_alpaca_client_applies_http_pool_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(alpaca_client, "StockHistoricalDataClient", _StubClient)
+    monkeypatch.setattr(
+        alpaca_client, "OptionHistoricalDataClient", _StubOptionHistoricalDataClientWithSession
+    )
+    monkeypatch.setattr(alpaca_client, "TradingClient", _StubClient)
+    monkeypatch.setattr(alpaca_client, "_ALPACA_IMPORT_ERROR", None)
+    monkeypatch.setattr(alpaca_client, "HTTPAdapter", _StubHTTPAdapter)
+
+    client = alpaca_client.AlpacaClient(
+        api_key_id="key",
+        api_secret_key="secret",
+        http_pool_connections=32,
+        http_pool_maxsize=128,
+    )
+    option_client = client.option_client
+    session = option_client._session
+
+    assert len(session.mount_calls) == 2
+    prefixes = [prefix for prefix, _ in session.mount_calls]
+    assert prefixes == ["https://", "http://"]
+    for _, adapter in session.mount_calls:
+        assert isinstance(adapter, _StubHTTPAdapter)
+        assert adapter.kwargs["pool_connections"] == 32
+        assert adapter.kwargs["pool_maxsize"] == 128
+        assert adapter.kwargs["pool_block"] is False
+
+
+def test_alpaca_client_applies_http_pool_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OH_ALPACA_HTTP_POOL_CONNECTIONS", "48")
+    monkeypatch.setenv("OH_ALPACA_HTTP_POOL_MAXSIZE", "96")
+    monkeypatch.setattr(alpaca_client, "StockHistoricalDataClient", _StubClient)
+    monkeypatch.setattr(
+        alpaca_client, "OptionHistoricalDataClient", _StubOptionHistoricalDataClientWithSession
+    )
+    monkeypatch.setattr(alpaca_client, "TradingClient", _StubClient)
+    monkeypatch.setattr(alpaca_client, "_ALPACA_IMPORT_ERROR", None)
+    monkeypatch.setattr(alpaca_client, "HTTPAdapter", _StubHTTPAdapter)
+
+    client = alpaca_client.AlpacaClient(api_key_id="key", api_secret_key="secret")
+    option_client = client.option_client
+    session = option_client._session
+
+    assert len(session.mount_calls) == 2
+    for _, adapter in session.mount_calls:
+        assert isinstance(adapter, _StubHTTPAdapter)
+        assert adapter.kwargs["pool_connections"] == 48
+        assert adapter.kwargs["pool_maxsize"] == 96

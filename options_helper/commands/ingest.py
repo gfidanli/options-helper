@@ -255,6 +255,52 @@ def ingest_options_bars_command(
         min=1,
         help="Safety cap on expiries (most-recent first).",
     ),
+    contracts_max_requests_per_second: float | None = typer.Option(
+        2.5,
+        "--contracts-max-rps",
+        min=0.1,
+        help="Soft throttle for options-contracts requests per second.",
+    ),
+    bars_concurrency: int = typer.Option(
+        8,
+        "--bars-concurrency",
+        min=1,
+        help="Concurrent option-contract bars fetches (reduced to 1 when --fail-fast).",
+    ),
+    bars_max_requests_per_second: float | None = typer.Option(
+        30.0,
+        "--bars-max-rps",
+        min=0.1,
+        help="Soft throttle for options-bars requests per second.",
+    ),
+    bars_write_batch_size: int = typer.Option(
+        200,
+        "--bars-write-batch-size",
+        min=1,
+        help="Contracts per DB/meta write batch for options-bars ingestion.",
+    ),
+    alpaca_http_pool_maxsize: int | None = typer.Option(
+        None,
+        "--alpaca-http-pool-maxsize",
+        min=1,
+        help="Requests connection pool max size for Alpaca clients used by this run.",
+    ),
+    alpaca_http_pool_connections: int | None = typer.Option(
+        None,
+        "--alpaca-http-pool-connections",
+        min=1,
+        help="Requests connection pool count for Alpaca clients used by this run.",
+    ),
+    log_rate_limits: bool = typer.Option(
+        False,
+        "--log-rate-limits",
+        help="Enable per-request Alpaca rate-limit logging for this run.",
+    ),
+    no_log_rate_limits: bool = typer.Option(
+        False,
+        "--no-log-rate-limits",
+        help="Disable per-request Alpaca rate-limit logging for this run.",
+    ),
     resume: bool = typer.Option(
         True,
         "--resume/--no-resume",
@@ -274,6 +320,15 @@ def ingest_options_bars_command(
     """Discover Alpaca option contracts and backfill daily bars."""
     console = Console(width=200)
     run_day = date.today()
+    if log_rate_limits and no_log_rate_limits:
+        raise typer.BadParameter("Choose either --log-rate-limits or --no-log-rate-limits, not both.")
+
+    log_rate_limits_override: bool | None = None
+    if log_rate_limits:
+        log_rate_limits_override = True
+    elif no_log_rate_limits:
+        log_rate_limits_override = False
+
     with _observed_run(
         console=console,
         job_name=JOB_INGEST_OPTIONS_BARS,
@@ -288,11 +343,36 @@ def ingest_options_bars_command(
             "max_underlyings": max_underlyings,
             "max_contracts": max_contracts,
             "max_expiries": max_expiries,
+            "contracts_max_requests_per_second": contracts_max_requests_per_second,
+            "bars_concurrency": bars_concurrency,
+            "bars_max_requests_per_second": bars_max_requests_per_second,
+            "bars_write_batch_size": bars_write_batch_size,
+            "alpaca_http_pool_maxsize": alpaca_http_pool_maxsize,
+            "alpaca_http_pool_connections": alpaca_http_pool_connections,
+            "log_rate_limits": log_rate_limits_override,
             "resume": resume,
             "dry_run": dry_run,
             "fail_fast": fail_fast,
         },
     ) as run_logger:
+        def _build_client() -> AlpacaClient:
+            kwargs: dict[str, object] = {}
+            if log_rate_limits_override is not None:
+                kwargs["log_rate_limits"] = log_rate_limits_override
+            if alpaca_http_pool_maxsize is not None:
+                kwargs["http_pool_maxsize"] = alpaca_http_pool_maxsize
+            if alpaca_http_pool_connections is not None:
+                kwargs["http_pool_connections"] = alpaca_http_pool_connections
+
+            if not kwargs:
+                return AlpacaClient()
+            try:
+                return AlpacaClient(**kwargs)
+            except TypeError:
+                # Backward-compatible fallback for tests that monkeypatch AlpacaClient
+                # with callables that do not accept keyword args.
+                return AlpacaClient()
+
         try:
             result = run_ingest_options_bars_job(
                 watchlists_path=watchlists_path,
@@ -305,13 +385,17 @@ def ingest_options_bars_command(
                 max_underlyings=max_underlyings,
                 max_contracts=max_contracts,
                 max_expiries=max_expiries,
+                contracts_max_requests_per_second=contracts_max_requests_per_second,
+                bars_concurrency=bars_concurrency,
+                bars_max_requests_per_second=bars_max_requests_per_second,
+                bars_write_batch_size=bars_write_batch_size,
                 resume=resume,
                 dry_run=dry_run,
                 fail_fast=fail_fast,
                 provider_builder=cli_deps.build_provider,
                 contracts_store_builder=cli_deps.build_option_contracts_store,
                 bars_store_builder=cli_deps.build_option_bars_store,
-                client_factory=AlpacaClient,
+                client_factory=_build_client,
                 contracts_store_dir=Path("data/option_contracts"),
                 bars_store_dir=Path("data/option_bars"),
                 today=run_day,

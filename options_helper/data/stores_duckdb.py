@@ -1031,6 +1031,45 @@ class DuckDBOptionBarsStore:
             return {}
         return df.iloc[0].to_dict()
 
+    def coverage_bulk(
+        self,
+        contract_symbols: Iterable[str],
+        *,
+        interval: str = "1d",
+        provider: str,
+    ) -> dict[str, dict[str, Any]]:
+        symbols = self._normalize_contract_symbols(contract_symbols)
+        if not symbols:
+            return {}
+        provider_name = self._normalize_provider(provider)
+        interval_name = self._normalize_interval(interval)
+        chunk_size = 2000
+        out: dict[str, dict[str, Any]] = {}
+
+        conn = self.warehouse.connect(read_only=True)
+        try:
+            for i in range(0, len(symbols), chunk_size):
+                chunk = symbols[i : i + chunk_size]
+                if not chunk:
+                    continue
+                placeholders = ",".join("?" for _ in chunk)
+                sql = f"""
+                    SELECT contract_symbol, interval, provider, status, rows, start_ts, end_ts,
+                           last_success_at, last_attempt_at, last_error, error_count
+                    FROM option_bars_meta
+                    WHERE interval = ? AND provider = ? AND contract_symbol IN ({placeholders})
+                """
+                df = conn.execute(sql, [interval_name, provider_name, *chunk]).df()
+                if df is None or df.empty:
+                    continue
+                for row in df.to_dict("records"):
+                    symbol = self._clean_symbol(row.get("contract_symbol"))
+                    if symbol:
+                        out[symbol] = row
+        finally:
+            conn.close()
+        return out
+
 @dataclass(frozen=True)
 class DuckDBOptionsSnapshotStore:
     """DuckDB-backed snapshot store with Parquet lake files."""

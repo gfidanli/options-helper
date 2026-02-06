@@ -14,6 +14,10 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+try:
+    from requests.adapters import HTTPAdapter
+except Exception:  # noqa: BLE001 - optional dependency at runtime
+    HTTPAdapter = None
 
 from options_helper.analysis.osi import parse_contract_symbol
 from options_helper.data.alpaca_symbols import to_alpaca_symbol, to_repo_symbol
@@ -89,6 +93,19 @@ def _coerce_int(value: str | None, default: int) -> int:
     except ValueError:
         return default
     return parsed if parsed > 0 else default
+
+
+def _coerce_optional_int(value: str | None) -> int | None:
+    if value is None:
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _strip_quotes(value: str) -> str:
@@ -1305,6 +1322,10 @@ class AlpacaClient:
         stock_feed: str | None = None,
         options_feed: str | None = None,
         recent_bars_buffer_minutes: int | None = None,
+        log_rate_limits: bool | None = None,
+        http_pool_maxsize: int | None = None,
+        http_pool_connections: int | None = None,
+        http_pool_block: bool | None = None,
     ) -> None:
         _maybe_load_alpaca_env()
         self._api_key_id = _clean_env(api_key_id) or _clean_env(os.getenv("APCA_API_KEY_ID"))
@@ -1325,7 +1346,20 @@ class AlpacaClient:
         self._trading_client = None
         self._corporate_actions_client = None
         self._news_client = None
-        self._log_rate_limits = _env_truthy("OH_ALPACA_LOG_RATE_LIMITS")
+        self._log_rate_limits = _env_truthy("OH_ALPACA_LOG_RATE_LIMITS") if log_rate_limits is None else bool(
+            log_rate_limits
+        )
+        if http_pool_maxsize is None:
+            self._http_pool_maxsize = _coerce_optional_int(os.getenv("OH_ALPACA_HTTP_POOL_MAXSIZE"))
+        else:
+            self._http_pool_maxsize = max(1, int(http_pool_maxsize))
+        if http_pool_connections is None:
+            self._http_pool_connections = _coerce_optional_int(os.getenv("OH_ALPACA_HTTP_POOL_CONNECTIONS"))
+        else:
+            self._http_pool_connections = max(1, int(http_pool_connections))
+        self._http_pool_block = _env_truthy("OH_ALPACA_HTTP_POOL_BLOCK") if http_pool_block is None else bool(
+            http_pool_block
+        )
         self._last_rate_limit: AlpacaRateLimitSnapshot | None = None
 
     @property
@@ -1382,6 +1416,46 @@ class AlpacaClient:
         except Exception:  # noqa: BLE001
             return
 
+    def _configure_http_session(self, client: Any, *, client_name: str) -> None:
+        if client is None or HTTPAdapter is None:
+            return
+
+        session = getattr(client, "_session", None)
+        if session is None:
+            return
+        if getattr(session, "_oh_http_pool_configured", False):
+            return
+
+        pool_connections = self._http_pool_connections
+        pool_maxsize = self._http_pool_maxsize
+        if pool_connections is None and pool_maxsize is None:
+            return
+        if pool_connections is None:
+            pool_connections = pool_maxsize
+        if pool_maxsize is None:
+            pool_maxsize = pool_connections
+        if pool_connections is None or pool_maxsize is None:
+            return
+
+        try:
+            adapter = HTTPAdapter(
+                pool_connections=max(1, int(pool_connections)),
+                pool_maxsize=max(1, int(pool_maxsize)),
+                pool_block=self._http_pool_block,
+            )
+            session.mount("https://", adapter)
+            session.mount("http://", adapter)
+            setattr(session, "_oh_http_pool_configured", True)
+            logger.info(
+                "ALPACA_HTTP_POOL client=%s pool_connections=%s pool_maxsize=%s pool_block=%s",
+                client_name,
+                pool_connections,
+                pool_maxsize,
+                self._http_pool_block,
+            )
+        except Exception:  # noqa: BLE001
+            return
+
     @property
     def provider_version(self) -> str | None:
         try:
@@ -1421,6 +1495,7 @@ class AlpacaClient:
                 **self._credential_kwargs(),
                 **self._feed_kwargs(self._stock_feed),
             )
+            self._configure_http_session(self._stock_client, client_name="stock")
             self._install_rate_limit_hook(self._stock_client, client_name="stock")
         return self._stock_client
 
@@ -1434,6 +1509,7 @@ class AlpacaClient:
                 **self._credential_kwargs(),
                 **self._feed_kwargs(self._options_feed),
             )
+            self._configure_http_session(self._option_client, client_name="option")
             self._install_rate_limit_hook(self._option_client, client_name="option")
         return self._option_client
 
@@ -1446,6 +1522,7 @@ class AlpacaClient:
             if self._api_base_url:
                 kwargs.update({"base_url": self._api_base_url, "url_override": self._api_base_url})
             self._trading_client = self._construct_client(TradingClient, **kwargs)
+            self._configure_http_session(self._trading_client, client_name="trading")
             self._install_rate_limit_hook(self._trading_client, client_name="trading")
         return self._trading_client
 
@@ -1457,6 +1534,7 @@ class AlpacaClient:
             if client_cls is None:
                 _raise_missing_optional_client("corporate actions")
             self._corporate_actions_client = self._construct_client(client_cls, **self._credential_kwargs())
+            self._configure_http_session(self._corporate_actions_client, client_name="corporate_actions")
             self._install_rate_limit_hook(self._corporate_actions_client, client_name="corporate_actions")
         return self._corporate_actions_client
 
@@ -1468,6 +1546,7 @@ class AlpacaClient:
             if client_cls is None:
                 _raise_missing_optional_client("news")
             self._news_client = self._construct_client(client_cls, **self._credential_kwargs())
+            self._configure_http_session(self._news_client, client_name="news")
             self._install_rate_limit_hook(self._news_client, client_name="news")
         return self._news_client
 
@@ -2037,6 +2116,7 @@ class AlpacaClient:
         exp_lte: date | None = None,
         limit: int | None = None,
         page_limit: int | None = None,
+        max_requests_per_second: float | None = None,
     ) -> list[dict[str, Any]]:
         alpaca_symbol = to_alpaca_symbol(underlying)
         if not alpaca_symbol:
@@ -2051,6 +2131,43 @@ class AlpacaClient:
         page_token: str | None = None
         page_count = 0
         out: list[dict[str, Any]] = []
+        if max_requests_per_second is None or max_requests_per_second <= 0:
+            min_interval_seconds = 0.0
+        else:
+            min_interval_seconds = 1.0 / float(max_requests_per_second)
+        next_allowed_at = 0.0
+        max_retries = max(0, _coerce_int(os.getenv("OH_ALPACA_MAX_RETRIES"), default=3))
+
+        def _wait_turn() -> None:
+            nonlocal next_allowed_at
+            if min_interval_seconds <= 0:
+                return
+            now = time.monotonic()
+            if next_allowed_at > now:
+                time.sleep(next_allowed_at - now)
+                now = time.monotonic()
+            next_allowed_at = now + min_interval_seconds
+
+        def _call_with_backoff(make_call):
+            for attempt in range(max_retries + 1):
+                try:
+                    return make_call()
+                except Exception as exc:  # noqa: BLE001
+                    if attempt >= max_retries:
+                        raise
+                    status_code = getattr(exc, "status_code", None)
+                    if status_code is not None:
+                        should_retry = status_code >= 500 or status_code in (408, 429)
+                    else:
+                        should_retry = _is_rate_limit_error(exc) or _is_timeout_error(exc)
+                    if not should_retry:
+                        raise
+                    delay = 0.5 * (2**attempt)
+                    retry_after = _extract_retry_after_seconds(exc)
+                    if retry_after is not None:
+                        delay = max(delay, retry_after)
+                    time.sleep(delay)
+            raise DataFetchError("Failed to fetch Alpaca option contracts after retries.")
 
         while True:
             page_count += 1
@@ -2075,12 +2192,14 @@ class AlpacaClient:
                 try:
                     request_kwargs = _filter_kwargs(request_cls, kwargs)
                     request = request_cls(**request_kwargs)
-                    payload = method(request)
+                    _wait_turn()
+                    payload = _call_with_backoff(lambda: method(request))
                 except TypeError:
                     payload = None
 
             if payload is None:
-                payload = method(**_filter_kwargs(method, kwargs))
+                _wait_turn()
+                payload = _call_with_backoff(lambda: method(**_filter_kwargs(method, kwargs)))
 
             contracts, next_token = _extract_contracts_page(payload)
             if contracts:

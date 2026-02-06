@@ -246,6 +246,10 @@ def run_ingest_options_bars_job(
     max_underlyings: int | None,
     max_contracts: int | None,
     max_expiries: int | None,
+    contracts_max_requests_per_second: float | None,
+    bars_concurrency: int,
+    bars_max_requests_per_second: float | None,
+    bars_write_batch_size: int,
     resume: bool,
     dry_run: bool,
     fail_fast: bool,
@@ -328,6 +332,7 @@ def run_ingest_options_bars_job(
         exp_end=exp_end,
         page_limit=page_limit,
         max_contracts=max_contracts,
+        max_requests_per_second=contracts_max_requests_per_second,
         fail_fast=fail_fast,
     )
 
@@ -398,6 +403,9 @@ def run_ingest_options_bars_job(
         provider="alpaca",
         lookback_years=lookback_years,
         page_limit=page_limit,
+        bars_concurrency=bars_concurrency,
+        bars_max_requests_per_second=bars_max_requests_per_second,
+        bars_write_batch_size=bars_write_batch_size,
         resume=resume,
         dry_run=dry_run,
         fail_fast=fail_fast,

@@ -178,3 +178,46 @@ def test_ingest_options_bars_per_symbol_records_errors(tmp_path: Path, monkeypat
 
     assert len(fake_client.bars_calls) == 3
     assert all(len(call["symbols"]) == 1 for call in fake_client.bars_calls)
+
+
+def test_ingest_options_bars_passes_http_pool_flags(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda: _StubProvider())
+    fake_client = _FakeAlpacaClient()
+    seen_kwargs: list[dict[str, object]] = []
+
+    def _client_factory(**kwargs):  # type: ignore[no-untyped-def]
+        seen_kwargs.append(dict(kwargs))
+        return fake_client
+
+    monkeypatch.setattr(ingest, "AlpacaClient", _client_factory)
+
+    runner = CliRunner()
+    duckdb_path = tmp_path / "options.duckdb"
+    result = runner.invoke(
+        app,
+        [
+            "--provider",
+            "alpaca",
+            "--duckdb-path",
+            str(duckdb_path),
+            "ingest",
+            "options-bars",
+            "--symbol",
+            "SPY",
+            "--contracts-exp-start",
+            "2025-01-01",
+            "--contracts-exp-end",
+            "2026-12-31",
+            "--lookback-years",
+            "1",
+            "--alpaca-http-pool-maxsize",
+            "128",
+            "--alpaca-http-pool-connections",
+            "64",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen_kwargs, "expected AlpacaClient to receive keyword args"
+    assert seen_kwargs[0]["http_pool_maxsize"] == 128
+    assert seen_kwargs[0]["http_pool_connections"] == 64
