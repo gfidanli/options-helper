@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import warnings
+
 import pandas as pd
 
 from options_helper.data.technical_backtesting_config import load_technical_backtesting_config
@@ -45,6 +47,19 @@ def test_indicator_columns_and_no_lookahead() -> None:
             features_shifted.loc[:cutoff, col],
             check_names=False,
         )
+
+
+def test_compute_features_does_not_emit_pandas_fragmentation_or_downcast_warnings() -> None:
+    cfg = load_technical_backtesting_config()
+    df = make_synthetic_ohlc(rows=260, seed=7)
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        _ = compute_features(df, cfg)
+
+    messages = [str(w.message) for w in captured]
+    assert not any("DataFrame is highly fragmented" in m for m in messages)
+    assert not any("Downcasting object dtype arrays on .fillna" in m for m in messages)
 
 
 def test_weekly_regime_logic_close_above_fast_is_more_permissive() -> None:

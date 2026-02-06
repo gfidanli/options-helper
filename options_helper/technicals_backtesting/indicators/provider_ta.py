@@ -160,6 +160,10 @@ class TaIndicatorProvider:
                     (close - out[sma_col]) / out[atr_col]
                 )
 
+        # Pandas can emit "highly fragmented" PerformanceWarnings after many column inserts.
+        # A copy defragments blocks and avoids warning spam in logs.
+        out = out.copy()
+
         # Weekly regime.
         weekly_cfg = cfg.get("weekly_regime", {})
         if weekly_cfg.get("enabled", False):
@@ -191,6 +195,8 @@ class TaIndicatorProvider:
 
             out[f"weekly_sma_{fast}"] = weekly_fast.reindex(out.index, method="ffill")
             out[f"weekly_sma_{slow}"] = weekly_slow.reindex(out.index, method="ffill")
-            out["weekly_trend_up"] = trend.reindex(out.index, method="ffill").fillna(False).astype(bool)
+            # Avoid FutureWarning about downcasting object dtype arrays during fillna/ffill.
+            weekly_trend = trend.reindex(out.index, method="ffill").astype("boolean")
+            out["weekly_trend_up"] = weekly_trend.fillna(False).astype(bool)
 
         return out
