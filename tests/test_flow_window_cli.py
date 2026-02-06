@@ -7,6 +7,7 @@ import pandas as pd
 from typer.testing import CliRunner
 
 from options_helper.cli import app
+from options_helper.db.warehouse import DuckDBWarehouse
 
 
 def test_flow_cli_windowed_groupby_writes_artifact(tmp_path: Path) -> None:
@@ -62,11 +63,14 @@ def test_flow_cli_windowed_groupby_writes_artifact(tmp_path: Path) -> None:
     (cache_dir / "AAA" / "2026-01-03" / f"{expiry}.csv").write_text(df_day3.to_csv(index=False), encoding="utf-8")
 
     out_dir = tmp_path / "reports"
+    duckdb_path = tmp_path / "options.duckdb"
 
     runner = CliRunner()
     res = runner.invoke(
         app,
         [
+            "--duckdb-path",
+            str(duckdb_path),
             "flow",
             str(portfolio_path),
             "--cache-dir",
@@ -113,3 +117,17 @@ def test_flow_cli_windowed_groupby_writes_artifact(tmp_path: Path) -> None:
     assert put_row["delta_oi"] == 20.0
     assert put_row["delta_oi_notional"] == 20.0 * 1.5 * 100.0
     assert put_row["delta_notional"] == -51_500.0
+
+    warehouse = DuckDBWarehouse(duckdb_path)
+    flow_rows = warehouse.fetch_df(
+        """
+        SELECT COUNT(*) AS c
+        FROM options_flow
+        WHERE symbol = 'AAA'
+          AND from_date = DATE '2026-01-01'
+          AND to_date = DATE '2026-01-03'
+          AND window_size = 2
+          AND group_by = 'expiry-strike'
+        """
+    )
+    assert int(flow_rows.iloc[0]["c"]) == 2

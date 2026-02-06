@@ -6,6 +6,7 @@ import pandas as pd
 from typer.testing import CliRunner
 
 from options_helper.cli import app
+from options_helper.db.warehouse import DuckDBWarehouse
 
 
 def test_flow_cli_can_use_watchlists_without_positions(tmp_path: Path) -> None:
@@ -43,11 +44,14 @@ def test_flow_cli_can_use_watchlists_without_positions(tmp_path: Path) -> None:
 
     df_prev.to_csv(day1 / "2024-01-19.csv", index=False)
     df_today.to_csv(day2 / "2024-01-19.csv", index=False)
+    duckdb_path = tmp_path / "options.duckdb"
 
     runner = CliRunner()
     res = runner.invoke(
         app,
         [
+            "--duckdb-path",
+            str(duckdb_path),
             "flow",
             str(portfolio_path),
             "--cache-dir",
@@ -63,3 +67,16 @@ def test_flow_cli_can_use_watchlists_without_positions(tmp_path: Path) -> None:
     assert res.exit_code == 0, res.output
     assert "AAA flow 2026-01-01" in res.output
 
+    warehouse = DuckDBWarehouse(duckdb_path)
+    flow_rows = warehouse.fetch_df(
+        """
+        SELECT COUNT(*) AS c
+        FROM options_flow
+        WHERE symbol = 'AAA'
+          AND from_date = DATE '2026-01-01'
+          AND to_date = DATE '2026-01-02'
+          AND window_size = 1
+          AND group_by = 'contract'
+        """
+    )
+    assert int(flow_rows.iloc[0]["c"]) == 1

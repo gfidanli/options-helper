@@ -953,43 +953,46 @@ def run_flow_report_job(
 
             renderables.append(table)
 
-            if out is not None:
-                net = aggregate_flow_window(pair_flows, group_by="contract")
-                net = net.assign(_abs=net["deltaOI_notional"].abs() if "deltaOI_notional" in net.columns else 0.0)
-                sort_cols = ["_abs"]
-                ascending = [False]
-                for c in ["expiry", "strike", "optionType", "contractSymbol"]:
-                    if c in net.columns:
-                        sort_cols.append(c)
-                        ascending.append(True)
-                net = net.sort_values(sort_cols, ascending=ascending, na_position="last").drop(columns=["_abs"])
+            net = aggregate_flow_window(pair_flows, group_by="contract")
+            net = net.assign(_abs=net["deltaOI_notional"].abs() if "deltaOI_notional" in net.columns else 0.0)
+            sort_cols = ["_abs"]
+            ascending = [False]
+            for c in ["expiry", "strike", "optionType", "contractSymbol"]:
+                if c in net.columns:
+                    sort_cols.append(c)
+                    ascending.append(True)
+            net = net.sort_values(sort_cols, ascending=ascending, na_position="last").drop(columns=["_abs"])
 
+            artifact_net = net.rename(
+                columns={
+                    "contractSymbol": "contract_symbol",
+                    "optionType": "option_type",
+                    "deltaOI": "delta_oi",
+                    "deltaOI_notional": "delta_oi_notional",
+                    "size": "n_pairs",
+                }
+            )
+            artifact = FlowArtifact(
+                schema_version=1,
+                generated_at=utc_now(),
+                as_of=today_date.isoformat(),
+                symbol=sym.upper(),
+                from_date=prev_date.isoformat(),
+                to_date=today_date.isoformat(),
+                window=1,
+                group_by="contract",
+                snapshot_dates=[prev_date.isoformat(), today_date.isoformat()],
+                net=artifact_net.where(pd.notna(artifact_net), None).to_dict(orient="records"),
+            )
+            payload = artifact.to_dict()
+            if strict:
+                FlowArtifact.model_validate(payload)
+            flow_store.upsert_artifact(artifact)
+
+            if out is not None:
                 base = out / "flow" / sym.upper()
                 base.mkdir(parents=True, exist_ok=True)
                 out_path = base / f"{prev_date.isoformat()}_to_{today_date.isoformat()}_w1_contract.json"
-                artifact_net = net.rename(
-                    columns={
-                        "contractSymbol": "contract_symbol",
-                        "optionType": "option_type",
-                        "deltaOI": "delta_oi",
-                        "deltaOI_notional": "delta_oi_notional",
-                        "size": "n_pairs",
-                    }
-                )
-                payload = FlowArtifact(
-                    schema_version=1,
-                    generated_at=utc_now(),
-                    as_of=today_date.isoformat(),
-                    symbol=sym.upper(),
-                    from_date=prev_date.isoformat(),
-                    to_date=today_date.isoformat(),
-                    window=1,
-                    group_by="contract",
-                    snapshot_dates=[prev_date.isoformat(), today_date.isoformat()],
-                    net=artifact_net.where(pd.notna(artifact_net), None).to_dict(orient="records"),
-                ).to_dict()
-                if strict:
-                    FlowArtifact.model_validate(payload)
                 out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
                 renderables.append(f"\nSaved: {out_path}")
             continue
@@ -1078,33 +1081,36 @@ def run_flow_report_job(
             _add_zone_row(t_unwind, row)
         renderables.append(t_unwind)
 
+        artifact_net = net.rename(
+            columns={
+                "contractSymbol": "contract_symbol",
+                "optionType": "option_type",
+                "deltaOI": "delta_oi",
+                "deltaOI_notional": "delta_oi_notional",
+                "size": "n_pairs",
+            }
+        )
+        artifact = FlowArtifact(
+            schema_version=1,
+            generated_at=utc_now(),
+            as_of=end_date.isoformat(),
+            symbol=sym.upper(),
+            from_date=start_date.isoformat(),
+            to_date=end_date.isoformat(),
+            window=window,
+            group_by=group_by_norm,
+            snapshot_dates=[d.isoformat() for d in dates],
+            net=artifact_net.where(pd.notna(artifact_net), None).to_dict(orient="records"),
+        )
+        payload = artifact.to_dict()
+        if strict:
+            FlowArtifact.model_validate(payload)
+        flow_store.upsert_artifact(artifact)
+
         if out is not None:
             base = out / "flow" / sym.upper()
             base.mkdir(parents=True, exist_ok=True)
             out_path = base / f"{start_date.isoformat()}_to_{end_date.isoformat()}_w{window}_{group_by_norm}.json"
-            artifact_net = net.rename(
-                columns={
-                    "contractSymbol": "contract_symbol",
-                    "optionType": "option_type",
-                    "deltaOI": "delta_oi",
-                    "deltaOI_notional": "delta_oi_notional",
-                    "size": "n_pairs",
-                }
-            )
-            payload = FlowArtifact(
-                schema_version=1,
-                generated_at=utc_now(),
-                as_of=end_date.isoformat(),
-                symbol=sym.upper(),
-                from_date=start_date.isoformat(),
-                to_date=end_date.isoformat(),
-                window=window,
-                group_by=group_by_norm,
-                snapshot_dates=[d.isoformat() for d in dates],
-                net=artifact_net.where(pd.notna(artifact_net), None).to_dict(orient="records"),
-            ).to_dict()
-            if strict:
-                FlowArtifact.model_validate(payload)
             out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
             renderables.append(f"\nSaved: {out_path}")
 
