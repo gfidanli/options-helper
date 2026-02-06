@@ -165,6 +165,46 @@ class _FakeStoreWithBatchCounters(_FakeStore):
         )
 
 
+class _FakeStoreWithApplyBatch(_FakeStoreWithBatchCounters):
+    def __init__(self) -> None:
+        super().__init__()
+        self.apply_calls = 0
+
+    def apply_write_batch(
+        self,
+        *,
+        bars_df: pd.DataFrame | None,
+        interval: str = "1d",
+        provider: str,
+        success_symbols=None,  # noqa: ANN001
+        success_rows=None,  # noqa: ANN001
+        success_start_ts=None,  # noqa: ANN001
+        success_end_ts=None,  # noqa: ANN001
+        error_groups=None,  # noqa: ANN001
+        updated_at=None,  # noqa: ANN001,ARG002
+    ) -> None:
+        self.apply_calls += 1
+        if bars_df is not None and not bars_df.empty:
+            self.upsert_bars(bars_df, interval=interval, provider=provider)
+        if success_symbols:
+            self.mark_meta_success(
+                success_symbols,
+                interval=interval,
+                provider=provider,
+                rows=success_rows,
+                start_ts=success_start_ts,
+                end_ts=success_end_ts,
+            )
+        for symbols, status, error_text in error_groups or []:
+            self.mark_meta_error(
+                symbols,
+                interval=interval,
+                provider=provider,
+                status=status,
+                error=error_text,
+            )
+
+
 class _FakeStoreWithBulkCoverage(_FakeStore):
     def __init__(self) -> None:
         super().__init__()
@@ -356,3 +396,30 @@ def test_backfill_option_bars_batches_error_meta_writes() -> None:
         "BBB260117C00100000",
         "CCC260117P00100000",
     }
+
+
+def test_backfill_option_bars_uses_apply_write_batch_when_available() -> None:
+    client = _FakeClient(sleep_seconds=0.0)
+    store = _FakeStoreWithApplyBatch()
+
+    summary = backfill_option_bars(
+        client,  # type: ignore[arg-type]
+        store,  # type: ignore[arg-type]
+        _contracts_frame(),
+        provider="alpaca",
+        lookback_years=1,
+        bars_concurrency=1,
+        bars_max_requests_per_second=None,
+        bars_write_batch_size=2,
+        resume=False,
+        dry_run=False,
+        fail_fast=False,
+        today=date(2026, 1, 20),
+    )
+
+    assert summary.requests_attempted == 3
+    assert summary.ok_contracts == 3
+    assert summary.error_contracts == 0
+    assert store.apply_calls == 2
+    assert store.upsert_calls == 2
+    assert store.success_calls == 2

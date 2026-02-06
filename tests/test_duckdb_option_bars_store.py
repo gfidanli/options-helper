@@ -195,3 +195,77 @@ def test_duckdb_option_bars_meta_success_merges_ranges(tmp_path):
     assert int(row["rows"]) == 10
     assert row["start_ts"] == datetime(2026, 1, 31, 0, 0)
     assert row["end_ts"] == datetime(2026, 2, 3, 0, 0)
+
+
+def test_duckdb_option_bars_apply_write_batch(tmp_path):
+    wh = DuckDBWarehouse(tmp_path / "options.duckdb")
+    ensure_schema(wh)
+    store = DuckDBOptionBarsStore(root_dir=tmp_path / "option_bars", warehouse=wh)
+
+    bars_df = pd.DataFrame(
+        [
+            {
+                "contractSymbol": "AAPL260315C00100000",
+                "ts": "2026-02-01",
+                "open": 1.0,
+                "high": 1.2,
+                "low": 0.9,
+                "close": 1.1,
+                "volume": 100,
+                "vwap": 1.05,
+                "trade_count": 10,
+            },
+            {
+                "contractSymbol": "MSFT260315P00150000",
+                "ts": "2026-02-01",
+                "open": 2.0,
+                "high": 2.2,
+                "low": 1.9,
+                "close": 2.1,
+                "volume": 80,
+                "vwap": 2.05,
+                "trade_count": 8,
+            },
+        ]
+    )
+
+    store.apply_write_batch(
+        bars_df=bars_df,
+        interval="1d",
+        provider="alpaca",
+        success_symbols=["AAPL260315C00100000"],
+        success_rows={"AAPL260315C00100000": 1},
+        success_start_ts={"AAPL260315C00100000": datetime(2026, 2, 1, tzinfo=timezone.utc)},
+        success_end_ts={"AAPL260315C00100000": datetime(2026, 2, 1, tzinfo=timezone.utc)},
+        error_groups=[(["MSFT260315P00150000"], "not_found", "no bars returned")],
+    )
+
+    bars = wh.fetch_df(
+        """
+        SELECT contract_symbol
+        FROM option_bars
+        WHERE provider = ? AND interval = ?
+        ORDER BY contract_symbol
+        """,
+        ["alpaca", "1d"],
+    )
+    assert list(bars["contract_symbol"]) == ["AAPL260315C00100000", "MSFT260315P00150000"]
+
+    meta = wh.fetch_df(
+        """
+        SELECT contract_symbol, status, rows, last_error
+        FROM option_bars_meta
+        WHERE provider = ? AND interval = ?
+        ORDER BY contract_symbol
+        """,
+        ["alpaca", "1d"],
+    )
+    assert list(meta["contract_symbol"]) == ["AAPL260315C00100000", "MSFT260315P00150000"]
+    ok_row = meta[meta["contract_symbol"] == "AAPL260315C00100000"].iloc[0]
+    err_row = meta[meta["contract_symbol"] == "MSFT260315P00150000"].iloc[0]
+    assert str(ok_row["status"]) == "ok"
+    assert int(ok_row["rows"]) == 1
+    assert pd.isna(ok_row["last_error"])
+    assert str(err_row["status"]) == "not_found"
+    assert int(err_row["rows"]) == 0
+    assert "no bars returned" in str(err_row["last_error"])

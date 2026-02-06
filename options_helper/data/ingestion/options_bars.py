@@ -551,6 +551,7 @@ def backfill_option_bars(
     pending_success_count = 0
     pending_errors: dict[tuple[str, str], list[str]] = {}
     pending_error_count = 0
+    apply_write_batch = getattr(store, "apply_write_batch", None)
 
     def _fetch_bars(plan: _BarsFetchPlan) -> pd.DataFrame:
         rate_limiter.wait_turn()
@@ -601,6 +602,31 @@ def backfill_option_bars(
         pending_error_count = 0
 
     def _flush_buffers() -> None:
+        nonlocal pending_success_count, pending_error_count
+        if callable(apply_write_batch):
+            merged = pd.concat(pending_bars, ignore_index=True) if pending_bars else None
+            error_groups = [(symbols, status, error_text) for (status, error_text), symbols in pending_errors.items()]
+            if merged is not None or pending_success_symbols or error_groups:
+                apply_write_batch(
+                    bars_df=merged,
+                    interval="1d",
+                    provider=provider,
+                    success_symbols=pending_success_symbols,
+                    success_rows=pending_success_rows or None,
+                    success_start_ts=pending_success_start or None,
+                    success_end_ts=pending_success_end or None,
+                    error_groups=error_groups,
+                )
+            pending_bars.clear()
+            pending_success_symbols.clear()
+            pending_success_rows.clear()
+            pending_success_start.clear()
+            pending_success_end.clear()
+            pending_success_count = 0
+            pending_errors.clear()
+            pending_error_count = 0
+            return
+
         _flush_success_buffers()
         _flush_error_buffers()
 
@@ -623,7 +649,7 @@ def backfill_option_bars(
             pending_success_end[symbol] = end_ts
         pending_success_count += 1
         if pending_success_count >= write_batch_size:
-            _flush_success_buffers()
+            _flush_buffers()
 
     def _queue_error(*, symbol: str, status: str, error_text: str) -> None:
         nonlocal pending_error_count
@@ -631,7 +657,7 @@ def backfill_option_bars(
         pending_errors.setdefault(key, []).append(symbol)
         pending_error_count += 1
         if pending_error_count >= write_batch_size:
-            _flush_error_buffers()
+            _flush_buffers()
 
     def _record_error(plan: _BarsFetchPlan, exc: Exception) -> None:
         nonlocal error_contracts
