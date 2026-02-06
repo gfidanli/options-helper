@@ -80,7 +80,7 @@ def test_get_option_bars_daily_full_paginates(monkeypatch: pytest.MonkeyPatch) -
     )
 
     assert len(stub.calls) == 2
-    assert stub.calls[0].get("limit") == 2
+    assert stub.calls[0].get("limit") is None
     assert stub.calls[1].get("page_token") == "next"
     assert list(out.columns) == [
         "contractSymbol",

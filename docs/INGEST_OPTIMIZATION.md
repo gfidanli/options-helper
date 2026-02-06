@@ -1,7 +1,7 @@
 # Ingestion Optimization Playbook (Alpaca + DuckDB)
 
-This captures the current ingestion tuning strategy for endpoint-level performance and database throughput.
-It is focused on `ingest options-bars` and should be treated as an operational playbook. **Not financial advice.**
+This captures the current ingestion tuning strategy for endpoint-level performance and database throughput across
+`ingest candles` and `ingest options-bars`. Treat it as an operational playbook. **Not financial advice.**
 
 Last updated: 2026-02-06.
 
@@ -10,6 +10,7 @@ Last updated: 2026-02-06.
 A single global "concurrency" number is not enough for options ingestion. Different endpoints have different limits,
 response shapes, and bottlenecks:
 
+- `GET /v2/stocks/bars` (stock client) can bottleneck candles ingestion if retries/throttles are not tuned.
 - `GET /v2/options/contracts` (trading client) is low-limit and easy to overrun.
 - `GET /v1beta1/options/bars` (option client) is high-limit and tends to hit local CPU/DB bottlenecks first.
 
@@ -19,19 +20,20 @@ The best results come from tuning each endpoint independently and validating wit
 
 | Area | Status | What was implemented |
 |---|---|---|
+| Candles endpoint (`/v2/stocks/bars`) | Optimized | Added candles endpoint knobs (`--candles-concurrency`, `--candles-max-rps`) and robust retry/backoff policy (429/408/5xx/timeouts + Retry-After). |
 | Contracts endpoint (`/v2/options/contracts`) | Optimized | Separate throttle (`--contracts-max-rps`, default `2.5`) and explicit rate-limit logging support. |
-| Bars endpoint (`/v1beta1/options/bars`) | Optimized | Independent concurrency + RPS controls (`--bars-concurrency`, `--bars-max-rps`) plus HTTP pool overrides (`--alpaca-http-pool-maxsize`, `--alpaca-http-pool-connections`). |
+| Bars endpoint (`/v1beta1/options/bars`) | Optimized | Independent concurrency + RPS controls (`--bars-concurrency`, `--bars-max-rps`) plus adaptive batching (`--bars-batch-mode adaptive`, `--bars-batch-size`) and HTTP pool overrides. |
+| Bars pagination behavior | Optimized | Removed `limit=chunk_size` truncation behavior; SDK-driven pagination is primary path with compatibility fallback for raw/mocked payloads. |
 | Bars fetch benchmarking | Optimized | `--fetch-only` mode to isolate network/provider throughput from DuckDB write cost. |
 | Resume/skip logic | Optimized | Uses `option_bars_meta` coverage so we avoid re-fetching contracts already attempted/covered. |
 | DuckDB write path for bars/meta | Optimized | Batched flushes and single-transaction `apply_write_batch(...)` for bars + meta updates. |
+| Auto-tune profile | Optimized | Explicit `--auto-tune` mode updates `config/ingest_tuning.json` from endpoint stats (429s/timeouts/latency/splits). |
 
 ## What Still Needs Optimization
 
 | Area | Current gap | Direction |
 |---|---|---|
-| Adaptive rate control | Tuning is manual today. | Auto-adjust from response headers and back off immediately on first 429. |
 | Contracts discovery concurrency | Discovery is intentionally conservative because limit is lower. | Keep low RPS, but evaluate bounded parallelism by underlying when provider behavior allows it. |
-| Endpoint-specific retry policy | Retries are generic. | Use per-endpoint jitter/backoff tuned to each reset window and limit. |
 | DuckDB write pressure | Single-writer model can still cap throughput at high fetch rates. | Add async write queue and/or larger staged write chunks. |
 | Historical benchmark registry | No canonical benchmark table yet. | Persist benchmark runs and pick defaults from measured p50/p95 throughput. |
 
@@ -40,9 +42,13 @@ The best results come from tuning each endpoint independently and validating wit
 Use these as starting points and validate with logs in your own account.
 
 1. Conservative baseline (defaults):
+   - `--candles-concurrency 1`
+   - `--candles-max-rps 8`
    - `--contracts-max-rps 2.5`
    - `--bars-concurrency 8`
    - `--bars-max-rps 30`
+   - `--bars-batch-mode adaptive`
+   - `--bars-batch-size 8`
 
 2. Throughput profile used in recent tuning:
    - `--contracts-max-rps 2.5`
@@ -64,6 +70,7 @@ The following are already in code:
 - Buffered success/error meta updates controlled by `--bars-write-batch-size`.
 - Store-level `apply_write_batch(...)` that writes bars + success meta + error meta in one transaction.
 - `--fetch-only` to confirm whether bottlenecks are network/provider or local DB writes.
+- Endpoint stats include p50/p95 latency + split/fallback counts for adaptive bars mode.
 
 Relevant code:
 
@@ -110,9 +117,8 @@ When adding a new provider or storage backend, keep the same tuning contract:
 
 ## Suggested Next Iteration
 
-Implement an optional auto-tune mode:
+Extend auto-tune with a benchmark registry in DuckDB:
 
-- Warm-up at baseline.
-- Increase bars concurrency/RPS stepwise.
-- Stop at first 429 or sustained write-latency spike.
-- Persist recommended settings per provider+endpoint+host profile.
+- Persist run-level endpoint stats/history (instead of config-file-only profiles).
+- Choose profile updates from rolling p50/p95 and error-rate windows.
+- Add host-aware profile keys (provider + endpoint + machine/runtime footprint).

@@ -27,11 +27,11 @@ class _FakeAlpacaClient:
         *,
         exp_gte: date | None = None,
         exp_lte: date | None = None,
-        limit: int | None = None,  # noqa: ARG002
+        limit: int | None = None,
         page_limit: int | None = None,  # noqa: ARG002
     ) -> list[dict[str, object]]:
         self.contract_calls.append(
-            {"underlying": underlying, "exp_gte": exp_gte, "exp_lte": exp_lte}
+            {"underlying": underlying, "exp_gte": exp_gte, "exp_lte": exp_lte, "limit": limit}
         )
         contracts = [
             {
@@ -139,6 +139,8 @@ def test_ingest_options_bars_per_symbol_records_errors(tmp_path: Path, monkeypat
             "2026-12-31",
             "--lookback-years",
             "1",
+            "--bars-batch-mode",
+            "per-contract",
         ],
     )
 
@@ -214,6 +216,8 @@ def test_ingest_options_bars_passes_http_pool_flags(tmp_path: Path, monkeypatch)
             "128",
             "--alpaca-http-pool-connections",
             "64",
+            "--bars-batch-mode",
+            "per-contract",
         ],
     )
 
@@ -248,6 +252,8 @@ def test_ingest_options_bars_fetch_only_skips_warehouse_writes(tmp_path: Path, m
             "--lookback-years",
             "1",
             "--fetch-only",
+            "--bars-batch-mode",
+            "per-contract",
         ],
     )
 
@@ -291,3 +297,43 @@ def test_ingest_options_bars_fetch_only_conflicts_with_dry_run(tmp_path: Path, m
 
     assert result.exit_code != 0
     assert "Choose either --dry-run or --fetch-only, not both." in result.output
+
+
+def test_ingest_options_bars_auto_tune_writes_profile_and_contract_limit(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda: _StubProvider())
+    fake_client = _FakeAlpacaClient()
+    monkeypatch.setattr(ingest, "AlpacaClient", lambda: fake_client)
+
+    runner = CliRunner()
+    duckdb_path = tmp_path / "options.duckdb"
+    tuning_path = tmp_path / "ingest_tuning.json"
+    result = runner.invoke(
+        app,
+        [
+            "--provider",
+            "alpaca",
+            "--duckdb-path",
+            str(duckdb_path),
+            "ingest",
+            "options-bars",
+            "--symbol",
+            "SPY",
+            "--contracts-exp-start",
+            "2025-01-01",
+            "--contracts-exp-end",
+            "2026-12-31",
+            "--lookback-years",
+            "1",
+            "--contracts-page-size",
+            "9999",
+            "--bars-batch-mode",
+            "per-contract",
+            "--auto-tune",
+            "--tune-config",
+            str(tuning_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert tuning_path.exists()
+    assert any(call.get("limit") == 9999 for call in fake_client.contract_calls)

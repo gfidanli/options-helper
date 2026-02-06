@@ -12,8 +12,9 @@ import pandas as pd
 
 from options_helper.analysis.osi import normalize_underlying, parse_contract_symbol
 from options_helper.data.alpaca_client import AlpacaClient, contracts_to_df
-from options_helper.data.option_bars import OptionBarsStore
 from options_helper.data.ingestion.common import shift_years
+from options_helper.data.ingestion.tuning import EndpointStats, build_endpoint_stats
+from options_helper.data.option_bars import OptionBarsStore
 
 
 _MIN_START_DATE = date(2000, 1, 1)
@@ -36,6 +37,7 @@ class ContractDiscoveryOutput:
     contracts: pd.DataFrame
     raw_by_symbol: dict[str, dict[str, Any]]
     summaries: list[UnderlyingDiscoverySummary]
+    endpoint_stats: ContractDiscoveryStats | None = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,17 @@ class BarsBackfillSummary:
     error_contracts: int
     bars_rows: int
     requests_attempted: int
+    endpoint_stats: BarsEndpointStats | None = None
+
+
+@dataclass(frozen=True)
+class ContractDiscoveryStats:
+    endpoint_stats: EndpointStats
+
+
+@dataclass(frozen=True)
+class BarsEndpointStats:
+    endpoint_stats: EndpointStats
 
 
 @dataclass(frozen=True)
@@ -62,6 +75,13 @@ class _BarsFetchPlan:
     fetch_start: date
     fetch_end: date
     has_coverage: bool
+
+
+@dataclass(frozen=True)
+class _BarsBatchPlan:
+    symbols: tuple[str, ...]
+    fetch_start: date
+    fetch_end: date
 
 
 class _RequestRateLimiter:
@@ -212,28 +232,44 @@ def _error_status(exc: Exception) -> str:
     return "error"
 
 
+def _looks_like_timeout(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "timeout" in msg or "timed out" in msg
+
+
+def _looks_like_429(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "429" in msg or "rate limit" in msg or "too many requests" in msg
+
+
+def _supports_max_rps_kw(method: Any) -> bool:
+    try:
+        signature = inspect.signature(method)
+    except (TypeError, ValueError):
+        return False
+    return "max_requests_per_second" in signature.parameters
+
+
 def _list_option_contracts(
     client: AlpacaClient,
     *,
     underlying: str,
     exp_gte: date,
     exp_lte: date,
+    limit: int | None,
     page_limit: int | None,
     max_requests_per_second: float | None,
+    supports_max_rps_kw: bool,
 ) -> list[dict[str, Any]]:
     method = getattr(client, "list_option_contracts")
     kwargs: dict[str, Any] = {
         "exp_gte": exp_gte,
         "exp_lte": exp_lte,
+        "limit": limit,
         "page_limit": page_limit,
     }
-    if max_requests_per_second is not None:
-        try:
-            signature = inspect.signature(method)
-        except (TypeError, ValueError):
-            signature = None
-        if signature is not None and "max_requests_per_second" in signature.parameters:
-            kwargs["max_requests_per_second"] = max_requests_per_second
+    if supports_max_rps_kw and max_requests_per_second is not None:
+        kwargs["max_requests_per_second"] = max_requests_per_second
     return method(underlying, **kwargs)
 
 
@@ -243,6 +279,7 @@ def discover_option_contracts(
     underlyings: Iterable[str],
     exp_start: date,
     exp_end: date,
+    limit: int | None = None,
     page_limit: int | None = None,
     max_contracts: int | None = None,
     max_requests_per_second: float | None = None,
@@ -251,7 +288,14 @@ def discover_option_contracts(
     frames: list[pd.DataFrame] = []
     raw_by_symbol: dict[str, dict[str, Any]] = {}
     summaries: list[UnderlyingDiscoverySummary] = []
-    contracts_rate_limiter = _RequestRateLimiter(max_requests_per_second)
+    method = getattr(client, "list_option_contracts")
+    supports_max_rps_kw = _supports_max_rps_kw(method)
+    contracts_rate_limiter = _RequestRateLimiter(max_requests_per_second if not supports_max_rps_kw else None)
+    calls = 0
+    error_count = 0
+    timeout_count = 0
+    rate_limit_429 = 0
+    latencies_ms: list[float] = []
 
     total_contracts = 0
     today = date.today()
@@ -274,22 +318,33 @@ def discover_option_contracts(
             if max_contracts is not None and total_contracts >= max_contracts:
                 break
             years_scanned += 1
+            started = time_mod.perf_counter()
             try:
                 contracts_rate_limiter.wait_turn()
+                calls += 1
                 contracts = _list_option_contracts(
                     client,
                     underlying=underlying,
                     exp_gte=window_start,
                     exp_lte=window_end,
+                    limit=limit,
                     page_limit=page_limit,
                     max_requests_per_second=max_requests_per_second,
+                    supports_max_rps_kw=supports_max_rps_kw,
                 )
             except Exception as exc:  # noqa: BLE001
+                latencies_ms.append((time_mod.perf_counter() - started) * 1000.0)
                 error = str(exc)
                 status = "error"
+                error_count += 1
+                if _looks_like_timeout(exc):
+                    timeout_count += 1
+                if _looks_like_429(exc):
+                    rate_limit_429 += 1
                 if fail_fast:
                     raise
                 break
+            latencies_ms.append((time_mod.perf_counter() - started) * 1000.0)
 
             if not contracts:
                 # Alpaca may not list far-dated expiries; don't let empty *future* windows
@@ -329,7 +384,20 @@ def discover_option_contracts(
 
     if not frames:
         empty = contracts_to_df([])
-        return ContractDiscoveryOutput(contracts=empty, raw_by_symbol=raw_by_symbol, summaries=summaries)
+        endpoint_stats = build_endpoint_stats(
+            calls=calls,
+            retries=0,
+            rate_limit_429=rate_limit_429,
+            timeout_count=timeout_count,
+            error_count=error_count,
+            latencies_ms=latencies_ms,
+        )
+        return ContractDiscoveryOutput(
+            contracts=empty,
+            raw_by_symbol=raw_by_symbol,
+            summaries=summaries,
+            endpoint_stats=ContractDiscoveryStats(endpoint_stats=endpoint_stats),
+        )
 
     combined = pd.concat(frames, ignore_index=True)
     combined = _normalize_contracts_frame(combined)
@@ -337,7 +405,20 @@ def discover_option_contracts(
         combined = combined.dropna(subset=["contractSymbol"])
         combined = combined.drop_duplicates(subset=["contractSymbol"], keep="last")
 
-    return ContractDiscoveryOutput(contracts=combined, raw_by_symbol=raw_by_symbol, summaries=summaries)
+    endpoint_stats = build_endpoint_stats(
+        calls=calls,
+        retries=0,
+        rate_limit_429=rate_limit_429,
+        timeout_count=timeout_count,
+        error_count=error_count,
+        latencies_ms=latencies_ms,
+    )
+    return ContractDiscoveryOutput(
+        contracts=combined,
+        raw_by_symbol=raw_by_symbol,
+        summaries=summaries,
+        endpoint_stats=ContractDiscoveryStats(endpoint_stats=endpoint_stats),
+    )
 
 
 def prepare_contracts_for_bars(
@@ -392,6 +473,8 @@ def backfill_option_bars(
     page_limit: int | None = None,
     bars_concurrency: int = 1,
     bars_max_requests_per_second: float | None = None,
+    bars_batch_mode: str = "adaptive",
+    bars_batch_size: int = 8,
     bars_write_batch_size: int = 200,
     resume: bool = True,
     dry_run: bool = False,
@@ -408,6 +491,9 @@ def backfill_option_bars(
             error_contracts=0,
             bars_rows=0,
             requests_attempted=0,
+            endpoint_stats=BarsEndpointStats(
+                endpoint_stats=build_endpoint_stats(calls=0, error_count=0, latencies_ms=[])
+            ),
         )
 
     df = contracts.copy()
@@ -535,12 +621,22 @@ def backfill_option_bars(
             error_contracts=error_contracts,
             bars_rows=bars_rows,
             requests_attempted=requests_attempted,
+            endpoint_stats=BarsEndpointStats(
+                endpoint_stats=build_endpoint_stats(
+                    calls=requests_attempted,
+                    error_count=error_contracts,
+                    latencies_ms=[],
+                )
+            ),
         )
 
-    requests_attempted += len(fetch_plans)
     rate_limiter = _RequestRateLimiter(bars_max_requests_per_second)
     max_workers = max(1, int(bars_concurrency))
     write_batch_size = max(1, int(bars_write_batch_size))
+    batch_mode = str(bars_batch_mode or "adaptive").strip().lower()
+    if batch_mode not in {"adaptive", "per-contract"}:
+        batch_mode = "adaptive"
+    batch_size = max(1, int(bars_batch_size))
     if fail_fast:
         max_workers = 1
     pending_bars: list[pd.DataFrame] = []
@@ -552,16 +648,47 @@ def backfill_option_bars(
     pending_errors: dict[tuple[str, str], list[str]] = {}
     pending_error_count = 0
     apply_write_batch = getattr(store, "apply_write_batch", None)
+    endpoint_calls = 0
+    endpoint_errors = 0
+    endpoint_timeout_count = 0
+    endpoint_rate_limit_429 = 0
+    endpoint_latencies_ms: list[float] = []
+    endpoint_split_count = 0
+    endpoint_fallback_count = 0
+    endpoint_lock = threading.Lock()
+    plan_by_symbol = {plan.symbol: plan for plan in fetch_plans}
 
-    def _fetch_bars(plan: _BarsFetchPlan) -> pd.DataFrame:
+    def _fetch_bars(
+        symbols: list[str],
+        *,
+        fetch_start: date,
+        fetch_end: date,
+    ) -> pd.DataFrame:
+        nonlocal endpoint_calls, endpoint_errors, endpoint_timeout_count, endpoint_rate_limit_429
         rate_limiter.wait_turn()
-        return client.get_option_bars_daily_full(
-            [plan.symbol],
-            start=plan.fetch_start,
-            end=plan.fetch_end,
-            interval="1d",
-            page_limit=page_limit,
-        )
+        started = time_mod.perf_counter()
+        try:
+            return client.get_option_bars_daily_full(
+                symbols,
+                start=fetch_start,
+                end=fetch_end,
+                interval="1d",
+                chunk_size=max(1, len(symbols)),
+                page_limit=page_limit,
+            )
+        except Exception as exc:  # noqa: BLE001
+            with endpoint_lock:
+                endpoint_errors += 1
+                if _looks_like_timeout(exc):
+                    endpoint_timeout_count += 1
+                if _looks_like_429(exc):
+                    endpoint_rate_limit_429 += 1
+            raise
+        finally:
+            elapsed_ms = (time_mod.perf_counter() - started) * 1000.0
+            with endpoint_lock:
+                endpoint_calls += 1
+                endpoint_latencies_ms.append(elapsed_ms)
 
     def _flush_success_buffers() -> None:
         nonlocal pending_success_count
@@ -725,30 +852,197 @@ def backfill_option_bars(
         )
         error_contracts += 1
 
-    if max_workers <= 1:
-        for plan in fetch_plans:
-            try:
-                df_bars = _fetch_bars(plan)
-            except Exception as exc:  # noqa: BLE001
-                _record_error(plan, exc)
-                if fail_fast:
-                    _flush_buffers()
-                    raise
+    def _fetch_single_plan(plan: _BarsFetchPlan) -> tuple[_BarsFetchPlan, pd.DataFrame | None, Exception | None]:
+        try:
+            df_bars = _fetch_bars([plan.symbol], fetch_start=plan.fetch_start, fetch_end=plan.fetch_end)
+            return plan, df_bars, None
+        except Exception as exc:  # noqa: BLE001
+            return plan, None, exc
+
+    def _split_batch(symbols: list[str]) -> tuple[list[str], list[str]]:
+        midpoint = max(1, len(symbols) // 2)
+        return symbols[:midpoint], symbols[midpoint:]
+
+    def _resolve_adaptive_batch(batch_plan: _BarsBatchPlan) -> list[tuple[_BarsFetchPlan, pd.DataFrame | None, Exception | None]]:
+        nonlocal endpoint_split_count, endpoint_fallback_count
+        symbols = [sym for sym in batch_plan.symbols if sym]
+        if not symbols:
+            return []
+
+        try:
+            df_bars = _fetch_bars(
+                symbols,
+                fetch_start=batch_plan.fetch_start,
+                fetch_end=batch_plan.fetch_end,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if len(symbols) == 1:
+                plan = plan_by_symbol.get(symbols[0])
+                if plan is None:
+                    return []
+                return [(plan, None, exc)]
+            with endpoint_lock:
+                endpoint_split_count += 1
+            left_symbols, right_symbols = _split_batch(symbols)
+            return _resolve_adaptive_batch(
+                _BarsBatchPlan(
+                    symbols=tuple(left_symbols),
+                    fetch_start=batch_plan.fetch_start,
+                    fetch_end=batch_plan.fetch_end,
+                )
+            ) + _resolve_adaptive_batch(
+                _BarsBatchPlan(
+                    symbols=tuple(right_symbols),
+                    fetch_start=batch_plan.fetch_start,
+                    fetch_end=batch_plan.fetch_end,
+                )
+            )
+
+        if df_bars is None or df_bars.empty:
+            if len(symbols) == 1:
+                plan = plan_by_symbol.get(symbols[0])
+                if plan is None:
+                    return []
+                return [(plan, pd.DataFrame(), None)]
+            with endpoint_lock:
+                endpoint_split_count += 1
+                endpoint_fallback_count += 1
+            left_symbols, right_symbols = _split_batch(symbols)
+            return _resolve_adaptive_batch(
+                _BarsBatchPlan(
+                    symbols=tuple(left_symbols),
+                    fetch_start=batch_plan.fetch_start,
+                    fetch_end=batch_plan.fetch_end,
+                )
+            ) + _resolve_adaptive_batch(
+                _BarsBatchPlan(
+                    symbols=tuple(right_symbols),
+                    fetch_start=batch_plan.fetch_start,
+                    fetch_end=batch_plan.fetch_end,
+                )
+            )
+
+        normalized = df_bars.copy()
+        if "contractSymbol" not in normalized.columns:
+            normalized["contractSymbol"] = pd.NA
+        normalized["contractSymbol"] = normalized["contractSymbol"].map(
+            lambda value: str(value).strip().upper() if value is not None else None
+        )
+        normalized = normalized.dropna(subset=["contractSymbol"]).copy()
+        if not normalized.empty:
+            normalized = normalized[normalized["contractSymbol"].isin(symbols)].copy()
+
+        present_symbols = (
+            sorted({str(value).strip().upper() for value in normalized["contractSymbol"].tolist()})
+            if not normalized.empty
+            else []
+        )
+        present_set = set(present_symbols)
+        outcomes: list[tuple[_BarsFetchPlan, pd.DataFrame | None, Exception | None]] = []
+        for sym in present_symbols:
+            plan = plan_by_symbol.get(sym)
+            if plan is None:
                 continue
-            _record_success(plan, df_bars)
+            rows = normalized[normalized["contractSymbol"] == sym].copy()
+            outcomes.append((plan, rows, None))
+
+        missing_symbols = [sym for sym in symbols if sym not in present_set]
+        if not missing_symbols:
+            return outcomes
+
+        if len(symbols) == 1:
+            plan = plan_by_symbol.get(symbols[0])
+            if plan is not None:
+                outcomes.append((plan, pd.DataFrame(), None))
+            return outcomes
+
+        with endpoint_lock:
+            endpoint_split_count += 1
+            endpoint_fallback_count += 1
+        left_symbols, right_symbols = _split_batch(missing_symbols)
+        return outcomes + _resolve_adaptive_batch(
+            _BarsBatchPlan(
+                symbols=tuple(left_symbols),
+                fetch_start=batch_plan.fetch_start,
+                fetch_end=batch_plan.fetch_end,
+            )
+        ) + _resolve_adaptive_batch(
+            _BarsBatchPlan(
+                symbols=tuple(right_symbols),
+                fetch_start=batch_plan.fetch_start,
+                fetch_end=batch_plan.fetch_end,
+            )
+        )
+
+    def _process_outcome(plan: _BarsFetchPlan, df_bars: pd.DataFrame | None, exc: Exception | None) -> None:
+        if exc is not None:
+            _record_error(plan, exc)
+            return
+        _record_success(plan, df_bars)
+
+    if batch_mode == "per-contract":
+        if max_workers <= 1:
+            for plan in fetch_plans:
+                item_plan, df_bars, exc = _fetch_single_plan(plan)
+                _process_outcome(item_plan, df_bars, exc)
+                if fail_fast and exc is not None:
+                    _flush_buffers()
+                    raise exc
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(_fetch_single_plan, plan): plan for plan in fetch_plans}
+                for future in as_completed(futures):
+                    item_plan, df_bars, exc = future.result()
+                    _process_outcome(item_plan, df_bars, exc)
     else:
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_fetch_bars, plan): plan for plan in fetch_plans}
-            for future in as_completed(futures):
-                plan = futures[future]
-                try:
-                    df_bars = future.result()
-                except Exception as exc:  # noqa: BLE001
-                    _record_error(plan, exc)
+        grouped_symbols: dict[tuple[date, date], list[str]] = {}
+        for plan in fetch_plans:
+            key = (plan.fetch_start, plan.fetch_end)
+            grouped_symbols.setdefault(key, []).append(plan.symbol)
+
+        batch_plans: list[_BarsBatchPlan] = []
+        for (fetch_start, fetch_end), symbols in grouped_symbols.items():
+            ordered = sorted({sym for sym in symbols if sym})
+            for index in range(0, len(ordered), batch_size):
+                chunk = ordered[index : index + batch_size]
+                if not chunk:
                     continue
-                _record_success(plan, df_bars)
+                batch_plans.append(
+                    _BarsBatchPlan(
+                        symbols=tuple(chunk),
+                        fetch_start=fetch_start,
+                        fetch_end=fetch_end,
+                    )
+                )
+
+        if max_workers <= 1:
+            for batch_plan in batch_plans:
+                outcomes = _resolve_adaptive_batch(batch_plan)
+                for item_plan, df_bars, exc in outcomes:
+                    _process_outcome(item_plan, df_bars, exc)
+                    if fail_fast and exc is not None:
+                        _flush_buffers()
+                        raise exc
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(_resolve_adaptive_batch, batch_plan): batch_plan for batch_plan in batch_plans}
+                for future in as_completed(futures):
+                    outcomes = future.result()
+                    for item_plan, df_bars, exc in outcomes:
+                        _process_outcome(item_plan, df_bars, exc)
 
     _flush_buffers()
+    requests_attempted = endpoint_calls
+    endpoint_stats = build_endpoint_stats(
+        calls=endpoint_calls,
+        retries=0,
+        rate_limit_429=endpoint_rate_limit_429,
+        timeout_count=endpoint_timeout_count,
+        error_count=endpoint_errors,
+        latencies_ms=endpoint_latencies_ms,
+        split_count=endpoint_split_count,
+        fallback_count=endpoint_fallback_count,
+    )
 
     return BarsBackfillSummary(
         total_contracts=total_contracts,
@@ -759,4 +1053,5 @@ def backfill_option_bars(
         error_contracts=error_contracts,
         bars_rows=bars_rows,
         requests_attempted=requests_attempted,
+        endpoint_stats=BarsEndpointStats(endpoint_stats=endpoint_stats),
     )

@@ -24,6 +24,12 @@ Common flags:
 - `--watchlist NAME` (repeatable)
 - `--symbol TICKER` (repeatable; overrides watchlists)
 - `--candle-cache-dir PATH`
+- `--candles-concurrency N` (stock-bars fetch workers; default `1`)
+- `--candles-max-rps FLOAT` (soft throttle for stock-bars requests/sec; default `8.0`)
+- `--alpaca-http-pool-maxsize N`, `--alpaca-http-pool-connections N`
+- `--log-rate-limits/--no-log-rate-limits`
+- `--auto-tune/--no-auto-tune`
+- `--tune-config PATH` (default: `config/ingest_tuning.json`, local state)
 
 ### Options bars (daily OHLCV + vwap + trade_count)
 Discovers Alpaca option contracts (expired + active) and backfills daily bars. Bars are fetched
@@ -37,15 +43,20 @@ Common flags:
 - `--contracts-exp-start YYYY-MM-DD`
 - `--contracts-exp-end YYYY-MM-DD` (default: today + 5y)
 - `--lookback-years N` (default: 10)
-- `--page-limit N` (default: 200)
+- `--page-limit N` (default: 200, contracts pagination safety cap)
+- `--contracts-page-size N` (default: `10000`)
 - `--max-underlyings N`, `--max-contracts N`, `--max-expiries N`
 - `--contracts-max-rps FLOAT` (default: `2.5`, soft throttle for options-contracts requests/sec)
 - `--bars-concurrency N` (default: `8`; forced to `1` with `--fail-fast`)
 - `--bars-max-rps FLOAT` (default: `30.0`, soft throttle for options-bars requests/sec)
+- `--bars-batch-mode adaptive|per-contract` (default: `adaptive`)
+- `--bars-batch-size N` (default: `8`)
 - `--bars-write-batch-size N` (default: `200`, batches bars/meta writes to DuckDB)
 - `--alpaca-http-pool-maxsize N` (override Alpaca `requests` pool max size for this run)
 - `--alpaca-http-pool-connections N` (override Alpaca `requests` pool connection pools for this run)
 - `--log-rate-limits/--no-log-rate-limits` (override per-request Alpaca rate-limit logging)
+- `--auto-tune/--no-auto-tune`
+- `--tune-config PATH` (default: `config/ingest_tuning.json`, local state)
 - `--resume/--no-resume` (uses `option_bars_meta` coverage)
 - `--dry-run` (no writes)
 - `--fetch-only` (benchmark mode: fetches contracts/bars, skips warehouse writes)
@@ -69,4 +80,5 @@ All ingestion writes to the DuckDB warehouse (default: `data/warehouse/options.d
 - Throughput tuning loop: enable `--log-rate-limits`, increase bars knobs until you first observe bars `status=429`, then back off to ~80% of that setting.
 - If bars throughput plateaus before any 429s, raise Alpaca HTTP pool sizes (for example `--alpaca-http-pool-maxsize 256 --alpaca-http-pool-connections 256`) before pushing concurrency/RPS higher.
 - Use `--fetch-only` for benchmarking raw fetch throughput without DuckDB write overhead.
+- `--auto-tune` updates `config/ingest_tuning.json` from observed endpoint stats (429s/timeouts/latency/splits).
 - For endpoint-by-endpoint tuning status and DuckDB optimization details, see [Ingestion optimization playbook](INGEST_OPTIMIZATION.md).

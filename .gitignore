@@ -38,6 +38,7 @@ venv/
 .env.local
 .python-version
 config/alpaca.env
+config/ingest_tuning.json
 
 # Logs and misc
 *.log

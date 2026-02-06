@@ -76,3 +76,41 @@ def test_ingest_candles_defaults(tmp_path: Path, monkeypatch) -> None:  # type: 
         "SELECT DISTINCT symbol FROM candles_daily ORDER BY symbol ASC"
     )
     assert list(df["symbol"]) == ["AAA", "BBB"]
+
+
+def test_ingest_candles_auto_tune_writes_profile(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    watchlists_path = tmp_path / "watchlists.json"
+    watchlists_path.write_text(
+        '{"watchlists":{"positions":["AAA"]}}',
+        encoding="utf-8",
+    )
+
+    provider = _StubProvider()
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda: provider)
+
+    runner = CliRunner()
+    duckdb_path = tmp_path / "options.duckdb"
+    tuning_path = tmp_path / "ingest_tuning.json"
+    result = runner.invoke(
+        app,
+        [
+            "--duckdb-path",
+            str(duckdb_path),
+            "ingest",
+            "candles",
+            "--watchlists-path",
+            str(watchlists_path),
+            "--watchlist",
+            "positions",
+            "--candles-concurrency",
+            "2",
+            "--candles-max-rps",
+            "5",
+            "--auto-tune",
+            "--tune-config",
+            str(tuning_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert tuning_path.exists()

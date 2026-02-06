@@ -28,16 +28,23 @@ from options_helper.data.candles import CandleStore, close_asof, last_close
 from options_helper.data.confluence_config import ConfigError as ConfluenceConfigError, load_confluence_config
 from options_helper.data.derived import DerivedStore
 from options_helper.data.earnings import safe_next_earnings_date
-from options_helper.data.ingestion.candles import CandleIngestResult, ingest_candles
+from options_helper.data.ingestion.candles import (
+    CandleIngestOutput,
+    CandleIngestResult,
+    ingest_candles_with_summary,
+)
 from options_helper.data.ingestion.common import DEFAULT_WATCHLISTS, parse_date, resolve_symbols, shift_years
 from options_helper.data.ingestion.options_bars import (
     BarsBackfillSummary,
     ContractDiscoveryOutput,
+    ContractDiscoveryStats,
     PreparedContracts,
+    BarsEndpointStats,
     backfill_option_bars,
     discover_option_contracts,
     prepare_contracts_for_bars,
 )
+from options_helper.data.ingestion.tuning import EndpointStats
 from options_helper.data.market_types import DataFetchError
 from options_helper.data.options_snapshots import OptionsSnapshotStore
 from options_helper.data.quality_checks import (
@@ -84,6 +91,7 @@ class IngestCandlesJobResult:
     symbols: list[str]
     results: list[CandleIngestResult]
     no_symbols: bool
+    endpoint_stats: EndpointStats | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +106,8 @@ class IngestOptionsBarsJobResult:
     no_symbols: bool
     no_contracts: bool
     no_eligible_contracts: bool
+    contracts_endpoint_stats: ContractDiscoveryStats | None = None
+    bars_endpoint_stats: BarsEndpointStats | None = None
 
 
 @dataclass(frozen=True)
@@ -214,6 +224,8 @@ def run_ingest_candles_job(
     watchlist: list[str],
     symbol: list[str],
     candle_cache_dir: Path,
+    candles_concurrency: int = 1,
+    candles_max_requests_per_second: float | None = None,
     provider_builder: Callable[[], Any] = cli_deps.build_provider,
     candle_store_builder: Callable[..., Any] = cli_deps.build_candle_store,
     run_logger: Any | None = None,
@@ -236,11 +248,19 @@ def run_ingest_candles_job(
             symbols=[],
             results=[],
             no_symbols=True,
+            endpoint_stats=None,
         )
 
     provider = provider_builder()
     store = candle_store_builder(candle_cache_dir, provider=provider)
-    results = ingest_candles(store, selection.symbols, period="max", best_effort=True)
+    output: CandleIngestOutput = ingest_candles_with_summary(
+        store,
+        selection.symbols,
+        period="max",
+        best_effort=True,
+        concurrency=max(1, int(candles_concurrency)),
+        max_requests_per_second=candles_max_requests_per_second,
+    )
     _persist_quality_results(
         quality_logger,
         run_candle_quality_checks(candle_store=store, symbols=selection.symbols),
@@ -248,8 +268,9 @@ def run_ingest_candles_job(
     return IngestCandlesJobResult(
         warnings=list(selection.warnings),
         symbols=list(selection.symbols),
-        results=results,
+        results=output.results,
         no_symbols=False,
+        endpoint_stats=output.summary.endpoint_stats,
     )
 
 
@@ -262,12 +283,15 @@ def run_ingest_options_bars_job(
     contracts_exp_end: str | None,
     lookback_years: int,
     page_limit: int,
+    contracts_page_size: int = 10000,
     max_underlyings: int | None,
     max_contracts: int | None,
     max_expiries: int | None,
     contracts_max_requests_per_second: float | None,
     bars_concurrency: int,
     bars_max_requests_per_second: float | None,
+    bars_batch_mode: str = "adaptive",
+    bars_batch_size: int = 8,
     bars_write_batch_size: int,
     resume: bool,
     dry_run: bool,
@@ -359,6 +383,7 @@ def run_ingest_options_bars_job(
         underlyings=underlyings,
         exp_start=exp_start,
         exp_end=exp_end,
+        limit=contracts_page_size,
         page_limit=page_limit,
         max_contracts=max_contracts,
         max_requests_per_second=contracts_max_requests_per_second,
@@ -431,9 +456,11 @@ def run_ingest_options_bars_job(
         prepared.contracts,
         provider="alpaca",
         lookback_years=lookback_years,
-        page_limit=page_limit,
+        page_limit=None,
         bars_concurrency=bars_concurrency,
         bars_max_requests_per_second=bars_max_requests_per_second,
+        bars_batch_mode=bars_batch_mode,
+        bars_batch_size=bars_batch_size,
         bars_write_batch_size=bars_write_batch_size,
         resume=effective_resume,
         dry_run=dry_run,
@@ -468,6 +495,8 @@ def run_ingest_options_bars_job(
         no_symbols=False,
         no_contracts=False,
         no_eligible_contracts=False,
+        contracts_endpoint_stats=discovery.endpoint_stats,
+        bars_endpoint_stats=summary.endpoint_stats if summary is not None else None,
     )
 
 

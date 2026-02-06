@@ -40,6 +40,22 @@ If you prefer doing it manually:
 rg "ALPACA_RATELIMIT" data/logs -g '*.log' | tail -n 20
 ```
 
+## Auto-tune interplay
+
+When running ingestion with `--auto-tune`, endpoint stats (including observed 429/timeouts) are used to update the
+local profile at `config/ingest_tuning.json` (gitignored local state).
+
+Examples:
+
+```bash
+OH_ALPACA_LOG_RATE_LIMITS=1 options-helper ingest candles --symbol MKSI --auto-tune
+OH_ALPACA_LOG_RATE_LIMITS=1 options-helper ingest options-bars --symbol MKSI --auto-tune
+```
+
+Use rate-limit logs + endpoint summary metrics together:
+- frequent 429s: expect auto-tune to reduce RPS/concurrency for that endpoint.
+- zero 429s with healthy latency/error rates: expect gradual increases (bounded).
+
 ## What the fields mean
 
 Each snapshot is derived from response headers:

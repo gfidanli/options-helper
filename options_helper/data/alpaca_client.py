@@ -1570,6 +1570,35 @@ class AlpacaClient:
             raise DataFetchError("End date is before start date for Alpaca bars request.")
 
         request_cls = _load_stock_bars_request()
+        max_retries = max(1, _coerce_int(os.getenv("OH_ALPACA_MAX_RETRIES"), default=3))
+
+        def _call_with_backoff(make_call):
+            for attempt in range(max_retries):
+                try:
+                    return make_call()
+                except Exception as exc:  # noqa: BLE001
+                    if attempt >= max_retries - 1:
+                        raise
+                    status_code = _extract_status_code(exc)
+                    retry_after = _extract_retry_after_seconds(exc)
+                    is_rate_limit = status_code == 429 or _is_rate_limit_error(exc)
+                    if status_code is not None:
+                        if 400 <= status_code < 500 and status_code not in (408, 429):
+                            raise
+                        should_retry = status_code >= 500 or status_code in (408, 429)
+                    else:
+                        should_retry = is_rate_limit or _is_timeout_error(exc)
+                    if not should_retry:
+                        raise
+                    base_delay = 0.5 * (2**attempt)
+                    delay = base_delay
+                    if is_rate_limit:
+                        delay += random.uniform(0, base_delay * 0.25)
+                    if retry_after is not None:
+                        delay = max(delay, retry_after)
+                    time.sleep(delay)
+            return None
+
         try:
             if request_cls is not None:
                 request = request_cls(
@@ -1579,14 +1608,16 @@ class AlpacaClient:
                     end=end_dt,
                     adjustment=adjustment,
                 )
-                payload = self.stock_client.get_stock_bars(request)
+                payload = _call_with_backoff(lambda: self.stock_client.get_stock_bars(request))
             else:
-                payload = self.stock_client.get_stock_bars(
-                    symbol_or_symbols=alpaca_symbol,
-                    timeframe=timeframe,
-                    start=start_dt,
-                    end=end_dt,
-                    adjustment=adjustment,
+                payload = _call_with_backoff(
+                    lambda: self.stock_client.get_stock_bars(
+                        symbol_or_symbols=alpaca_symbol,
+                        timeframe=timeframe,
+                        start=start_dt,
+                        end=end_dt,
+                        adjustment=adjustment,
+                    )
                 )
         except DataFetchError:
             # Preserve higher-level errors (missing credentials, missing SDK, etc.).
@@ -1802,50 +1833,49 @@ class AlpacaClient:
 
         all_chunks: list[pd.DataFrame] = []
 
+        def _request_chunk(chunk: list[str], *, page_token: str | None = None) -> Any:
+            kwargs = {
+                "symbol_or_symbols": chunk,
+                "symbols": chunk,
+                "timeframe": timeframe,
+                "start": start_dt,
+                "end": end_dt,
+                "feed": feed_val,
+                "page_token": page_token,
+            }
+            payload = None
+            if request_cls is not None:
+                try:
+                    request_kwargs = _filter_kwargs(request_cls, kwargs)
+                    request = request_cls(**request_kwargs)
+                    payload = _call_with_backoff(lambda: method(request))
+                except TypeError:
+                    payload = None
+            if payload is None:
+                payload = _call_with_backoff(lambda: method(**_filter_kwargs(method, kwargs)))
+            return payload
+
         for i in range(0, len(unique_symbols), chunk_size):
             chunk = unique_symbols[i : i + chunk_size]
-            page_token: str | None = None
-            page_count = 0
+            payload = _request_chunk(chunk, page_token=None)
+            if payload is None:
+                continue
 
-            while True:
-                page_count += 1
-                if page_limit is not None and page_count > page_limit:
-                    raise DataFetchError("Exceeded Alpaca option bars page limit.")
-
-                kwargs = {
-                    "symbol_or_symbols": chunk,
-                    "symbols": chunk,
-                    "timeframe": timeframe,
-                    "start": start_dt,
-                    "end": end_dt,
-                    "feed": feed_val,
-                    "limit": chunk_size,
-                    "page_token": page_token,
-                }
-
-                payload = None
-                if request_cls is not None:
-                    try:
-                        request_kwargs = _filter_kwargs(request_cls, kwargs)
-                        request = request_cls(**request_kwargs)
-                        payload = _call_with_backoff(lambda: method(request))
-                    except TypeError:
-                        payload = None
-
-                if payload is None:
-                    payload = _call_with_backoff(lambda: method(**_filter_kwargs(method, kwargs)))
-
-                if payload is None:
-                    break
-
+            page_count = 1
+            while payload is not None:
                 df = _option_bars_to_dataframe(payload)
                 norm = _normalize_option_bars_daily_full(df)
                 if not norm.empty:
                     all_chunks.append(norm)
 
+                # Compatibility fallback: handle raw/mocked payloads that expose page tokens.
                 page_token = _extract_option_bars_page_token(payload)
                 if not page_token:
                     break
+                page_count += 1
+                if page_limit is not None and page_count > page_limit:
+                    raise DataFetchError("Exceeded Alpaca option bars page limit.")
+                payload = _request_chunk(chunk, page_token=page_token)
 
         if not all_chunks:
             return pd.DataFrame(columns=columns)

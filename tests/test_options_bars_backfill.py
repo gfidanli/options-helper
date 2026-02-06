@@ -251,6 +251,41 @@ class _AlwaysErrorClient(_FakeClient):
         raise RuntimeError("boom")
 
 
+class _PartialBatchClient(_FakeClient):
+    def get_option_bars_daily_full(
+        self,
+        symbols: list[str],
+        *,
+        start,  # noqa: ANN001
+        end,  # noqa: ANN001
+        interval: str = "1d",  # noqa: ARG002
+        feed: str | None = None,  # noqa: ARG002
+        chunk_size: int = 200,  # noqa: ARG002
+        max_retries: int = 3,  # noqa: ARG002
+        page_limit: int | None = None,  # noqa: ARG002
+    ) -> pd.DataFrame:
+        self.call_starts.append(time.monotonic())
+        self.calls.append({"symbols": list(symbols), "start": start, "end": end})
+        if len(symbols) > 1:
+            symbols = [symbols[0]]
+        rows: list[dict[str, object]] = []
+        for sym in symbols:
+            rows.append(
+                {
+                    "contractSymbol": sym,
+                    "ts": pd.Timestamp("2026-01-02"),
+                    "open": 1.0,
+                    "high": 1.1,
+                    "low": 0.9,
+                    "close": 1.0,
+                    "volume": 10,
+                    "vwap": 1.0,
+                    "trade_count": 2,
+                }
+            )
+        return pd.DataFrame(rows)
+
+
 def _contracts_frame() -> pd.DataFrame:
     return pd.DataFrame(
         {
@@ -276,6 +311,7 @@ def test_backfill_option_bars_parallel_records_success() -> None:
         lookback_years=1,
         bars_concurrency=3,
         bars_max_requests_per_second=None,
+        bars_batch_mode="per-contract",
         resume=False,
         dry_run=False,
         fail_fast=False,
@@ -307,6 +343,7 @@ def test_backfill_option_bars_throttle_limits_request_rate() -> None:
         lookback_years=1,
         bars_concurrency=3,
         bars_max_requests_per_second=5.0,
+        bars_batch_mode="per-contract",
         resume=False,
         dry_run=False,
         fail_fast=False,
@@ -354,6 +391,7 @@ def test_backfill_option_bars_batches_writes() -> None:
         bars_concurrency=1,
         bars_max_requests_per_second=None,
         bars_write_batch_size=2,
+        bars_batch_mode="per-contract",
         resume=False,
         dry_run=False,
         fail_fast=False,
@@ -379,6 +417,7 @@ def test_backfill_option_bars_batches_error_meta_writes() -> None:
         bars_concurrency=1,
         bars_max_requests_per_second=None,
         bars_write_batch_size=2,
+        bars_batch_mode="per-contract",
         resume=False,
         dry_run=False,
         fail_fast=False,
@@ -411,6 +450,7 @@ def test_backfill_option_bars_uses_apply_write_batch_when_available() -> None:
         bars_concurrency=1,
         bars_max_requests_per_second=None,
         bars_write_batch_size=2,
+        bars_batch_mode="per-contract",
         resume=False,
         dry_run=False,
         fail_fast=False,
@@ -423,3 +463,31 @@ def test_backfill_option_bars_uses_apply_write_batch_when_available() -> None:
     assert store.apply_calls == 2
     assert store.upsert_calls == 2
     assert store.success_calls == 2
+
+
+def test_backfill_option_bars_adaptive_splits_missing_symbols() -> None:
+    client = _PartialBatchClient(sleep_seconds=0.0)
+    store = _FakeStore()
+
+    summary = backfill_option_bars(
+        client,  # type: ignore[arg-type]
+        store,  # type: ignore[arg-type]
+        _contracts_frame(),
+        provider="alpaca",
+        lookback_years=1,
+        bars_concurrency=1,
+        bars_max_requests_per_second=None,
+        bars_batch_mode="adaptive",
+        bars_batch_size=3,
+        resume=False,
+        dry_run=False,
+        fail_fast=False,
+        today=date(2026, 1, 20),
+    )
+
+    assert summary.ok_contracts == 3
+    assert summary.error_contracts == 0
+    assert summary.requests_attempted >= 3
+    assert summary.endpoint_stats is not None
+    assert summary.endpoint_stats.endpoint_stats.split_count > 0
+    assert any(len(call["symbols"]) > 1 for call in client.calls)

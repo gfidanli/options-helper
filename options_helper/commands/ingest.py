@@ -11,6 +11,12 @@ from rich.console import Console
 import options_helper.cli_deps as cli_deps
 from options_helper.data.alpaca_client import AlpacaClient
 from options_helper.data.ingestion.common import DEFAULT_WATCHLISTS
+from options_helper.data.ingestion.tuning import (
+    default_provider_profile,
+    load_tuning_profile,
+    recommend_profile,
+    save_tuning_profile,
+)
 from options_helper.data.option_bars import OptionBarsStoreError
 from options_helper.data.option_contracts import OptionContractsStoreError
 from options_helper.data.providers.runtime import get_default_provider_name
@@ -33,6 +39,8 @@ ASSET_OPTION_BARS = "option_bars"
 NOOP_LEDGER_WARNING = (
     "Run ledger disabled for filesystem storage backend (NoopRunLogger active)."
 )
+
+DEFAULT_TUNE_CONFIG = Path("config/ingest_tuning.json")
 
 
 def _is_noop_run_logger(run_logger: object) -> bool:
@@ -68,6 +76,59 @@ def _latest_contract_expiry(discovery: object | None) -> date | None:
         if latest is None or parsed > latest:
             latest = parsed
     return latest
+
+
+def _resolve_tuning_profile(*, auto_tune: bool, tune_config: Path, provider: str) -> dict[str, Any]:
+    if auto_tune:
+        return load_tuning_profile(tune_config, provider=provider)
+    return default_provider_profile()
+
+
+def _float_or_default(
+    value: float | None,
+    default: float,
+) -> float:
+    if value is None:
+        return float(default)
+    return float(value)
+
+
+def _int_or_default(
+    value: int | None,
+    default: int,
+) -> int:
+    if value is None:
+        return int(default)
+    return int(value)
+
+
+def _build_candles_provider(
+    *,
+    log_rate_limits_override: bool | None,
+    alpaca_http_pool_maxsize: int | None,
+    alpaca_http_pool_connections: int | None,
+):
+    provider_name = get_default_provider_name()
+    if provider_name != "alpaca":
+        return cli_deps.build_provider()
+
+    kwargs: dict[str, object] = {}
+    if log_rate_limits_override is not None:
+        kwargs["log_rate_limits"] = log_rate_limits_override
+    if alpaca_http_pool_maxsize is not None:
+        kwargs["http_pool_maxsize"] = alpaca_http_pool_maxsize
+    if alpaca_http_pool_connections is not None:
+        kwargs["http_pool_connections"] = alpaca_http_pool_connections
+
+    if not kwargs:
+        return cli_deps.build_provider()
+
+    from options_helper.data.providers.alpaca import AlpacaProvider
+    try:
+        client = AlpacaClient(**kwargs)
+    except TypeError:
+        client = AlpacaClient()
+    return AlpacaProvider(client=client)
 
 
 @contextmanager
@@ -118,9 +179,78 @@ def ingest_candles_command(
         "--candle-cache-dir",
         help="Directory for cached daily candles.",
     ),
+    candles_concurrency: int | None = typer.Option(
+        None,
+        "--candles-concurrency",
+        min=1,
+        help="Concurrent stock-bars fetch workers for candle ingestion.",
+    ),
+    candles_max_requests_per_second: float | None = typer.Option(
+        None,
+        "--candles-max-rps",
+        min=0.1,
+        help="Soft throttle for stock-bars requests per second.",
+    ),
+    alpaca_http_pool_maxsize: int | None = typer.Option(
+        None,
+        "--alpaca-http-pool-maxsize",
+        min=1,
+        help="Requests connection pool max size for Alpaca clients used by this run.",
+    ),
+    alpaca_http_pool_connections: int | None = typer.Option(
+        None,
+        "--alpaca-http-pool-connections",
+        min=1,
+        help="Requests connection pool count for Alpaca clients used by this run.",
+    ),
+    log_rate_limits: bool = typer.Option(
+        False,
+        "--log-rate-limits",
+        help="Enable per-request Alpaca rate-limit logging for this run.",
+    ),
+    no_log_rate_limits: bool = typer.Option(
+        False,
+        "--no-log-rate-limits",
+        help="Disable per-request Alpaca rate-limit logging for this run.",
+    ),
+    auto_tune: bool = typer.Option(
+        False,
+        "--auto-tune/--no-auto-tune",
+        help="Auto-adjust ingestion tuning profile from observed endpoint stats.",
+    ),
+    tune_config: Path = typer.Option(
+        DEFAULT_TUNE_CONFIG,
+        "--tune-config",
+        help="Path to local ingestion tuning profile JSON (local state).",
+    ),
 ) -> None:
     """Backfill daily candles for watchlist symbols (period=max)."""
     console = Console(width=200)
+    if log_rate_limits and no_log_rate_limits:
+        raise typer.BadParameter("Choose either --log-rate-limits or --no-log-rate-limits, not both.")
+
+    log_rate_limits_override: bool | None = None
+    if log_rate_limits:
+        log_rate_limits_override = True
+    elif no_log_rate_limits:
+        log_rate_limits_override = False
+
+    provider_name = get_default_provider_name()
+    profile = _resolve_tuning_profile(auto_tune=auto_tune, tune_config=tune_config, provider=provider_name)
+    candles_profile = dict(profile.get("candles") or {})
+    effective_candles_concurrency = _int_or_default(candles_concurrency, int(candles_profile.get("concurrency") or 1))
+    effective_candles_max_rps = _float_or_default(
+        candles_max_requests_per_second,
+        float(candles_profile.get("max_rps") or 8.0),
+    )
+
+    def _provider_builder():
+        return _build_candles_provider(
+            log_rate_limits_override=log_rate_limits_override,
+            alpaca_http_pool_maxsize=alpaca_http_pool_maxsize,
+            alpaca_http_pool_connections=alpaca_http_pool_connections,
+        )
+
     with _observed_run(
         console=console,
         job_name=JOB_INGEST_CANDLES,
@@ -129,6 +259,13 @@ def ingest_candles_command(
             "watchlist": watchlist,
             "symbol": symbol,
             "candle_cache_dir": str(candle_cache_dir),
+            "candles_concurrency": effective_candles_concurrency,
+            "candles_max_requests_per_second": effective_candles_max_rps,
+            "alpaca_http_pool_maxsize": alpaca_http_pool_maxsize,
+            "alpaca_http_pool_connections": alpaca_http_pool_connections,
+            "log_rate_limits": log_rate_limits_override,
+            "auto_tune": auto_tune,
+            "tune_config": str(tune_config),
         },
     ) as run_logger:
         result = run_ingest_candles_job(
@@ -136,7 +273,9 @@ def ingest_candles_command(
             watchlist=watchlist,
             symbol=symbol,
             candle_cache_dir=candle_cache_dir,
-            provider_builder=cli_deps.build_provider,
+            candles_concurrency=effective_candles_concurrency,
+            candles_max_requests_per_second=effective_candles_max_rps,
+            provider_builder=_provider_builder,
             candle_store_builder=cli_deps.build_candle_store,
         )
 
@@ -195,6 +334,26 @@ def ingest_candles_command(
         console.print(
             f"Summary: {ok} ok, {empty} empty, {error} error(s) for {len(result.results)} symbol(s)."
         )
+        if result.endpoint_stats is not None:
+            console.print(
+                "Endpoint stats (/v2/stocks/bars): "
+                f"calls={result.endpoint_stats.calls}, "
+                f"429={result.endpoint_stats.rate_limit_429}, "
+                f"timeouts={result.endpoint_stats.timeout_count}, "
+                f"p50_ms={result.endpoint_stats.latency_p50_ms}, "
+                f"p95_ms={result.endpoint_stats.latency_p95_ms}"
+            )
+
+        if auto_tune:
+            updated = recommend_profile(profile, candles_stats=result.endpoint_stats)
+            save_tuning_profile(tune_config, provider=provider_name, profile=updated)
+            tuned_candles = updated.get("candles") or {}
+            console.print(
+                "Auto-tune saved: "
+                f"candles.max_rps={tuned_candles.get('max_rps')} "
+                f"candles.concurrency={tuned_candles.get('concurrency')} "
+                f"({tune_config})"
+            )
 
 
 @app.command("options-bars")
@@ -235,7 +394,13 @@ def ingest_options_bars_command(
         200,
         "--page-limit",
         min=1,
-        help="Max pages to request from Alpaca per call.",
+        help="Max contract pages to request from Alpaca during contracts discovery.",
+    ),
+    contracts_page_size: int | None = typer.Option(
+        None,
+        "--contracts-page-size",
+        min=1,
+        help="Contracts page size (default 10000).",
     ),
     max_underlyings: int | None = typer.Option(
         None,
@@ -256,22 +421,33 @@ def ingest_options_bars_command(
         help="Safety cap on expiries (most-recent first).",
     ),
     contracts_max_requests_per_second: float | None = typer.Option(
-        2.5,
+        None,
         "--contracts-max-rps",
         min=0.1,
         help="Soft throttle for options-contracts requests per second.",
     ),
-    bars_concurrency: int = typer.Option(
-        8,
+    bars_concurrency: int | None = typer.Option(
+        None,
         "--bars-concurrency",
         min=1,
         help="Concurrent option-contract bars fetches (reduced to 1 when --fail-fast).",
     ),
     bars_max_requests_per_second: float | None = typer.Option(
-        30.0,
+        None,
         "--bars-max-rps",
         min=0.1,
         help="Soft throttle for options-bars requests per second.",
+    ),
+    bars_batch_mode: str | None = typer.Option(
+        None,
+        "--bars-batch-mode",
+        help="Bars fetch mode: adaptive or per-contract.",
+    ),
+    bars_batch_size: int | None = typer.Option(
+        None,
+        "--bars-batch-size",
+        min=1,
+        help="Initial batch size used when --bars-batch-mode adaptive.",
     ),
     bars_write_batch_size: int = typer.Option(
         200,
@@ -321,6 +497,16 @@ def ingest_options_bars_command(
         "--fail-fast/--best-effort",
         help="Stop on first error (default: best-effort).",
     ),
+    auto_tune: bool = typer.Option(
+        False,
+        "--auto-tune/--no-auto-tune",
+        help="Auto-adjust ingestion tuning profile from observed endpoint stats.",
+    ),
+    tune_config: Path = typer.Option(
+        DEFAULT_TUNE_CONFIG,
+        "--tune-config",
+        help="Path to local ingestion tuning profile JSON (local state).",
+    ),
 ) -> None:
     """Discover Alpaca option contracts and backfill daily bars."""
     console = Console(width=200)
@@ -336,6 +522,26 @@ def ingest_options_bars_command(
     elif no_log_rate_limits:
         log_rate_limits_override = False
 
+    provider_name = get_default_provider_name()
+    profile = _resolve_tuning_profile(auto_tune=auto_tune, tune_config=tune_config, provider=provider_name)
+    contracts_profile = dict(profile.get("contracts") or {})
+    bars_profile = dict(profile.get("bars") or {})
+
+    effective_contracts_page_size = _int_or_default(contracts_page_size, int(contracts_profile.get("page_size") or 10000))
+    effective_contracts_max_rps = _float_or_default(
+        contracts_max_requests_per_second,
+        float(contracts_profile.get("max_rps") or 2.5),
+    )
+    effective_bars_concurrency = _int_or_default(bars_concurrency, int(bars_profile.get("concurrency") or 8))
+    effective_bars_max_rps = _float_or_default(
+        bars_max_requests_per_second,
+        float(bars_profile.get("max_rps") or 30.0),
+    )
+    effective_bars_batch_size = _int_or_default(bars_batch_size, int(bars_profile.get("batch_size") or 8))
+    effective_bars_batch_mode = str(bars_batch_mode or bars_profile.get("batch_mode") or "adaptive").strip().lower()
+    if effective_bars_batch_mode not in {"adaptive", "per-contract"}:
+        raise typer.BadParameter("bars-batch-mode must be one of: adaptive, per-contract")
+
     with _observed_run(
         console=console,
         job_name=JOB_INGEST_OPTIONS_BARS,
@@ -347,12 +553,15 @@ def ingest_options_bars_command(
             "contracts_exp_end": contracts_exp_end,
             "lookback_years": lookback_years,
             "page_limit": page_limit,
+            "contracts_page_size": effective_contracts_page_size,
             "max_underlyings": max_underlyings,
             "max_contracts": max_contracts,
             "max_expiries": max_expiries,
-            "contracts_max_requests_per_second": contracts_max_requests_per_second,
-            "bars_concurrency": bars_concurrency,
-            "bars_max_requests_per_second": bars_max_requests_per_second,
+            "contracts_max_requests_per_second": effective_contracts_max_rps,
+            "bars_concurrency": effective_bars_concurrency,
+            "bars_max_requests_per_second": effective_bars_max_rps,
+            "bars_batch_mode": effective_bars_batch_mode,
+            "bars_batch_size": effective_bars_batch_size,
             "bars_write_batch_size": bars_write_batch_size,
             "alpaca_http_pool_maxsize": alpaca_http_pool_maxsize,
             "alpaca_http_pool_connections": alpaca_http_pool_connections,
@@ -361,6 +570,8 @@ def ingest_options_bars_command(
             "dry_run": dry_run,
             "fetch_only": fetch_only,
             "fail_fast": fail_fast,
+            "auto_tune": auto_tune,
+            "tune_config": str(tune_config),
         },
     ) as run_logger:
         def _build_client() -> AlpacaClient:
@@ -390,12 +601,15 @@ def ingest_options_bars_command(
                 contracts_exp_end=contracts_exp_end,
                 lookback_years=lookback_years,
                 page_limit=page_limit,
+                contracts_page_size=effective_contracts_page_size,
                 max_underlyings=max_underlyings,
                 max_contracts=max_contracts,
                 max_expiries=max_expiries,
-                contracts_max_requests_per_second=contracts_max_requests_per_second,
-                bars_concurrency=bars_concurrency,
-                bars_max_requests_per_second=bars_max_requests_per_second,
+                contracts_max_requests_per_second=effective_contracts_max_rps,
+                bars_concurrency=effective_bars_concurrency,
+                bars_max_requests_per_second=effective_bars_max_rps,
+                bars_batch_mode=effective_bars_batch_mode,
+                bars_batch_size=effective_bars_batch_size,
                 bars_write_batch_size=bars_write_batch_size,
                 resume=resume,
                 dry_run=dry_run,
@@ -608,4 +822,54 @@ def ingest_options_bars_command(
                 f"{summary.ok_contracts} ok, {summary.error_contracts} error(s), "
                 f"{summary.skipped_contracts} skipped, {summary.bars_rows} bars, "
                 f"{summary.requests_attempted} request(s) across {summary.total_expiries} expiry group(s)."
+            )
+
+        if result.contracts_endpoint_stats is not None:
+            contracts_endpoint_stats = result.contracts_endpoint_stats.endpoint_stats
+            console.print(
+                "Endpoint stats (/v2/options/contracts): "
+                f"calls={contracts_endpoint_stats.calls}, "
+                f"429={contracts_endpoint_stats.rate_limit_429}, "
+                f"timeouts={contracts_endpoint_stats.timeout_count}, "
+                f"p50_ms={contracts_endpoint_stats.latency_p50_ms}, "
+                f"p95_ms={contracts_endpoint_stats.latency_p95_ms}"
+            )
+        if result.bars_endpoint_stats is not None:
+            bars_endpoint_stats = result.bars_endpoint_stats.endpoint_stats
+            console.print(
+                "Endpoint stats (/v1beta1/options/bars): "
+                f"calls={bars_endpoint_stats.calls}, "
+                f"429={bars_endpoint_stats.rate_limit_429}, "
+                f"timeouts={bars_endpoint_stats.timeout_count}, "
+                f"splits={bars_endpoint_stats.split_count}, "
+                f"fallbacks={bars_endpoint_stats.fallback_count}, "
+                f"p50_ms={bars_endpoint_stats.latency_p50_ms}, "
+                f"p95_ms={bars_endpoint_stats.latency_p95_ms}"
+            )
+
+        if auto_tune:
+            updated = recommend_profile(
+                profile,
+                contracts_stats=(
+                    result.contracts_endpoint_stats.endpoint_stats
+                    if result.contracts_endpoint_stats is not None
+                    else None
+                ),
+                bars_stats=(
+                    result.bars_endpoint_stats.endpoint_stats
+                    if result.bars_endpoint_stats is not None
+                    else None
+                ),
+            )
+            save_tuning_profile(tune_config, provider=provider_name, profile=updated)
+            tuned_contracts = updated.get("contracts") or {}
+            tuned_bars = updated.get("bars") or {}
+            console.print(
+                "Auto-tune saved: "
+                f"contracts.max_rps={tuned_contracts.get('max_rps')} "
+                f"contracts.page_size={tuned_contracts.get('page_size')} "
+                f"bars.max_rps={tuned_bars.get('max_rps')} "
+                f"bars.concurrency={tuned_bars.get('concurrency')} "
+                f"bars.batch_size={tuned_bars.get('batch_size')} "
+                f"({tune_config})"
             )
