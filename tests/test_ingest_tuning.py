@@ -60,6 +60,33 @@ def test_recommend_profile_adjusts_from_endpoint_stats() -> None:
 
     assert updated["contracts"]["max_rps"] < profile["contracts"]["max_rps"]
     assert updated["bars"]["max_rps"] > profile["bars"]["max_rps"]
+    assert updated["bars"]["concurrency"] > profile["bars"]["concurrency"]
+
+
+def test_recommend_profile_increases_candle_concurrency_from_one() -> None:
+    profile = {
+        "candles": {"max_rps": 8.0, "concurrency": 1},
+        "contracts": {"max_rps": 2.5, "page_size": 10000},
+        "bars": {"max_rps": 30.0, "concurrency": 8, "batch_mode": "adaptive", "batch_size": 8},
+    }
+    candles_stats = build_endpoint_stats(calls=12, rate_limit_429=0, timeout_count=0, error_count=0, latencies_ms=[60, 80])
+
+    updated = recommend_profile(profile, candles_stats=candles_stats)
+
+    assert updated["candles"]["concurrency"] == 2
+
+
+def test_recommend_profile_reduces_concurrency_on_rate_limit() -> None:
+    profile = {
+        "candles": {"max_rps": 12.0, "concurrency": 5},
+        "contracts": {"max_rps": 2.5, "page_size": 10000},
+        "bars": {"max_rps": 30.0, "concurrency": 10, "batch_mode": "adaptive", "batch_size": 8},
+    }
+    candles_stats = build_endpoint_stats(calls=20, rate_limit_429=2, timeout_count=0, error_count=2)
+
+    updated = recommend_profile(profile, candles_stats=candles_stats)
+
+    assert updated["candles"]["concurrency"] < profile["candles"]["concurrency"]
 
 
 def test_tuning_profile_file_shape(tmp_path: Path) -> None:

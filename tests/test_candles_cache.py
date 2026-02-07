@@ -187,6 +187,29 @@ def test_period_max_backfill_runs_once_then_uses_meta_flag(tmp_path) -> None:
     assert second.index.min().date() == date(2026, 1, 1)
 
 
+def test_period_max_pre_1970_cache_skips_invalid_backfill_range(tmp_path) -> None:
+    cached_start = date(1962, 1, 2)
+    cached = _df(cached_start, 5)
+
+    calls: list[tuple[str, date | None, date | None]] = []
+
+    def fetcher(symbol: str, start: date | None, end: date | None) -> pd.DataFrame:
+        calls.append((symbol, start, end))
+        return pd.DataFrame()
+
+    store = CandleStore(tmp_path, fetcher=fetcher, backfill_days=0)
+    store.save("CVX", cached)
+
+    out = store.get_daily_history("CVX", period="max", today=date(2026, 2, 7))
+
+    # Existing cache already predates _MAX_BACKFILL_START (1970-01-01), so skip
+    # bounded backfill instead of emitting an invalid start>end request.
+    assert calls == []
+    assert out.index.min().date() == cached_start
+    meta = store.load_meta("CVX") or {}
+    assert bool(meta.get("max_backfill_complete")) is True
+
+
 def test_load_normalizes_mixed_tz_index(tmp_path) -> None:
     # Simulate a cached CSV with mixed tz offsets in the index.
     path = tmp_path / "UROY.csv"

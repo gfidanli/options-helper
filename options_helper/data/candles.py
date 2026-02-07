@@ -357,11 +357,14 @@ class CandleStore:
         elif wants_max:
             if not max_backfill_complete:
                 first_cached = merged.index.min().date()
-                fetched = self._fetch_with_retry(symbol, self._MAX_BACKFILL_START, first_cached)
-                fetched = _normalize_history(fetched)
-                if not fetched.empty:
-                    merged = pd.concat([fetched, merged])
-                    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+                # Legacy caches can already start before our safe backfill floor.
+                # Skip the bounded backfill request in that case to avoid start>end.
+                if first_cached > self._MAX_BACKFILL_START:
+                    fetched = self._fetch_with_retry(symbol, self._MAX_BACKFILL_START, first_cached)
+                    fetched = _normalize_history(fetched)
+                    if not fetched.empty:
+                        merged = pd.concat([fetched, merged])
+                        merged = merged[~merged.index.duplicated(keep="last")].sort_index()
                 max_backfill_complete = True
         elif desired_start is not None:
             first_cached = merged.index.min().date()

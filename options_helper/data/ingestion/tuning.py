@@ -248,6 +248,29 @@ def _tune_numeric(
     return _bounded_float(float(current), minimum=minimum, maximum=maximum)
 
 
+def _tune_int(
+    current: int,
+    stats: EndpointStats | None,
+    *,
+    minimum: int,
+    maximum: int,
+    increase_step: int = 1,
+    decrease_factor: float = 0.8,
+) -> int:
+    bounded_current = _bounded_int(int(current), minimum=minimum, maximum=maximum)
+    if stats is None or stats.calls <= 0:
+        return bounded_current
+    if stats.rate_limit_429 > 0:
+        reduced = int(math.floor(float(bounded_current) * float(decrease_factor)))
+        if reduced >= bounded_current and bounded_current > minimum:
+            reduced = bounded_current - 1
+        return _bounded_int(reduced, minimum=minimum, maximum=maximum)
+    error_rate = float(stats.error_count) / float(max(stats.calls, 1))
+    if error_rate <= 0.02 and stats.timeout_count == 0:
+        return _bounded_int(bounded_current + max(1, int(increase_step)), minimum=minimum, maximum=maximum)
+    return bounded_current
+
+
 def recommend_profile(
     current: dict[str, Any],
     *,
@@ -263,8 +286,9 @@ def recommend_profile(
         minimum=0.5,
         maximum=100.0,
     )
-    profile["candles"]["concurrency"] = _bounded_int(
-        int(round(_tune_numeric(float(profile["candles"]["concurrency"]), candles_stats, minimum=1.0, maximum=32.0))),
+    profile["candles"]["concurrency"] = _tune_int(
+        int(profile["candles"]["concurrency"]),
+        candles_stats,
         minimum=1,
         maximum=32,
     )
@@ -283,8 +307,9 @@ def recommend_profile(
         minimum=1.0,
         maximum=4000.0,
     )
-    profile["bars"]["concurrency"] = _bounded_int(
-        int(round(_tune_numeric(float(profile["bars"]["concurrency"]), bars_stats, minimum=1.0, maximum=256.0))),
+    profile["bars"]["concurrency"] = _tune_int(
+        int(profile["bars"]["concurrency"]),
+        bars_stats,
         minimum=1,
         maximum=256,
     )
