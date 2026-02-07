@@ -50,6 +50,7 @@ yarn-error.log*
 portfolio.json
 /data/
 /artifacts/
+.codex/napkin.md
 
 # Docs site build output
 /site/
