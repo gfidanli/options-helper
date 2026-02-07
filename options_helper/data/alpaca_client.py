@@ -2140,17 +2140,24 @@ class AlpacaClient:
 
     def list_option_contracts(
         self,
-        underlying: str,
+        underlying: str | None = None,
         *,
+        root_symbol: str | None = None,
         exp_gte: date | None = None,
         exp_lte: date | None = None,
         limit: int | None = None,
         page_limit: int | None = None,
         max_requests_per_second: float | None = None,
     ) -> list[dict[str, Any]]:
-        alpaca_symbol = to_alpaca_symbol(underlying)
-        if not alpaca_symbol:
+        alpaca_symbol = to_alpaca_symbol(underlying) if underlying else ""
+        if underlying and not alpaca_symbol:
             raise DataFetchError(f"Invalid underlying symbol: {underlying}")
+
+        root_val = to_alpaca_symbol(root_symbol) if root_symbol else ""
+        if root_symbol and not root_val:
+            raise DataFetchError(f"Invalid root symbol: {root_symbol}")
+        if not alpaca_symbol and not root_val:
+            raise DataFetchError("Either underlying or root_symbol is required to list Alpaca option contracts.")
 
         client = self.trading_client
         method = getattr(client, "get_option_contracts", None) or getattr(client, "get_option_contract", None)
@@ -2205,10 +2212,14 @@ class AlpacaClient:
                 raise DataFetchError("Exceeded Alpaca option contracts page limit.")
 
             kwargs = {
-                "underlying_symbol": alpaca_symbol,
-                "underlying_symbols": [alpaca_symbol],
-                "underlying": alpaca_symbol,
-                "symbol": alpaca_symbol,
+                "underlying_symbol": alpaca_symbol or None,
+                "underlying_symbols": [alpaca_symbol] if alpaca_symbol else None,
+                "underlying": alpaca_symbol or None,
+                "symbol": alpaca_symbol or None,
+                "root_symbol": root_val or None,
+                "root_symbols": [root_val] if root_val else None,
+                "rootSymbol": root_val or None,
+                "rootSymbols": [root_val] if root_val else None,
                 "expiration_date_gte": exp_gte,
                 "expiration_date_lte": exp_lte,
                 "exp_gte": exp_gte,

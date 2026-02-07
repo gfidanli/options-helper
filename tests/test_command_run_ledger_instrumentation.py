@@ -84,6 +84,7 @@ def test_producer_commands_log_runs_assets_and_watermarks_duckdb(tmp_path: Path,
         return IngestOptionsBarsJobResult(
             warnings=[],
             underlyings=["AAA"],
+            root_symbols=[],
             limited_underlyings=False,
             discovery=ContractDiscoveryOutput(
                 contracts=contracts_df,

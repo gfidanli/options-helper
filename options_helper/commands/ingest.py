@@ -374,6 +374,19 @@ def ingest_options_bars_command(
         "-s",
         help="Optional symbol override (repeatable or comma-separated).",
     ),
+    contracts_root_symbol: list[str] = typer.Option(
+        [],
+        "--contracts-root-symbol",
+        help=(
+            "Optional option-contract root symbol filter (repeatable). "
+            "Useful for index/weekly roots like SPXW."
+        ),
+    ),
+    contracts_symbol_prefix: str | None = typer.Option(
+        None,
+        "--contracts-symbol-prefix",
+        help="Optional contractSymbol prefix filter applied after discovery (e.g. SPXW).",
+    ),
     contracts_exp_start: str = typer.Option(
         "2000-01-01",
         "--contracts-exp-start",
@@ -554,6 +567,8 @@ def ingest_options_bars_command(
             "watchlists_path": str(watchlists_path),
             "watchlist": watchlist,
             "symbol": symbol,
+            "contracts_root_symbol": contracts_root_symbol,
+            "contracts_symbol_prefix": contracts_symbol_prefix,
             "contracts_exp_start": contracts_exp_start,
             "contracts_exp_end": contracts_exp_end,
             "lookback_years": lookback_years,
@@ -603,6 +618,8 @@ def ingest_options_bars_command(
                 watchlists_path=watchlists_path,
                 watchlist=watchlist,
                 symbol=symbol,
+                contracts_root_symbols=contracts_root_symbol,
+                contract_symbol_prefix=contracts_symbol_prefix,
                 contracts_exp_start=contracts_exp_start,
                 contracts_exp_end=contracts_exp_end,
                 lookback_years=lookback_years,
@@ -654,7 +671,9 @@ def ingest_options_bars_command(
                 partition_key="ALL",
                 extra={"reason": "no_symbols"},
             )
-            console.print("No symbols found (empty watchlists and no --symbol override).")
+            console.print(
+                "No symbols found (empty watchlists and no --symbol/--contracts-root-symbol override)."
+            )
             raise typer.Exit(0)
 
         if result.limited_underlyings:

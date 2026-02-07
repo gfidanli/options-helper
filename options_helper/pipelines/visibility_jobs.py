@@ -33,7 +33,13 @@ from options_helper.data.ingestion.candles import (
     CandleIngestResult,
     ingest_candles_with_summary,
 )
-from options_helper.data.ingestion.common import DEFAULT_WATCHLISTS, parse_date, resolve_symbols, shift_years
+from options_helper.data.ingestion.common import (
+    DEFAULT_WATCHLISTS,
+    SymbolSelection,
+    parse_date,
+    resolve_symbols,
+    shift_years,
+)
 from options_helper.data.ingestion.options_bars import (
     BarsBackfillSummary,
     ContractDiscoveryOutput,
@@ -97,6 +103,7 @@ class IngestCandlesJobResult:
 class IngestOptionsBarsJobResult:
     warnings: list[str]
     underlyings: list[str]
+    root_symbols: list[str]
     limited_underlyings: bool
     discovery: ContractDiscoveryOutput | None
     prepared: PreparedContracts | None
@@ -275,6 +282,8 @@ def run_ingest_options_bars_job(
     watchlists_path: Path,
     watchlist: list[str],
     symbol: list[str],
+    contracts_root_symbols: list[str] | None,
+    contract_symbol_prefix: str | None,
     contracts_exp_start: str,
     contracts_exp_end: str | None,
     lookback_years: int,
@@ -309,14 +318,30 @@ def run_ingest_options_bars_job(
 
     quality_dry_run = dry_run or fetch_only
     effective_resume = resume and not fetch_only
-    selection = resolve_symbols(
-        watchlists_path=watchlists_path,
-        watchlists=watchlist,
-        symbols=symbol,
-        default_watchlists=DEFAULT_WATCHLISTS,
-    )
+    root_symbols = [
+        str(sym).strip().upper()
+        for sym in (contracts_root_symbols or [])
+        if str(sym or "").strip()
+    ]
 
-    if not selection.symbols:
+    try:
+        selection = resolve_symbols(
+            watchlists_path=watchlists_path,
+            watchlists=watchlist,
+            symbols=symbol,
+            default_watchlists=DEFAULT_WATCHLISTS,
+        )
+    except Exception as exc:  # noqa: BLE001
+        if root_symbols:
+            selection = SymbolSelection(
+                symbols=[],
+                watchlists_used=[],
+                warnings=[f"Watchlists unavailable: {exc}"],
+            )
+        else:
+            raise
+
+    if not selection.symbols and not root_symbols:
         _persist_quality_results(
             quality_logger,
             run_options_bars_quality_checks(
@@ -329,6 +354,7 @@ def run_ingest_options_bars_job(
         return IngestOptionsBarsJobResult(
             warnings=list(selection.warnings),
             underlyings=[],
+            root_symbols=[],
             limited_underlyings=False,
             discovery=None,
             prepared=None,
@@ -379,8 +405,10 @@ def run_ingest_options_bars_job(
     discovery = discover_option_contracts(
         client,
         underlyings=underlyings,
+        root_symbols=root_symbols or None,
         exp_start=exp_start,
         exp_end=exp_end,
+        contract_symbol_prefix=contract_symbol_prefix,
         limit=contracts_page_size,
         page_limit=page_limit,
         max_contracts=max_contracts,
@@ -401,6 +429,7 @@ def run_ingest_options_bars_job(
         return IngestOptionsBarsJobResult(
             warnings=list(selection.warnings),
             underlyings=underlyings,
+            root_symbols=root_symbols,
             limited_underlyings=limited_underlyings,
             discovery=discovery,
             prepared=None,
@@ -462,6 +491,7 @@ def run_ingest_options_bars_job(
         return IngestOptionsBarsJobResult(
             warnings=list(selection.warnings),
             underlyings=underlyings,
+            root_symbols=root_symbols,
             limited_underlyings=limited_underlyings,
             discovery=discovery,
             prepared=None,
@@ -494,6 +524,7 @@ def run_ingest_options_bars_job(
         return IngestOptionsBarsJobResult(
             warnings=list(selection.warnings),
             underlyings=underlyings,
+            root_symbols=root_symbols,
             limited_underlyings=limited_underlyings,
             discovery=discovery,
             prepared=prepared,
@@ -542,6 +573,7 @@ def run_ingest_options_bars_job(
     return IngestOptionsBarsJobResult(
         warnings=list(selection.warnings),
         underlyings=underlyings,
+        root_symbols=root_symbols,
         limited_underlyings=limited_underlyings,
         discovery=discovery,
         prepared=prepared,

@@ -253,7 +253,8 @@ def _supports_max_rps_kw(method: Any) -> bool:
 def _list_option_contracts(
     client: AlpacaClient,
     *,
-    underlying: str,
+    underlying: str | None = None,
+    root_symbol: str | None = None,
     exp_gte: date,
     exp_lte: date,
     limit: int | None,
@@ -268,6 +269,8 @@ def _list_option_contracts(
         "limit": limit,
         "page_limit": page_limit,
     }
+    if root_symbol:
+        kwargs["root_symbol"] = root_symbol
     if supports_max_rps_kw and max_requests_per_second is not None:
         kwargs["max_requests_per_second"] = max_requests_per_second
     return method(underlying, **kwargs)
@@ -277,8 +280,10 @@ def discover_option_contracts(
     client: AlpacaClient,
     *,
     underlyings: Iterable[str],
+    root_symbols: Iterable[str] | None = None,
     exp_start: date,
     exp_end: date,
+    contract_symbol_prefix: str | None = None,
     limit: int | None = None,
     page_limit: int | None = None,
     max_contracts: int | None = None,
@@ -301,11 +306,17 @@ def discover_option_contracts(
     today = date.today()
     windows = _year_windows(exp_start, exp_end)
 
-    for raw_symbol in underlyings:
+    prefix = str(contract_symbol_prefix or "").strip().upper() or None
+    scan_targets: list[tuple[str, str]] = []
+    scan_targets.extend([("underlying", sym) for sym in underlyings])
+    if root_symbols is not None:
+        scan_targets.extend([("root_symbol", sym) for sym in root_symbols])
+
+    for kind, raw_symbol in scan_targets:
         if max_contracts is not None and total_contracts >= max_contracts:
             break
-        underlying = normalize_underlying(raw_symbol)
-        if not underlying:
+        token = normalize_underlying(raw_symbol)
+        if not token:
             continue
 
         raw_contracts: list[dict[str, Any]] = []
@@ -324,7 +335,8 @@ def discover_option_contracts(
                 calls += 1
                 contracts = _list_option_contracts(
                     client,
-                    underlying=underlying,
+                    underlying=token if kind == "underlying" else None,
+                    root_symbol=token if kind == "root_symbol" else None,
                     exp_gte=window_start,
                     exp_lte=window_end,
                     limit=limit,
@@ -345,6 +357,9 @@ def discover_option_contracts(
                     raise
                 break
             latencies_ms.append((time_mod.perf_counter() - started) * 1000.0)
+
+            if prefix and contracts:
+                contracts = [raw for raw in contracts if (_contract_symbol_from_raw(raw) or "").startswith(prefix)]
 
             if not contracts:
                 # Alpaca may not list far-dated expiries; don't let empty *future* windows
@@ -379,7 +394,7 @@ def discover_option_contracts(
 
         summaries.append(
             UnderlyingDiscoverySummary(
-                underlying=underlying,
+                underlying=token,
                 contracts=len(raw_contracts),
                 years_scanned=years_scanned,
                 empty_years=empty_years,

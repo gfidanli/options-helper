@@ -317,6 +317,94 @@ def test_ingest_options_bars_contracts_only_writes_contract_snapshots(tmp_path: 
     assert len(fake_client.bars_calls) == 0
 
 
+def test_ingest_options_bars_supports_contracts_root_symbol_and_prefix(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda: _StubProvider())
+
+    class _RootClient:
+        def __init__(self) -> None:
+            self.contract_calls: list[dict[str, object]] = []
+
+        def list_option_contracts(
+            self,
+            underlying: str | None = None,
+            *,
+            root_symbol: str | None = None,
+            exp_gte: date | None = None,  # noqa: ARG002
+            exp_lte: date | None = None,  # noqa: ARG002
+            limit: int | None = None,  # noqa: ARG002
+            page_limit: int | None = None,  # noqa: ARG002
+        ) -> list[dict[str, object]]:
+            self.contract_calls.append({"underlying": underlying, "root_symbol": root_symbol})
+            if str(root_symbol or "").upper() != "SPXW":
+                return []
+            return [
+                {
+                    "contractSymbol": "SPXW260117C00100000",
+                    "underlying": "SPX",
+                    "expiration_date": "2026-01-17",
+                    "option_type": "call",
+                    "strike_price": 100.0,
+                    "multiplier": 100,
+                    "open_interest": 10,
+                    "open_interest_date": "2026-01-15",
+                    "close_price": 1.1,
+                    "close_price_date": "2026-01-15",
+                },
+                {
+                    "contractSymbol": "SPX260117C00100000",
+                    "underlying": "SPX",
+                    "expiration_date": "2026-01-17",
+                    "option_type": "call",
+                    "strike_price": 101.0,
+                    "multiplier": 100,
+                    "open_interest": 11,
+                    "open_interest_date": "2026-01-15",
+                    "close_price": 1.2,
+                    "close_price_date": "2026-01-15",
+                },
+            ]
+
+    fake_client = _RootClient()
+    monkeypatch.setattr(ingest, "AlpacaClient", lambda: fake_client)
+
+    runner = CliRunner()
+    duckdb_path = tmp_path / "options.duckdb"
+    result = runner.invoke(
+        app,
+        [
+            "--provider",
+            "alpaca",
+            "--duckdb-path",
+            str(duckdb_path),
+            "ingest",
+            "options-bars",
+            "--watchlists-path",
+            str(tmp_path / "missing-watchlists.json"),
+            "--contracts-root-symbol",
+            "SPXW",
+            "--contracts-symbol-prefix",
+            "SPXW",
+            "--contracts-exp-start",
+            "2025-01-01",
+            "--contracts-exp-end",
+            "2026-12-31",
+            "--contracts-only",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert fake_client.contract_calls
+    assert fake_client.contract_calls[0]["underlying"] is None
+    assert fake_client.contract_calls[0]["root_symbol"] == "SPXW"
+
+    wh = DuckDBWarehouse(duckdb_path)
+    ensure_schema(wh)
+    contracts = wh.fetch_df(
+        "SELECT DISTINCT contract_symbol FROM option_contracts ORDER BY contract_symbol ASC"
+    )
+    assert list(contracts["contract_symbol"]) == ["SPXW260117C00100000"]
+
+
 def test_ingest_options_bars_fetch_only_conflicts_with_dry_run(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda: _StubProvider())
     monkeypatch.setattr(ingest, "AlpacaClient", lambda: _FakeAlpacaClient())

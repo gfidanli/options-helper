@@ -87,6 +87,8 @@ def test_run_ingest_options_bars_job_batches_contract_upserts(monkeypatch, tmp_p
         watchlists_path=tmp_path / "watchlists.json",
         watchlist=["positions"],
         symbol=["AAA"],
+        contracts_root_symbols=None,
+        contract_symbol_prefix=None,
         contracts_exp_start="2026-01-01",
         contracts_exp_end="2026-12-31",
         lookback_years=5,

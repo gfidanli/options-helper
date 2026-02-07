@@ -112,6 +112,7 @@ def test_dagster_partitioned_materialization_order_and_ledger(tmp_path: Path, mo
         return IngestOptionsBarsJobResult(
             warnings=[],
             underlyings=["AAA"],
+            root_symbols=[],
             limited_underlyings=False,
             discovery=ContractDiscoveryOutput(
                 contracts=contracts_df,
