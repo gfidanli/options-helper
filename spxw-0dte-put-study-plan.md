@@ -89,9 +89,9 @@ T12,T13,T15,T16 -> T17 -> T18
 - **location**: `options_helper/data/zero_dte_dataset.py`, `options_helper/data/intraday_store.py`, `options_helper/data/stores_duckdb.py`
 - **description**: Add loaders that assemble per-day/per-time snapshots from intraday underlying bars (SPY default proxy; optional SPX/SPXW sources when available) and optional same-day option bars/snapshots. Handle sparse/missing partitions, timezone normalization, holidays, half-days, and DST boundaries.
 - **validation**: Deterministic fixture tests for missing files/tables, timezone conversion, half-day sessions, and DST boundary sessions.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added a new read-only `ZeroDTEIntradayDatasetLoader` in `options_helper/data/zero_dte_dataset.py` with typed session/dataset interfaces, deterministic timezone normalization (`America/New_York`), US-equity holiday/half-day session windows, per-time snapshot assembly, sparse partition handling, and optional same-day option snapshot/bars loading (filesystem-first with safe DuckDB missing-table fallback). Added deterministic fixture coverage for missing files/tables, timezone conversion, half-day behavior, and DST-boundary sessions.
+- **files edited/created**: `options_helper/data/zero_dte_dataset.py`, `tests/test_zero_dte_dataset_loader.py`, `spxw-0dte-put-study-plan.md`
 
 ### T3: Add Strike/Premium Snapshot + Contract Eligibility Loader
 - **depends_on**: [T0, T1, T2]
