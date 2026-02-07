@@ -467,49 +467,66 @@ def _build_summary_rows(*, daily_events: list[dict[str, Any]], weekly_events: li
             return {
                 "group": name,
                 "count": 0,
-                "avg_1d_pct": None,
-                "avg_5d_pct": None,
-                "avg_10d_pct": None,
+                "median_1d_pct": None,
+                "median_5d_pct": None,
+                "median_10d_pct": None,
             }
         return {
             "group": name,
             "count": int(len(frame)),
-            "avg_1d_pct": _mean_or_none(frame.get("forward_1d_pct")),
-            "avg_5d_pct": _mean_or_none(frame.get("forward_5d_pct")),
-            "avg_10d_pct": _mean_or_none(frame.get("forward_10d_pct")),
+            "median_1d_pct": _median_or_none(frame.get("forward_1d_pct")),
+            "median_5d_pct": _median_or_none(frame.get("forward_5d_pct")),
+            "median_10d_pct": _median_or_none(frame.get("forward_10d_pct")),
         }
 
     rows = []
     if daily_df.empty:
         rows.append(_summary_row("Daily Bullish SFP", daily_df))
         rows.append(_summary_row("Daily Bearish SFP", daily_df))
-        rows.append(_summary_row("Daily SFP at RSI Extremes", daily_df))
+        rows.append(_summary_row("Daily SFP at RSI Extremes (Bullish)", daily_df))
+        rows.append(_summary_row("Daily SFP at RSI Extremes (Bearish)", daily_df))
     else:
-        rows.append(_summary_row("Daily Bullish SFP", daily_df[daily_df["direction"] == "bullish"]))
-        rows.append(_summary_row("Daily Bearish SFP", daily_df[daily_df["direction"] == "bearish"]))
+        bullish_daily = daily_df[daily_df["direction"] == "bullish"]
+        bearish_daily = daily_df[daily_df["direction"] == "bearish"]
+        rows.append(_summary_row("Daily Bullish SFP", bullish_daily))
+        rows.append(_summary_row("Daily Bearish SFP", bearish_daily))
         rows.append(
             _summary_row(
-                "Daily SFP at RSI Extremes",
-                daily_df[daily_df["rsi_regime"].isin(["overbought", "oversold"])],
+                "Daily SFP at RSI Extremes (Bullish)",
+                bullish_daily[bullish_daily["rsi_regime"].isin(["overbought", "oversold"])],
+            )
+        )
+        rows.append(
+            _summary_row(
+                "Daily SFP at RSI Extremes (Bearish)",
+                bearish_daily[bearish_daily["rsi_regime"].isin(["overbought", "oversold"])],
             )
         )
 
     if weekly_df.empty:
-        rows.append(_summary_row("Weekly SFP + Daily Extension Extreme in Week", weekly_df))
+        rows.append(_summary_row("Weekly SFP + Daily Extension Extreme in Week (Bullish)", weekly_df))
+        rows.append(_summary_row("Weekly SFP + Daily Extension Extreme in Week (Bearish)", weekly_df))
     else:
+        weekly_extreme = weekly_df[weekly_df["week_has_daily_extension_extreme"] == True]  # noqa: E712
         rows.append(
             _summary_row(
-                "Weekly SFP + Daily Extension Extreme in Week",
-                weekly_df[weekly_df["week_has_daily_extension_extreme"] == True],  # noqa: E712
+                "Weekly SFP + Daily Extension Extreme in Week (Bullish)",
+                weekly_extreme[weekly_extreme["direction"] == "bullish"],
+            )
+        )
+        rows.append(
+            _summary_row(
+                "Weekly SFP + Daily Extension Extreme in Week (Bearish)",
+                weekly_extreme[weekly_extreme["direction"] == "bearish"],
             )
         )
     return rows
 
 
-def _mean_or_none(values: Any) -> float | None:
+def _median_or_none(values: Any) -> float | None:
     if values is None:
         return None
     series = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
     if series.empty:
         return None
-    return round(float(series.mean()), 2)
+    return round(float(series.median()), 2)

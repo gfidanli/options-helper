@@ -99,6 +99,15 @@ def test_sfp_page_helpers_with_seeded_db(tmp_path: Path) -> None:
     assert isinstance(daily_events, list)
     assert isinstance(weekly_events, list)
     assert isinstance(summary, list)
+    groups = {str(row.get("group")) for row in summary}
+    assert "Daily SFP at RSI Extremes (Bullish)" in groups
+    assert "Daily SFP at RSI Extremes (Bearish)" in groups
+    assert "Weekly SFP + Daily Extension Extreme in Week (Bullish)" in groups
+    assert "Weekly SFP + Daily Extension Extreme in Week (Bearish)" in groups
+    for row in summary:
+        assert "median_1d_pct" in row
+        assert "median_5d_pct" in row
+        assert "median_10d_pct" in row
 
     if daily_events:
         ev = daily_events[0]

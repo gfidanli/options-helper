@@ -179,12 +179,12 @@ else:
         columns={
             "group": "group",
             "count": "count",
-            "avg_1d_pct": "avg_1d_pct",
-            "avg_5d_pct": "avg_5d_pct",
-            "avg_10d_pct": "avg_10d_pct",
+            "median_1d_pct": "median_1d_pct",
+            "median_5d_pct": "median_5d_pct",
+            "median_10d_pct": "median_10d_pct",
         }
     )
-    for column in ("avg_1d_pct", "avg_5d_pct", "avg_10d_pct"):
+    for column in ("median_1d_pct", "median_5d_pct", "median_10d_pct"):
         if column in summary_display.columns:
             summary_display[column] = summary_display[column].map(_fmt_pct)
     st.dataframe(summary_display, hide_index=True, use_container_width=True)
