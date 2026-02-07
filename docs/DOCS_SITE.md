@@ -8,9 +8,16 @@ This repo’s docs live in `docs/` and can be rendered as a static website using
 
 ```bash
 pip install -e ".[dev,docs]"
+npm install --no-package-lock
 ```
 
-2. Run the live-reload docs server:
+2. Validate diagram artifacts:
+
+```bash
+npm run check-diagrams
+```
+
+3. Run the live-reload docs server:
 
 ```bash
 mkdocs serve
@@ -21,6 +28,7 @@ Then open the printed local URL (typically `http://127.0.0.1:8000/`).
 ## Build (static output)
 
 ```bash
+npm run check-diagrams
 mkdocs build
 ```
 

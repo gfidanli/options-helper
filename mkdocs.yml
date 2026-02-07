@@ -62,6 +62,7 @@ nav:
       - Backlog: BACKLOG.md
       - Repo Improvements: REPO_IMPROVEMENTS.md
       - Plans Index: plans/README.md
+  - Diagrams: DIAGRAMS.md
   - Docs Site: DOCS_SITE.md
   - Reference:
       - Providers: PROVIDERS.md

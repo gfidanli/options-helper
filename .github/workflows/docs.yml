@@ -6,6 +6,16 @@ on:
     paths:
       - "docs/**"
       - "mkdocs.yml"
+      - "package.json"
+      - "scripts/render_diagrams.mjs"
+      - "pyproject.toml"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "package.json"
+      - "scripts/render_diagrams.mjs"
       - "pyproject.toml"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
@@ -16,7 +26,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
+  group: "pages-${{ github.ref }}"
   cancel-in-progress: true
 
 jobs:
@@ -24,26 +34,36 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
+      - if: github.event_name == 'push'
+        uses: actions/configure-pages@v5
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: "pip"
           cache-dependency-path: pyproject.toml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
       - name: Install docs dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install mkdocs mkdocs-material
+      - name: Install diagram dependencies
+        run: npm install --no-package-lock
+      - name: Verify generated diagrams
+        run: npm run check-diagrams
       - name: Build site
         run: |
           mkdocs build --strict
           touch site/.nojekyll
       - name: Upload Pages artifact
+        if: github.event_name == 'push'
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
 
   deploy:
+    if: github.event_name == 'push'
     needs: build
     runs-on: ubuntu-latest
     environment:

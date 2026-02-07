@@ -1,0 +1,12 @@
+{
+  "name": "options-helper-docs-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "render-diagrams": "node scripts/render_diagrams.mjs",
+    "check-diagrams": "node scripts/render_diagrams.mjs --check"
+  },
+  "devDependencies": {
+    "beautiful-mermaid": "0.1.3"
+  }
+}

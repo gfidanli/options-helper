@@ -1,0 +1,11 @@
+flowchart TD
+  INPUTS["Watchlists / Symbols"] --> CANDLES["ingest candles"]
+  INPUTS --> CONTRACTS["Discover option contracts"]
+  CONTRACTS --> BARS["ingest options-bars"]
+
+  CANDLES --> WAREHOUSE[("DuckDB warehouse")]
+  BARS --> WAREHOUSE
+  BARS --> META[("option_bars_meta")]
+
+  WAREHOUSE --> REPORTS["Scans + report commands"]
+  META --> REPORTS

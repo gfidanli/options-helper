@@ -8,6 +8,10 @@ Bulk backfills for daily candles and Alpaca option bars. DuckDB is the default s
 - Set `APCA_API_KEY_ID` and `APCA_API_SECRET_KEY` (or use `config/alpaca.env`)
 - Ensure your Alpaca account has the required market data entitlements (options feeds often require upgrades).
 
+## Pipeline diagram
+
+![Ingestion pipeline](assets/diagrams/generated/ingest_pipeline.svg)
+
 ## Commands
 
 ### Candles (daily OHLCV)
