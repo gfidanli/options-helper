@@ -91,6 +91,52 @@ All artifacts include:
   - `disclaimer.spy_proxy_caveat`
   - `disclaimer.lookahead_notice`
 
+### SPXW 0DTE model-state + registry contracts
+- Recommended root: `data/reports/zero_dte_put_study/{SYMBOL}/`
+- Source: `options_helper.data.zero_dte_artifacts.ZeroDteArtifactStore`
+- Schemas:
+  - `model_states/{MODEL_VERSION}.json`: `ZeroDteModelSnapshotArtifact`
+  - `model_registry.json`: `ZeroDteModelRegistryArtifact`
+- Required frozen-state metadata:
+  - `model_version`
+  - `trained_through_session`
+  - `assumptions_hash`
+  - `snapshot_hash`
+  - `compatibility.{artifact_schema_version,feature_contract_version,policy_contract_version}`
+- Registry metadata:
+  - `active_model_version`
+  - `previous_active_model_version` (rollback pointer)
+  - `entries[]` with per-model compatibility + snapshot reference
+  - `promotion_history[]` with `action in {promote,rollback}`, `from_model_version`, `to_model_version`, `promoted_at`
+- Active model resolution is deterministic and fail-closed:
+  - Requires one explicit active model in registry.
+  - Rejects missing snapshot files.
+  - Rejects stale snapshots (`trained_through_session` before required minimum, or not strictly before scoring session).
+  - Rejects compatibility/assumption-hash mismatches.
+
+### SPXW 0DTE table artifacts + upsert keys
+- Paths (under the same root):
+  - `probability_curves.json`: `ZeroDteProbabilityCurveArtifact`
+  - `strike_ladders.json`: `ZeroDteStrikeLadderArtifact`
+  - `calibration_tables.json`: `ZeroDteCalibrationArtifact`
+  - `backtest_summaries.json`: `ZeroDteBacktestSummaryArtifact`
+  - `forward_snapshots.json`: `ZeroDteForwardSnapshotArtifact`
+  - `trade_ledgers.json`: `ZeroDteTradeLedgerArtifact`
+- Canonical forward upsert key (base key, required):
+  - `symbol`
+  - `session_date`
+  - `decision_ts`
+  - `risk_tier`
+  - `model_version`
+  - `assumptions_hash`
+- Row-level idempotent upsert extension:
+  - Probability curves: base key + `strike_return`
+  - Strike ladders: base key + `ladder_rank`
+  - Forward snapshots: base key (single row per forward decision/risk tier)
+  - Trade ledgers: base key + `exit_mode` + `contract_symbol` + `entry_ts`
+  - Calibration tables: `model_version` + `assumptions_hash` + `risk_tier` + `probability_bin`
+  - Backtest summaries: `model_version` + `assumptions_hash` + `session_date` + `risk_tier` + `exit_mode`
+
 ## Validation
 
 - Offline fixtures live under `tests/fixtures/artifacts/`.

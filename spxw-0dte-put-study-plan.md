@@ -177,18 +177,20 @@ T12,T13,T15,T16 -> T17 -> T18
 - **location**: `options_helper/data/zero_dte_artifacts.py`, `options_helper/schemas/zero_dte_put_study.py`
 - **description**: Persist fit-time model state and metadata (`model_version`, `trained_through_session`, `assumptions_hash`) so forward-test inference cannot accidentally refit on future data.
 - **validation**: Tests verify deterministic model snapshots, hash stability, and explicit rejection of forward scoring when model state is stale/missing.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added strict frozen model-state contracts (`ZeroDteModelSnapshotArtifact`) and deterministic snapshot hashing/canonicalization in `zero_dte_artifacts.py`; implemented model snapshot persistence with atomic writes plus fail-closed forward-model resolution that rejects missing or stale model state.
+- **files edited/created**: `options_helper/schemas/zero_dte_put_study.py`, `options_helper/data/zero_dte_artifacts.py`, `tests/test_zero_dte_artifacts.py`, `spxw-0dte-put-study-plan.md`
+- **gotchas/errors**: Snapshot hashing was made canonical JSON (`sort_keys=True`, stable separators, UTF-8 SHA256) to keep hash identity stable across equivalent payload key orderings.
 
 ### T9A: Add Active Model Registry + Promotion Rules
 - **depends_on**: [T9]
 - **location**: `options_helper/data/zero_dte_artifacts.py`, `options_helper/schemas/zero_dte_put_study.py`
 - **description**: Implement model registry metadata (`active_model_version`, promoted_at, compatibility metadata, rollback pointer) and deterministic promotion rules so forward scoring always resolves one auditable active model.
 - **validation**: Tests verify active-model resolution, compatibility checks, promotion/rollback behavior, and deterministic failure when no valid active model exists.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Implemented `ZeroDteModelRegistryArtifact` + promotion history/event contracts with compatibility metadata, then added deterministic registry operations (`register_model_snapshot`, `promote_model`, `rollback_model`, `resolve_active_model`) including compatibility checks and rollback pointer handling.
+- **files edited/created**: `options_helper/schemas/zero_dte_put_study.py`, `options_helper/data/zero_dte_artifacts.py`, `tests/test_zero_dte_artifacts.py`, `spxw-0dte-put-study-plan.md`
+- **gotchas/errors**: Active-model resolution is intentionally explicit-pointer only (no implicit fallback model selection) so absence/mismatch states fail deterministically.
 
 ### T10: Implement Walk-Forward Backtest Orchestrator
 - **depends_on**: [T6, T7, T8, T9, T11, T4A, T4B]
@@ -204,18 +206,20 @@ T12,T13,T15,T16 -> T17 -> T18
 - **location**: `options_helper/schemas/zero_dte_put_study.py`, `docs/ARTIFACT_SCHEMAS.md`
 - **description**: Finalize schema version and storage contracts before writer implementation, including unique upsert key for forward rows (`symbol`, `session_date`, `decision_ts`, `risk_tier`, `model_version`, `assumptions_hash`).
 - **validation**: Schema and contract tests confirm required fields/key composition before writer code starts.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Extended zero-DTE schemas with explicit forward upsert-key contract (`ZeroDteForwardUpsertKey`) and typed table row/artifact contracts for probability curves, strike ladders, calibration tables, backtest summaries, forward snapshots, and trade ledgers.
+- **files edited/created**: `options_helper/schemas/zero_dte_put_study.py`, `docs/ARTIFACT_SCHEMAS.md`, `tests/test_zero_dte_artifacts.py`, `spxw-0dte-put-study-plan.md`
+- **gotchas/errors**: Preserved backward safety by adding contract extensions as new models (without tightening existing row requirements used by prior completed tasks/tests).
 
 ### T11A: Implement Artifact Writers + Idempotent Upserts
 - **depends_on**: [T10, T11]
 - **location**: `options_helper/data/zero_dte_artifacts.py`
 - **description**: Implement writer/upsert code for probability curves, strike ladders, calibration tables, backtest summaries, forward snapshots, and trade ledgers.
 - **validation**: Artifact writer tests verify idempotent upserts, no duplicate rows on rerun, and backward-compatible reads.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added a file-backed `ZeroDteArtifactStore` that writes/reads all six artifact tables with deterministic idempotent upsert semantics (base forward key plus table-specific tie-break keys) and atomic JSON persistence.
+- **files edited/created**: `options_helper/data/zero_dte_artifacts.py`, `tests/test_zero_dte_artifacts.py`, `docs/ARTIFACT_SCHEMAS.md`, `spxw-0dte-put-study-plan.md`
+- **gotchas/errors**: Upsert merging canonicalizes sort order by key tuple to keep file output deterministic across reruns.
 
 ### T12: Add CLI Command for Study + Backtest
 - **depends_on**: [T0, T10, T11A]

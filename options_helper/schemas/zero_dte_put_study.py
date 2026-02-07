@@ -54,6 +54,16 @@ class SkipReason(str, Enum):
     INSUFFICIENT_DATA = "insufficient_data"
 
 
+class ModelRegistryStatus(str, Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+
+
+class ModelPromotionAction(str, Enum):
+    PROMOTE = "promote"
+    ROLLBACK = "rollback"
+
+
 DEFAULT_RISK_TIERS: tuple[float, ...] = (0.005, 0.01, 0.02, 0.05)
 DEFAULT_EXIT_MODES: tuple[ExitMode, ...] = (
     ExitMode.HOLD_TO_CLOSE,
@@ -207,3 +217,211 @@ class ZeroDtePutStudyArtifact(ArtifactBase):
     simulation_rows: list[ZeroDteSimulationRow] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
+
+class ZeroDteModelCompatibilityMetadata(ArtifactBase):
+    artifact_schema_version: int = 1
+    feature_contract_version: str = "v1"
+    policy_contract_version: str = "v1"
+
+
+class ZeroDteModelSnapshotArtifact(ArtifactBase):
+    schema_version: int = 1
+    generated_at: datetime = Field(default_factory=utc_now)
+    model_version: str
+    trained_through_session: date
+    assumptions_hash: str
+    snapshot_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    model_payload: dict[str, object] = Field(default_factory=dict)
+    compatibility: ZeroDteModelCompatibilityMetadata = Field(
+        default_factory=ZeroDteModelCompatibilityMetadata
+    )
+    notes: list[str] = Field(default_factory=list)
+
+    @field_validator("model_version", "assumptions_hash")
+    @classmethod
+    def _validate_non_empty_identifiers(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("identifier fields must not be empty")
+        return trimmed
+
+
+class ZeroDteModelRegistryEntry(ArtifactBase):
+    model_version: str
+    trained_through_session: date
+    assumptions_hash: str
+    snapshot_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    snapshot_path: str
+    compatibility: ZeroDteModelCompatibilityMetadata = Field(
+        default_factory=ZeroDteModelCompatibilityMetadata
+    )
+    status: ModelRegistryStatus = ModelRegistryStatus.INACTIVE
+    promoted_at: datetime | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ZeroDteModelPromotionRecord(ArtifactBase):
+    action: ModelPromotionAction
+    from_model_version: str | None = None
+    to_model_version: str
+    promoted_at: datetime = Field(default_factory=utc_now)
+    reason: str | None = None
+    compatibility: ZeroDteModelCompatibilityMetadata = Field(
+        default_factory=ZeroDteModelCompatibilityMetadata
+    )
+
+
+class ZeroDteModelRegistryArtifact(ArtifactBase):
+    schema_version: int = 1
+    generated_at: datetime = Field(default_factory=utc_now)
+    as_of: date
+    compatibility: ZeroDteModelCompatibilityMetadata = Field(
+        default_factory=ZeroDteModelCompatibilityMetadata
+    )
+    active_model_version: str | None = None
+    previous_active_model_version: str | None = None
+    entries: list[ZeroDteModelRegistryEntry] = Field(default_factory=list)
+    promotion_history: list[ZeroDteModelPromotionRecord] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_model_versions(self) -> ZeroDteModelRegistryArtifact:
+        versions = [entry.model_version for entry in self.entries]
+        if len(set(versions)) != len(versions):
+            raise ValueError("registry entries must use unique model_version values")
+        if self.active_model_version and self.active_model_version not in versions:
+            raise ValueError("active_model_version must reference an existing registry entry")
+        if self.previous_active_model_version and self.previous_active_model_version not in versions:
+            raise ValueError(
+                "previous_active_model_version must reference an existing registry entry"
+            )
+        return self
+
+
+class ZeroDteForwardUpsertKey(ArtifactBase):
+    symbol: str = "SPY"
+    session_date: date
+    decision_ts: datetime
+    risk_tier: float = Field(gt=0.0, lt=1.0)
+    model_version: str
+    assumptions_hash: str
+
+    @field_validator("symbol", "model_version", "assumptions_hash")
+    @classmethod
+    def _validate_required_tokens(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("upsert key tokens must not be empty")
+        return trimmed
+
+
+class ZeroDteForwardProbabilityCurveRow(ZeroDteForwardUpsertKey):
+    strike_return: float
+    breach_probability: float = Field(ge=0.0, le=1.0)
+    breach_probability_ci_low: float | None = Field(default=None, ge=0.0, le=1.0)
+    breach_probability_ci_high: float | None = Field(default=None, ge=0.0, le=1.0)
+    sample_size: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _validate_confidence_bounds(self) -> ZeroDteForwardProbabilityCurveRow:
+        lo = self.breach_probability_ci_low
+        hi = self.breach_probability_ci_high
+        if lo is None and hi is None:
+            return self
+        if lo is None or hi is None:
+            raise ValueError("confidence interval bounds must both be present or absent")
+        if lo > hi:
+            raise ValueError("breach_probability_ci_low must be <= breach_probability_ci_high")
+        return self
+
+
+class ZeroDteForwardStrikeLadderRow(ZeroDteForwardUpsertKey):
+    ladder_rank: int = Field(ge=1)
+    strike_price: float
+    strike_return: float
+    breach_probability: float = Field(ge=0.0, le=1.0)
+    premium_estimate: float | None = None
+    quote_quality_status: QuoteQualityStatus = QuoteQualityStatus.UNKNOWN
+    fill_model: FillModel = FillModel.BID
+
+
+class ZeroDteCalibrationTableRow(ArtifactBase):
+    model_version: str
+    assumptions_hash: str
+    risk_tier: float = Field(gt=0.0, lt=1.0)
+    probability_bin: str
+    predicted_probability: float = Field(ge=0.0, le=1.0)
+    observed_frequency: float = Field(ge=0.0, le=1.0)
+    sample_size: int = Field(ge=0)
+
+
+class ZeroDteBacktestSummaryRow(ArtifactBase):
+    model_version: str
+    assumptions_hash: str
+    session_date: date
+    risk_tier: float = Field(gt=0.0, lt=1.0)
+    exit_mode: ExitMode
+    trade_count: int = Field(ge=0)
+    win_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    net_pnl: float
+    brier_score: float | None = Field(default=None, ge=0.0)
+
+
+class ZeroDteForwardSnapshotRow(ZeroDteForwardUpsertKey):
+    recommended_contract_symbol: str | None = None
+    recommended_strike: float | None = None
+    recommended_premium: float | None = None
+    quote_quality_status: QuoteQualityStatus = QuoteQualityStatus.UNKNOWN
+    skip_reason: SkipReason | None = None
+
+
+class ZeroDteTradeLedgerRow(ZeroDteForwardUpsertKey):
+    exit_mode: ExitMode
+    contract_symbol: str | None = None
+    entry_ts: datetime
+    exit_ts: datetime | None = None
+    entry_premium: float | None = None
+    exit_premium: float | None = None
+    pnl_per_contract: float | None = None
+    status: str = "open"
+
+
+class ZeroDteProbabilityCurveArtifact(ArtifactBase):
+    schema_version: int = 1
+    generated_at: datetime = Field(default_factory=utc_now)
+    as_of: date
+    probability_rows: list[ZeroDteForwardProbabilityCurveRow] = Field(default_factory=list)
+
+
+class ZeroDteStrikeLadderArtifact(ArtifactBase):
+    schema_version: int = 1
+    generated_at: datetime = Field(default_factory=utc_now)
+    as_of: date
+    strike_ladder_rows: list[ZeroDteForwardStrikeLadderRow] = Field(default_factory=list)
+
+
+class ZeroDteCalibrationArtifact(ArtifactBase):
+    schema_version: int = 1
+    generated_at: datetime = Field(default_factory=utc_now)
+    as_of: date
+    calibration_rows: list[ZeroDteCalibrationTableRow] = Field(default_factory=list)
+
+
+class ZeroDteBacktestSummaryArtifact(ArtifactBase):
+    schema_version: int = 1
+    generated_at: datetime = Field(default_factory=utc_now)
+    as_of: date
+    backtest_rows: list[ZeroDteBacktestSummaryRow] = Field(default_factory=list)
+
+
+class ZeroDteForwardSnapshotArtifact(ArtifactBase):
+    schema_version: int = 1
+    generated_at: datetime = Field(default_factory=utc_now)
+    as_of: date
+    snapshot_rows: list[ZeroDteForwardSnapshotRow] = Field(default_factory=list)
+
+
+class ZeroDteTradeLedgerArtifact(ArtifactBase):
+    schema_version: int = 1
+    generated_at: datetime = Field(default_factory=utc_now)
+    as_of: date
+    trade_rows: list[ZeroDteTradeLedgerRow] = Field(default_factory=list)
