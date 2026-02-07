@@ -67,6 +67,30 @@ All artifacts include:
 - Source: `options-helper market-analysis tail-risk ... --out ...`
 - Schema: `options_helper.schemas.tail_risk.TailRiskArtifact`
 
+### SPXW 0DTE put study (SPY proxy)
+- Path: `data/reports/zero_dte_put_study/{SYMBOL}/{YYYY-MM-DD}.json`
+- Source: planned `options-helper market-analysis zero-dte-put-study ... --out ...`
+- Schema: `options_helper.schemas.zero_dte_put_study.ZeroDtePutStudyArtifact`
+- Locked defaults/assumptions:
+  - `assumptions.proxy_underlying_symbol="SPY"`
+  - `assumptions.benchmark_decision_mode="fixed_time"`
+  - `assumptions.benchmark_fixed_time_et="10:30"`
+  - `assumptions.fill_model="bid"`
+  - `assumptions.risk_tier_breach_probabilities=[0.005,0.01,0.02,0.05]`
+  - `assumptions.exit_modes=["hold_to_close","adaptive_exit"]`
+- Required row contracts:
+  - `probability_rows[]`: conditional close-tail probability rows keyed by anchor metadata + risk tier + strike return.
+  - `strike_ladder_rows[]`: ranked strike candidates with breach probability and premium estimate.
+  - `simulation_rows[]`: per-exit-mode trade outcome rows (`hold_to_close`, `adaptive_exit`).
+- Anti-lookahead contract:
+  - Anchor metadata is explicit via `anchor.{decision_ts,decision_bar_completed_ts,entry_anchor_ts,close_label_ts}`.
+  - If `entry_anchor_ts` is missing, `skip_reason` must be `no_entry_anchor`.
+- Disclaimer metadata:
+  - `disclaimer.not_financial_advice`
+  - `disclaimer.informational_use_only`
+  - `disclaimer.spy_proxy_caveat`
+  - `disclaimer.lookahead_notice`
+
 ## Validation
 
 - Offline fixtures live under `tests/fixtures/artifacts/`.
