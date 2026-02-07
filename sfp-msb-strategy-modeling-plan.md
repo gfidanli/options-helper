@@ -155,9 +155,17 @@ T0 ──┬── T1 ──┬── T4A ──┬── T5 ── T6 ── T7
 - **location**: `options_helper/analysis/strategy_simulator.py`
 - **description**: Simulate each event with next-day-open entry, hard stop at signal candle low/high, and target ladder `1.0R..2.0R` in `0.1R` increments (integer-tenths generation to avoid float drift), evaluating exits on intraday bars after entry. Support long/short, gap fills, max-hold exits, MAE/MFE in R, and explicit reject codes (`invalid_signal`, `missing_intraday_coverage`, `missing_entry_bar`, `non_positive_risk`, `insufficient_future_bars`). If both stop and target are touched inside one intraday bar, use conservative `stop_first` tie-break.
 - **validation**: Scenario tests cover long/short, intraday first-touch chronology, same-intraday-bar tie-breaks, gap-through levels, invalid-risk cases, ladder label stability, no-future-bar exclusion, session-gap anchoring across holidays/missing sessions, and explicit cases where realized `R < -1.0R`.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added deterministic simulator module with stable integer-tenths R-ladder generation (`1.0R..2.0R`), per-target trade simulation, next-tradable-bar entry anchoring, hard stop/target path evaluation, gap-at-open fills, stop-first same-bar tie-break, max-hold exits, and MAE/MFE in `R`.
+  - Added explicit reject handling for `invalid_signal`, `missing_intraday_coverage`, `missing_entry_bar`, `non_positive_risk`, and `insufficient_future_bars`.
+  - Added scenario tests for long/short path semantics, chronology/tie-break behavior, gap slippage (`realized_r < -1.0`), max-hold exits, reject-code coverage, and session-gap entry anchoring.
+  - Validation: `./.venv/bin/python -m pytest tests/test_strategy_simulator.py` (12 passed).
+  - Errors: none.
 - **files edited/created**:
+  - `options_helper/analysis/strategy_simulator.py`
+  - `tests/test_strategy_simulator.py`
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ### T6: Build Portfolio Ledger + Equity Curve Constructor
 - **depends_on**: [T0, T5]
