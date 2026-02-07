@@ -239,7 +239,18 @@ def test_sfp_page_compat_with_legacy_compute_signature(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(sfp_page, "compute_sfp_signals", legacy_compute_sfp_signals)
 
-    payload, note = sfp_page.load_sfp_payload(
+    payload_off, note_off = sfp_page.load_sfp_payload(
+        symbol="SPY",
+        lookback_days=365,
+        tail_low_pct=5.0,
+        tail_high_pct=95.0,
+        swing_left_bars=1,
+        swing_right_bars=1,
+        min_swing_distance_bars=1,
+        ignore_swept_swings=False,
+        database_path=str(db_path),
+    )
+    payload_on, note_on = sfp_page.load_sfp_payload(
         symbol="SPY",
         lookback_days=365,
         tail_low_pct=5.0,
@@ -250,5 +261,8 @@ def test_sfp_page_compat_with_legacy_compute_signature(tmp_path: Path, monkeypat
         ignore_swept_swings=True,
         database_path=str(db_path),
     )
-    assert note is None
-    assert payload is not None
+    assert note_off is None
+    assert note_on is None
+    assert payload_off is not None
+    assert payload_on is not None
+    assert len(payload_on.get("daily_events") or []) < len(payload_off.get("daily_events") or [])

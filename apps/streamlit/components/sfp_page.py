@@ -17,6 +17,10 @@ _CANDLES_COLUMNS = ["ts", "open", "high", "low", "close", "volume"]
 _HORIZONS = (1, 5, 10)
 
 
+def _compute_supports_ignore_swept_swings() -> bool:
+    return "ignore_swept_swings" in inspect.signature(compute_sfp_signals).parameters
+
+
 def _compute_sfp_signals_compat(
     ohlc: pd.DataFrame,
     *,
@@ -26,14 +30,13 @@ def _compute_sfp_signals_compat(
     ignore_swept_swings: bool,
     timeframe: str,
 ) -> pd.DataFrame:
-    params = inspect.signature(compute_sfp_signals).parameters
     kwargs: dict[str, Any] = {
         "swing_left_bars": int(swing_left_bars),
         "swing_right_bars": int(swing_right_bars),
         "min_swing_distance_bars": int(min_swing_distance_bars),
         "timeframe": timeframe,
     }
-    if "ignore_swept_swings" in params:
+    if _compute_supports_ignore_swept_swings():
         kwargs["ignore_swept_swings"] = bool(ignore_swept_swings)
     return compute_sfp_signals(ohlc, **kwargs)
 
@@ -130,8 +133,16 @@ def _build_sfp_payload_cached(
     swing_right_bars: int,
     min_swing_distance_bars: int,
     ignore_swept_swings: bool,
+    compute_supports_ignore_swept_swings: bool,
     database_path: str,
 ) -> dict[str, Any]:
+    notes: list[str] = []
+    if bool(ignore_swept_swings) and not bool(compute_supports_ignore_swept_swings):
+        notes.append(
+            "Runtime SFP engine does not expose native swept-swing ignore mode; "
+            "applied app-layer fallback filter."
+        )
+
     candles, note = load_candles_history(
         symbol=symbol,
         database_path=database_path,
@@ -145,7 +156,7 @@ def _build_sfp_payload_cached(
             "weekly_events": [],
             "summary_rows": [],
             "counts": {},
-            "notes": [note],
+            "notes": [*notes, note],
         }
     if candles.empty:
         return {
@@ -155,7 +166,7 @@ def _build_sfp_payload_cached(
             "weekly_events": [],
             "summary_rows": [],
             "counts": {},
-            "notes": [f"No daily candles found for {normalize_symbol(symbol)}."],
+            "notes": [*notes, f"No daily candles found for {normalize_symbol(symbol)}."],
         }
 
     daily_ohlc = candles.rename(
@@ -175,7 +186,7 @@ def _build_sfp_payload_cached(
             "weekly_events": [],
             "summary_rows": [],
             "counts": {},
-            "notes": [f"No usable daily OHLC candles found for {normalize_symbol(symbol)}."],
+            "notes": [*notes, f"No usable daily OHLC candles found for {normalize_symbol(symbol)}."],
         }
 
     daily_close = daily_ohlc["Close"].astype("float64")
@@ -218,6 +229,7 @@ def _build_sfp_payload_cached(
         timeframe="daily",
         week_has_daily_extension_map=daily_week_has_extreme,
         weekly_index_labels=False,
+        ignore_swept_swings=bool(ignore_swept_swings),
     )
 
     weekly_ohlc = (
@@ -250,6 +262,7 @@ def _build_sfp_payload_cached(
         timeframe="weekly",
         week_has_daily_extension_map=daily_week_has_extreme,
         weekly_index_labels=True,
+        ignore_swept_swings=bool(ignore_swept_swings),
     )
 
     latest_ts = daily_ohlc.index.max()
@@ -274,7 +287,7 @@ def _build_sfp_payload_cached(
             "daily_bullish": sum(1 for row in daily_events_filtered if row.get("direction") == "bullish"),
             "daily_bearish": sum(1 for row in daily_events_filtered if row.get("direction") == "bearish"),
         },
-        "notes": [],
+        "notes": notes,
     }
 
 
@@ -294,6 +307,7 @@ def load_sfp_payload(
 ) -> tuple[dict[str, Any] | None, str | None]:
     resolved = resolve_duckdb_path(database_path)
     try:
+        compute_supports_ignore_swept_swings = _compute_supports_ignore_swept_swings()
         payload = _build_sfp_payload_cached(
             symbol=normalize_symbol(symbol),
             lookback_days=max(1, int(lookback_days)),
@@ -305,6 +319,7 @@ def load_sfp_payload(
             swing_right_bars=max(1, int(swing_right_bars)),
             min_swing_distance_bars=max(1, int(min_swing_distance_bars)),
             ignore_swept_swings=bool(ignore_swept_swings),
+            compute_supports_ignore_swept_swings=bool(compute_supports_ignore_swept_swings),
             database_path=str(resolved),
         )
         return payload, None
@@ -449,6 +464,7 @@ def _events_from_signals(
     timeframe: str,
     week_has_daily_extension_map: dict[pd.Timestamp, bool],
     weekly_index_labels: bool,
+    ignore_swept_swings: bool = False,
 ) -> list[dict[str, Any]]:
     if signals.empty:
         return []
@@ -524,8 +540,30 @@ def _events_from_signals(
         )
         rows.append(formatted)
 
+    if ignore_swept_swings and rows:
+        rows = _consume_reused_swept_swings(rows)
+
     rows.sort(key=lambda item: str(item.get("event_ts") or ""), reverse=True)
     return rows
+
+
+def _consume_reused_swept_swings(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only the first SFP event for each (direction, swept swing) pair.
+
+    This mirrors "consume liquidity" behavior and acts as a safety net when an older
+    compute_sfp_signals implementation is imported without native ignore support.
+    """
+    seen: set[tuple[str, str]] = set()
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        direction = str(row.get("direction") or "").lower()
+        swept_ts = str(row.get("swept_swing_ts") or "")
+        key = (direction, swept_ts)
+        if key in seen:
+            continue
+        seen.add(key)
+        filtered.append(row)
+    return filtered
 
 
 def _build_summary_rows(*, daily_events: list[dict[str, Any]], weekly_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
