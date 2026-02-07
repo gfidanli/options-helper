@@ -6,6 +6,7 @@ from pathlib import Path
 import typer
 
 from options_helper.commands.backtest import app as backtest_app
+from options_helper.commands.coverage import register as register_coverage_commands
 from options_helper.commands.db import app as db_app
 from options_helper.commands.debug import app as debug_app
 from options_helper.commands.derived import app as derived_app
@@ -56,6 +57,7 @@ app.add_typer(ingest_app, name="ingest")
 register_portfolio_commands(app)
 register_report_commands(app)
 register_workflow_commands(app)
+register_coverage_commands(app)
 register_ui_commands(app)
 
 

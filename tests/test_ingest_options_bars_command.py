@@ -273,6 +273,50 @@ def test_ingest_options_bars_fetch_only_skips_warehouse_writes(tmp_path: Path, m
     assert len(fake_client.bars_calls) == 3
 
 
+def test_ingest_options_bars_contracts_only_writes_contract_snapshots(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda: _StubProvider())
+    fake_client = _FakeAlpacaClient()
+    monkeypatch.setattr(ingest, "AlpacaClient", lambda: fake_client)
+
+    runner = CliRunner()
+    duckdb_path = tmp_path / "options.duckdb"
+    result = runner.invoke(
+        app,
+        [
+            "--provider",
+            "alpaca",
+            "--duckdb-path",
+            str(duckdb_path),
+            "ingest",
+            "options-bars",
+            "--symbol",
+            "SPY",
+            "--contracts-exp-start",
+            "2025-01-01",
+            "--contracts-exp-end",
+            "2026-12-31",
+            "--contracts-only",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Contracts-only mode" in result.output
+
+    wh = DuckDBWarehouse(duckdb_path)
+    ensure_schema(wh)
+
+    contracts = wh.fetch_df("SELECT COUNT(*) AS n FROM option_contracts")
+    snapshots = wh.fetch_df("SELECT COUNT(*) AS n FROM option_contract_snapshots")
+    bars = wh.fetch_df("SELECT COUNT(*) AS n FROM option_bars")
+    bars_meta = wh.fetch_df("SELECT COUNT(*) AS n FROM option_bars_meta")
+
+    assert int(contracts.iloc[0]["n"]) == 3
+    assert int(snapshots.iloc[0]["n"]) == 3
+    assert int(bars.iloc[0]["n"]) == 0
+    assert int(bars_meta.iloc[0]["n"]) == 0
+    assert len(fake_client.bars_calls) == 0
+
+
 def test_ingest_options_bars_fetch_only_conflicts_with_dry_run(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda: _StubProvider())
     monkeypatch.setattr(ingest, "AlpacaClient", lambda: _FakeAlpacaClient())

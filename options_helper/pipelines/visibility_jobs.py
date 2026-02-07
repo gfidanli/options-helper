@@ -102,6 +102,7 @@ class IngestOptionsBarsJobResult:
     prepared: PreparedContracts | None
     summary: BarsBackfillSummary | None
     dry_run: bool
+    contracts_only: bool
     no_symbols: bool
     no_contracts: bool
     no_eligible_contracts: bool
@@ -291,6 +292,7 @@ def run_ingest_options_bars_job(
     resume: bool,
     dry_run: bool,
     fail_fast: bool,
+    contracts_only: bool = False,
     fetch_only: bool = False,
     provider_builder: Callable[[], Any] = cli_deps.build_provider,
     contracts_store_builder: Callable[[Path], Any] = cli_deps.build_option_contracts_store,
@@ -332,6 +334,7 @@ def run_ingest_options_bars_job(
             prepared=None,
             summary=None,
             dry_run=dry_run,
+            contracts_only=contracts_only,
             no_symbols=True,
             no_contracts=False,
             no_eligible_contracts=False,
@@ -403,6 +406,7 @@ def run_ingest_options_bars_job(
             prepared=None,
             summary=None,
             dry_run=dry_run,
+            contracts_only=contracts_only,
             no_symbols=False,
             no_contracts=True,
             no_eligible_contracts=False,
@@ -434,6 +438,43 @@ def run_ingest_options_bars_job(
                 raw_by_contract_symbol=chunk_raw,
             )
 
+    if contracts_only:
+        _persist_quality_results(
+            quality_logger,
+            run_options_bars_quality_checks(
+                bars_store=bars_store,
+                contract_symbols=[],
+                dry_run=quality_dry_run,
+                skip_reason="contracts_only",
+            ),
+        )
+        summary = BarsBackfillSummary(
+            total_contracts=0,
+            total_expiries=0,
+            planned_contracts=0,
+            skipped_contracts=0,
+            ok_contracts=0,
+            error_contracts=0,
+            bars_rows=0,
+            requests_attempted=0,
+            endpoint_stats=None,
+        )
+        return IngestOptionsBarsJobResult(
+            warnings=list(selection.warnings),
+            underlyings=underlyings,
+            limited_underlyings=limited_underlyings,
+            discovery=discovery,
+            prepared=None,
+            summary=summary,
+            dry_run=dry_run,
+            contracts_only=True,
+            no_symbols=False,
+            no_contracts=False,
+            no_eligible_contracts=False,
+            contracts_endpoint_stats=discovery.endpoint_stats,
+            bars_endpoint_stats=None,
+        )
+
     prepared = prepare_contracts_for_bars(
         discovery.contracts,
         max_expiries=max_expiries,
@@ -458,6 +499,7 @@ def run_ingest_options_bars_job(
             prepared=prepared,
             summary=None,
             dry_run=dry_run,
+            contracts_only=contracts_only,
             no_symbols=False,
             no_contracts=False,
             no_eligible_contracts=True,
@@ -505,6 +547,7 @@ def run_ingest_options_bars_job(
         prepared=prepared,
         summary=summary,
         dry_run=dry_run,
+        contracts_only=contracts_only,
         no_symbols=False,
         no_contracts=False,
         no_eligible_contracts=False,

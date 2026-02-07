@@ -482,6 +482,11 @@ def ingest_options_bars_command(
         "--resume/--no-resume",
         help="Skip contracts already covered in option_bars_meta (ignored with --fetch-only).",
     ),
+    contracts_only: bool = typer.Option(
+        False,
+        "--contracts-only",
+        help="Discover + persist option contracts/OI snapshots, skip option-bars backfill.",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -567,6 +572,7 @@ def ingest_options_bars_command(
             "alpaca_http_pool_connections": alpaca_http_pool_connections,
             "log_rate_limits": log_rate_limits_override,
             "resume": resume,
+            "contracts_only": contracts_only,
             "dry_run": dry_run,
             "fetch_only": fetch_only,
             "fail_fast": fail_fast,
@@ -614,6 +620,7 @@ def ingest_options_bars_command(
                 resume=resume,
                 dry_run=dry_run,
                 fail_fast=fail_fast,
+                contracts_only=contracts_only,
                 fetch_only=fetch_only,
                 provider_builder=cli_deps.build_provider,
                 contracts_store_builder=cli_deps.build_option_contracts_store,
@@ -723,106 +730,120 @@ def ingest_options_bars_command(
             console.print("No contracts discovered; nothing to ingest.")
             raise typer.Exit(0)
 
-        if dry_run:
-            console.print(
-                f"[yellow]Dry run:[/yellow] skipping writes (would upsert {len(discovery.contracts)} contracts)."
-            )
-        elif fetch_only:
-            console.print(
-                "[yellow]Fetch-only:[/yellow] benchmarking network fetch throughput; warehouse writes are skipped."
-            )
-
-        if result.no_eligible_contracts:
-            run_logger.log_asset_skipped(
-                asset_key=ASSET_OPTION_BARS,
-                asset_kind="table",
-                partition_key="ALL",
-                extra={"reason": "no_eligible_contracts"},
-            )
-            console.print("No contracts eligible for bars ingestion after filtering.")
-            raise typer.Exit(0)
-
-        summary = result.summary
-        assert summary is not None
-        if dry_run:
+        if result.contracts_only:
             run_logger.log_asset_skipped(
                 asset_key=ASSET_OPTION_BARS,
                 asset_kind="table",
                 partition_key="ALL",
                 extra={
-                    "reason": "dry_run",
-                    "planned_contracts": summary.planned_contracts,
-                    "skipped_contracts": summary.skipped_contracts,
-                    "requests_attempted": summary.requests_attempted,
+                    "reason": "contracts_only",
+                    "discovered_contracts": len(discovery.contracts),
                 },
             )
             console.print(
-                "Dry run summary: "
-                f"{summary.planned_contracts} planned, {summary.skipped_contracts} skipped, "
-                f"{summary.requests_attempted} request(s) across {summary.total_expiries} expiry group(s)."
-            )
-        elif fetch_only:
-            run_logger.log_asset_skipped(
-                asset_key=ASSET_OPTION_BARS,
-                asset_kind="table",
-                partition_key="ALL",
-                extra={
-                    "reason": "fetch_only",
-                    "ok_contracts": summary.ok_contracts,
-                    "error_contracts": summary.error_contracts,
-                    "skipped_contracts": summary.skipped_contracts,
-                    "bars_rows_fetched": summary.bars_rows,
-                    "requests_attempted": summary.requests_attempted,
-                    "total_expiries": summary.total_expiries,
-                },
-            )
-            console.print(
-                "Fetch-only summary: "
-                f"{summary.ok_contracts} ok, {summary.error_contracts} error(s), "
-                f"{summary.skipped_contracts} skipped, {summary.bars_rows} bars fetched, "
-                f"{summary.requests_attempted} request(s) across {summary.total_expiries} expiry group(s)."
+                "Contracts-only mode: persisted contract snapshots and skipped option-bars backfill."
             )
         else:
-            if summary.error_contracts > 0:
-                run_logger.log_asset_failure(
+            if dry_run:
+                console.print(
+                    f"[yellow]Dry run:[/yellow] skipping writes (would upsert {len(discovery.contracts)} contracts)."
+                )
+            elif fetch_only:
+                console.print(
+                    "[yellow]Fetch-only:[/yellow] benchmarking network fetch throughput; warehouse writes are skipped."
+                )
+
+            if result.no_eligible_contracts:
+                run_logger.log_asset_skipped(
                     asset_key=ASSET_OPTION_BARS,
                     asset_kind="table",
                     partition_key="ALL",
-                    rows_inserted=summary.bars_rows,
+                    extra={"reason": "no_eligible_contracts"},
+                )
+                console.print("No contracts eligible for bars ingestion after filtering.")
+                raise typer.Exit(0)
+
+            summary = result.summary
+            assert summary is not None
+            if dry_run:
+                run_logger.log_asset_skipped(
+                    asset_key=ASSET_OPTION_BARS,
+                    asset_kind="table",
+                    partition_key="ALL",
                     extra={
+                        "reason": "dry_run",
+                        "planned_contracts": summary.planned_contracts,
+                        "skipped_contracts": summary.skipped_contracts,
+                        "requests_attempted": summary.requests_attempted,
+                    },
+                )
+                console.print(
+                    "Dry run summary: "
+                    f"{summary.planned_contracts} planned, {summary.skipped_contracts} skipped, "
+                    f"{summary.requests_attempted} request(s) across {summary.total_expiries} expiry group(s)."
+                )
+            elif fetch_only:
+                run_logger.log_asset_skipped(
+                    asset_key=ASSET_OPTION_BARS,
+                    asset_kind="table",
+                    partition_key="ALL",
+                    extra={
+                        "reason": "fetch_only",
                         "ok_contracts": summary.ok_contracts,
                         "error_contracts": summary.error_contracts,
                         "skipped_contracts": summary.skipped_contracts,
+                        "bars_rows_fetched": summary.bars_rows,
                         "requests_attempted": summary.requests_attempted,
                         "total_expiries": summary.total_expiries,
                     },
+                )
+                console.print(
+                    "Fetch-only summary: "
+                    f"{summary.ok_contracts} ok, {summary.error_contracts} error(s), "
+                    f"{summary.skipped_contracts} skipped, {summary.bars_rows} bars fetched, "
+                    f"{summary.requests_attempted} request(s) across {summary.total_expiries} expiry group(s)."
                 )
             else:
-                run_logger.log_asset_success(
-                    asset_key=ASSET_OPTION_BARS,
-                    asset_kind="table",
-                    partition_key="ALL",
-                    rows_inserted=summary.bars_rows,
-                    extra={
-                        "ok_contracts": summary.ok_contracts,
-                        "error_contracts": summary.error_contracts,
-                        "skipped_contracts": summary.skipped_contracts,
-                        "requests_attempted": summary.requests_attempted,
-                        "total_expiries": summary.total_expiries,
-                    },
+                if summary.error_contracts > 0:
+                    run_logger.log_asset_failure(
+                        asset_key=ASSET_OPTION_BARS,
+                        asset_kind="table",
+                        partition_key="ALL",
+                        rows_inserted=summary.bars_rows,
+                        extra={
+                            "ok_contracts": summary.ok_contracts,
+                            "error_contracts": summary.error_contracts,
+                            "skipped_contracts": summary.skipped_contracts,
+                            "requests_attempted": summary.requests_attempted,
+                            "total_expiries": summary.total_expiries,
+                        },
+                    )
+                else:
+                    run_logger.log_asset_success(
+                        asset_key=ASSET_OPTION_BARS,
+                        asset_kind="table",
+                        partition_key="ALL",
+                        rows_inserted=summary.bars_rows,
+                        extra={
+                            "ok_contracts": summary.ok_contracts,
+                            "error_contracts": summary.error_contracts,
+                            "skipped_contracts": summary.skipped_contracts,
+                            "requests_attempted": summary.requests_attempted,
+                            "total_expiries": summary.total_expiries,
+                        },
+                    )
+                if summary.ok_contracts > 0:
+                    run_logger.upsert_watermark(
+                        asset_key=ASSET_OPTION_BARS,
+                        scope_key="ALL",
+                        watermark_ts=run_day,
+                    )
+                console.print(
+                    "Bars backfill summary: "
+                    f"{summary.ok_contracts} ok, {summary.error_contracts} error(s), "
+                    f"{summary.skipped_contracts} skipped, {summary.bars_rows} bars, "
+                    f"{summary.requests_attempted} request(s) across {summary.total_expiries} expiry group(s)."
                 )
-            if summary.ok_contracts > 0:
-                run_logger.upsert_watermark(
-                    asset_key=ASSET_OPTION_BARS,
-                    scope_key="ALL",
-                    watermark_ts=run_day,
-                )
-            console.print(
-                "Bars backfill summary: "
-                f"{summary.ok_contracts} ok, {summary.error_contracts} error(s), "
-                f"{summary.skipped_contracts} skipped, {summary.bars_rows} bars, "
-                f"{summary.requests_attempted} request(s) across {summary.total_expiries} expiry group(s)."
-            )
 
         if result.contracts_endpoint_stats is not None:
             contracts_endpoint_stats = result.contracts_endpoint_stats.endpoint_stats

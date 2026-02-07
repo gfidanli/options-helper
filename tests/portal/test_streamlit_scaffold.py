@@ -17,6 +17,7 @@ PAGE_FILES = [
     STREAMLIT_DIR / "pages" / "05_Derived_History.py",
     STREAMLIT_DIR / "pages" / "06_Data_Explorer.py",
     STREAMLIT_DIR / "pages" / "07_Market_Analysis.py",
+    STREAMLIT_DIR / "pages" / "08_Coverage.py",
 ]
 
 
@@ -38,6 +39,7 @@ def test_streamlit_module_import_smoke() -> None:
     importlib.import_module("apps.streamlit.components.db")
     importlib.import_module("apps.streamlit.components.queries")
     importlib.import_module("apps.streamlit.components.gap_planner")
+    importlib.import_module("apps.streamlit.components.coverage_page")
 
     for page_file in PAGE_FILES:
         runpy.run_path(str(page_file), run_name=f"__streamlit_page_{page_file.stem}__")

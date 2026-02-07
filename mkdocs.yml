@@ -35,6 +35,7 @@ nav:
       - Ingestion Optimization: INGEST_OPTIMIZATION.md
       - Candle Cache: CANDLE_CACHE.md
       - DuckDB: DUCKDB.md
+      - Coverage: COVERAGE.md
       - Chain Report: CHAIN_REPORT.md
       - Options Flow: OPTIONS_FLOW.md
       - Derived Metrics: DERIVED.md
@@ -50,6 +51,7 @@ nav:
       - Confluence Score: CONFLUENCE_SCORE.md
       - Technical Extension (Percentiles): TECHNICAL_EXTENSION_PERCENTILES.md
       - Technical Extension (RSI Divergence): TECHNICAL_EXTENSION_RSI_DIVERGENCE.md
+      - Technical SFP Scan: TECHNICAL_SFP.md
   - Visibility & Portal:
       - Next Stage Overview: NEXT_STAGE_VISIBILITY_PORTAL.md
       - Observability + Health: OBSERVABILITY.md

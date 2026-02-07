@@ -142,6 +142,7 @@ def test_dagster_partitioned_materialization_order_and_ledger(tmp_path: Path, mo
                 requests_attempted=1,
             ),
             dry_run=False,
+            contracts_only=False,
             no_symbols=False,
             no_contracts=False,
             no_eligible_contracts=False,
