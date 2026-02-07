@@ -7,7 +7,7 @@
 
 - Start here: [Briefing](BRIEFING.md), [Dashboard](DASHBOARD.md), [Automation](AUTOMATION.md)
 - Data and artifacts: [Candle cache](CANDLE_CACHE.md), [Options flow](OPTIONS_FLOW.md), [Chain reports](CHAIN_REPORT.md)
-- Research: [Research workflow](RESEARCH.md), [Backtesting](BACKTESTING.md)
+- Research: [Research workflow](RESEARCH.md), [IV surface](IV_SURFACE.md), [Dealer exposure](DEALER_EXPOSURE.md), [Intraday flow](INTRADAY_FLOW.md), [Levels](LEVELS.md), [Backtesting](BACKTESTING.md)
 - Project planning: [Backlog](BACKLOG.md), [Plans index](plans/README.md)
 
 ## Documentation site

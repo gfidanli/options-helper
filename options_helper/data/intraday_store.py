@@ -155,3 +155,33 @@ class IntradayStore:
             return json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:  # noqa: BLE001
             raise IntradayStoreError(f"Failed to read intraday meta: {path}") from exc
+
+    def list_symbols(self, kind: str, dataset: str, timeframe: str) -> list[str]:
+        base = self._partition_dir(kind, dataset, timeframe, "placeholder").parent
+        if not base.exists():
+            return []
+        symbols = [entry.name for entry in base.iterdir() if entry.is_dir()]
+        return sorted({symbol for symbol in symbols if symbol})
+
+    def list_days(self, kind: str, dataset: str, timeframe: str, symbol: str) -> list[date]:
+        sym_dir = self._partition_dir(kind, dataset, timeframe, symbol)
+        if not sym_dir.exists():
+            return []
+
+        days: list[date] = []
+        for entry in sym_dir.glob("*.csv.gz"):
+            stem = entry.name.removesuffix(".csv.gz")
+            try:
+                days.append(date.fromisoformat(stem))
+            except ValueError:
+                continue
+        return sorted({day for day in days})
+
+    def list_symbols_for_day(self, kind: str, dataset: str, timeframe: str, day: date) -> list[str]:
+        wanted = f"{day.isoformat()}.csv.gz"
+        matches: list[str] = []
+        for symbol in self.list_symbols(kind, dataset, timeframe):
+            path = self._partition_dir(kind, dataset, timeframe, symbol) / wanted
+            if path.exists():
+                matches.append(symbol)
+        return sorted(matches)

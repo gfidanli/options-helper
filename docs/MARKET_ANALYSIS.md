@@ -1,10 +1,16 @@
-# Market Analysis (Tail Risk + IV Context)
+# Market Analysis (Tail Risk + Snapshot/Candle Metrics)
 
 Status: Implemented
 
 This feature adds a Monte Carlo tail-risk view inspired by TeamCinco-style market analysis, implemented natively in this repo.
 
 It is informational/educational tooling and **not financial advice**.
+
+Related command docs:
+
+- [IV Surface](IV_SURFACE.md)
+- [Dealer Exposure](DEALER_EXPOSURE.md)
+- [Levels](LEVELS.md)
 
 ## What it does
 
@@ -64,4 +70,3 @@ If `derived_daily` is missing for a symbol, run:
 - Uses historical daily close returns with normally distributed shocks.
 - VaR/CVaR and expected return are model outputs, not predictions.
 - Output quality depends on local data quality and coverage in candles/snapshots/derived rows.
-

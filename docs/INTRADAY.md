@@ -3,6 +3,8 @@
 This feature captures **intraday bars** for stocks and options using Alpaca and stores them as partitioned
 `CSV.gz` + `meta.json` files. It is **not financial advice**.
 
+For offline trade/quote summarization from captured partitions, see: [Intraday Flow](INTRADAY_FLOW.md).
+
 ## Requirements
 - Provider: **Alpaca** (`--provider alpaca`)
 - Alpaca credentials available via environment or `config/alpaca.env`

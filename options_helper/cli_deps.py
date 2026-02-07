@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from options_helper.data.derived import DerivedStore
     from options_helper.data.earnings import EarningsStore
     from options_helper.data.flow_store import FlowStore
+    from options_helper.data.stores_duckdb import DuckDBResearchMetricsStore
     from options_helper.data.journal import JournalStore
     from options_helper.data.observability_meta import RunLogger
     from options_helper.data.option_bars import OptionBarsStore
@@ -84,6 +85,12 @@ def build_option_bars_store(bars_dir: Path) -> OptionBarsStore:
     from options_helper.data.store_factory import get_option_bars_store
 
     return get_option_bars_store(bars_dir)
+
+
+def build_research_metrics_store(root_dir: Path) -> DuckDBResearchMetricsStore:
+    from options_helper.data.store_factory import get_research_metrics_store
+
+    return get_research_metrics_store(root_dir)
 
 
 def build_run_logger(

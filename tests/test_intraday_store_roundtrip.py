@@ -41,6 +41,10 @@ def test_intraday_store_roundtrip(tmp_path) -> None:  # type: ignore[no-untyped-
     assert meta["symbol"] == "AAPL"
     assert meta["coverage_start"].startswith("2026-02-03")
 
+    assert store.list_symbols("stocks", "bars", "1Min") == ["AAPL"]
+    assert store.list_days("stocks", "bars", "1Min", "AAPL") == [date(2026, 2, 3)]
+    assert store.list_symbols_for_day("stocks", "bars", "1Min", date(2026, 2, 3)) == ["AAPL"]
+
 
 def test_intraday_store_missing_partition(tmp_path) -> None:  # type: ignore[no-untyped-def]
     store = IntradayStore(tmp_path)

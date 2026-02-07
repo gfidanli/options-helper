@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from datetime import date
+from types import SimpleNamespace
 
 import pandas as pd
 from typer.testing import CliRunner
 
 from options_helper.commands import intraday
 from options_helper.cli import app
+from options_helper.data.intraday_store import IntradayStore
 from options_helper.data.option_contracts import OptionContractsStore
+from options_helper.schemas.intraday_flow import IntradayFlowArtifact
 
 
 class _StubProvider:
@@ -175,3 +178,150 @@ def test_intraday_pull_options_bars(tmp_path, monkeypatch):  # type: ignore[no-u
     )
     assert call_path.exists()
     assert put_path.exists()
+
+
+def _sample_contract_symbol() -> str:
+    return "SPY260320C00450000"
+
+
+def _sample_trades(day: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime([f"{day}T14:30:10Z", f"{day}T14:31:10Z"], utc=True),
+            "price": [1.20, 1.10],
+            "size": [10, 5],
+        }
+    )
+
+
+def _sample_quotes(day: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime([f"{day}T14:30:00Z", f"{day}T14:31:00Z"], utc=True),
+            "bid": [1.00, 1.00],
+            "ask": [1.10, 1.10],
+        }
+    )
+
+
+def test_intraday_flow_summarizes_local_partitions_offline(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    store = IntradayStore(tmp_path / "intraday")
+    contract = _sample_contract_symbol()
+    target_day = date(2026, 2, 5)
+
+    store.save_partition("options", "trades", "tick", contract, target_day, _sample_trades("2026-02-05"), meta={})
+    store.save_partition("options", "quotes", "tick", contract, target_day, _sample_quotes("2026-02-05"), meta={})
+
+    monkeypatch.setattr(
+        intraday.cli_deps,
+        "build_provider",
+        lambda: (_ for _ in ()).throw(RuntimeError("network should not be used")),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "intraday",
+            "flow",
+            "--contract",
+            contract,
+            "--day",
+            "2026-02-05",
+            "--out-dir",
+            str(tmp_path / "intraday"),
+            "--format",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    artifact = IntradayFlowArtifact.model_validate_json(result.output)
+    assert artifact.symbol == "SPY"
+    assert artifact.market_date == "2026-02-05"
+    assert len(artifact.contract_flow) == 1
+    assert artifact.time_buckets
+
+
+def test_intraday_flow_latest_day_and_duckdb_persist(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    store = IntradayStore(tmp_path / "intraday")
+    contract = _sample_contract_symbol()
+
+    store.save_partition(
+        "options",
+        "trades",
+        "tick",
+        contract,
+        date(2026, 2, 5),
+        _sample_trades("2026-02-05"),
+        meta={},
+    )
+    store.save_partition(
+        "options",
+        "quotes",
+        "tick",
+        contract,
+        date(2026, 2, 5),
+        _sample_quotes("2026-02-05"),
+        meta={},
+    )
+    store.save_partition(
+        "options",
+        "trades",
+        "tick",
+        contract,
+        date(2026, 2, 6),
+        _sample_trades("2026-02-06"),
+        meta={},
+    )
+    store.save_partition(
+        "options",
+        "quotes",
+        "tick",
+        contract,
+        date(2026, 2, 6),
+        _sample_quotes("2026-02-06"),
+        meta={},
+    )
+
+    class _StubResearchStore:
+        def __init__(self) -> None:
+            self.rows = 0
+
+        def upsert_intraday_option_flow(self, df: pd.DataFrame, *, provider: str | None = None) -> int:  # noqa: ARG002
+            self.rows = int(len(df))
+            return self.rows
+
+    stub_store = _StubResearchStore()
+
+    monkeypatch.setattr(
+        intraday,
+        "get_storage_runtime_config",
+        lambda: SimpleNamespace(backend="duckdb"),
+    )
+    monkeypatch.setattr(
+        intraday.cli_deps,
+        "build_research_metrics_store",
+        lambda *_a, **_k: stub_store,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "intraday",
+            "flow",
+            "--contract",
+            contract,
+            "--day",
+            "latest",
+            "--out-dir",
+            str(tmp_path / "intraday"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "2026-02-06" in result.output
+    assert stub_store.rows > 0

@@ -42,6 +42,10 @@ nav:
   - Research & Analysis:
       - Research: RESEARCH.md
       - Market Analysis: MARKET_ANALYSIS.md
+      - IV Surface: IV_SURFACE.md
+      - Dealer Exposure: DEALER_EXPOSURE.md
+      - Levels: LEVELS.md
+      - Intraday Flow: INTRADAY_FLOW.md
       - Backtesting: BACKTESTING.md
       - Confluence Score: CONFLUENCE_SCORE.md
       - Technical Extension (Percentiles): TECHNICAL_EXTENSION_PERCENTILES.md
