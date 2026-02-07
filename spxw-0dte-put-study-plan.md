@@ -138,18 +138,20 @@ T12,T13,T15,T16 -> T17 -> T18
 - **location**: `options_helper/analysis/zero_dte_tail_model.py`
 - **description**: Implement baseline empirical conditional model estimating end-of-day close-return distribution conditioned on intraday state bucket (time-of-day + extension bucket + volatility regime), with small-sample shrinkage (for example Beta prior smoothing). Output strike-threshold breach probabilities with confidence intervals and sample counts.
 - **validation**: Offline tests verify monotonic probability behavior across deeper strikes, stable results on fixed fixtures, and sensible outputs for low-sample bins.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added typed tail-model fit/score APIs with conditioning buckets (`time_of_day_bucket`, extension bucket, `iv_regime`), hierarchical shrinkage (bucket -> parent -> global), Wilson confidence bands, per-strike sample diagnostics, and monotonic enforcement for breach probabilities across deeper strikes.
+- **files edited/created**: `options_helper/analysis/zero_dte_tail_model.py`, `tests/test_zero_dte_tail_model.py`, `spxw-0dte-put-study-plan.md`
+- **gotchas/errors**: Initial scoring pass missed a fallback helper; added deterministic `fallback_source` labels (`local`, `shrunk_local`, `parent`, `global`) and regression-tested low-sample behavior.
 
 ### T6: Build Strike Recommendation Policy Layer
 - **depends_on**: [T3, T5]
 - **location**: `options_helper/analysis/zero_dte_policy.py`
 - **description**: Map modeled probabilities to ranked strike options by risk tier while incorporating premium availability/quality flags. Produce strike distance, breach probability, premium estimate, and EV proxy bands with explicit skip/fallback reasons when quotes are invalid.
 - **validation**: Unit tests confirm farther OTM strikes for tighter risk tiers, deterministic ranking, and deterministic skip behavior for quote-quality failures.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Implemented deterministic risk-tier policy ranking that merges probability rows with strike snapshots, applies quote/premium quality gates, computes EV proxy bands from probability intervals, and emits explicit fallback/skip reasons when no valid candidate can be recommended.
+- **files edited/created**: `options_helper/analysis/zero_dte_policy.py`, `tests/test_zero_dte_policy.py`, `spxw-0dte-put-study-plan.md`
+- **gotchas/errors**: Boolean outputs in pandas-backed rows required explicit bool coercion in tests to avoid identity-check flakiness.
 
 ### T7: Implement Trade Outcome Simulator (0DTE Put Seller)
 - **depends_on**: [T0, T3, T4A, T6]
@@ -165,9 +167,10 @@ T12,T13,T15,T16 -> T17 -> T18
 - **location**: `options_helper/analysis/zero_dte_calibration.py`
 - **description**: Add forecast-quality metrics for the probability model (Brier score, reliability bins, observed-vs-predicted breach rates, sharpness). Keep outputs independent of PnL simulation.
 - **validation**: Unit tests assert metric formulas and reliability-bin aggregation on synthetic known distributions.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added standalone calibration module with typed config/result contracts covering Brier score, reliability-bin aggregation, observed-vs-predicted tables, expected calibration error, and sharpness, including support for external outcome series.
+- **files edited/created**: `options_helper/analysis/zero_dte_calibration.py`, `tests/test_zero_dte_calibration.py`, `spxw-0dte-put-study-plan.md`
+- **gotchas/errors**: Calibration preprocessing now drops invalid probability/outcome rows deterministically so metrics stay stable on partially dirty inputs.
 
 ### T9: Persist Frozen Model State for Inference
 - **depends_on**: [T5]
