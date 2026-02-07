@@ -67,18 +67,36 @@ T0 ──┬── T1 ──┬── T4A ──┬── T5 ── T6 ── T7
 - **location**: `options_helper/analysis/strategy_modeling_contracts.py`, `options_helper/schemas/`
 - **description**: Create typed contracts for signal events, trade simulations, equity points, R-ladder stats, segmentation records, and portfolio metrics (including Sharpe ratio). Include anti-lookahead fields: `signal_ts`, `signal_confirmed_ts`, `entry_ts`, `entry_price_source`.
 - **validation**: Unit tests assert contract serialization, required fields, and anti-lookahead metadata presence.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added typed strategy-modeling contracts for signal events, trade simulations, equity points, R-ladder stats, segmentation records, and portfolio metrics with required `sharpe_ratio`.
+  - Enforced anti-lookahead metadata fields (`signal_ts`, `signal_confirmed_ts`, `entry_ts`, `entry_price_source`) as required contract fields on signal/trade records.
+  - Added deterministic analysis parsing/serialization helpers (stable sort order for events/trades/equity/ladder/segments and typed portfolio-metrics parsing).
+  - Added unit tests covering required-field validation, anti-lookahead field presence, serialization round-trips, and helper determinism.
+  - Errors: none.
 - **files edited/created**:
+  - `options_helper/analysis/strategy_modeling_contracts.py`
+  - `options_helper/schemas/__init__.py`
+  - `options_helper/schemas/strategy_modeling_contracts.py`
+  - `tests/test_strategy_modeling_contracts.py`
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ### T2: Build Data Access + Universe Loader
 - **depends_on**: [T0]
 - **location**: `options_helper/data/strategy_modeling_io.py`, `options_helper/data/store_factory.py` (if needed)
 - **description**: Add read-only loaders for symbol universe, daily OHLC history, and required intraday bars by symbol/date range. Include deterministic preflight coverage checks that fail/skip per policy when intraday data is missing. Apply declared adjustment policy consistently and encode fallback behavior when adjusted OHLC is unavailable (default `warn_and_skip_symbol`; optional explicit fallback mode).
 - **validation**: Offline tests with temporary DuckDB/fixtures verify deterministic symbol discovery/loading, missing-table/missing-symbol behavior, intraday-coverage gating, and adjusted-data fallback policy behavior.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added new read-only strategy-modeling data module with deterministic loaders for universe discovery, daily OHLC history, intraday required-session derivation, intraday preflight coverage checks, and intraday bar loading by symbol/date scope.
+  - Implemented policy-aware adjusted OHLC loading with explicit fallback modes (`warn_and_skip_symbol` default and `use_unadjusted_ohlc` opt-in) plus per-symbol skip/missing diagnostics.
+  - Implemented deterministic intraday preflight gating that blocks incomplete symbols when `require_intraday_bars=true` and allows partial loads when disabled.
+  - Added offline tests covering success paths and failure modes for missing DB/table, missing symbols, adjusted-data fallback behavior, and intraday coverage policy gating.
+  - Validation: `./.venv/bin/python -m pytest tests/test_strategy_modeling_io.py` (7 passed).
 - **files edited/created**:
+  - `options_helper/data/strategy_modeling_io.py`
+  - `tests/test_strategy_modeling_io.py`
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ### T3: Build Feature Enrichment Layer (Pure Analysis)
 - **depends_on**: [T2]
