@@ -42,14 +42,14 @@ def _bootstrap_v2_database(wh: DuckDBWarehouse) -> None:
         tx.execute("INSERT INTO schema_migrations(schema_version) VALUES (1), (2);")
 
 
-def test_duckdb_migrations_v4_contains_v2_and_new_meta_tables(tmp_path):
+def test_duckdb_migrations_v5_contains_v2_and_research_metric_tables(tmp_path):
     db_path = tmp_path / "options.duckdb"
     wh = DuckDBWarehouse(db_path)
 
     info = ensure_schema(wh)
-    assert info.schema_version == 4
+    assert info.schema_version == 5
     assert info.path == db_path
-    assert current_schema_version(wh) == 4
+    assert current_schema_version(wh) == 5
 
     conn = wh.connect(read_only=True)
     try:
@@ -69,6 +69,10 @@ def test_duckdb_migrations_v4_contains_v2_and_new_meta_tables(tmp_path):
             ("main", "option_bars"),
             ("main", "option_bars_meta"),
             ("main", "options_flow"),
+            ("main", "iv_surface_tenor"),
+            ("main", "iv_surface_delta_buckets"),
+            ("main", "dealer_exposure_strikes"),
+            ("main", "intraday_option_flow"),
             ("meta", "ingestion_runs"),
             ("meta", "ingestion_run_assets"),
             ("meta", "asset_watermarks"),
@@ -154,6 +158,64 @@ def test_duckdb_migrations_v4_contains_v2_and_new_meta_tables(tmp_path):
             "n_pairs",
         }.issubset(flow_cols)
 
+        iv_tenor_cols = _table_columns(conn, "iv_surface_tenor")
+        assert {
+            "symbol",
+            "as_of",
+            "tenor_target_dte",
+            "expiry",
+            "atm_iv",
+            "straddle_mark",
+            "expected_move_pct",
+            "warnings_json",
+            "provider",
+            "updated_at",
+        }.issubset(iv_tenor_cols)
+
+        iv_bucket_cols = _table_columns(conn, "iv_surface_delta_buckets")
+        assert {
+            "symbol",
+            "as_of",
+            "tenor_target_dte",
+            "option_type",
+            "delta_bucket",
+            "avg_iv",
+            "n_contracts",
+            "warnings_json",
+            "provider",
+            "updated_at",
+        }.issubset(iv_bucket_cols)
+
+        exposure_cols = _table_columns(conn, "dealer_exposure_strikes")
+        assert {
+            "symbol",
+            "as_of",
+            "expiry",
+            "strike",
+            "call_oi",
+            "put_oi",
+            "call_gex",
+            "put_gex",
+            "net_gex",
+            "provider",
+            "updated_at",
+        }.issubset(exposure_cols)
+
+        intraday_cols = _table_columns(conn, "intraday_option_flow")
+        assert {
+            "symbol",
+            "market_date",
+            "source",
+            "contract_symbol",
+            "buy_notional",
+            "sell_notional",
+            "net_notional",
+            "trade_count",
+            "warnings_json",
+            "provider",
+            "updated_at",
+        }.issubset(intraday_cols)
+
         ingestion_run_indexes = _index_names(conn, "ingestion_runs", schema="meta")
         assert {
             "idx_ingestion_runs_job_started",
@@ -175,11 +237,23 @@ def test_duckdb_migrations_v4_contains_v2_and_new_meta_tables(tmp_path):
             "idx_options_flow_group_by",
             "idx_options_flow_expiry",
         }.issubset(options_flow_indexes)
+
+        iv_tenor_indexes = _index_names(conn, "iv_surface_tenor")
+        assert {
+            "idx_iv_surface_tenor_symbol_as_of",
+            "idx_iv_surface_tenor_provider_as_of",
+        }.issubset(iv_tenor_indexes)
+
+        intraday_indexes = _index_names(conn, "intraday_option_flow")
+        assert {
+            "idx_intraday_option_flow_symbol_day",
+            "idx_intraday_option_flow_contract_day",
+        }.issubset(intraday_indexes)
     finally:
         conn.close()
 
 
-def test_duckdb_migrations_upgrade_v2_to_v4(tmp_path):
+def test_duckdb_migrations_upgrade_v2_to_v5(tmp_path):
     db_path = tmp_path / "options.duckdb"
     wh = DuckDBWarehouse(db_path)
     _bootstrap_v2_database(wh)
@@ -187,11 +261,11 @@ def test_duckdb_migrations_upgrade_v2_to_v4(tmp_path):
     assert current_schema_version(wh) == 2
 
     info = ensure_schema(wh)
-    assert info.schema_version == 4
-    assert current_schema_version(wh) == 4
+    assert info.schema_version == 5
+    assert current_schema_version(wh) == 5
 
     # Idempotent repeat should not duplicate migration rows.
-    assert ensure_schema(wh).schema_version == 4
+    assert ensure_schema(wh).schema_version == 5
 
     conn = wh.connect(read_only=True)
     try:
@@ -205,6 +279,6 @@ def test_duckdb_migrations_upgrade_v2_to_v4(tmp_path):
                 """
             ).fetchall()
         ]
-        assert versions == [1, 2, 3, 4]
+        assert versions == [1, 2, 3, 4, 5]
     finally:
         conn.close()

@@ -104,3 +104,12 @@ def get_option_bars_store(root_dir: Path):
     from options_helper.data.stores_duckdb import DuckDBOptionBarsStore
 
     return DuckDBOptionBarsStore(root_dir=root_dir, warehouse=get_warehouse())
+
+
+def get_research_metrics_store(root_dir: Path):
+    cfg = get_storage_runtime_config()
+    if cfg.backend != "duckdb":
+        raise RuntimeError("Research metrics persistence requires DuckDB backend.")
+    from options_helper.data.stores_duckdb import DuckDBResearchMetricsStore
+
+    return DuckDBResearchMetricsStore(root_dir=root_dir, warehouse=get_warehouse())

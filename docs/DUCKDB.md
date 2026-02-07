@@ -23,6 +23,8 @@ DuckDB stores:
 - derived metrics table
 - journal events table
 - option contracts + option bars tables
+- research metrics tables (`iv_surface_tenor`, `iv_surface_delta_buckets`,
+  `dealer_exposure_strikes`, `intraday_option_flow`)
 - option snapshot *headers/index* (what exists, where it lives)
 
 ### Lake (Parquet partitions)
