@@ -14,6 +14,20 @@ from apps.streamlit.components.market_analysis_page import (
     load_latest_derived_row,
     normalize_symbol,
 )
+from apps.streamlit.components.research_metrics_page import (
+    build_exposure_top_strikes,
+    build_iv_delta_bucket_sparkline,
+    build_iv_tenor_sparkline,
+    build_latest_iv_delta_table,
+    build_latest_iv_tenor_table,
+    compute_exposure_flip_strike,
+    load_exposure_by_strike_latest,
+    load_intraday_flow_summary,
+    load_intraday_flow_top_contracts,
+    load_intraday_flow_top_strikes,
+    load_iv_surface_delta_history,
+    load_iv_surface_tenor_history,
+)
 from apps.streamlit.components.symbol_explorer_page import sync_symbol_query_param
 from options_helper.analysis.iv_context import classify_iv_rv
 from options_helper.analysis.tail_risk import TailRiskConfig
@@ -56,6 +70,74 @@ def _fmt_float(value: object, *, digits: int = 2) -> str:
         return "-"
 
 
+def _fmt_number(value: object, *, digits: int = 0) -> str:
+    try:
+        if value is None:
+            return "-"
+        number = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if pd.isna(number):
+        return "-"
+    return f"{number:,.{digits}f}"
+
+
+def _fmt_date(value: object) -> str:
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return "-"
+    return parsed.date().isoformat()
+
+
+def _render_exposure_chart(exposure_df: pd.DataFrame, *, flip_strike: float | None) -> None:
+    chart_rows = exposure_df.copy()
+    chart_rows["strike"] = pd.to_numeric(chart_rows["strike"], errors="coerce")
+    chart_rows["net_gex"] = pd.to_numeric(chart_rows["net_gex"], errors="coerce")
+    chart_rows = chart_rows.dropna(subset=["strike", "net_gex"])
+    chart_rows = chart_rows.sort_values(by="strike", kind="stable")
+    if chart_rows.empty:
+        st.info("Exposure chart unavailable for selected symbol.")
+        return
+
+    try:
+        import altair as alt
+    except Exception:  # noqa: BLE001
+        st.bar_chart(
+            chart_rows.set_index("strike")[["net_gex"]],
+            use_container_width=True,
+        )
+        if flip_strike is not None:
+            st.caption(f"Flip marker (cumulative net GEX): {flip_strike:,.2f}")
+        return
+
+    bars = alt.Chart(chart_rows).mark_bar().encode(
+        x=alt.X("strike:Q", title="Strike"),
+        y=alt.Y("net_gex:Q", title="Net GEX"),
+        color=alt.condition(
+            alt.datum.net_gex >= 0,
+            alt.value("#2ca02c"),
+            alt.value("#d62728"),
+        ),
+        tooltip=[
+            alt.Tooltip("strike:Q", format=",.2f"),
+            alt.Tooltip("net_gex:Q", format=",.2f"),
+        ],
+    )
+
+    layers: list[object] = [bars]
+    if flip_strike is not None:
+        flip_df = pd.DataFrame([{"flip_strike": float(flip_strike)}])
+        marker = alt.Chart(flip_df).mark_rule(color="#1f77b4", strokeDash=[8, 4], size=2).encode(
+            x=alt.X("flip_strike:Q", title="Strike")
+        )
+        layers.append(marker)
+
+    st.altair_chart(
+        alt.layer(*layers).properties(height=320),
+        use_container_width=True,
+    )
+
+
 def _load_iv_thresholds() -> tuple[float, float]:
     default_low = 0.8
     default_high = 1.2
@@ -93,6 +175,15 @@ with st.sidebar:
     var_confidence = st.slider("VaR confidence", min_value=0.90, max_value=0.99, value=0.95, step=0.01)
     show_sample_paths = st.checkbox("Show sample paths", value=False)
     sample_paths = st.slider("Sample paths count", min_value=20, max_value=200, value=80, step=20)
+    st.markdown("### Research Panels")
+    research_lookback_days = st.slider(
+        "Research lookback (days)",
+        min_value=14,
+        max_value=365,
+        value=90,
+        step=7,
+    )
+    intraday_top_n = st.slider("Intraday top rows", min_value=5, max_value=50, value=15, step=5)
 
 database_arg: str | Path | None = database_path or None
 symbols, symbols_note = list_candle_symbols(database_path=database_arg)
@@ -243,3 +334,191 @@ else:
         st.markdown("**Model Warnings**")
         for warning in result.warnings:
             st.caption(f"- {warning}")
+
+st.subheader("Persisted Research Metrics")
+st.caption("Read-only DuckDB panels. Informational only; no ingestion or writes are triggered from this page.")
+tabs = st.tabs(
+    [
+        "IV Surface",
+        "Exposure by Strike",
+        "Intraday Flow",
+    ]
+)
+
+with tabs[0]:
+    tenor_df, tenor_note = load_iv_surface_tenor_history(
+        active_symbol,
+        limit_dates=research_lookback_days,
+        database_path=database_arg,
+    )
+    if tenor_note:
+        st.warning(f"IV tenor surface unavailable: {tenor_note}")
+
+    delta_df, delta_note = load_iv_surface_delta_history(
+        active_symbol,
+        limit_dates=research_lookback_days,
+        database_path=database_arg,
+    )
+    if delta_note:
+        st.warning(f"IV delta-bucket surface unavailable: {delta_note}")
+
+    latest_tenor = build_latest_iv_tenor_table(tenor_df)
+    latest_delta = build_latest_iv_delta_table(delta_df, top_n=60)
+
+    if latest_tenor.empty and latest_delta.empty:
+        st.info(f"No persisted IV surface rows found for {active_symbol}.")
+    else:
+        latest_as_of = max(
+            pd.to_datetime(latest_tenor.get("as_of"), errors="coerce").max()
+            if not latest_tenor.empty
+            else pd.NaT,
+            pd.to_datetime(latest_delta.get("as_of"), errors="coerce").max()
+            if not latest_delta.empty
+            else pd.NaT,
+        )
+        iv_metrics = st.columns(3)
+        iv_metrics[0].metric("Latest As-of", value=_fmt_date(latest_as_of))
+        iv_metrics[1].metric("Tenor Rows", value=f"{len(latest_tenor)}")
+        iv_metrics[2].metric("Delta Rows", value=f"{len(latest_delta)}")
+
+        tenor_spark = build_iv_tenor_sparkline(tenor_df)
+        st.markdown("**ATM IV by Tenor (Sparkline)**")
+        if tenor_spark.empty:
+            st.info("No tenor sparkline data available.")
+        else:
+            st.line_chart(tenor_spark, use_container_width=True)
+
+        delta_spark = build_iv_delta_bucket_sparkline(delta_df, max_series=8)
+        st.markdown("**Delta Buckets (Sparkline, Top Series by Contracts)**")
+        if delta_spark.empty:
+            st.info("No delta-bucket sparkline data available.")
+        else:
+            st.line_chart(delta_spark, use_container_width=True)
+
+        if not latest_tenor.empty:
+            st.markdown("**Latest Tenor Surface Rows**")
+            latest_tenor_view = latest_tenor.copy()
+            latest_tenor_view["as_of"] = pd.to_datetime(latest_tenor_view["as_of"], errors="coerce").dt.date.astype(str)
+            latest_tenor_view["updated_at"] = (
+                pd.to_datetime(latest_tenor_view["updated_at"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
+            )
+            st.dataframe(latest_tenor_view, hide_index=True, use_container_width=True)
+
+        if not latest_delta.empty:
+            st.markdown("**Latest Delta-Bucket Rows**")
+            latest_delta_view = latest_delta.copy()
+            latest_delta_view["as_of"] = pd.to_datetime(latest_delta_view["as_of"], errors="coerce").dt.date.astype(str)
+            latest_delta_view["updated_at"] = (
+                pd.to_datetime(latest_delta_view["updated_at"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
+            )
+            st.dataframe(latest_delta_view, hide_index=True, use_container_width=True)
+
+with tabs[1]:
+    exposure_df, exposure_note = load_exposure_by_strike_latest(
+        active_symbol,
+        database_path=database_arg,
+    )
+    if exposure_note:
+        st.warning(f"Exposure data unavailable: {exposure_note}")
+
+    if exposure_df.empty:
+        st.info(f"No persisted exposure rows found for {active_symbol}.")
+    else:
+        flip_strike = compute_exposure_flip_strike(exposure_df)
+        latest_as_of = pd.to_datetime(exposure_df["as_of"], errors="coerce").max()
+        top_exposure = build_exposure_top_strikes(exposure_df, top_n=20)
+
+        exposure_metrics = st.columns(4)
+        exposure_metrics[0].metric("Latest As-of", value=_fmt_date(latest_as_of))
+        exposure_metrics[1].metric("Strikes", value=f"{len(exposure_df)}")
+        exposure_metrics[2].metric("Net GEX", value=_fmt_number(exposure_df["net_gex"].sum(), digits=0))
+        exposure_metrics[3].metric(
+            "Flip Marker",
+            value="-" if flip_strike is None else f"{float(flip_strike):,.2f}",
+        )
+
+        st.markdown("**Net GEX by Strike**")
+        _render_exposure_chart(exposure_df, flip_strike=flip_strike)
+        if flip_strike is None:
+            st.caption("No cumulative net-GEX zero-crossing found for the latest snapshot.")
+
+        if not top_exposure.empty:
+            st.markdown("**Top Strikes by |Net GEX|**")
+            top_view = top_exposure.copy()
+            top_view["as_of"] = pd.to_datetime(top_view["as_of"], errors="coerce").dt.date.astype(str)
+            st.dataframe(top_view, hide_index=True, use_container_width=True)
+
+with tabs[2]:
+    intraday_summary, summary_note = load_intraday_flow_summary(
+        active_symbol,
+        database_path=database_arg,
+    )
+    if summary_note:
+        st.warning(f"Intraday flow summary unavailable: {summary_note}")
+
+    top_strikes_df, top_strikes_note = load_intraday_flow_top_strikes(
+        active_symbol,
+        top_n=intraday_top_n,
+        database_path=database_arg,
+    )
+    if top_strikes_note:
+        st.warning(f"Intraday top strikes unavailable: {top_strikes_note}")
+
+    top_contracts_df, top_contracts_note = load_intraday_flow_top_contracts(
+        active_symbol,
+        top_n=intraday_top_n,
+        database_path=database_arg,
+    )
+    if top_contracts_note:
+        st.warning(f"Intraday top contracts unavailable: {top_contracts_note}")
+
+    if intraday_summary is None and top_strikes_df.empty and top_contracts_df.empty:
+        st.info(f"No persisted intraday flow rows found for {active_symbol}.")
+    else:
+        if intraday_summary is not None:
+            summary_cols = st.columns(4)
+            summary_cols[0].metric("Market Date", value=str(intraday_summary.get("market_date") or "-"))
+            summary_cols[1].metric("Contracts", value=str(intraday_summary.get("contracts") or 0))
+            summary_cols[2].metric("Trade Count", value=str(intraday_summary.get("trade_count") or 0))
+            summary_cols[3].metric("Net Notional", value=_fmt_currency(intraday_summary.get("net_notional")))
+
+            summary_cols2 = st.columns(4)
+            summary_cols2[0].metric("Buy Notional", value=_fmt_currency(intraday_summary.get("buy_notional")))
+            summary_cols2[1].metric("Sell Notional", value=_fmt_currency(intraday_summary.get("sell_notional")))
+            summary_cols2[2].metric(
+                "Unknown Trade Share",
+                value=_fmt_pct(intraday_summary.get("avg_unknown_trade_share")),
+            )
+            summary_cols2[3].metric(
+                "Quote Coverage",
+                value=_fmt_pct(intraday_summary.get("avg_quote_coverage_pct")),
+            )
+
+        if not top_strikes_df.empty:
+            st.markdown("**Top Strikes by |Net Notional|**")
+            strike_chart = top_strikes_df.copy()
+            strike_chart["label"] = strike_chart.apply(
+                lambda row: (
+                    f"{_fmt_number(row.get('strike'), digits=2)} "
+                    f"{str(row.get('option_type') or '').upper()} "
+                    f"{str(row.get('delta_bucket') or '')}"
+                ).strip(),
+                axis=1,
+            )
+            st.bar_chart(
+                strike_chart.set_index("label")[["net_notional"]],
+                use_container_width=True,
+            )
+            strike_view = top_strikes_df.copy()
+            strike_view["market_date"] = pd.to_datetime(strike_view["market_date"], errors="coerce").dt.date.astype(str)
+            st.dataframe(strike_view, hide_index=True, use_container_width=True)
+
+        if not top_contracts_df.empty:
+            st.markdown("**Top Contracts by |Net Notional|**")
+            contract_view = top_contracts_df.copy()
+            contract_view["market_date"] = pd.to_datetime(
+                contract_view["market_date"],
+                errors="coerce",
+            ).dt.date.astype(str)
+            contract_view["expiry"] = pd.to_datetime(contract_view["expiry"], errors="coerce").dt.date.astype(str)
+            st.dataframe(contract_view, hide_index=True, use_container_width=True)

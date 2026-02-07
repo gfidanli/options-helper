@@ -55,6 +55,10 @@ Implemented pages under `apps/streamlit/pages/`:
 - `07_Market_Analysis.py`
   - Monte Carlo tail-risk fan chart + horizon percentile table
   - move-percentile calculator and IV regime context from `derived_daily`
+  - persisted research-metrics tabs from DuckDB:
+    - IV surface tenor + delta-bucket sparklines and latest rows
+    - dealer exposure by strike with net-GEX bar chart and flip marker
+    - intraday flow summary with top strikes/contracts (when persisted)
 
 ## Read-only behavior
 
