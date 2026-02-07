@@ -121,9 +121,18 @@ T0 ──┬── T1 ──┬── T4A ──┬── T5 ── T6 ── T7
 - **location**: `options_helper/analysis/strategy_portfolio.py`
 - **description**: Convert simulated trades to portfolio-level ledger and equity curve using starting capital and sizing policy, including trade overlap/concurrency rules and `one_open_per_symbol` handling.
 - **validation**: Deterministic tests assert cash/equity transitions, concurrency behavior, and invariant checks (no negative quantity, no impossible fills).
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added pure deterministic portfolio constructor module `strategy_portfolio.py` that converts simulated trades into transaction-style ledger rows plus equity-curve points.
+  - Implemented policy-aware sizing (`risk_pct_of_equity` using `starting_capital` and `risk_per_trade_pct`), cash gating, overlap handling, optional global concurrency caps, and `one_open_per_symbol` enforcement.
+  - Added explicit skip classifications for invalid/non-closed fills and infeasible sizing states, while preserving deterministic ordering and no-negative-quantity/cash invariants.
+  - Added deterministic tests for cash/equity transitions, symbol-overlap concurrency policy behavior, and ledger invariants/skip reasons.
+  - Validation: `./.venv/bin/python -m pytest tests/test_strategy_portfolio.py` (3 passed).
+  - Errors: none.
 - **files edited/created**:
+  - `options_helper/analysis/strategy_portfolio.py`
+  - `tests/test_strategy_portfolio.py`
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ### T7: Compute Quant Strategy Metrics
 - **depends_on**: [T6]
