@@ -103,9 +103,16 @@ T0 ──┬── T1 ──┬── T4A ──┬── T5 ── T6 ── T7
 - **location**: `options_helper/analysis/strategy_features.py`
 - **description**: Compute reusable bar features: extension ATR/percentile, RSI + regime, RSI divergence over configurable left-window bars, realized-vol percentile/regime (`low/normal/high`), and helper buckets for segmentation.
 - **validation**: Deterministic unit tests cover NaN edges, short history, and bucket consistency.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added pure analysis module `strategy_features.py` with deterministic feature enrichment for extension ATR/percentile, RSI + regime, RSI divergence (configurable left-window bars), realized-vol percentile/regime, and segmentation bucket helpers.
+  - Added strict config validation/parsing (`StrategyFeatureConfig`, `parse_strategy_feature_config`) to keep windows/thresholds explicit and deterministic.
+  - Added deterministic offline unit tests for short-history handling, NaN-edge determinism, divergence left-window behavior, and bucket boundary consistency.
+  - Errors: none.
 - **files edited/created**:
+  - `options_helper/analysis/strategy_features.py`
+  - `tests/test_strategy_features.py`
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ### T4A: Implement Signal Adapter + Registry (SFP First)
 - **depends_on**: [T1, T3]
