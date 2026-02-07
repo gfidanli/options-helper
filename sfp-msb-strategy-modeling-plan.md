@@ -1,0 +1,296 @@
+# Plan: SFP/MSB Strategy Modeling (CLI + Streamlit)
+
+**Generated**: 2026-02-07
+
+## Overview
+Build a reusable, strategy-agnostic modeling pipeline that can evaluate daily signal strategies (starting with SFP, then MSB) using next-day-open entries, hard stops based on signal candle extremes, and target ladders from `1.0R` to `2.0R` in `0.1R` increments. Deliver both:
+- CLI workflows for batch research over all symbols or selected symbols.
+- A read-only Streamlit dashboard for interactive slicing, including starting capital and risk sizing inputs.
+
+Design constraints:
+- Keep analysis pure under `options_helper/analysis/`.
+- Keep external I/O and warehouse reads under `options_helper/data/`.
+- Keep CLI wiring thin in `options_helper/commands/` + `options_helper/cli.py`.
+- Keep Streamlit pages thin and move logic into `apps/streamlit/components/`.
+- Keep all outputs explicit that this is informational tooling, not financial advice.
+
+## Prerequisites
+- Python env with `.[dev]` and `.[ui]` extras available.
+- DuckDB warehouse with populated `candles_daily` table.
+- Context7 references reviewed for:
+  - Streamlit patterns (`/streamlit/docs`) for caching/widgets/page config.
+  - Typer patterns (`/fastapi/typer`) for multi-command registration and option validation.
+
+## Recommended Clarifications (Can Ship with Defaults)
+1. Intraday data requirement (required): strategy simulation runs only when required intraday underlying bars exist for the selected symbols/date range; dashboard must block runs without intraday coverage.
+2. Max holding window (recommended default): `20` bars, then time-stop exit.
+3. Sizing model (recommended default): risk a fixed `%` of current equity, default `1.0%`.
+4. Portfolio concurrency (recommended default): allow concurrent trades across symbols, `one_open_per_symbol=true`.
+5. Gap fill policy (recommended default): if open gaps beyond stop/target, fill at bar open; realized trade `R` may be less than `-1.0R` and must be visible in trade logs.
+6. Adjustment policy (recommended default): use adjusted OHLC consistently for both signal and simulation.
+
+## Dependency Graph
+
+```text
+T0 ──┬── T1 ──┬── T4A ──┬── T5 ── T6 ── T7 ──┬── T8 ──┬── T8A ──┬── T9 ──┬── T10 ──┬── T15 ──┐
+     │        │         │                     │        │         │       │         │        │
+     │        │         └── T4B ──────────────┘        └── T11 ──┘       └── T12 ── T13 ── T16 │
+     └── T2 ──┴── T3 ───────────────────────────────────────────────┬────────────── T14 ── T14B │
+                                                                    │                            │
+                                                                    └────────────── T17 ── T18 ──┘
+                                                                                                  │
+                                                                                                  T19
+```
+
+## Tasks
+
+### T0: Lock Modeling Policy Defaults + Config Contract
+- **depends_on**: []
+- **location**: `docs/TECHNICAL_STRATEGY_MODELING.md`, `options_helper/schemas/`, `options_helper/analysis/`
+- **description**: Define and document baseline behavior required by downstream implementation: intraday data requirement, max-hold rule, sizing rule, concurrency rule (`one_open_per_symbol=true`), gap fill policy, session-anchor rule (`entry_ts` is first tradable bar open after `signal_confirmed_ts`), and adjusted-vs-unadjusted policy. Encode these as explicit config fields with defaults so CLI/Streamlit can override safely.
+- **validation**: Contract tests assert defaults and override parsing; docs/schema fields match exactly, including session-anchor semantics.
+- **status**: Completed
+- **log**:
+  - Added `StrategyModelingPolicyConfig` with explicit defaulted fields for intraday requirement, max hold, sizing, one-open-per-symbol, gap fill, session-anchor, and adjusted OHLC policy.
+  - Added strict override parser `parse_strategy_modeling_policy_config(...)` for CLI/Streamlit callers.
+  - Added technical doc `docs/TECHNICAL_STRATEGY_MODELING.md` with locked defaults and anti-lookahead session-anchor semantics.
+  - Added deterministic tests for default contract values and override/validation behavior.
+- **files edited/created**:
+  - `docs/TECHNICAL_STRATEGY_MODELING.md`
+  - `options_helper/analysis/strategy_modeling_policy.py`
+  - `options_helper/schemas/__init__.py`
+  - `options_helper/schemas/strategy_modeling_policy.py`
+  - `tests/test_strategy_modeling_policy.py`
+
+### T1: Define Strategy Modeling Contracts
+- **depends_on**: [T0]
+- **location**: `options_helper/analysis/strategy_modeling_contracts.py`, `options_helper/schemas/`
+- **description**: Create typed contracts for signal events, trade simulations, equity points, R-ladder stats, segmentation records, and portfolio metrics (including Sharpe ratio). Include anti-lookahead fields: `signal_ts`, `signal_confirmed_ts`, `entry_ts`, `entry_price_source`.
+- **validation**: Unit tests assert contract serialization, required fields, and anti-lookahead metadata presence.
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+### T2: Build Data Access + Universe Loader
+- **depends_on**: [T0]
+- **location**: `options_helper/data/strategy_modeling_io.py`, `options_helper/data/store_factory.py` (if needed)
+- **description**: Add read-only loaders for symbol universe, daily OHLC history, and required intraday bars by symbol/date range. Include deterministic preflight coverage checks that fail/skip per policy when intraday data is missing. Apply declared adjustment policy consistently and encode fallback behavior when adjusted OHLC is unavailable (default `warn_and_skip_symbol`; optional explicit fallback mode).
+- **validation**: Offline tests with temporary DuckDB/fixtures verify deterministic symbol discovery/loading, missing-table/missing-symbol behavior, intraday-coverage gating, and adjusted-data fallback policy behavior.
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+### T3: Build Feature Enrichment Layer (Pure Analysis)
+- **depends_on**: [T2]
+- **location**: `options_helper/analysis/strategy_features.py`
+- **description**: Compute reusable bar features: extension ATR/percentile, RSI + regime, RSI divergence over configurable left-window bars, realized-vol percentile/regime (`low/normal/high`), and helper buckets for segmentation.
+- **validation**: Deterministic unit tests cover NaN edges, short history, and bucket consistency.
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+### T4A: Implement Signal Adapter + Registry (SFP First)
+- **depends_on**: [T1, T3]
+- **location**: `options_helper/analysis/strategy_signals.py`, `options_helper/analysis/sfp.py`
+- **description**: Normalize SFP detections into one signal-event schema and register the strategy via registry to enable engine reuse. Ensure swing confirmation lag is preserved (`signal_confirmed_ts` only after right-side bars).
+- **validation**: Tests assert normalized SFP outputs plus confirmation-lag and next-bar execution semantics.
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+### T4B: Add MSB Adapter to Strategy Registry
+- **depends_on**: [T4A]
+- **location**: `options_helper/analysis/strategy_signals.py`, `options_helper/analysis/msb.py`
+- **description**: Plug MSB into the same normalized signal schema/registry so the engine can run SFP and MSB through identical simulation/metrics flows.
+- **validation**: Tests assert MSB adapter parity with SFP contract fields and confirmation-lag semantics.
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+### T5: Implement Per-Trade Path Simulator (R-Based)
+- **depends_on**: [T0, T1, T4A]
+- **location**: `options_helper/analysis/strategy_simulator.py`
+- **description**: Simulate each event with next-day-open entry, hard stop at signal candle low/high, and target ladder `1.0R..2.0R` in `0.1R` increments (integer-tenths generation to avoid float drift), evaluating exits on intraday bars after entry. Support long/short, gap fills, max-hold exits, MAE/MFE in R, and explicit reject codes (`invalid_signal`, `missing_intraday_coverage`, `missing_entry_bar`, `non_positive_risk`, `insufficient_future_bars`). If both stop and target are touched inside one intraday bar, use conservative `stop_first` tie-break.
+- **validation**: Scenario tests cover long/short, intraday first-touch chronology, same-intraday-bar tie-breaks, gap-through levels, invalid-risk cases, ladder label stability, no-future-bar exclusion, session-gap anchoring across holidays/missing sessions, and explicit cases where realized `R < -1.0R`.
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+### T6: Build Portfolio Ledger + Equity Curve Constructor
+- **depends_on**: [T0, T5]
+- **location**: `options_helper/analysis/strategy_portfolio.py`
+- **description**: Convert simulated trades to portfolio-level ledger and equity curve using starting capital and sizing policy, including trade overlap/concurrency rules and `one_open_per_symbol` handling.
+- **validation**: Deterministic tests assert cash/equity transitions, concurrency behavior, and invariant checks (no negative quantity, no impossible fills).
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+### T7: Compute Quant Strategy Metrics
+- **depends_on**: [T6]
+- **location**: `options_helper/analysis/strategy_metrics.py`
+- **description**: Compute metrics from trades + equity curve: total return, CAGR, max drawdown, Sharpe, Sortino, Calmar, win rate, profit factor, expectancy (R/$), exposure, average hold, and target-level hit rates.
+- **validation**: Synthetic tests verify formulas and edge handling (zero variance, no losers/winners, sparse trades).
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+### T8: Build Segmentation + Reliability Aggregator
+- **depends_on**: [T0, T3, T5, T7]
+- **location**: `options_helper/analysis/strategy_modeling.py`
+- **description**: Aggregate overall + sliced performance across ticker, direction, extension bucket, RSI regime, RSI divergence, volatility regime, and bars-since-swing buckets. Include reliability fields (`sample_size`, `min_sample_threshold`, optional confidence interval markers).
+- **validation**: Tests confirm slice counts reconcile to base trades and reliability gating is applied consistently.
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+### T8A: Build Shared Modeling Service/Factory
+- **depends_on**: [T8]
+- **location**: `options_helper/analysis/strategy_modeling.py`, `options_helper/cli_deps.py`
+- **description**: Expose one deterministic orchestration seam composing loaders + features + signal adapters + simulator + ledger + metrics + segmentation for both CLI and Streamlit.
+- **validation**: Parity tests verify identical outputs for CLI-style and Streamlit-style callers under same inputs.
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+### T9: Add CLI Command for Strategy Modeling Runs
+- **depends_on**: [T0, T8A]
+- **location**: `options_helper/commands/technicals.py`, `options_helper/cli.py`, `options_helper/cli_deps.py`
+- **description**: Add generic command (for example `technicals strategy-model`) with options for strategy, universe/symbol filters, date range, required intraday timeframe/source, R-ladder config, gap policy, starting capital, risk sizing, and segment filters. Command must fail fast when intraday coverage is missing for requested scope. Ship SFP-first, then expose MSB once T4B completes.
+- **validation**: CLI tests cover registration, parsing, fast-fail validation, and deterministic success path.
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+### T10: Add CLI Artifact + Summary Writers
+- **depends_on**: [T9, T11]
+- **location**: `options_helper/data/strategy_modeling_artifacts.py` (new), `options_helper/commands/technicals.py`
+- **description**: Write JSON/CSV/Markdown outputs with metrics, R-ladder, segments, policy metadata (`entry_anchor=next_bar_open`, confirmation lag, intraday-required, gap/tie-break rules), and explicit not-financial-advice disclaimer. Include per-trade log fields that expose realized `R`, gap exits, and any stop slippage so losses below `-1.0R` are explicit.
+- **validation**: Schema-validation and golden-output tests assert stable required fields, disclaimer text, and trade-log examples where realized `R < -1.0R`.
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+### T11: Define Artifact Schema + Versioning
+- **depends_on**: [T1, T8]
+- **location**: `options_helper/schemas/`, `docs/ARTIFACT_SCHEMAS.md`
+- **description**: Formalize schema versions for strategy-modeling payloads consumed by CLI, tests, and Streamlit.
+- **validation**: Contract tests verify required keys, version field, and backward-compatible parsing.
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+### T12: Build Streamlit Data Component
+- **depends_on**: [T0, T8A, T11]
+- **location**: `apps/streamlit/components/strategy_modeling_page.py`
+- **description**: Add cached loaders and transformation helpers for interactive dashboard use with graceful failures for missing DB/table/symbol universe and invalid filter combinations. Include intraday preflight coverage checks and expose a blocking status payload when requirements are not met.
+- **validation**: Component tests validate payload shape, cache behavior, friendly error handling, and intraday-coverage blocking semantics.
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+### T13: Add Streamlit Strategy Modeling Page
+- **depends_on**: [T0, T12]
+- **location**: `apps/streamlit/pages/11_Strategy_Modeling.py`, `apps/streamlit/streamlit_app.py`
+- **description**: Create dashboard with sidebar inputs: strategy, date range, intraday timeframe/source, starting capital, risk %, gap policy, max-hold, per-symbol overlap policy, ticker/segment filters. Page must require intraday coverage before enabling run actions (show blocking warning + missing coverage details). Main panels: key metrics, R-ladder chart/table, equity curve, segmented breakdowns, and trade log with realized `R` (including `< -1.0R` cases).
+- **validation**: Portal scaffold tests verify page import/render, required controls/sections, and blocked-run behavior when intraday coverage is missing.
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+### T14: Core Analysis Regression Suite
+- **depends_on**: [T3, T4A, T5, T6, T7, T8, T8A]
+- **location**: `tests/test_strategy_modeling*.py`
+- **description**: Add deterministic offline tests for end-to-end engine behavior, especially anti-lookahead (next-bar-open anchor + confirmation lag), required-intraday gating, gap policy, overlap policy, and service parity.
+- **validation**: New analysis tests pass deterministically offline.
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+### T14B: MSB Parity Regression Suite
+- **depends_on**: [T4B, T14]
+- **location**: `tests/test_strategy_modeling_msb.py`
+- **description**: Add MSB-specific parity tests to confirm the shared engine, CLI, and segmentation outputs work identically under the registry contract used by SFP.
+- **validation**: Deterministic tests pass for MSB modeling and match contract invariants.
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+### T15: CLI Integration Tests
+- **depends_on**: [T10, T14, T14B]
+- **location**: `tests/test_strategy_modeling_cli.py`
+- **description**: Validate command execution, filter behavior, policy overrides, artifacts, and summary contracts.
+- **validation**: CLI integration tests pass with fixture-backed offline storage.
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+### T16: Streamlit Integration Tests
+- **depends_on**: [T13, T14]
+- **location**: `tests/portal/test_strategy_modeling_page.py`
+- **description**: Test component + page behavior with seeded temp DuckDB fixtures and missing-DB resilience.
+- **validation**: Portal tests pass offline, including empty/unavailable data states.
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+### T17: User Documentation
+- **depends_on**: [T10, T11, T13]
+- **location**: `docs/TECHNICAL_STRATEGY_MODELING.md`, `docs/index.md`, `mkdocs.yml`
+- **description**: Document methodology, assumptions, CLI usage, dashboard usage, metric definitions, segmentation caveats, and non-financial-advice guardrails.
+- **validation**: Docs build passes and examples match implemented command/page options.
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+### T18: Universe-Scale Performance Gate
+- **depends_on**: [T10, T12, T14]
+- **location**: `tests/test_strategy_modeling_performance.py`, `docs/TECHNICAL_STRATEGY_MODELING.md`
+- **description**: Define and verify performance thresholds for all-symbol modeling runs (runtime and memory envelope) with deterministic fixture scale tests and documented acceptable bounds.
+- **validation**: Performance smoke tests pass thresholds; docs record benchmark setup and limits.
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+### T19: End-to-End Verification + Cleanup
+- **depends_on**: [T15, T16, T17, T18]
+- **location**: repo root and changed files
+- **description**: Run targeted/full tests, smoke-check CLI help + Streamlit page registration, and confirm read-only page behavior (no ingestion writes during render).
+- **validation**: `./.venv/bin/python -m pytest` (full or scoped with reason), CLI help output, Streamlit page visibility checks.
+- **status**: Not Completed
+- **log**:
+- **files edited/created**:
+
+## Parallel Execution Groups
+
+| Wave | Tasks | Can Start When |
+|------|-------|----------------|
+| 1 | T0 | Immediately |
+| 2 | T1, T2 | T0 complete |
+| 3 | T3 | T2 complete |
+| 4 | T4A | T1, T3 complete |
+| 5 | T4B, T5 | T4B needs T4A; T5 needs T0+T1+T4A |
+| 6 | T6 | T0, T5 complete |
+| 7 | T7 | T6 complete |
+| 8 | T8 | T0, T3, T5, T7 complete |
+| 9 | T8A | T8 complete |
+| 10 | T11 | T1, T8 complete |
+| 11 | T9, T12 | T9 needs T0+T8A; T12 needs T0+T8A+T11 |
+| 12 | T10, T13, T14 | T10 needs T9+T11; T13 needs T0+T12; T14 needs T3+T4A+T5+T6+T7+T8+T8A |
+| 13 | T14B, T16, T17, T18 | T14B needs T4B+T14; T16 needs T13+T14; T17 needs T10+T11+T13; T18 needs T10+T12+T14 |
+| 14 | T15 | T10+T14+T14B complete |
+| 15 | T19 | T15, T16, T17, T18 complete |
+
+## Testing Strategy
+- Unit tests for feature engineering, signal adapters, simulator path logic, portfolio ledger, and metric math.
+- Regression tests for anti-lookahead semantics (signal confirmation lag + next-bar-open entry).
+- CLI tests for option validation, policy overrides, artifact schemas, and output stability.
+- Streamlit component/page tests with temporary DuckDB and missing-table/missing-db fallbacks.
+
+## Risks & Mitigations
+- **Intrabar ambiguity**: require intraday data for simulation; for residual same-intraday-bar ties, use conservative `stop_first` and test explicitly.
+- **Gap-through execution ambiguity**: explicit open-fill policy in config/contract/tests.
+- **Float drift in ladder generation**: integer-tenths/Decimal ladder generation and canonical labels.
+- **Sparse/dirty candles**: reject codes and per-symbol warnings instead of hard crashes.
+- **Overlapping signals and capital realism**: explicit concurrency + per-symbol overlap policies in ledger.
+- **Segment overfitting/misread**: include sample-size threshold and reliability fields in segment outputs.
+- **Interpretation risk**: clear non-financial-advice disclaimers across CLI, UI, and docs.
