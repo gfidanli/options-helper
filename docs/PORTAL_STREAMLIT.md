@@ -59,6 +59,15 @@ Implemented pages under `apps/streamlit/pages/`:
     - IV surface tenor + delta-bucket sparklines and latest rows
     - dealer exposure by strike with net-GEX bar chart and flip marker
     - intraday flow summary with top strikes/contracts (when persisted)
+- `08_Coverage.py`
+  - universe and symbol-level data coverage views from persisted quality checks
+  - latest completeness/freshness indicators for candles/options snapshots
+- `09_SFP.py`
+  - daily/weekly swing failure pattern (SFP) research summaries and event tables
+  - extension-percentile and RSI context for each SFP event
+- `10_MSB.py`
+  - daily/weekly market structure break (MSB) research summaries and event tables
+  - close-through break events against prior swings with extension/RSI context
 
 ## Read-only behavior
 
