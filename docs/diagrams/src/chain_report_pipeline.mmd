@@ -1,0 +1,9 @@
+flowchart TD
+  Inputs["Snapshot CSVs + meta spot"] --> Select["Resolve as-of date and expiry set"]
+  Select --> Metrics["Compute PCR, walls, EM, IV, skew, gamma proxy"]
+  Metrics --> Format{"Format"}
+  Format --> Console["console"]
+  Format --> Markdown["markdown"]
+  Format --> Json["json"]
+  Markdown --> Artifacts["Optional saved artifacts"]
+  Json --> Artifacts

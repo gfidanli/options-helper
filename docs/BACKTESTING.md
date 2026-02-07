@@ -7,6 +7,10 @@ This tool is for research and education only — **not financial advice**.
 - Options snapshots already saved under `data/options_snapshots/` (from `snapshot-options`).
 - Cached daily candles under `data/candles/` (used for trend + extension context).
 
+## Workflow diagram
+
+![Backtest workflow](assets/diagrams/generated/backtest_options_lifecycle.svg)
+
 ## Run a backtest
 
 Example (single contract):

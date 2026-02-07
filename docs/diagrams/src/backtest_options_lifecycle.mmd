@@ -1,0 +1,10 @@
+flowchart TD
+  Snapshots["Option snapshots timeline"] --> Selector["Select contract or expiry/strike"]
+  Candles["Daily candle cache"] --> Context["Trend and extension context"]
+  Selector --> Fill["Apply fill model and slippage"]
+  Context --> Fill
+  Fill --> Roll{"Rolling enabled?"}
+  Roll -->|"yes"| RollLogic["Apply DTE threshold and roll intent"]
+  Roll -->|"no"| Trades["Generate trade timeline"]
+  RollLogic --> Trades
+  Trades --> Artifacts["Write trades + summary + markdown"]

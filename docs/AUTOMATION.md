@@ -4,6 +4,10 @@ This repo includes cron-friendly scripts under `scripts/` to keep data caches an
 
 This tool is for informational/educational use only and is not financial advice.
 
+## Dependency diagram
+
+![Automation dependency flow](assets/diagrams/generated/automation_dependency_flow.svg)
+
 ## Key ideas
 
 - **Data first, reports second:** `briefing` (and most offline reports) depend on snapshot files under `data/`.

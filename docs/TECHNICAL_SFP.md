@@ -4,6 +4,10 @@ This feature detects **swing highs/lows** and flags **swing failure pattern (SFP
 
 This project is **not financial advice**. Outputs are descriptive signals for research and position-management workflows.
 
+## Signal workflow diagram
+
+![SFP detection workflow](assets/diagrams/generated/sfp_detection_flow.svg)
+
 ---
 
 ## 1) Definitions

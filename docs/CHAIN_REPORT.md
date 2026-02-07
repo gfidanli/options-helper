@@ -11,6 +11,10 @@
 
 This command is **offline-first**: it does not call Yahoo.
 
+## Workflow diagram
+
+![Chain report workflow](assets/diagrams/generated/chain_report_pipeline.svg)
+
 ## Usage
 
 ```bash
@@ -63,4 +67,3 @@ Notes:
 - Yahoo chains can be stale/illiquid; bid/ask can be missing or zero.
 - Expected move and IV/skew require the relevant strikes/contracts to exist in the snapshot (windowed snapshots can miss them).
 - Greeks (`bs_delta`, `bs_gamma`) are locally computed Black–Scholes estimates.
-

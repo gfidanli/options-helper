@@ -1,0 +1,8 @@
+flowchart TD
+  Symbols["Portfolio + watchlist symbols"] --> Resolve["Resolve as-of and compare per symbol"]
+  Snapshots["Snapshot files"] --> Sections["Build per-symbol sections"]
+  Candles["Candle cache + technical config"] --> Sections
+  Earnings["Earnings cache"] --> Sections
+  Resolve --> Sections
+  Sections --> Report["Write daily markdown + JSON"]
+  Report --> Derived["Optional derived-history update"]

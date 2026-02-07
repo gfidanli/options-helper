@@ -1,0 +1,9 @@
+flowchart LR
+  Weekly["Mon 12:00 earnings refresh"] --> Earnings["Earnings cache"]
+  Snap["16:00 portfolio snapshots"] --> Monitor["16:05 monitor snapshots"]
+  Monitor --> Briefing["16:10 briefing"]
+  Briefing --> Scanner["16:15 scanner run"]
+  Scanner --> Check["16:30 scanner check"]
+  Check --> Pack["17:00 offline report-pack"]
+  Snap --> Pack
+  Earnings --> Briefing

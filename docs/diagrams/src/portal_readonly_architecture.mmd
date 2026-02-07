@@ -1,0 +1,9 @@
+flowchart TD
+  Launch["options-helper ui run"] --> Portal["Streamlit portal"]
+  DuckDB["data/warehouse/options.duckdb"] --> Portal
+  Artifacts["reports + snapshots + derived files"] --> Portal
+  Portal --> Health["Health page"]
+  Portal --> Portfolio["Portfolio page"]
+  Portal --> Symbol["Symbol explorer"]
+  Portal --> Research["Flow / Derived / Market / Coverage / SFP / MSB pages"]
+  Portal --> Explorer["Data explorer"]

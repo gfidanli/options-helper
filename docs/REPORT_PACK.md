@@ -14,6 +14,10 @@
 
 This tool is for informational/educational use only and is not financial advice.
 
+## Workflow diagram
+
+![Report-pack workflow](assets/diagrams/generated/report_pack_pipeline.svg)
+
 ## Inputs
 
 - Options snapshots: `data/options_snapshots/{SYMBOL}/{YYYY-MM-DD}/...`

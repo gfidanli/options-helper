@@ -11,6 +11,10 @@ Make technical analysis efficient and consistent by:
 This avoids repeatedly fetching large history windows and enables computing higher-timeframe indicators that require
 a deeper candle set (e.g., weekly EMA50, weekly RSI, breakout lookbacks).
 
+## Update workflow diagram
+
+![Candle cache incremental update](assets/diagrams/generated/candle_cache_incremental.svg)
+
 ## Data source / caveats
 - Candles come from the active **market data provider** (`--provider`, default: `alpaca`).
 - `yahoo` uses `yfinance` (Yahoo Finance). Data quality and timeliness are “best effort”.

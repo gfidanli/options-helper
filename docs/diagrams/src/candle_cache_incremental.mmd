@@ -1,0 +1,9 @@
+flowchart TD
+  Load["Load cached candles"] --> Need["Compute required start from --period"]
+  Need --> Early{"Missing early history?"}
+  Early -->|"yes"| FetchEarly["Fetch required start to first cached bar"]
+  Early -->|"no"| Refresh["Refresh recent bars: last_cached - backfill_days"]
+  FetchEarly --> Merge["Merge, dedupe, sort"]
+  Refresh --> Merge
+  Merge --> Save["Write {SYMBOL}.csv + meta"]
+  Save --> Resample["Resample daily cache for higher timeframes"]

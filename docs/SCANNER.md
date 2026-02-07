@@ -14,6 +14,10 @@ This is **decision support only** and **not financial advice**.
 - **Confluence score:** still computed for context in the shortlist markdown.
 - **Reports:** Extension Percentile Stats reports for shortlist symbols.
 
+## Workflow diagram
+
+![Scanner pipeline](assets/diagrams/generated/scanner_pipeline.svg)
+
 ## Command
 ```bash
 ./.venv/bin/options-helper scanner run

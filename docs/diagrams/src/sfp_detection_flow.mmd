@@ -1,0 +1,7 @@
+flowchart TD
+  OHLC["OHLC candles"] --> Swings["Detect confirmed swing highs/lows"]
+  Swings --> Pattern["Wick breaks level and closes back through"]
+  Pattern --> Events["Bearish and bullish SFP events"]
+  Events --> Anchor["Forward returns anchored at next candle open"]
+  Anchor --> Context["Add extension and RSI context"]
+  Context --> Output["Write JSON and Markdown artifacts"]

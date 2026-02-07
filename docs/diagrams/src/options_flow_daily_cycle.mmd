@@ -1,0 +1,6 @@
+flowchart TD
+  Snapshot["snapshot-options daily run"] --> Store["Save snapshots by symbol/date/expiry"]
+  Store --> Flow["flow command"]
+  Flow --> Delta["Compute Delta OI / volume / notional proxies"]
+  Delta --> Aggregate["Optional net window and group-by aggregation"]
+  Aggregate --> Output["Console + JSON artifacts"]

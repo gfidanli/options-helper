@@ -16,6 +16,10 @@ options-helper analyze portfolio.json --offline --as-of latest
 
 This tool is for informational/educational use only and is not financial advice.
 
+## Workflow diagram
+
+![Briefing report assembly](assets/diagrams/generated/briefing_report_assembly.svg)
+
 ## Usage
 
 ```bash

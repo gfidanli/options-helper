@@ -15,6 +15,10 @@ Important limitations:
 - This is not a true “smart money” feed — it’s a **heuristic signal**.
 - Some chains are illiquid; values can be stale/incorrect.
 
+## Daily flow workflow diagram
+
+![Options flow daily cycle](assets/diagrams/generated/options_flow_daily_cycle.svg)
+
 ## Data storage layout
 Snapshots are stored under a root directory (default `data/options_snapshots`):
 

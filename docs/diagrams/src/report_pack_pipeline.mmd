@@ -1,0 +1,20 @@
+flowchart LR
+  Inputs["Local snapshots + candles + watchlists"] --> Resolve["Resolve symbol set and as-of"]
+  Resolve --> Chain["chain-report"]
+  Resolve --> Compare["compare"]
+  Resolve --> Flow["flow"]
+  Resolve --> Derived["derived stats"]
+  Resolve --> IV["iv-surface"]
+  Resolve --> Exposure["dealer-exposure"]
+  Resolve --> Levels["levels"]
+  Resolve --> Technicals["technicals extension-stats"]
+  Resolve --> Scenarios["scenarios (optional)"]
+  Chain --> Out["data/reports/**"]
+  Compare --> Out
+  Flow --> Out
+  Derived --> Out
+  IV --> Out
+  Exposure --> Out
+  Levels --> Out
+  Technicals --> Out
+  Scenarios --> Out

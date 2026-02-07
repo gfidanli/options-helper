@@ -1,0 +1,10 @@
+flowchart TD
+  Jobs["Producer jobs (duckdb storage)"] --> Runs["meta.ingestion_runs"]
+  Jobs --> Assets["meta.ingestion_run_assets"]
+  Jobs --> Watermarks["meta.asset_watermarks"]
+  Jobs --> Checks["meta.asset_checks"]
+  Runs --> Health["options-helper db health"]
+  Assets --> Health
+  Watermarks --> Health
+  Checks --> Health
+  Health --> Views["Latest runs, failures, freshness, failed checks"]

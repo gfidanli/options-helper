@@ -1,0 +1,5 @@
+flowchart TD
+  Briefing["Daily briefing JSON"] --> Dashboard["dashboard command"]
+  Artifacts["report-pack artifacts (optional)"] --> Dashboard
+  Scanner["scanner shortlist (optional)"] --> Dashboard
+  Dashboard --> Console["Console dashboard output"]

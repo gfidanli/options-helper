@@ -1,0 +1,9 @@
+flowchart TD
+  Universe["US equity and ETF universe"] --> Extension["Extension percentile scan"]
+  Extension --> Tail["Tail symbols (<=2.5 or >=97.5)"]
+  Tail --> Backfill["Max candle-history backfill"]
+  Backfill --> Snapshots["Full-chain options snapshots"]
+  Snapshots --> Liquidity["Liquidity filter (DTE / volume / OI)"]
+  Liquidity --> Shortlist["Scanner - Shortlist ranking"]
+  Shortlist --> Reports["Shortlist artifacts + extension reports"]
+  Reports --> Watchlists["data/watchlists.json updated"]

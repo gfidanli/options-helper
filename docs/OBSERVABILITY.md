@@ -4,6 +4,10 @@ Status: Implemented
 
 This observability layer is for operational visibility only. It is informational/educational and **not financial advice**.
 
+## Workflow diagram
+
+![Observability health flow](assets/diagrams/generated/observability_health_flow.svg)
+
 ## What is tracked
 
 When producer jobs run on DuckDB storage, `options-helper` persists run metadata in DuckDB `meta.*` tables:

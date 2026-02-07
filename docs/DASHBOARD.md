@@ -5,6 +5,10 @@ offline artifacts under `data/reports/`. No network calls are made.
 
 This tool is for informational/educational use only and is not financial advice.
 
+## Workflow diagram
+
+![Dashboard render flow](assets/diagrams/generated/dashboard_render_flow.svg)
+
 ## Inputs
 
 - Daily briefing JSON: `data/reports/daily/{YYYY-MM-DD}.json`

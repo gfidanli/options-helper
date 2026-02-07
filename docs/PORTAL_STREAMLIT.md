@@ -4,6 +4,10 @@ Status: Implemented
 
 The portal is a read-only interface for operational visibility and research. It is informational/educational only and **not financial advice**.
 
+## Architecture diagram
+
+![Streamlit portal architecture](assets/diagrams/generated/portal_readonly_architecture.svg)
+
 ## Install and launch
 
 Install optional UI dependencies:

@@ -4,6 +4,10 @@ This feature detects **swing highs/lows** and flags **market structure breaks (M
 
 This project is **not financial advice**. Outputs are descriptive signals for research and position-management workflows.
 
+## Signal workflow diagram
+
+![MSB detection workflow](assets/diagrams/generated/msb_detection_flow.svg)
+
 ---
 
 ## 1) Definitions
