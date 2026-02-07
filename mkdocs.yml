@@ -61,6 +61,7 @@ nav:
       - Alpaca Rate Limits: ALPACA_RATE_LIMITS.md
       - Multi-leg: MULTI_LEG.md
       - Roll Plan: ROLL_PLAN.md
+      - Position Scenarios: POSITION_SCENARIOS.md
       - Earnings: EARNINGS.md
       - Events: EVENTS.md
       - Intraday: INTRADAY.md

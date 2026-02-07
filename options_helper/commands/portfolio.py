@@ -1,20 +1,60 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+import re
+from typing import Any
 
 import typer
 from rich.console import Console
+from rich.table import Table
 
-from options_helper.commands.common import _parse_date
+import options_helper.cli_deps as cli_deps
+from options_helper.analysis.scenarios import compute_position_scenarios
+from options_helper.commands.common import _parse_date, _spot_from_meta
+from options_helper.commands.position_metrics import _extract_float, _mark_price
+from options_helper.data.options_snapshots import find_snapshot_row
 from options_helper.models import Leg, MultiLegPosition, OptionType, Position
 from options_helper.reporting import render_summary
+from options_helper.schemas.common import utc_now
+from options_helper.schemas.scenarios import ScenarioGridRow, ScenarioSummaryRow, ScenariosArtifact
 from options_helper.storage import load_portfolio, save_portfolio, write_template
+
+_SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+@dataclass(frozen=True)
+class _ScenarioTarget:
+    key: str
+    symbol: str
+    option_type: OptionType
+    side: str
+    expiry: date
+    strike: float
+    contracts: int
+    basis: float | None
+
+
+@dataclass(frozen=True)
+class _SymbolScenarioContext:
+    as_of: date
+    day_df: object
+    spot: float | None
+    warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _ScenarioResult:
+    target: _ScenarioTarget
+    artifact: ScenariosArtifact
 
 
 def register(app: typer.Typer) -> None:
     app.command()(init)
     app.command("list")(list_positions)
+    app.command("scenarios")(position_scenarios)
+    app.command("position-scenarios")(position_scenarios)
     app.command("add-position")(add_position)
     app.command("add-spread")(add_spread)
     app.command("remove-position")(remove_position)
@@ -131,6 +171,130 @@ def list_positions(
     console.print(table)
 
 
+def position_scenarios(
+    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
+    as_of: str = typer.Option(
+        "latest",
+        "--as-of",
+        help="Snapshot date (YYYY-MM-DD) or 'latest'.",
+    ),
+    cache_dir: Path = typer.Option(
+        Path("data/options_snapshots"),
+        "--cache-dir",
+        help="Directory containing options snapshot folders.",
+    ),
+    out: Path | None = typer.Option(
+        None,
+        "--out",
+        help="Output root for saved artifacts (writes under {out}/scenarios/{PORTFOLIO_DATE}/).",
+    ),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Validate JSON artifacts against schemas before writing.",
+    ),
+) -> None:
+    """Compute per-position scenario grids from local snapshot data (offline-first)."""
+    portfolio = load_portfolio(portfolio_path)
+    console = Console(width=200)
+    render_summary(console, portfolio)
+
+    targets = _build_scenario_targets(portfolio.positions)
+    if not targets:
+        console.print("No positions.")
+        raise typer.Exit(0)
+
+    explicit_as_of = _parse_explicit_as_of(as_of)
+    fallback_as_of = explicit_as_of or date.today()
+    snapshot_store = cli_deps.build_snapshot_store(cache_dir)
+
+    contexts: dict[str, _SymbolScenarioContext] = {}
+    for symbol in sorted({target.symbol for target in targets}):
+        contexts[symbol] = _resolve_symbol_context(
+            store=snapshot_store,
+            symbol=symbol,
+            as_of_spec=as_of,
+            fallback_as_of=fallback_as_of,
+        )
+
+    results: list[_ScenarioResult] = []
+    for target in targets:
+        context = contexts[target.symbol]
+        row = None
+        extra_warnings = list(context.warnings)
+        if not _is_empty_frame(context.day_df):
+            row = find_snapshot_row(
+                context.day_df,  # type: ignore[arg-type]
+                expiry=target.expiry,
+                strike=target.strike,
+                option_type=target.option_type,
+            )
+        if row is None:
+            extra_warnings.append("missing_snapshot_row")
+
+        spot = context.spot
+        if spot is None and row is not None:
+            spot = _row_float(row, "underlyingPrice", "underlying_price", "spot")
+
+        contract_symbol = _row_string(row, "contractSymbol", "contract_symbol")
+        if not contract_symbol:
+            contract_symbol = _fallback_contract_symbol(
+                symbol=target.symbol,
+                expiry=target.expiry,
+                option_type=target.option_type,
+                strike=target.strike,
+            )
+
+        bid = _row_float(row, "bid")
+        ask = _row_float(row, "ask")
+        last = _row_float(row, "lastPrice", "last_price")
+        mark = _mark_price(bid=bid, ask=ask, last=last)
+        iv = _row_float(row, "impliedVolatility", "implied_volatility")
+
+        computed = compute_position_scenarios(
+            symbol=target.symbol,
+            as_of=context.as_of,
+            contract_symbol=contract_symbol,
+            option_type=target.option_type,
+            side=target.side,
+            contracts=target.contracts,
+            spot=spot,
+            strike=target.strike,
+            expiry=target.expiry,
+            mark=mark,
+            iv=iv,
+            basis=target.basis,
+        )
+
+        summary_payload = dict(computed.summary)
+        summary_payload["warnings"] = _merge_warnings(
+            base=summary_payload.get("warnings"),
+            extra=extra_warnings,
+        )
+        artifact = ScenariosArtifact(
+            generated_at=utc_now(),
+            as_of=context.as_of.isoformat(),
+            symbol=target.symbol,
+            contract_symbol=contract_symbol,
+            summary=ScenarioSummaryRow.model_validate(summary_payload),
+            grid=[ScenarioGridRow.model_validate(item) for item in computed.grid],
+        )
+        results.append(_ScenarioResult(target=target, artifact=artifact))
+
+    portfolio_date = _portfolio_date(results, fallback=fallback_as_of)
+    _render_scenario_console(console, results, portfolio_date=portfolio_date)
+
+    if out is not None:
+        out_dir = out / "scenarios" / portfolio_date.isoformat()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for result in results:
+            if strict:
+                ScenariosArtifact.model_validate(result.artifact.to_dict())
+            out_path = out_dir / _scenario_filename(result)
+            out_path.write_text(result.artifact.model_dump_json(indent=2), encoding="utf-8")
+            console.print(f"Saved: {out_path}")
+
+
 def add_position(
     portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
     symbol: str = typer.Option(..., "--symbol"),
@@ -232,3 +396,232 @@ def remove_position(
         raise typer.BadParameter(f"No position found with id: {position_id}")
     save_portfolio(portfolio_path, portfolio)
     Console().print(f"Removed {position_id}")
+
+
+def _build_scenario_targets(positions: list[Position | MultiLegPosition]) -> list[_ScenarioTarget]:
+    targets: list[_ScenarioTarget] = []
+    for position in positions:
+        if isinstance(position, MultiLegPosition):
+            for index, leg in enumerate(position.legs, start=1):
+                targets.append(
+                    _ScenarioTarget(
+                        key=f"{position.id}:leg{index}",
+                        symbol=position.symbol.upper(),
+                        option_type=leg.option_type,
+                        side=leg.side,
+                        expiry=leg.expiry,
+                        strike=leg.strike,
+                        contracts=leg.contracts,
+                        basis=None,
+                    )
+                )
+            continue
+        targets.append(
+            _ScenarioTarget(
+                key=position.id,
+                symbol=position.symbol.upper(),
+                option_type=position.option_type,
+                side="long",
+                expiry=position.expiry,
+                strike=position.strike,
+                contracts=position.contracts,
+                basis=position.cost_basis,
+            )
+        )
+    return targets
+
+
+def _parse_explicit_as_of(value: str) -> date | None:
+    spec = str(value or "").strip().lower()
+    if spec == "latest":
+        return None
+    try:
+        return date.fromisoformat(spec)
+    except ValueError as exc:
+        raise typer.BadParameter("Invalid --as-of (use YYYY-MM-DD or 'latest').", param_hint="--as-of") from exc
+
+
+def _resolve_symbol_context(
+    *,
+    store: Any,
+    symbol: str,
+    as_of_spec: str,
+    fallback_as_of: date,
+) -> _SymbolScenarioContext:
+    warnings: list[str] = []
+    snapshot_date: date
+    try:
+        snapshot_date = store.resolve_date(symbol, as_of_spec)
+    except Exception:  # noqa: BLE001
+        snapshot_date = fallback_as_of
+        warnings.append("missing_snapshot_date")
+
+    try:
+        day_df = store.load_day(symbol, snapshot_date)
+    except Exception:  # noqa: BLE001
+        day_df = {}
+        warnings.append("snapshot_day_load_error")
+    if _is_empty_frame(day_df):
+        warnings.append("missing_snapshot_day")
+
+    try:
+        meta = store.load_meta(symbol, snapshot_date)
+    except Exception:  # noqa: BLE001
+        meta = {}
+        warnings.append("snapshot_meta_load_error")
+
+    spot = _spot_from_meta(meta)
+    return _SymbolScenarioContext(as_of=snapshot_date, day_df=day_df, spot=spot, warnings=tuple(warnings))
+
+
+def _row_float(row: object, *keys: str) -> float | None:
+    if row is None:
+        return None
+    for key in keys:
+        value = _extract_float(row, key)
+        if value is not None:
+            return value
+    return None
+
+
+def _row_string(row: object, *keys: str) -> str | None:
+    if row is None:
+        return None
+    for key in keys:
+        try:
+            if key not in row:  # type: ignore[operator]
+                continue
+            raw = row[key]  # type: ignore[index]
+        except Exception:  # noqa: BLE001
+            continue
+        if raw is None:
+            continue
+        token = str(raw).strip()
+        if token:
+            return token
+    return None
+
+
+def _is_empty_frame(value: object) -> bool:
+    empty_flag = getattr(value, "empty", None)
+    if isinstance(empty_flag, bool):
+        return empty_flag
+    return True
+
+
+def _merge_warnings(*, base: object, extra: list[str]) -> list[str]:
+    merged: list[str] = []
+    for item in list(base) if isinstance(base, list) else []:
+        token = str(item).strip()
+        if token and token not in merged:
+            merged.append(token)
+    for token in extra:
+        clean = str(token).strip()
+        if clean and clean not in merged:
+            merged.append(clean)
+    return merged
+
+
+def _fallback_contract_symbol(*, symbol: str, expiry: date, option_type: OptionType, strike: float) -> str:
+    strike_scaled = int(round(float(strike) * 1000.0))
+    side = "C" if option_type == "call" else "P"
+    return f"{symbol.upper()}{expiry.strftime('%y%m%d')}{side}{strike_scaled:08d}"
+
+
+def _portfolio_date(results: list[_ScenarioResult], *, fallback: date) -> date:
+    dates: list[date] = []
+    for result in results:
+        try:
+            dates.append(date.fromisoformat(result.artifact.as_of))
+        except Exception:  # noqa: BLE001
+            continue
+    return max(dates) if dates else fallback
+
+
+def _scenario_filename(result: _ScenarioResult) -> str:
+    key = _sanitize_file_token(result.target.key)
+    contract = _sanitize_file_token(result.artifact.contract_symbol)
+    return f"{key}_{contract}.json"
+
+
+def _sanitize_file_token(value: str) -> str:
+    cleaned = _SAFE_FILENAME_RE.sub("_", str(value).strip())
+    cleaned = cleaned.strip("._-")
+    return cleaned or "scenario"
+
+
+def _fmt_money(value: float | None) -> str:
+    if value is None:
+        return "-"
+    return f"${value:,.2f}"
+
+
+def _fmt_pct(value: float | None) -> str:
+    if value is None:
+        return "-"
+    return f"{value:.1%}"
+
+
+def _render_scenario_console(console: Console, results: list[_ScenarioResult], *, portfolio_date: date) -> None:
+    summary = Table(title=f"Position Scenarios (as-of {portfolio_date.isoformat()})")
+    summary.add_column("ID")
+    summary.add_column("Symbol")
+    summary.add_column("As-Of")
+    summary.add_column("Contract")
+    summary.add_column("Mark", justify="right")
+    summary.add_column("IV", justify="right")
+    summary.add_column("Best PnL", justify="right")
+    summary.add_column("Worst PnL", justify="right")
+    summary.add_column("Rows", justify="right")
+    summary.add_column("Warnings")
+
+    for result in results:
+        artifact = result.artifact
+        warning_text = "-" if not artifact.summary.warnings else ",".join(artifact.summary.warnings)
+        pnl_values = [row.pnl_position for row in artifact.grid if row.pnl_position is not None]
+        best = max(pnl_values) if pnl_values else None
+        worst = min(pnl_values) if pnl_values else None
+        summary.add_row(
+            result.target.key,
+            artifact.symbol,
+            artifact.as_of,
+            artifact.contract_symbol,
+            _fmt_money(artifact.summary.mark),
+            _fmt_pct(artifact.summary.iv),
+            _fmt_money(best),
+            _fmt_money(worst),
+            str(len(artifact.grid)),
+            warning_text,
+        )
+
+    console.print(summary)
+
+    for result in results:
+        artifact = result.artifact
+        if artifact.summary.warnings:
+            console.print(
+                f"[yellow]Warning:[/yellow] {result.target.key}: "
+                + ", ".join(artifact.summary.warnings)
+            )
+        rows = [
+            row
+            for row in artifact.grid
+            if abs(row.iv_change_pp) < 1e-12 and row.days_forward == 0
+        ]
+        if not rows:
+            continue
+        rows = sorted(rows, key=lambda row: row.spot_change_pct)
+
+        table = Table(title=f"{result.target.key} spot-shock slice (iv=0pp, t+0d)")
+        table.add_column("Spot Move", justify="right")
+        table.add_column("Theo", justify="right")
+        table.add_column("PnL/Contract", justify="right")
+        table.add_column("PnL Position", justify="right")
+        for row in rows:
+            table.add_row(
+                _fmt_pct(row.spot_change_pct),
+                _fmt_money(row.theoretical_price),
+                _fmt_money(row.pnl_per_contract),
+                _fmt_money(row.pnl_position),
+            )
+        console.print(table)

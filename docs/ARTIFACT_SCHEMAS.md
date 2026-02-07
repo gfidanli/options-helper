@@ -53,7 +53,7 @@ All artifacts include:
 - Schema: `options_helper.schemas.levels.LevelsArtifact`
 
 ### Scenarios report
-- Path: `data/reports/scenarios/{SYMBOL}/{YYYY-MM-DD}_{CONTRACT}.json`
+- Path: `data/reports/scenarios/{PORTFOLIO_DATE}/{POSITION_KEY}_{CONTRACT}.json`
 - Source: `options-helper scenarios ... --out ...`
 - Schema: `options_helper.schemas.scenarios.ScenariosArtifact`
 
