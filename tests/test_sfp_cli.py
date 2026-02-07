@@ -51,8 +51,9 @@ def test_sfp_scan_cli_writes_json_and_markdown_artifacts(tmp_path: Path) -> None
     assert md_path.exists()
 
     payload = json.loads(json_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["symbol"] == "UNKNOWN"
+    assert payload["config"]["forward_returns_entry_anchor"] == "next_bar_open"
     assert payload["counts"]["bearish_sfp"] >= 1
     assert payload["counts"]["bullish_sfp"] >= 1
     assert payload["events"]
@@ -66,14 +67,18 @@ def test_sfp_scan_cli_writes_json_and_markdown_artifacts(tmp_path: Path) -> None
     ev0 = payload["events"][0]
     assert "T" not in ev0["timestamp"]
     assert "T" not in ev0["swept_swing_timestamp"]
+    assert "T" not in ev0["entry_anchor_timestamp"]
     for key in ("candle_open", "candle_high", "candle_low", "candle_close", "sweep_level"):
         assert ev0[key] == round(ev0[key], 2)
+    assert ev0["entry_anchor_price"] == round(ev0["entry_anchor_price"], 2)
     assert ev0["forward_returns_pct"].keys() == {"1d", "5d", "10d"}
+    assert ev0["forward_returns_pct"]["1d"] == -1.71
     assert "extension_percentile" in ev0
 
     md = md_path.read_text(encoding="utf-8")
     assert "fwd(1/5/10d)=" in md
     assert "ext_pct=" in md
+    assert "entry=" in md
 
 
 def test_sfp_scan_cli_symbol_path_backfills_cache_when_missing(tmp_path: Path, monkeypatch) -> None:

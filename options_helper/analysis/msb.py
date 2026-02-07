@@ -120,6 +120,15 @@ def compute_msb_signals(
     for i in range(n):
         prev_close = close[i - 1] if i > 0 else np.nan
 
+        # A swing at index k is confirmed only after `right` future bars.
+        # Expose it to break logic starting at bar i where k = i - right.
+        confirm_idx = i - right
+        if confirm_idx >= 0:
+            if swing_high[confirm_idx]:
+                last_swing_high_idx = confirm_idx
+            if swing_low[confirm_idx]:
+                last_swing_low_idx = confirm_idx
+
         if last_swing_high_idx is not None:
             level = float(high[last_swing_high_idx])
             age = i - last_swing_high_idx
@@ -143,11 +152,6 @@ def compute_msb_signals(
                 bearish_msb[i] = True
                 broken_low_level[i] = level
                 broken_low_ts[i] = _label(frame.index[last_swing_low_idx])
-
-        if swing_high[i]:
-            last_swing_high_idx = i
-        if swing_low[i]:
-            last_swing_low_idx = i
 
     out["swing_high"] = swing_high
     out["swing_low"] = swing_low

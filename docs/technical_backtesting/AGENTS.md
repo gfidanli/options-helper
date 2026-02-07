@@ -14,6 +14,7 @@ This folder is the long-form design + runbook for the `technicals_backtesting` s
   - `CONFIG_SCHEMA.md`
   - the JSON schema (`config/technical_backtesting.schema.json`) if relevant
   - at least one test that would fail under the old behavior
+- If you change signal timing or forward-return anchoring, explicitly document lookahead-bias assumptions and entry timing.
 
 ## Writing style
 - Bias toward **concrete**:

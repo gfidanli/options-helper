@@ -43,6 +43,13 @@ This repo is an information/decision-support tool. Keep outputs and docs clear t
 - Prefer cached daily candles as the “source of truth” for technical indicators.
 - When saving snapshots, date folders by the **data period** (latest candle date), not wall-clock run time.
 
+## Lookahead-bias guardrails
+- Treat lookahead bias as a first-class defect in all technical analytics and backtesting outputs.
+- If a signal is only knowable at candle close, execution/forward-return anchors must start at the **next candle open**.
+- Apply the same rule on resampled data (weekly/multi-day/intraday): anchor at the next bar open in that timeframe.
+- Swing-based logic with right-side confirmation bars must only consume swings after the confirmation lag has elapsed.
+- Any change to signal/return anchoring must include deterministic regression tests.
+
 ## Product direction
 - Optimize for **position management** and **signal clarity** over complex modeling.
 - Start with simple rules and measurable outputs; iterate with tests and docs.

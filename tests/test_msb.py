@@ -70,3 +70,22 @@ def test_msb_weekly_resample_uses_monday_labels() -> None:
     assert not signals.empty
     assert isinstance(signals.index, pd.DatetimeIndex)
     assert all(ts.weekday() == 0 for ts in signals.index)
+
+
+def test_msb_uses_confirmed_swings_only_when_right_bars_gt_one() -> None:
+    idx = pd.date_range("2026-01-05", periods=6, freq="B")
+    df = pd.DataFrame(
+        {
+            "Open": [1.0, 2.5, 2.0, 1.2, 1.5, 1.1],
+            "High": [1.0, 3.0, 2.0, 1.0, 2.0, 1.0],
+            "Low": [0.8, 1.8, 1.5, 0.7, 1.2, 0.9],
+            "Close": [0.9, 2.4, 1.9, 0.9, 1.4, 1.0],
+        },
+        index=idx,
+    )
+
+    signals = compute_msb_signals(df, swing_left_bars=1, swing_right_bars=2, min_swing_distance_bars=1)
+
+    # Swing high at index 1 is confirmed only after index 3.
+    assert pd.isna(signals.iloc[2]["last_swing_high_level"])
+    assert signals.iloc[3]["last_swing_high_level"] == 3.0

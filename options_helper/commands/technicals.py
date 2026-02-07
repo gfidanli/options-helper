@@ -271,6 +271,7 @@ def technicals_sfp_scan(
             require_rsi_extreme=False,
         )
 
+    open_series = signals["Open"].astype("float64")
     close_series = signals["Close"].astype("float64")
     index_to_pos = {ts: i for i, ts in enumerate(signals.index)}
 
@@ -278,12 +279,13 @@ def technicals_sfp_scan(
         i = index_to_pos.get(start_ts)
         if i is None:
             return None
+        entry_i = i + 1
         j = i + int(horizon)
-        if j >= len(close_series):
+        if entry_i >= len(open_series) or j >= len(close_series) or j < entry_i:
             return None
-        c0 = float(close_series.iloc[i])
+        c0 = float(open_series.iloc[entry_i])
         c1 = float(close_series.iloc[j])
-        if c0 == 0.0:
+        if c0 == 0.0 or pd.isna(c0) or pd.isna(c1):
             return None
         return round((c1 / c0 - 1.0) * 100.0, 2)
 
@@ -316,8 +318,23 @@ def technicals_sfp_scan(
         else:
             ev["rsi_divergence_same_bar"] = None
 
+        entry_anchor_ts = None
+        entry_anchor_price = None
+        i = index_to_pos.get(event_ts) if event_ts is not None else None
+        if i is not None:
+            entry_i = i + 1
+            if entry_i < len(open_series):
+                entry_candidate = open_series.iloc[entry_i]
+                if pd.notna(entry_candidate):
+                    entry_anchor_ts = signals.index[entry_i]
+                    entry_anchor_price = float(entry_candidate)
+
         ev["timestamp"] = _date_only_label(ev.get("timestamp"))
         ev["swept_swing_timestamp"] = _date_only_label(ev.get("swept_swing_timestamp"))
+        ev["entry_anchor_timestamp"] = (
+            _date_only_label(entry_anchor_ts) if entry_anchor_ts is not None else None
+        )
+        ev["entry_anchor_price"] = _round2(entry_anchor_price)
         ev["candle_open"] = _round2(ev.get("candle_open"))
         ev["candle_high"] = _round2(ev.get("candle_high"))
         ev["candle_low"] = _round2(ev.get("candle_low"))
@@ -347,7 +364,7 @@ def technicals_sfp_scan(
     bullish_events = [ev for ev in event_rows if ev.get("direction") == "bullish"]
 
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "symbol": symbol.upper() if symbol else "UNKNOWN",
         "asof": asof_label,
         "timeframe": timeframe,
@@ -362,6 +379,7 @@ def technicals_sfp_scan(
             "divergence_window_bars": int(divergence_window_bars),
             "extension_sma_window": 20,
             "extension_atr_window": 14,
+            "forward_returns_entry_anchor": "next_bar_open",
         },
         "counts": {
             "bars": int(len(signals)),
@@ -423,6 +441,7 @@ def technicals_sfp_scan(
                 (
                     f"- `{ev['timestamp']}` {ev['direction']} SFP | "
                     f"sweep={_fmt_price(ev.get('sweep_level'))}, close={_fmt_price(ev.get('candle_close'))}, "
+                    f"entry={_fmt_price(ev.get('entry_anchor_price'))}, "
                     f"swing={ev['swept_swing_timestamp']}, age={int(ev['bars_since_swing'])} bars"
                     f", ext_pct={ext_pct_text}, fwd(1/5/10d)="
                     f"{_fmt_pct(fwd.get('1d'))}/{_fmt_pct(fwd.get('5d'))}/{_fmt_pct(fwd.get('10d'))}"
@@ -542,6 +561,7 @@ def technicals_msb_scan(
     if rsi_window > 0:
         rsi_series = _rsi_series(signals["Close"], window=int(rsi_window))
 
+    open_series = signals["Open"].astype("float64")
     close_series = signals["Close"].astype("float64")
     index_to_pos = {ts: i for i, ts in enumerate(signals.index)}
 
@@ -549,12 +569,13 @@ def technicals_msb_scan(
         i = index_to_pos.get(start_ts)
         if i is None:
             return None
+        entry_i = i + 1
         j = i + int(horizon)
-        if j >= len(close_series):
+        if entry_i >= len(open_series) or j >= len(close_series) or j < entry_i:
             return None
-        c0 = float(close_series.iloc[i])
+        c0 = float(open_series.iloc[entry_i])
         c1 = float(close_series.iloc[j])
-        if c0 == 0.0:
+        if c0 == 0.0 or pd.isna(c0) or pd.isna(c1):
             return None
         return round((c1 / c0 - 1.0) * 100.0, 2)
 
@@ -581,8 +602,23 @@ def technicals_msb_scan(
             ev["rsi"] = None
             ev["rsi_regime"] = None
 
+        entry_anchor_ts = None
+        entry_anchor_price = None
+        i = index_to_pos.get(event_ts) if event_ts is not None else None
+        if i is not None:
+            entry_i = i + 1
+            if entry_i < len(open_series):
+                entry_candidate = open_series.iloc[entry_i]
+                if pd.notna(entry_candidate):
+                    entry_anchor_ts = signals.index[entry_i]
+                    entry_anchor_price = float(entry_candidate)
+
         ev["timestamp"] = _date_only_label(ev.get("timestamp"))
         ev["broken_swing_timestamp"] = _date_only_label(ev.get("broken_swing_timestamp"))
+        ev["entry_anchor_timestamp"] = (
+            _date_only_label(entry_anchor_ts) if entry_anchor_ts is not None else None
+        )
+        ev["entry_anchor_price"] = _round2(entry_anchor_price)
         ev["candle_open"] = _round2(ev.get("candle_open"))
         ev["candle_high"] = _round2(ev.get("candle_high"))
         ev["candle_low"] = _round2(ev.get("candle_low"))
@@ -612,7 +648,7 @@ def technicals_msb_scan(
     bearish_events = [ev for ev in event_rows if ev.get("direction") == "bearish"]
 
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "symbol": symbol.upper() if symbol else "UNKNOWN",
         "asof": asof_label,
         "timeframe": timeframe,
@@ -625,6 +661,7 @@ def technicals_msb_scan(
             "rsi_oversold": float(rsi_oversold),
             "extension_sma_window": 20,
             "extension_atr_window": 14,
+            "forward_returns_entry_anchor": "next_bar_open",
         },
         "counts": {
             "bars": int(len(signals)),
@@ -685,6 +722,7 @@ def technicals_msb_scan(
                 (
                     f"- `{ev['timestamp']}` {ev['direction']} MSB | "
                     f"break={_fmt_price(ev.get('break_level'))}, close={_fmt_price(ev.get('candle_close'))}, "
+                    f"entry={_fmt_price(ev.get('entry_anchor_price'))}, "
                     f"swing={ev['broken_swing_timestamp']}, age={int(ev['bars_since_swing'])} bars"
                     f", ext_pct={ext_pct_text}, fwd(1/5/10d)="
                     f"{_fmt_pct(fwd.get('1d'))}/{_fmt_pct(fwd.get('5d'))}/{_fmt_pct(fwd.get('10d'))}"
@@ -873,6 +911,7 @@ def technicals_extension_stats(
 
     report_daily = compute_extension_percentiles(
         extension_series=features[ext_col],
+        open_series=features["Open"],
         close_series=features["Close"],
         windows_years=windows_years,
         days_per_year=days_per_year,
@@ -882,6 +921,12 @@ def technicals_extension_stats(
         include_tail_events=True,
     )
     weekly_rule = cfg["weekly_regime"].get("resample_rule", "W-FRI")
+    weekly_candles = (
+        df[["Open", "High", "Low", "Close"]]
+        .resample(weekly_rule)
+        .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
+        .dropna()
+    )
     weekly_ext, weekly_close = build_weekly_extension_series(
         df[["Open", "High", "Low", "Close"]],
         sma_window=sma_window,
@@ -890,6 +935,7 @@ def technicals_extension_stats(
     )
     report_weekly = compute_extension_percentiles(
         extension_series=weekly_ext,
+        open_series=weekly_candles["Open"],
         close_series=weekly_close,
         windows_years=windows_years,
         days_per_year=int(days_per_year / 5),
@@ -946,6 +992,7 @@ def technicals_extension_stats(
 
     # Pre-align daily series for deterministic iloc-based lookups.
     ext_series_daily = features[ext_col].dropna()
+    open_series_daily = features["Open"].reindex(ext_series_daily.index)
     close_series_daily = features["Close"].reindex(ext_series_daily.index)
     high_series_daily = features["High"].reindex(ext_series_daily.index) if "High" in features.columns else None
     low_series_daily = features["Low"].reindex(ext_series_daily.index) if "Low" in features.columns else None
@@ -953,14 +1000,7 @@ def technicals_extension_stats(
         features[rsi_col].reindex(ext_series_daily.index) if rsi_col and rsi_col in features.columns else None
     )
 
-    # Weekly candles (for RSI + context alignment).
-    weekly_candles = (
-        df[["Open", "High", "Low", "Close"]]
-        .resample(weekly_rule)
-        .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
-        .dropna()
-    )
-
+    weekly_open_series = weekly_candles["Open"]
     weekly_close_series = weekly_candles["Close"]
     weekly_high_series = weekly_candles["High"]
     weekly_low_series = weekly_candles["Low"]
@@ -1182,6 +1222,7 @@ def technicals_extension_stats(
             "rsi_divergence": rsi_divergence_cfg,
             "max_forward_returns": {
                 "method": "directional_mfe",  # low-tail uses High (up move), high-tail uses Low (down move)
+                "entry_anchor": "next_bar_open",
                 "horizons_days": max_return_horizons_days,
             },
         },
@@ -1300,7 +1341,7 @@ def technicals_extension_stats(
             if high_series_daily is not None:
                 for h in forward_days_daily:
                     r = forward_max_up_move(
-                        close_series=close_series_daily,
+                        open_series=open_series_daily,
                         high_series=high_series_daily,
                         start_iloc=i,
                         horizon_bars=int(h),
@@ -1308,7 +1349,7 @@ def technicals_extension_stats(
                     max_up_short[int(h)] = None if r is None else float(r)
                 for label, h in max_return_horizons_days.items():
                     r = forward_max_up_move(
-                        close_series=close_series_daily,
+                        open_series=open_series_daily,
                         high_series=high_series_daily,
                         start_iloc=i,
                         horizon_bars=int(h),
@@ -1318,7 +1359,7 @@ def technicals_extension_stats(
             if low_series_daily is not None:
                 for h in forward_days_daily:
                     r = forward_max_down_move(
-                        close_series=close_series_daily,
+                        open_series=open_series_daily,
                         low_series=low_series_daily,
                         start_iloc=i,
                         horizon_bars=int(h),
@@ -1326,7 +1367,7 @@ def technicals_extension_stats(
                     max_down_short[int(h)] = None if r is None else float(r)
                 for label, h in max_return_horizons_days.items():
                     r = forward_max_down_move(
-                        close_series=close_series_daily,
+                        open_series=open_series_daily,
                         low_series=low_series_daily,
                         start_iloc=i,
                         horizon_bars=int(h),
@@ -1416,13 +1457,13 @@ def technicals_extension_stats(
         if i is not None:
             for h in forward_days_weekly:
                 r_up = forward_max_up_move(
-                    close_series=weekly_close_series,
+                    open_series=weekly_open_series,
                     high_series=weekly_high_series,
                     start_iloc=i,
                     horizon_bars=int(h),
                 )
                 r_dn = forward_max_down_move(
-                    close_series=weekly_close_series,
+                    open_series=weekly_open_series,
                     low_series=weekly_low_series,
                     start_iloc=i,
                     horizon_bars=int(h),

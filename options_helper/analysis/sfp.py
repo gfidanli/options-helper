@@ -171,6 +171,15 @@ def compute_sfp_signals(
         return str(ts)
 
     for i in range(n):
+        # A swing at index k needs `right` future bars to be confirmed.
+        # Make it available only when processing bar i where k = i - right.
+        confirm_idx = i - right
+        if confirm_idx >= 0:
+            if swing_high[confirm_idx]:
+                last_swing_high_idx = confirm_idx
+            if swing_low[confirm_idx]:
+                last_swing_low_idx = confirm_idx
+
         if last_swing_high_idx is not None:
             level = float(high[last_swing_high_idx])
             age = i - last_swing_high_idx
@@ -192,11 +201,6 @@ def compute_sfp_signals(
                     bullish_sfp[i] = True
                     swept_low_level[i] = level
                     swept_low_ts[i] = _label(frame.index[last_swing_low_idx])
-
-        if swing_high[i]:
-            last_swing_high_idx = i
-        if swing_low[i]:
-            last_swing_low_idx = i
 
     out["swing_high"] = swing_high
     out["swing_low"] = swing_low

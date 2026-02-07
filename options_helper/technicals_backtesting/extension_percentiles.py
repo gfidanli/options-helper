@@ -84,6 +84,7 @@ def compute_extension_percentiles(
     *,
     extension_series: pd.Series,
     close_series: pd.Series,
+    open_series: pd.Series | None = None,
     windows_years: Iterable[int],
     days_per_year: int,
     tail_high_pct: float,
@@ -102,7 +103,15 @@ def compute_extension_percentiles(
         )
 
     extension_series = extension_series.dropna()
-    aligned = pd.concat([extension_series, close_series.reindex(extension_series.index)], axis=1).dropna()
+    entry_series = close_series if open_series is None else open_series
+    aligned = pd.concat(
+        [
+            extension_series.rename("extension"),
+            entry_series.reindex(extension_series.index).rename("entry"),
+            close_series.reindex(extension_series.index).rename("close"),
+        ],
+        axis=1,
+    ).dropna(subset=["extension", "entry", "close"])
     if aligned.empty:
         return ExtensionPercentileReport(
             asof="-",
@@ -112,8 +121,9 @@ def compute_extension_percentiles(
             tail_window_years=None,
             tail_events=[],
         )
-    extension_series = aligned.iloc[:, 0]
-    close_series = aligned.iloc[:, 1]
+    extension_series = aligned["extension"].astype("float64")
+    entry_series = aligned["entry"].astype("float64")
+    close_series = aligned["close"].astype("float64")
 
     asof_idx = extension_series.index[-1]
     asof = asof_idx.date().isoformat() if isinstance(asof_idx, pd.Timestamp) else str(asof_idx)
@@ -163,14 +173,15 @@ def compute_extension_percentiles(
             forward_returns: dict[int, float | None] = {}
             for d in forward_days:
                 j = i + int(d)
-                if j >= len(extension_series):
+                entry_i = i + 1
+                if j >= len(extension_series) or entry_i >= len(entry_series):
                     forward_extension_percentiles[int(d)] = None
                     forward_returns[int(d)] = None
                     continue
                 f_pct = pct_series.iloc[j]
                 forward_extension_percentiles[int(d)] = None if np.isnan(f_pct) else float(f_pct)
-                if i < len(close_series) and j < len(close_series):
-                    c0 = float(close_series.iloc[i])
+                if entry_i <= j and j < len(close_series):
+                    c0 = float(entry_series.iloc[entry_i])
                     c1 = float(close_series.iloc[j])
                     forward_returns[int(d)] = (c1 / c0 - 1.0) if c0 else None
                 else:

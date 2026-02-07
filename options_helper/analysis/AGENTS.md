@@ -10,6 +10,9 @@ Analysis code should be **pure**:
 - Operate on cached daily candles (timezone-naive `DatetimeIndex`).
 - Resample from daily to higher timeframes (weekly, multi-day) inside analysis modules.
 - Always handle missing/empty data gracefully (return `None` values + human-readable reasons).
+- Prevent lookahead bias:
+  - when signals are close-confirmed, downstream entry/return anchors must use next-bar open
+  - when swing detection uses right-side bars, consume swings only after confirmation lag
 
 ## Options research guidelines
 - Recommendations should be explainable: always produce a “why” list.
@@ -23,4 +26,3 @@ Analysis code should be **pure**:
 ## Tests
 - Add unit tests for indicator math and edge cases (NaNs, small samples).
 - Avoid pandas object-dtype pitfalls (prefer `NaN` over `pd.NA` in numeric series).
-

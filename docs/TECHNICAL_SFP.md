@@ -64,7 +64,8 @@ JSON includes:
 - full event list with:
   - date-only event/swing timestamps
   - prices rounded to 2 decimals
-  - forward returns from SFP close (`1d`, `5d`, `10d`) in percent
+  - forward returns anchored to the **next candle open** (`1d`, `5d`, `10d`) in percent
+  - entry anchor metadata (`entry_anchor_timestamp`, `entry_anchor_price`)
   - extension context (`extension_atr`, `extension_percentile`)
   - optional RSI regime and same-bar RSI divergence tags
 

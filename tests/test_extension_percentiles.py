@@ -61,3 +61,32 @@ def test_extension_percentiles_fallback_to_full_history() -> None:
         include_tail_events=False,
     )
     assert report.current_percentiles
+
+
+def test_extension_percentiles_forward_returns_anchor_to_next_open() -> None:
+    idx = pd.date_range("2024-01-01", periods=12, freq="B")
+    ext = pd.Series(range(1, 13), index=idx, dtype="float64")
+    close = pd.Series([100.0] * 12, index=idx, dtype="float64")
+    open_ = pd.Series([100.0] * 12, index=idx, dtype="float64")
+    # Event at i=9 is in high tail for this monotonic series (window=10, pct=95).
+    # If anchored to next open, 1d return = close[10] / open[10] - 1 = 0.
+    # If anchored to event close, it would be +100%, which catches lookahead regressions.
+    close.iloc[9] = 50.0
+    close.iloc[10] = 100.0
+    open_.iloc[10] = 100.0
+
+    report = compute_extension_percentiles(
+        extension_series=ext,
+        close_series=close,
+        open_series=open_,
+        windows_years=[1],
+        days_per_year=10,
+        tail_high_pct=90,
+        tail_low_pct=10,
+        forward_days=[1],
+        include_tail_events=True,
+    )
+    assert report.tail_events
+    event = next((ev for ev in report.tail_events if ev.date == idx[9].date().isoformat()), None)
+    assert event is not None
+    assert event.forward_returns[1] == 0.0

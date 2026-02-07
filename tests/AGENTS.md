@@ -18,3 +18,5 @@
 - Edge cases: empty history, missing columns, NaNs, zeros from Yahoo.
 - “No crash” invariants: per-symbol failures should not abort multi-symbol runs.
 - Saved artifacts: reports, snapshots, metadata correctness.
+- Lookahead guardrails: assert forward-return anchors use next-bar open for close-confirmed signals.
+- Swing-based signals with right-side confirmation should have tests proving no pre-confirmation consumption.

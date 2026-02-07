@@ -117,6 +117,8 @@ def test_extension_stats_cli_symbol_backfills_missing_cache(tmp_path: Path, monk
     res = runner.invoke(
         app,
         [
+            "--storage",
+            "filesystem",
             "technicals",
             "extension-stats",
             "--symbol",
