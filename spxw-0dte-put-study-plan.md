@@ -98,36 +98,40 @@ T12,T13,T15,T16 -> T17 -> T18
 - **location**: `options_helper/data/zero_dte_dataset.py`, `options_helper/analysis/osi.py`
 - **description**: Resolve candidate strikes (as `%` of previous close) to tradable contracts, enforce settlement/eligibility filters (for example SPX AM-settled monthly vs SPXW PM-settled), and attach entry premium fields from nearest valid quote/bar snapshot with freshness + microstructure quality tags.
 - **validation**: Tests cover no-contract cases, tie-breaking, stale/locked/crossed markets, zero or negative bid/ask, max-spread threshold failures, settlement filtering, and fallback behavior.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Completed strike/premium snapshot resolution with deterministic contract eligibility filtering (option type, same-day expiry, PM-settlement, allowed roots), explicit SPX/SPXW settlement inference via OSI parsing, and quote-quality-aware premium selection that only accepts `good` quotes directly and otherwise falls back to nearest option bar before fail-closing with `skip_reason=bad_quote_quality`.
+- **files edited/created**: `options_helper/data/zero_dte_dataset.py`, `options_helper/analysis/osi.py`, `tests/test_zero_dte_features.py`, `spxw-0dte-put-study-plan.md`
+- **gotchas/errors**: `infer_settlement_style` was imported by the loader but not implemented in `analysis/osi.py`; added a deterministic helper to avoid runtime import/eligibility failures.
 
 ### T4: Build Intraday Extension Feature Engine (Pure Analysis)
 - **depends_on**: [T0, T1, T2]
 - **location**: `options_helper/analysis/zero_dte_features.py`
 - **description**: Compute features available at decision time: intraday return vs prior close, drawdown from open, distance from VWAP, realized intraday volatility, bar-range percentile, and time-of-day bucket; optionally join IV regime context.
 - **validation**: Unit tests verify feature formulas, NaN handling, and strict time-cutoff enforcement.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added pure analysis module `compute_zero_dte_features` with typed config and strict no-lookahead cutoffs (`<= decision bar timestamp`) for intraday return vs prior close, drawdown from open, VWAP distance, realized intraday volatility, current bar range percentile, time-of-day bucket, and optional IV-regime as-of joins.
+- **files edited/created**: `options_helper/analysis/zero_dte_features.py`, `tests/test_zero_dte_features.py`, `spxw-0dte-put-study-plan.md`
+- **gotchas/errors**: Feature calculations now gate unstable early-session windows with configurable minimum bars/returns so NaN behavior is deterministic instead of implicit.
 
 ### T4A: Build Label/Anchor Contract Module (Anti-Lookahead)
 - **depends_on**: [T0, T1, T2]
 - **location**: `options_helper/analysis/zero_dte_labels.py`
 - **description**: Implement deterministic label generation and anchor semantics (`decision_ts`, `entry_anchor_ts`, `close_label_ts`) including fail-closed handling when no next tradable anchor exists (`skip_reason=no_entry_anchor`).
 - **validation**: Regression tests for late-session decisions, early-close sessions, and missing final bars prove no lookahead leakage.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Implemented deterministic label/anchor builder `build_zero_dte_labels` with explicit anti-lookahead semantics: decision anchors resolve from known decision bars, entry anchors require the strictly next tradable bar, and missing next anchors fail closed with `skip_reason=no_entry_anchor`; close-label coverage is marked `insufficient_data` when the terminal bar is too stale/missing.
+- **files edited/created**: `options_helper/analysis/zero_dte_labels.py`, `tests/test_zero_dte_labels.py`, `spxw-0dte-put-study-plan.md`
+- **gotchas/errors**: Added an explicit close-bar lag guard so incomplete sessions cannot silently label against stale pre-close bars.
 
 ### T4B: Add Data Sufficiency + Session Preflight Gates
 - **depends_on**: [T2, T3]
 - **location**: `options_helper/analysis/zero_dte_preflight.py`
 - **description**: Add preflight checks for minimum sample thresholds per time bucket/regime and minimum quote-quality pass rates before model fitting/backtesting/forward scoring.
 - **validation**: Tests verify fail-fast behavior and user-friendly diagnostics when coverage thresholds are not met.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added typed preflight gate module that evaluates minimum session/row sufficiency, per-time-bucket and per-IV-regime coverage, label coverage rate, and quote-quality pass rate with structured diagnostics/messages for fail-fast user feedback.
+- **files edited/created**: `options_helper/analysis/zero_dte_preflight.py`, `tests/test_zero_dte_preflight.py`, `spxw-0dte-put-study-plan.md`
+- **gotchas/errors**: Preflight intentionally treats missing/empty strike snapshot inputs as `quote_quality_pass_rate=0.0` to fail closed when premium quality evidence is absent.
 
 ### T5: Implement Conditional Close-Tail Probability Model
 - **depends_on**: [T3, T4, T4A, T4B]

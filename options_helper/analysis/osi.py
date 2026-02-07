@@ -12,6 +12,22 @@ _UNDERLYING_ALIASES = {
     "BF.A": "BF-A",
 }
 
+_PM_SETTLED_ROOTS: set[str] = {
+    "SPY",
+    "SPXW",
+    "XSP",
+    "QQQ",
+    "IWM",
+    "DIA",
+}
+
+_AM_SETTLED_ROOTS: set[str] = {
+    "SPX",
+    "RUT",
+    "NDX",
+    "OEX",
+}
+
 
 def normalize_underlying(symbol: str | None) -> str:
     if symbol is None:
@@ -95,3 +111,39 @@ def format_osi(parsed: ParsedContract) -> str:
     date_part = parsed.expiry.strftime("%y%m%d")
     option_part = "C" if parsed.option_type == "call" else "P"
     return f"{root_part}{date_part}{option_part}{strike_int:08d}"
+
+
+def infer_settlement_style(value: ParsedContract | str | None) -> str | None:
+    """Best-effort inference for option settlement style.
+
+    Returns:
+      - ``"pm"`` for known PM-settled roots (for example SPXW/SPY).
+      - ``"am"`` for known AM-settled index monthlies (for example SPX).
+      - ``None`` when the root cannot be inferred.
+    """
+
+    parsed: ParsedContract | None
+    if isinstance(value, ParsedContract):
+        parsed = value
+    else:
+        parsed = parse_contract_symbol(value)
+    if parsed is None:
+        return None
+
+    root = normalize_underlying(parsed.underlying_norm or parsed.underlying)
+    if not root:
+        return None
+    if root in _PM_SETTLED_ROOTS or root.endswith("W"):
+        return "pm"
+    if root in _AM_SETTLED_ROOTS:
+        return "am"
+    return None
+
+
+__all__ = [
+    "ParsedContract",
+    "format_osi",
+    "infer_settlement_style",
+    "normalize_underlying",
+    "parse_contract_symbol",
+]
