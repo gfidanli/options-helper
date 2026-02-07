@@ -90,3 +90,40 @@ def test_sfp_uses_confirmed_swings_only_when_right_bars_gt_one() -> None:
     # Swing high at index 1 is only confirmed after index 3 closes.
     assert pd.isna(signals.iloc[2]["last_swing_high_level"])
     assert signals.iloc[3]["last_swing_high_level"] == 3.0
+
+
+def test_sfp_ignore_swept_swings_consumes_level_for_future_signals() -> None:
+    idx = pd.date_range("2022-01-03", periods=10, freq="B")
+    df = pd.DataFrame(
+        {
+            "Open": [10.0, 11.0, 11.8, 11.0, 10.5, 11.9, 11.7, 10.2, 10.1, 10.0],
+            "High": [10.2, 11.5, 12.0, 11.2, 10.8, 12.8, 13.2, 11.0, 10.7, 10.5],
+            "Low": [9.8, 10.8, 11.2, 10.6, 10.1, 11.3, 11.4, 9.8, 9.9, 9.7],
+            "Close": [10.1, 11.2, 11.9, 10.9, 10.4, 11.7, 11.8, 10.0, 10.2, 10.1],
+        },
+        index=idx,
+    )
+
+    # Swing high at 2022-01-05 can be swept on both 2022-01-10 and 2022-01-11.
+    keep_reusing = compute_sfp_signals(
+        df,
+        swing_left_bars=1,
+        swing_right_bars=1,
+        min_swing_distance_bars=1,
+        ignore_swept_swings=False,
+    )
+    consume_on_sweep = compute_sfp_signals(
+        df,
+        swing_left_bars=1,
+        swing_right_bars=1,
+        min_swing_distance_bars=1,
+        ignore_swept_swings=True,
+    )
+
+    d1 = pd.Timestamp("2022-01-10")
+    d2 = pd.Timestamp("2022-01-11")
+    assert bool(keep_reusing.loc[d1, "bearish_sfp"]) is True
+    assert bool(keep_reusing.loc[d2, "bearish_sfp"]) is True
+
+    assert bool(consume_on_sweep.loc[d1, "bearish_sfp"]) is True
+    assert bool(consume_on_sweep.loc[d2, "bearish_sfp"]) is False

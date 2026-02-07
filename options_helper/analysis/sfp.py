@@ -83,6 +83,7 @@ def compute_sfp_signals(
     swing_left_bars: int = 1,   # 1 = nearest candle, 2 = next 2 candles
     swing_right_bars: int = 1,  # 1 = nearest candle, 2 = next 2 candles
     min_swing_distance_bars: int = 1,
+    ignore_swept_swings: bool = False,
     timeframe: str | None = None,
 ) -> pd.DataFrame:
     left = int(swing_left_bars)
@@ -190,6 +191,10 @@ def compute_sfp_signals(
                     bearish_sfp[i] = True
                     swept_high_level[i] = level
                     swept_high_ts[i] = _label(frame.index[last_swing_high_idx])
+                    if ignore_swept_swings:
+                        # Optional "consume liquidity" mode: once swept, this swing can no longer
+                        # anchor later SFPs until a new swing high is confirmed.
+                        last_swing_high_idx = None
 
         if last_swing_low_idx is not None:
             level = float(low[last_swing_low_idx])
@@ -201,6 +206,10 @@ def compute_sfp_signals(
                     bullish_sfp[i] = True
                     swept_low_level[i] = level
                     swept_low_ts[i] = _label(frame.index[last_swing_low_idx])
+                    if ignore_swept_swings:
+                        # Optional "consume liquidity" mode: once swept, this swing can no longer
+                        # anchor later SFPs until a new swing low is confirmed.
+                        last_swing_low_idx = None
 
     out["swing_high"] = swing_high
     out["swing_low"] = swing_low

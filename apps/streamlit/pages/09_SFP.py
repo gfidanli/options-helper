@@ -109,6 +109,14 @@ with st.sidebar:
         value="5/95",
     )
     show_only_extreme = st.checkbox("Show only events at extension extremes", value=False)
+    ignore_swept_swings = st.checkbox(
+        "Ignore swept swings for future SFPs",
+        value=False,
+        help=(
+            "If enabled, once a swing is swept by an SFP it is consumed and cannot trigger "
+            "additional SFPs until a new swing is confirmed."
+        ),
+    )
     with st.expander("Advanced Settings", expanded=False):
         swing_left = st.slider("Swing left bars", min_value=1, max_value=5, value=2, step=1)
         swing_right = st.slider("Swing right bars", min_value=1, max_value=5, value=2, step=1)
@@ -146,6 +154,7 @@ payload, payload_note = load_sfp_payload(
     swing_left_bars=swing_left,
     swing_right_bars=swing_right,
     min_swing_distance_bars=min_swing_distance,
+    ignore_swept_swings=ignore_swept_swings,
     database_path=database_arg,
 )
 if payload_note:

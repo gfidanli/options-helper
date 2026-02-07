@@ -107,6 +107,7 @@ def _build_sfp_payload_cached(
     swing_left_bars: int,
     swing_right_bars: int,
     min_swing_distance_bars: int,
+    ignore_swept_swings: bool,
     database_path: str,
 ) -> dict[str, Any]:
     candles, note = load_candles_history(
@@ -178,6 +179,7 @@ def _build_sfp_payload_cached(
         swing_left_bars=int(swing_left_bars),
         swing_right_bars=int(swing_right_bars),
         min_swing_distance_bars=int(min_swing_distance_bars),
+        ignore_swept_swings=bool(ignore_swept_swings),
         timeframe="native",
     )
     daily_events = _events_from_signals(
@@ -209,6 +211,7 @@ def _build_sfp_payload_cached(
         swing_left_bars=int(swing_left_bars),
         swing_right_bars=int(swing_right_bars),
         min_swing_distance_bars=int(min_swing_distance_bars),
+        ignore_swept_swings=bool(ignore_swept_swings),
         timeframe="native",
     )
     weekly_events = _events_from_signals(
@@ -264,6 +267,7 @@ def load_sfp_payload(
     swing_left_bars: int = 2,
     swing_right_bars: int = 2,
     min_swing_distance_bars: int = 1,
+    ignore_swept_swings: bool = False,
     database_path: str | Path | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     resolved = resolve_duckdb_path(database_path)
@@ -278,6 +282,7 @@ def load_sfp_payload(
             swing_left_bars=max(1, int(swing_left_bars)),
             swing_right_bars=max(1, int(swing_right_bars)),
             min_swing_distance_bars=max(1, int(min_swing_distance_bars)),
+            ignore_swept_swings=bool(ignore_swept_swings),
             database_path=str(resolved),
         )
         return payload, None

@@ -140,6 +140,21 @@ def test_sfp_page_helpers_with_seeded_db(tmp_path: Path) -> None:
                 if direction == "bearish":
                     assert float(value) <= 0.0
 
+    payload_ignore, payload_ignore_note = sfp_page.load_sfp_payload(
+        symbol="SPY",
+        lookback_days=700,
+        tail_low_pct=5.0,
+        tail_high_pct=95.0,
+        swing_left_bars=1,
+        swing_right_bars=1,
+        min_swing_distance_bars=1,
+        ignore_swept_swings=True,
+        database_path=str(db_path),
+    )
+    assert payload_ignore_note is None
+    assert payload_ignore is not None
+    assert len(payload_ignore.get("daily_events") or []) <= len(daily_events)
+
 
 def test_sfp_page_helpers_handle_missing_db(tmp_path: Path) -> None:
     pytest.importorskip("streamlit")
