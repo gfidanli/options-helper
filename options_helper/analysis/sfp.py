@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -8,6 +9,10 @@ import re
 
 _REQUIRED_OHLC_COLUMNS = ("Open", "High", "Low", "Close")
 _WEEKLY_RULE_RE = re.compile(r"^\d*W(?:-[A-Z]{3})?$")
+_DIRECTIONAL_SIGNAL_SPECS = (
+    ("bearish_sfp", "bearish", "swept_swing_high_level", "swept_swing_high_timestamp", "bars_since_swing_high"),
+    ("bullish_sfp", "bullish", "swept_swing_low_level", "swept_swing_low_timestamp", "bars_since_swing_low"),
+)
 
 
 def _is_weekly_rule(timeframe: str) -> bool:
@@ -236,10 +241,28 @@ def compute_sfp_signals(
 
 
 def extract_sfp_events(signals: pd.DataFrame) -> list[SfpEvent]:
+    rows = extract_sfp_signal_candidates(signals)
+    return [
+        SfpEvent(
+            timestamp=str(row["timestamp"]),
+            direction=str(row["direction"]),
+            candle_open=float(row["candle_open"]),
+            candle_high=float(row["candle_high"]),
+            candle_low=float(row["candle_low"]),
+            candle_close=float(row["candle_close"]),
+            sweep_level=float(row["sweep_level"]),
+            swept_swing_timestamp=str(row["swept_swing_timestamp"]),
+            bars_since_swing=int(row["bars_since_swing"]),
+        )
+        for row in rows
+    ]
+
+
+def extract_sfp_signal_candidates(signals: pd.DataFrame) -> list[dict[str, Any]]:
     if signals is None or signals.empty:
         return []
 
-    events: list[SfpEvent] = []
+    candidates: list[dict[str, Any]] = []
 
     def _value_or_default(value: object, default: float = float("nan")) -> float:
         try:
@@ -258,39 +281,35 @@ def extract_sfp_events(signals: pd.DataFrame) -> list[SfpEvent]:
             return value.isoformat()
         return str(value)
 
-    for idx, row in signals.iterrows():
+    for row_position, (idx, row) in enumerate(signals.iterrows()):
         ts = _timestamp(idx)
         o = _value_or_default(row.get("Open"))
         h = _value_or_default(row.get("High"))
         low_val = _value_or_default(row.get("Low"))
         c = _value_or_default(row.get("Close"))
 
-        if bool(row.get("bearish_sfp", False)):
-            events.append(
-                SfpEvent(
-                    timestamp=ts,
-                    direction="bearish",
-                    candle_open=o,
-                    candle_high=h,
-                    candle_low=low_val,
-                    candle_close=c,
-                    sweep_level=_value_or_default(row.get("swept_swing_high_level")),
-                    swept_swing_timestamp=str(row.get("swept_swing_high_timestamp")),
-                    bars_since_swing=_bars(row.get("bars_since_swing_high")),
-                )
+        for (
+            flag_column,
+            direction,
+            sweep_level_column,
+            swept_timestamp_column,
+            bars_column,
+        ) in _DIRECTIONAL_SIGNAL_SPECS:
+            if not bool(row.get(flag_column, False)):
+                continue
+            candidates.append(
+                {
+                    "row_position": row_position,
+                    "index_value": idx,
+                    "timestamp": ts,
+                    "direction": direction,
+                    "candle_open": o,
+                    "candle_high": h,
+                    "candle_low": low_val,
+                    "candle_close": c,
+                    "sweep_level": _value_or_default(row.get(sweep_level_column)),
+                    "swept_swing_timestamp": str(row.get(swept_timestamp_column)),
+                    "bars_since_swing": _bars(row.get(bars_column)),
+                }
             )
-        if bool(row.get("bullish_sfp", False)):
-            events.append(
-                SfpEvent(
-                    timestamp=ts,
-                    direction="bullish",
-                    candle_open=o,
-                    candle_high=h,
-                    candle_low=low_val,
-                    candle_close=c,
-                    sweep_level=_value_or_default(row.get("swept_swing_low_level")),
-                    swept_swing_timestamp=str(row.get("swept_swing_low_timestamp")),
-                    bars_since_swing=_bars(row.get("bars_since_swing_low")),
-                )
-            )
-    return events
+    return candidates

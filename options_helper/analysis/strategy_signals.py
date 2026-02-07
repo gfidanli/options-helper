@@ -1,0 +1,217 @@
+from __future__ import annotations
+
+from collections.abc import Callable
+from datetime import datetime
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+from options_helper.analysis.sfp import compute_sfp_signals, extract_sfp_signal_candidates
+from options_helper.schemas.strategy_modeling_contracts import EntryPriceSource, StrategySignalEvent
+
+
+StrategySignalAdapter = Callable[..., list[StrategySignalEvent]]
+
+_DEFAULT_ENTRY_PRICE_SOURCE: EntryPriceSource = "first_tradable_bar_open_after_signal_confirmed_ts"
+_SIGNAL_ADAPTER_REGISTRY: dict[str, StrategySignalAdapter] = {}
+
+
+def _strategy_key(strategy: str) -> str:
+    key = str(strategy).strip().lower()
+    if not key:
+        raise ValueError("strategy must be non-empty")
+    return key
+
+
+def _normalize_timeframe_label(timeframe: str | None) -> str:
+    if timeframe is None:
+        return "1d"
+    label = str(timeframe).strip()
+    if not label:
+        return "1d"
+    if label.lower() in {"native", "raw", "none"}:
+        return "1d"
+    return label
+
+
+def _to_datetime(value: object) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, pd.Timestamp):
+        return value.to_pydatetime()
+    return pd.Timestamp(value).to_pydatetime()
+
+
+def _float_or_none(value: object) -> float | None:
+    try:
+        number = float(value)
+    except Exception:  # noqa: BLE001
+        return None
+    if not np.isfinite(number):
+        return None
+    return number
+
+
+def register_strategy_signal_adapter(
+    strategy: str,
+    adapter: StrategySignalAdapter,
+    *,
+    replace: bool = False,
+) -> None:
+    key = _strategy_key(strategy)
+    if key in _SIGNAL_ADAPTER_REGISTRY and not replace:
+        raise ValueError(f"strategy adapter already registered: {strategy}")
+    _SIGNAL_ADAPTER_REGISTRY[key] = adapter
+
+
+def get_strategy_signal_adapter(strategy: str) -> StrategySignalAdapter:
+    key = _strategy_key(strategy)
+    adapter = _SIGNAL_ADAPTER_REGISTRY.get(key)
+    if adapter is None:
+        registered = ", ".join(sorted(_SIGNAL_ADAPTER_REGISTRY)) or "<none>"
+        raise KeyError(f"Unknown strategy signal adapter: {strategy}. Registered: {registered}")
+    return adapter
+
+
+def list_registered_strategy_signal_adapters() -> tuple[str, ...]:
+    return tuple(sorted(_SIGNAL_ADAPTER_REGISTRY))
+
+
+def build_strategy_signal_events(
+    strategy: str,
+    ohlc: pd.DataFrame,
+    **kwargs: Any,
+) -> list[StrategySignalEvent]:
+    adapter = get_strategy_signal_adapter(strategy)
+    return adapter(ohlc, **kwargs)
+
+
+def normalize_sfp_signal_events(
+    signals: pd.DataFrame,
+    *,
+    symbol: str,
+    timeframe: str | None = "1d",
+    swing_right_bars: int = 1,
+    entry_price_source: EntryPriceSource = _DEFAULT_ENTRY_PRICE_SOURCE,
+) -> list[StrategySignalEvent]:
+    if signals is None or signals.empty:
+        return []
+
+    normalized_symbol = str(symbol).strip().upper()
+    if not normalized_symbol:
+        raise ValueError("symbol must be non-empty")
+
+    required_lag = int(swing_right_bars)
+    if required_lag < 1:
+        raise ValueError("swing_right_bars must be >= 1")
+
+    index_values = list(signals.index)
+    timeframe_label = _normalize_timeframe_label(timeframe)
+    events: list[StrategySignalEvent] = []
+
+    for row in extract_sfp_signal_candidates(signals):
+        row_position = int(row["row_position"])
+        if row_position + 1 >= len(index_values):
+            # The last bar has no first tradable bar after confirmation in this frame.
+            continue
+
+        bars_since_swing = int(row["bars_since_swing"])
+        if bars_since_swing < required_lag:
+            continue
+
+        raw_direction = str(row["direction"])
+        if raw_direction == "bullish":
+            direction = "long"
+        elif raw_direction == "bearish":
+            direction = "short"
+        else:
+            continue
+
+        signal_ts = _to_datetime(index_values[row_position])
+        signal_confirmed_ts = signal_ts
+        entry_ts = _to_datetime(index_values[row_position + 1])
+        if entry_ts <= signal_confirmed_ts:
+            continue
+
+        signal_open = _float_or_none(row.get("candle_open"))
+        signal_high = _float_or_none(row.get("candle_high"))
+        signal_low = _float_or_none(row.get("candle_low"))
+        signal_close = _float_or_none(row.get("candle_close"))
+        stop_price = signal_low if direction == "long" else signal_high
+
+        notes = [
+            f"swept_swing_timestamp={row['swept_swing_timestamp']}",
+            f"sweep_level={row['sweep_level']}",
+            f"bars_since_swing={bars_since_swing}",
+            f"swing_right_bars={required_lag}",
+            "entry_ts_policy=next_bar_open_after_signal_confirmed_ts",
+        ]
+
+        event_id = (
+            f"sfp:{normalized_symbol}:{timeframe_label}:"
+            f"{pd.Timestamp(signal_ts).isoformat()}:{direction}"
+        )
+        events.append(
+            StrategySignalEvent(
+                event_id=event_id,
+                strategy="sfp",
+                symbol=normalized_symbol,
+                timeframe=timeframe_label,
+                direction=direction,
+                signal_ts=signal_ts,
+                signal_confirmed_ts=signal_confirmed_ts,
+                entry_ts=entry_ts,
+                entry_price_source=entry_price_source,
+                signal_open=signal_open,
+                signal_high=signal_high,
+                signal_low=signal_low,
+                signal_close=signal_close,
+                stop_price=stop_price,
+                notes=notes,
+            )
+        )
+
+    return events
+
+
+def adapt_sfp_signal_events(
+    ohlc: pd.DataFrame,
+    *,
+    symbol: str,
+    timeframe: str | None = None,
+    swing_left_bars: int = 1,
+    swing_right_bars: int = 1,
+    min_swing_distance_bars: int = 1,
+    ignore_swept_swings: bool = False,
+    entry_price_source: EntryPriceSource = _DEFAULT_ENTRY_PRICE_SOURCE,
+) -> list[StrategySignalEvent]:
+    signals = compute_sfp_signals(
+        ohlc,
+        swing_left_bars=swing_left_bars,
+        swing_right_bars=swing_right_bars,
+        min_swing_distance_bars=min_swing_distance_bars,
+        ignore_swept_swings=ignore_swept_swings,
+        timeframe=timeframe,
+    )
+    return normalize_sfp_signal_events(
+        signals,
+        symbol=symbol,
+        timeframe=timeframe,
+        swing_right_bars=swing_right_bars,
+        entry_price_source=entry_price_source,
+    )
+
+
+register_strategy_signal_adapter("sfp", adapt_sfp_signal_events, replace=True)
+
+
+__all__ = [
+    "StrategySignalAdapter",
+    "adapt_sfp_signal_events",
+    "build_strategy_signal_events",
+    "get_strategy_signal_adapter",
+    "list_registered_strategy_signal_adapters",
+    "normalize_sfp_signal_events",
+    "register_strategy_signal_adapter",
+]

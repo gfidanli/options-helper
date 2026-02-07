@@ -119,9 +119,18 @@ T0 ──┬── T1 ──┬── T4A ──┬── T5 ── T6 ── T7
 - **location**: `options_helper/analysis/strategy_signals.py`, `options_helper/analysis/sfp.py`
 - **description**: Normalize SFP detections into one signal-event schema and register the strategy via registry to enable engine reuse. Ensure swing confirmation lag is preserved (`signal_confirmed_ts` only after right-side bars).
 - **validation**: Tests assert normalized SFP outputs plus confirmation-lag and next-bar execution semantics.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added new strategy signal adapter registry module with deterministic register/get/list/build APIs and default SFP registration.
+  - Added SFP normalization adapter that emits `StrategySignalEvent` rows with anti-lookahead fields (`signal_ts`, `signal_confirmed_ts`, `entry_ts`, `entry_price_source`) and next-bar entry anchoring.
+  - Added reusable SFP directional candidate extraction helper in `sfp.py` so normalization and legacy event extraction share one deterministic source.
+  - Added targeted tests covering registry behavior, normalized SFP contract output, confirmation-lag semantics (`swing_right_bars`), and next-bar execution anchor behavior.
+  - Errors: none.
 - **files edited/created**:
+  - `options_helper/analysis/sfp.py`
+  - `options_helper/analysis/strategy_signals.py`
+  - `tests/test_strategy_signals.py`
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ### T4B: Add MSB Adapter to Strategy Registry
 - **depends_on**: [T4A]
