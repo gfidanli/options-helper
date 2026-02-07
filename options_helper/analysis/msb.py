@@ -1,11 +1,30 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from options_helper.analysis.sfp import normalize_ohlc_frame, resample_ohlc_frame
+
+
+_DIRECTIONAL_SIGNAL_SPECS = (
+    (
+        "bullish_msb",
+        "bullish",
+        "broken_swing_high_level",
+        "broken_swing_high_timestamp",
+        "bars_since_swing_high",
+    ),
+    (
+        "bearish_msb",
+        "bearish",
+        "broken_swing_low_level",
+        "broken_swing_low_timestamp",
+        "bars_since_swing_low",
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -178,10 +197,28 @@ def compute_msb_signals(
 
 
 def extract_msb_events(signals: pd.DataFrame) -> list[MsbEvent]:
+    rows = extract_msb_signal_candidates(signals)
+    return [
+        MsbEvent(
+            timestamp=str(row["timestamp"]),
+            direction=str(row["direction"]),
+            candle_open=float(row["candle_open"]),
+            candle_high=float(row["candle_high"]),
+            candle_low=float(row["candle_low"]),
+            candle_close=float(row["candle_close"]),
+            break_level=float(row["break_level"]),
+            broken_swing_timestamp=str(row["broken_swing_timestamp"]),
+            bars_since_swing=int(row["bars_since_swing"]),
+        )
+        for row in rows
+    ]
+
+
+def extract_msb_signal_candidates(signals: pd.DataFrame) -> list[dict[str, Any]]:
     if signals is None or signals.empty:
         return []
 
-    events: list[MsbEvent] = []
+    candidates: list[dict[str, Any]] = []
 
     def _value_or_default(value: object, default: float = float("nan")) -> float:
         try:
@@ -200,40 +237,35 @@ def extract_msb_events(signals: pd.DataFrame) -> list[MsbEvent]:
             return value.isoformat()
         return str(value)
 
-    for idx, row in signals.iterrows():
+    for row_position, (idx, row) in enumerate(signals.iterrows()):
         ts = _timestamp(idx)
         o = _value_or_default(row.get("Open"))
         h = _value_or_default(row.get("High"))
         low_val = _value_or_default(row.get("Low"))
         c = _value_or_default(row.get("Close"))
 
-        if bool(row.get("bullish_msb", False)):
-            events.append(
-                MsbEvent(
-                    timestamp=ts,
-                    direction="bullish",
-                    candle_open=o,
-                    candle_high=h,
-                    candle_low=low_val,
-                    candle_close=c,
-                    break_level=_value_or_default(row.get("broken_swing_high_level")),
-                    broken_swing_timestamp=str(row.get("broken_swing_high_timestamp")),
-                    bars_since_swing=_bars(row.get("bars_since_swing_high")),
-                )
+        for (
+            flag_column,
+            direction,
+            break_level_column,
+            broken_timestamp_column,
+            bars_column,
+        ) in _DIRECTIONAL_SIGNAL_SPECS:
+            if not bool(row.get(flag_column, False)):
+                continue
+            candidates.append(
+                {
+                    "row_position": row_position,
+                    "index_value": idx,
+                    "timestamp": ts,
+                    "direction": direction,
+                    "candle_open": o,
+                    "candle_high": h,
+                    "candle_low": low_val,
+                    "candle_close": c,
+                    "break_level": _value_or_default(row.get(break_level_column)),
+                    "broken_swing_timestamp": str(row.get(broken_timestamp_column)),
+                    "bars_since_swing": _bars(row.get(bars_column)),
+                }
             )
-        if bool(row.get("bearish_msb", False)):
-            events.append(
-                MsbEvent(
-                    timestamp=ts,
-                    direction="bearish",
-                    candle_open=o,
-                    candle_high=h,
-                    candle_low=low_val,
-                    candle_close=c,
-                    break_level=_value_or_default(row.get("broken_swing_low_level")),
-                    broken_swing_timestamp=str(row.get("broken_swing_low_timestamp")),
-                    bars_since_swing=_bars(row.get("bars_since_swing_low")),
-                )
-            )
-
-    return events
+    return candidates

@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from options_helper.analysis.msb import compute_msb_signals, extract_msb_signal_candidates
 from options_helper.analysis.sfp import compute_sfp_signals, extract_sfp_signal_candidates
 from options_helper.schemas.strategy_modeling_contracts import EntryPriceSource, StrategySignalEvent
 
@@ -175,6 +176,94 @@ def normalize_sfp_signal_events(
     return events
 
 
+def normalize_msb_signal_events(
+    signals: pd.DataFrame,
+    *,
+    symbol: str,
+    timeframe: str | None = "1d",
+    swing_right_bars: int = 1,
+    entry_price_source: EntryPriceSource = _DEFAULT_ENTRY_PRICE_SOURCE,
+) -> list[StrategySignalEvent]:
+    if signals is None or signals.empty:
+        return []
+
+    normalized_symbol = str(symbol).strip().upper()
+    if not normalized_symbol:
+        raise ValueError("symbol must be non-empty")
+
+    required_lag = int(swing_right_bars)
+    if required_lag < 1:
+        raise ValueError("swing_right_bars must be >= 1")
+
+    index_values = list(signals.index)
+    timeframe_label = _normalize_timeframe_label(timeframe)
+    events: list[StrategySignalEvent] = []
+
+    for row in extract_msb_signal_candidates(signals):
+        row_position = int(row["row_position"])
+        if row_position + 1 >= len(index_values):
+            # The last bar has no first tradable bar after confirmation in this frame.
+            continue
+
+        bars_since_swing = int(row["bars_since_swing"])
+        if bars_since_swing < required_lag:
+            continue
+
+        raw_direction = str(row["direction"])
+        if raw_direction == "bullish":
+            direction = "long"
+        elif raw_direction == "bearish":
+            direction = "short"
+        else:
+            continue
+
+        signal_ts = _to_datetime(index_values[row_position])
+        signal_confirmed_ts = signal_ts
+        entry_ts = _to_datetime(index_values[row_position + 1])
+        if entry_ts <= signal_confirmed_ts:
+            continue
+
+        signal_open = _float_or_none(row.get("candle_open"))
+        signal_high = _float_or_none(row.get("candle_high"))
+        signal_low = _float_or_none(row.get("candle_low"))
+        signal_close = _float_or_none(row.get("candle_close"))
+        stop_price = signal_low if direction == "long" else signal_high
+
+        notes = [
+            f"broken_swing_timestamp={row['broken_swing_timestamp']}",
+            f"break_level={row['break_level']}",
+            f"bars_since_swing={bars_since_swing}",
+            f"swing_right_bars={required_lag}",
+            "entry_ts_policy=next_bar_open_after_signal_confirmed_ts",
+        ]
+
+        event_id = (
+            f"msb:{normalized_symbol}:{timeframe_label}:"
+            f"{pd.Timestamp(signal_ts).isoformat()}:{direction}"
+        )
+        events.append(
+            StrategySignalEvent(
+                event_id=event_id,
+                strategy="msb",
+                symbol=normalized_symbol,
+                timeframe=timeframe_label,
+                direction=direction,
+                signal_ts=signal_ts,
+                signal_confirmed_ts=signal_confirmed_ts,
+                entry_ts=entry_ts,
+                entry_price_source=entry_price_source,
+                signal_open=signal_open,
+                signal_high=signal_high,
+                signal_low=signal_low,
+                signal_close=signal_close,
+                stop_price=stop_price,
+                notes=notes,
+            )
+        )
+
+    return events
+
+
 def adapt_sfp_signal_events(
     ohlc: pd.DataFrame,
     *,
@@ -203,15 +292,44 @@ def adapt_sfp_signal_events(
     )
 
 
+def adapt_msb_signal_events(
+    ohlc: pd.DataFrame,
+    *,
+    symbol: str,
+    timeframe: str | None = None,
+    swing_left_bars: int = 1,
+    swing_right_bars: int = 1,
+    min_swing_distance_bars: int = 1,
+    entry_price_source: EntryPriceSource = _DEFAULT_ENTRY_PRICE_SOURCE,
+) -> list[StrategySignalEvent]:
+    signals = compute_msb_signals(
+        ohlc,
+        swing_left_bars=swing_left_bars,
+        swing_right_bars=swing_right_bars,
+        min_swing_distance_bars=min_swing_distance_bars,
+        timeframe=timeframe,
+    )
+    return normalize_msb_signal_events(
+        signals,
+        symbol=symbol,
+        timeframe=timeframe,
+        swing_right_bars=swing_right_bars,
+        entry_price_source=entry_price_source,
+    )
+
+
 register_strategy_signal_adapter("sfp", adapt_sfp_signal_events, replace=True)
+register_strategy_signal_adapter("msb", adapt_msb_signal_events, replace=True)
 
 
 __all__ = [
     "StrategySignalAdapter",
+    "adapt_msb_signal_events",
     "adapt_sfp_signal_events",
     "build_strategy_signal_events",
     "get_strategy_signal_adapter",
     "list_registered_strategy_signal_adapters",
+    "normalize_msb_signal_events",
     "normalize_sfp_signal_events",
     "register_strategy_signal_adapter",
 ]

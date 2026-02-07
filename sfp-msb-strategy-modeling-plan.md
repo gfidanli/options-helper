@@ -137,9 +137,18 @@ T0 ──┬── T1 ──┬── T4A ──┬── T5 ── T6 ── T7
 - **location**: `options_helper/analysis/strategy_signals.py`, `options_helper/analysis/msb.py`
 - **description**: Plug MSB into the same normalized signal schema/registry so the engine can run SFP and MSB through identical simulation/metrics flows.
 - **validation**: Tests assert MSB adapter parity with SFP contract fields and confirmation-lag semantics.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added reusable MSB directional candidate extraction helper (`extract_msb_signal_candidates`) carrying `row_position` for deterministic next-bar entry anchoring.
+  - Added MSB normalization/adapter path in strategy signal registry (`normalize_msb_signal_events`, `adapt_msb_signal_events`) and registered `msb` alongside `sfp`.
+  - Added parity tests for registry presence, normalized contract field parity with SFP, confirmation-lag notes/semantics, and final-bar no-entry skip behavior.
+  - Validation: `./.venv/bin/python -m pytest tests/test_strategy_signals.py` (7 passed).
+  - Errors: none.
 - **files edited/created**:
+  - `options_helper/analysis/msb.py`
+  - `options_helper/analysis/strategy_signals.py`
+  - `tests/test_strategy_signals.py`
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ### T5: Implement Per-Trade Path Simulator (R-Based)
 - **depends_on**: [T0, T1, T4A]
