@@ -88,9 +88,11 @@ Legend:
   - Provide deterministic handling for missing columns (`impliedVolatility`, `bs_delta`, quotes).
 - **validation**:
   - `pytest -k iv_surface` on synthetic chain fixtures.
-- **status**: Not Completed
-- **log**:
+- **status**: Completed
+- **log**: Added deterministic pure IV surface extraction with tenor selection, ATM/straddle/expected-move/skew metrics, delta-bucket summaries, and day-over-day change tables with robust warnings for sparse/missing fields.
 - **files edited/created**:
+  - `options_helper/analysis/iv_surface.py`
+  - `tests/test_iv_surface.py`
 
 ### T3: Dealer/Exposure Metrics (Pure Functions)
 - **depends_on**: [T1]
@@ -109,9 +111,11 @@ Legend:
   - Keep output schema versioned and deterministic.
 - **validation**:
   - `pytest -k exposure` on synthetic strike ladders.
-- **status**: Not Completed
-- **log**:
+- **status**: Completed
+- **log**: Implemented deterministic exposure slice computations (near/monthly/all), strike-level OI/GEX/net tables, top abs-net levels, and cumulative flip heuristic with explicit signed convention and missing-value guardrails.
 - **files edited/created**:
+  - `options_helper/analysis/exposure.py`
+  - `tests/test_exposure.py`
 
 ### T4: Intraday Options Flow from Trades + Quotes (Pure Functions)
 - **depends_on**: [T1]
@@ -133,9 +137,11 @@ Legend:
   - No network calls; inputs are DataFrames loaded by callers.
 - **validation**:
   - `pytest -k intraday_flow` with synthetic quote/trade sequences (including missing/late quotes).
-- **status**: Not Completed
-- **log**:
+- **status**: Completed
+- **log**: Added deterministic trades+quotes alignment/classification pipeline with merge_asof hardening, buy/sell/unknown tagging, per-contract/day summaries, and 5m/15m time-bucket aggregations.
 - **files edited/created**:
+  - `options_helper/analysis/intraday_flow.py`
+  - `tests/test_intraday_flow.py`
 
 ### T5: Underlying Actionable Levels (Anchored VWAP, Volume Profile, RS/Beta)
 - **depends_on**: [T1]
@@ -157,9 +163,11 @@ Legend:
     - treat missing `volume` as 0 and missing prices as NaN (skip bins).
 - **validation**:
   - `pytest -k levels` on synthetic minute and daily candle inputs.
-- **status**: Not Completed
-- **log**:
+- **status**: Completed
+- **log**: Implemented anchored VWAP (session/timestamp/date/breakout anchors), volume profile (POC/HVN/LVN), gap/key level summaries, and RS/beta/correlation metrics with deterministic empty/zero-volume handling.
 - **files edited/created**:
+  - `options_helper/analysis/levels.py`
+  - `tests/test_levels.py`
 
 ### T6: Position Scenario Grid + Decision Table (Pure Functions)
 - **depends_on**: [T1]
@@ -181,9 +189,11 @@ Legend:
     - IV <= 0 => treat as missing; never pass invalid params into BS helpers.
 - **validation**:
   - `pytest -k scenarios` with known BS pricing invariants (monotonicity checks).
-- **status**: Not Completed
-- **log**:
+- **status**: Completed
+- **log**: Added deterministic per-position scenario engine (intrinsic/extrinsic, theta burn, spot/IV/time grids) with robust guards for past expiry and missing spot/mark/iv inputs.
 - **files edited/created**:
+  - `options_helper/analysis/scenarios.py`
+  - `tests/test_scenarios.py`
 
 ### T7.1: Artifact Schema + Fixture — IV Surface
 - **depends_on**: [T2]
@@ -196,9 +206,13 @@ Legend:
   - Add a versioned `IvSurfaceArtifact` schema + minimal fixture validation.
 - **validation**:
   - `pytest -k artifact_fixtures`.
-- **status**: Not Completed
-- **log**:
+- **status**: Completed
+- **log**: Added versioned IV surface artifact schema and minimal fixture validation as part of grouped T7 schema/fixture rollout.
 - **files edited/created**:
+  - `options_helper/schemas/iv_surface.py`
+  - `docs/ARTIFACT_SCHEMAS.md`
+  - `tests/test_artifact_fixtures.py`
+  - `tests/fixtures/artifacts/iv_surface_minimal.json`
 
 ### T7.2: Artifact Schema + Fixture — Exposure
 - **depends_on**: [T3]
@@ -211,9 +225,13 @@ Legend:
   - Add a versioned `ExposureArtifact` schema + minimal fixture validation.
 - **validation**:
   - `pytest -k artifact_fixtures`.
-- **status**: Not Completed
-- **log**:
+- **status**: Completed
+- **log**: Added versioned exposure artifact schema and minimal fixture validation as part of grouped T7 schema/fixture rollout.
 - **files edited/created**:
+  - `options_helper/schemas/exposure.py`
+  - `docs/ARTIFACT_SCHEMAS.md`
+  - `tests/test_artifact_fixtures.py`
+  - `tests/fixtures/artifacts/exposure_minimal.json`
 
 ### T7.3: Artifact Schema + Fixture — Intraday Flow
 - **depends_on**: [T4]
@@ -226,9 +244,13 @@ Legend:
   - Add a versioned `IntradayFlowArtifact` schema + minimal fixture validation.
 - **validation**:
   - `pytest -k artifact_fixtures`.
-- **status**: Not Completed
-- **log**:
+- **status**: Completed
+- **log**: Added versioned intraday-flow artifact schema and minimal fixture validation as part of grouped T7 schema/fixture rollout.
 - **files edited/created**:
+  - `options_helper/schemas/intraday_flow.py`
+  - `docs/ARTIFACT_SCHEMAS.md`
+  - `tests/test_artifact_fixtures.py`
+  - `tests/fixtures/artifacts/intraday_flow_minimal.json`
 
 ### T7.4: Artifact Schema + Fixture — Levels
 - **depends_on**: [T5]
@@ -241,9 +263,13 @@ Legend:
   - Add a versioned `LevelsArtifact` schema + minimal fixture validation.
 - **validation**:
   - `pytest -k artifact_fixtures`.
-- **status**: Not Completed
-- **log**:
+- **status**: Completed
+- **log**: Added versioned levels artifact schema and minimal fixture validation as part of grouped T7 schema/fixture rollout.
 - **files edited/created**:
+  - `options_helper/schemas/levels.py`
+  - `docs/ARTIFACT_SCHEMAS.md`
+  - `tests/test_artifact_fixtures.py`
+  - `tests/fixtures/artifacts/levels_minimal.json`
 
 ### T7.5: Artifact Schema + Fixture — Scenarios
 - **depends_on**: [T6]
@@ -256,15 +282,19 @@ Legend:
   - Add a versioned `ScenariosArtifact` schema + minimal fixture validation.
 - **validation**:
   - `pytest -k artifact_fixtures`.
-- **status**: Not Completed
-- **log**:
+- **status**: Completed
+- **log**: Added versioned scenarios artifact schema and minimal fixture validation as part of grouped T7 schema/fixture rollout.
 - **files edited/created**:
+  - `options_helper/schemas/scenarios.py`
+  - `docs/ARTIFACT_SCHEMAS.md`
+  - `tests/test_artifact_fixtures.py`
+  - `tests/fixtures/artifacts/scenarios_minimal.json`
 
-### T8: DuckDB Schema Migration v4 + Stores for New Tables
+### T8: DuckDB Schema Migration v5 + Stores for New Tables
 - **depends_on**: [T1, T2, T3]
 - **location**:
   - `options_helper/db/migrations.py`
-  - `options_helper/db/schema_v4.sql` (new)
+  - `options_helper/db/schema_v5.sql` (new)
   - `options_helper/data/stores_duckdb.py`
   - `options_helper/data/store_factory.py`
   - `docs/DUCKDB.md` (update “what gets stored where”)
@@ -277,9 +307,17 @@ Legend:
   - Implement DuckDB store APIs to upsert/query these tables (thin, deterministic).
 - **validation**:
   - `options-helper db init` (migration applies) + unit tests for store read/write with temp duckdb path.
-- **status**: Not Completed
-- **log**:
+- **status**: Completed
+- **log**: Added additive/idempotent schema v5 migration for research metrics tables and implemented DuckDB upsert/query APIs (`DuckDBResearchMetricsStore`) wired through store factory.
 - **files edited/created**:
+  - `options_helper/db/migrations.py`
+  - `options_helper/db/schema_v5.sql`
+  - `options_helper/data/stores_duckdb.py`
+  - `options_helper/data/store_factory.py`
+  - `docs/DUCKDB.md`
+  - `tests/test_duckdb_migrations.py`
+  - `tests/test_duckdb_migrations_v2.py`
+  - `tests/test_duckdb_research_metrics_store.py`
 
 ### T9: CLI Commands — IV Surface + Exposure
 - **depends_on**: [T2, T3, T7.1, T7.2] (and [T8] if persistence enabled)
@@ -295,9 +333,13 @@ Legend:
   - Optional: upsert to DuckDB tables when backend is duckdb.
 - **validation**:
   - CLI smoke tests using fixture snapshots (no network) + `pytest -k market_analysis`.
-- **status**: Not Completed
-- **log**:
+- **status**: Completed
+- **log**: Added `market-analysis iv-surface` and `market-analysis exposure` commands with offline snapshot/candle inputs, console/json outputs, artifact writing, and optional DuckDB persistence hooks.
 - **files edited/created**:
+  - `options_helper/commands/market_analysis.py`
+  - `docs/IV_SURFACE.md`
+  - `docs/DEALER_EXPOSURE.md`
+  - `tests/test_market_analysis_cli.py`
 
 ### T10: CLI Commands — Intraday Flow + Levels
 - **depends_on**: [T4, T5, T7.3, T7.4] (and [T8] if persistence enabled)
@@ -315,9 +357,15 @@ Legend:
   - (Optional v2) REST backfill path: use Alpaca `OptionHistoricalDataClient.get_option_trades` to backfill missing days.
 - **validation**:
   - `pytest -k intraday` and a no-network run over synthetic partitions in `tests/fixtures/intraday/`.
-- **status**: Not Completed
-- **log**:
+- **status**: Completed
+- **log**: Added `intraday flow` offline summarizer over local quotes/trades partitions and `market-analysis levels` candle/intraday report command with deterministic JSON/console outputs.
 - **files edited/created**:
+  - `options_helper/commands/intraday.py`
+  - `options_helper/commands/market_analysis.py`
+  - `docs/INTRADAY_FLOW.md`
+  - `docs/LEVELS.md`
+  - `tests/test_intraday_cli.py`
+  - `tests/test_market_analysis_cli.py`
 
 ### T11: CLI Command — Position Scenarios
 - **depends_on**: [T6, T7.5]
@@ -332,9 +380,14 @@ Legend:
   - Keep `analyze` output mostly unchanged; optionally add a `--show-scenarios` flag later.
 - **validation**:
   - `pytest -k scenarios_command` + offline run on a tiny portfolio fixture.
-- **status**: Not Completed
-- **log**:
+- **status**: Completed
+- **log**: Added `scenarios` / `position-scenarios` portfolio command with compact console output and per-position JSON artifacts under `{out}/scenarios/{PORTFOLIO_DATE}/...`.
 - **files edited/created**:
+  - `options_helper/commands/portfolio.py`
+  - `docs/POSITION_SCENARIOS.md`
+  - `docs/ARTIFACT_SCHEMAS.md`
+  - `mkdocs.yml`
+  - `tests/test_scenarios_command.py`
 
 ### T12: Report Pack + Daily Briefing Integration
 - **depends_on**: [T9, T10, T11]
@@ -357,9 +410,12 @@ Legend:
     - exposure “top levels” near spot.
 - **validation**:
   - Run `options-helper report-pack ...` against fixture stores in tests; ensure deterministic output paths and schemas.
-- **status**: Not Completed
-- **log**:
+- **status**: Completed
+- **log**: Extended `report-pack` to generate iv-surface/exposure/levels artifacts and optional per-position scenarios artifacts with filesystem-first fallback behavior and skip/warn (no hard fail) semantics.
 - **files edited/created**:
+  - `options_helper/commands/reports.py`
+  - `docs/REPORT_PACK.md`
+  - `tests/test_report_pack_cli.py`
 
 ### T13: Portal (Streamlit) Surfaces
 - **depends_on**: [T8, T9, T10, T12]
@@ -373,9 +429,13 @@ Legend:
     - intraday flow summary (if persisted) with top strikes/contracts.
 - **validation**:
   - Manual: `options-helper ui` renders pages with empty-data fallbacks and no crashes.
-- **status**: Not Completed
-- **log**:
+- **status**: Completed
+- **log**: Added Streamlit research-metrics portal tabs/panels for IV surface, exposure-by-strike (with flip marker), and persisted intraday-flow summaries with robust missing-db/table fallbacks.
 - **files edited/created**:
+  - `apps/streamlit/components/research_metrics_page.py`
+  - `apps/streamlit/pages/07_Market_Analysis.py`
+  - `docs/PORTAL_STREAMLIT.md`
+  - `tests/portal/test_research_metrics_queries.py`
 
 ## Parallel Execution Groups
 
