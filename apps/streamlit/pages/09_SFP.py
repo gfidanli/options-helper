@@ -46,9 +46,9 @@ def _render_events_table(df: pd.DataFrame, *, title: str, tail_low_pct: float, t
             "candle_close": "close",
             "sweep_level": "sweep",
             "extension_percentile": "ext_pct",
-            "forward_1d_pct": "ret_1d_pct",
-            "forward_5d_pct": "ret_5d_pct",
-            "forward_10d_pct": "ret_10d_pct",
+            "forward_1d_pct": "max_1d_pct",
+            "forward_5d_pct": "max_5d_pct",
+            "forward_10d_pct": "max_10d_pct",
             "week_has_daily_extension_extreme": "week_has_daily_extreme",
         }
     )
@@ -65,9 +65,9 @@ def _render_events_table(df: pd.DataFrame, *, title: str, tail_low_pct: float, t
         "extension_atr",
         "rsi",
         "rsi_regime",
-        "ret_1d_pct",
-        "ret_5d_pct",
-        "ret_10d_pct",
+        "max_1d_pct",
+        "max_5d_pct",
+        "max_10d_pct",
         "swept_swing_date",
         "bars_from_swing",
     ]
@@ -75,7 +75,7 @@ def _render_events_table(df: pd.DataFrame, *, title: str, tail_low_pct: float, t
         ordered_cols.insert(10, "week_has_daily_extreme")
 
     display = display.reindex(columns=[col for col in ordered_cols if col in display.columns])
-    for column in ("close", "sweep", "ext_pct", "extension_atr", "rsi", "ret_1d_pct", "ret_5d_pct", "ret_10d_pct"):
+    for column in ("close", "sweep", "ext_pct", "extension_atr", "rsi", "max_1d_pct", "max_5d_pct", "max_10d_pct"):
         if column in display.columns:
             display[column] = display[column].map(_fmt_float)
 
@@ -179,12 +179,12 @@ else:
         columns={
             "group": "group",
             "count": "count",
-            "median_1d_pct": "median_1d_pct",
-            "median_5d_pct": "median_5d_pct",
-            "median_10d_pct": "median_10d_pct",
+            "median_1d_pct": "median_max_1d_pct",
+            "median_5d_pct": "median_max_5d_pct",
+            "median_10d_pct": "median_max_10d_pct",
         }
     )
-    for column in ("median_1d_pct", "median_5d_pct", "median_10d_pct"):
+    for column in ("median_max_1d_pct", "median_max_5d_pct", "median_max_10d_pct"):
         if column in summary_display.columns:
             summary_display[column] = summary_display[column].map(_fmt_pct)
     st.dataframe(summary_display, hide_index=True, use_container_width=True)

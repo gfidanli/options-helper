@@ -156,6 +156,9 @@ def _build_sfp_payload_cached(
         }
 
     daily_close = daily_ohlc["Close"].astype("float64")
+    daily_open = daily_ohlc["Open"].astype("float64")
+    daily_high = daily_ohlc["High"].astype("float64")
+    daily_low = daily_ohlc["Low"].astype("float64")
     daily_rsi = _rsi_series(daily_close)
     daily_ext, daily_ext_pct = _compute_extension_percentile_series(daily_ohlc)
     week_start_idx_daily = pd.DatetimeIndex([_week_start_monday(ts) for ts in daily_ohlc.index])
@@ -180,6 +183,9 @@ def _build_sfp_payload_cached(
     daily_events = _events_from_signals(
         signals=daily_signals,
         source_daily_close=daily_close,
+        source_daily_open=daily_open,
+        source_daily_high=daily_high,
+        source_daily_low=daily_low,
         rsi_series=daily_rsi,
         extension_series=daily_ext,
         extension_percentile_series=daily_ext_pct,
@@ -208,6 +214,9 @@ def _build_sfp_payload_cached(
     weekly_events = _events_from_signals(
         signals=weekly_signals,
         source_daily_close=daily_close,
+        source_daily_open=daily_open,
+        source_daily_high=daily_high,
+        source_daily_low=daily_low,
         rsi_series=weekly_rsi,
         extension_series=weekly_ext,
         extension_percentile_series=weekly_ext_pct,
@@ -351,8 +360,10 @@ def _week_start_monday(ts: pd.Timestamp) -> pd.Timestamp:
 
 def _forward_returns_from_anchor(
     *,
-    daily_close: pd.Series,
-    event_close: float,
+    daily_open: pd.Series,
+    daily_high: pd.Series,
+    daily_low: pd.Series,
+    direction: str,
     anchor_pos: int | None,
 ) -> dict[str, float | None]:
     out: dict[str, float | None] = {}
@@ -360,12 +371,39 @@ def _forward_returns_from_anchor(
         if anchor_pos is None:
             out[f"forward_{horizon}d_pct"] = None
             continue
-        j = int(anchor_pos) + int(horizon)
-        if j >= len(daily_close):
+        start = int(anchor_pos) + 1
+        end = int(anchor_pos) + int(horizon) + 1
+        if start >= len(daily_high):
             out[f"forward_{horizon}d_pct"] = None
             continue
-        c1 = float(daily_close.iloc[j])
-        out[f"forward_{horizon}d_pct"] = None if event_close == 0.0 else round((c1 / event_close - 1.0) * 100.0, 2)
+        end = min(end, len(daily_high))
+        if end <= start:
+            out[f"forward_{horizon}d_pct"] = None
+            continue
+
+        entry_open = pd.to_numeric(daily_open.iloc[start : start + 1], errors="coerce").dropna()
+        if entry_open.empty:
+            out[f"forward_{horizon}d_pct"] = None
+            continue
+        entry_price = float(entry_open.iloc[0])
+        if entry_price == 0.0:
+            out[f"forward_{horizon}d_pct"] = None
+            continue
+
+        if str(direction).lower() == "bearish":
+            window_low = pd.to_numeric(daily_low.iloc[start:end], errors="coerce").dropna()
+            if window_low.empty:
+                out[f"forward_{horizon}d_pct"] = None
+                continue
+            move_pct = (float(window_low.min()) / entry_price - 1.0) * 100.0
+            out[f"forward_{horizon}d_pct"] = round(min(0.0, move_pct), 2)
+        else:
+            window_high = pd.to_numeric(daily_high.iloc[start:end], errors="coerce").dropna()
+            if window_high.empty:
+                out[f"forward_{horizon}d_pct"] = None
+                continue
+            move_pct = (float(window_high.max()) / entry_price - 1.0) * 100.0
+            out[f"forward_{horizon}d_pct"] = round(max(0.0, move_pct), 2)
     return out
 
 
@@ -373,6 +411,9 @@ def _events_from_signals(
     *,
     signals: pd.DataFrame,
     source_daily_close: pd.Series,
+    source_daily_open: pd.Series,
+    source_daily_high: pd.Series,
+    source_daily_low: pd.Series,
     rsi_series: pd.Series,
     extension_series: pd.Series,
     extension_percentile_series: pd.Series,
@@ -447,8 +488,10 @@ def _events_from_signals(
         }
         formatted.update(
             _forward_returns_from_anchor(
-                daily_close=source_daily_close,
-                event_close=event_close,
+                daily_open=source_daily_open,
+                daily_high=source_daily_high,
+                daily_low=source_daily_low,
+                direction=str(row["direction"]),
                 anchor_pos=anchor_pos,
             )
         )

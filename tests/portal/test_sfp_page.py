@@ -114,11 +114,31 @@ def test_sfp_page_helpers_with_seeded_db(tmp_path: Path) -> None:
         assert "T" not in str(ev["event_ts"])
         assert "extension_percentile" in ev
         assert {"forward_1d_pct", "forward_5d_pct", "forward_10d_pct"}.issubset(ev.keys())
+        for row in daily_events:
+            direction = str(row.get("direction") or "").lower()
+            for key in ("forward_1d_pct", "forward_5d_pct", "forward_10d_pct"):
+                value = row.get(key)
+                if value is None:
+                    continue
+                if direction == "bullish":
+                    assert float(value) >= 0.0
+                if direction == "bearish":
+                    assert float(value) <= 0.0
 
     if weekly_events:
         evw = weekly_events[0]
         assert "T" not in str(evw["event_ts"])
         assert "week_has_daily_extension_extreme" in evw
+        for row in weekly_events:
+            direction = str(row.get("direction") or "").lower()
+            for key in ("forward_1d_pct", "forward_5d_pct", "forward_10d_pct"):
+                value = row.get(key)
+                if value is None:
+                    continue
+                if direction == "bullish":
+                    assert float(value) >= 0.0
+                if direction == "bearish":
+                    assert float(value) <= 0.0
 
 
 def test_sfp_page_helpers_handle_missing_db(tmp_path: Path) -> None:
@@ -142,3 +162,37 @@ def test_sfp_page_helpers_handle_missing_db(tmp_path: Path) -> None:
     assert payload["daily_events"] == []
     assert payload["weekly_events"] == []
     assert payload["notes"]
+
+
+def test_forward_max_move_uses_next_open_entry_and_directional_sign() -> None:
+    pytest.importorskip("streamlit")
+    from apps.streamlit.components.sfp_page import _forward_returns_from_anchor
+
+    daily_open = pd.Series([100.0, 90.0, 95.0, 96.0], dtype="float64")
+    daily_high = pd.Series([101.0, 92.0, 105.0, 97.0], dtype="float64")
+    daily_low = pd.Series([99.0, 88.0, 94.0, 80.0], dtype="float64")
+
+    # Anchor at index 0 => entry is next open (index 1 = 90.0).
+    bullish = _forward_returns_from_anchor(
+        daily_open=daily_open,
+        daily_high=daily_high,
+        daily_low=daily_low,
+        direction="bullish",
+        anchor_pos=0,
+    )
+    bearish = _forward_returns_from_anchor(
+        daily_open=daily_open,
+        daily_high=daily_high,
+        daily_low=daily_low,
+        direction="bearish",
+        anchor_pos=0,
+    )
+
+    # 1d bullish uses day-1 high 92 from entry 90 => +2.22%
+    assert bullish["forward_1d_pct"] == pytest.approx(2.22, abs=1e-2)
+    # 1d bearish uses day-1 low 88 from entry 90 => -2.22%
+    assert bearish["forward_1d_pct"] == pytest.approx(-2.22, abs=1e-2)
+
+    # 5d window here truncates to available future bars; bullish max high=105, bearish min low=80.
+    assert bullish["forward_5d_pct"] == pytest.approx(16.67, abs=1e-2)
+    assert bearish["forward_5d_pct"] == pytest.approx(-11.11, abs=1e-2)
