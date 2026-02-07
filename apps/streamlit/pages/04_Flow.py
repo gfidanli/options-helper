@@ -5,6 +5,8 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
+st.set_page_config(layout="wide", initial_sidebar_state="expanded")
+
 from apps.streamlit.components.flow_page import (
     DEFAULT_FLOW_GROUP,
     FLOW_GROUP_VALUES,

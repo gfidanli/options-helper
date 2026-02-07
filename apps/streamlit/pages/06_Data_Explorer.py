@@ -3,6 +3,8 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+st.set_page_config(layout="wide", initial_sidebar_state="expanded")
+
 from apps.streamlit.components.data_explorer_page import (
     build_select_sql,
     list_database_schemas,

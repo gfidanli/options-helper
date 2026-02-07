@@ -5,6 +5,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+st.set_page_config(layout="wide", initial_sidebar_state="expanded")
+
 from apps.streamlit.components.sfp_page import (
     list_sfp_symbols,
     load_sfp_payload,

@@ -3,6 +3,8 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+st.set_page_config(layout="wide", initial_sidebar_state="expanded")
+
 from apps.streamlit.components.derived_history_page import (
     build_derived_latest_summary,
     list_derived_symbols,

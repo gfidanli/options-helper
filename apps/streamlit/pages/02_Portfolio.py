@@ -3,6 +3,8 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+st.set_page_config(layout="wide", initial_sidebar_state="expanded")
+
 from apps.streamlit.components.portfolio_page import (
     build_portfolio_risk_summary,
     build_positions_dataframe,

@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+st.set_page_config(layout="wide", initial_sidebar_state="expanded")
+
 from apps.streamlit.components.market_analysis_page import (
     compute_end_return_percentile,
     compute_tail_risk_for_symbol,

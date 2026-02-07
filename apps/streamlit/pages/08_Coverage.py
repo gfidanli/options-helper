@@ -5,6 +5,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+st.set_page_config(layout="wide", initial_sidebar_state="expanded")
+
 from apps.streamlit.components.coverage_page import (
     list_coverage_symbols,
     load_coverage_payload,

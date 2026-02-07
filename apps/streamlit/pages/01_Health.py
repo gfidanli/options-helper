@@ -3,6 +3,8 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+st.set_page_config(layout="wide", initial_sidebar_state="expanded")
+
 from apps.streamlit.components.gap_planner import build_gap_backfill_plan
 from apps.streamlit.components.health_page import HealthSnapshot, load_health_snapshot
 
