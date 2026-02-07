@@ -287,7 +287,7 @@ class DuckDBCandleStore(CandleStore):
             return None
         df = self.warehouse.fetch_df(
             """
-            SELECT updated_at, rows, start_ts, end_ts
+            SELECT updated_at, rows, start_ts, end_ts, max_backfill_complete
             FROM candles_meta
             WHERE symbol = ? AND interval = ? AND auto_adjust = ? AND back_adjust = ?
             """,
@@ -297,7 +297,7 @@ class DuckDBCandleStore(CandleStore):
             return None
         row = df.iloc[0].to_dict()
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "symbol": sym,
             "interval": self.interval,
             "auto_adjust": bool(self.auto_adjust),
@@ -306,6 +306,7 @@ class DuckDBCandleStore(CandleStore):
             "rows": int(row.get("rows") or 0),
             "start": str(row.get("start_ts")) if row.get("start_ts") is not None else None,
             "end": str(row.get("end_ts")) if row.get("end_ts") is not None else None,
+            "max_backfill_complete": bool(row.get("max_backfill_complete")),
             "source": "duckdb",
         }
 
@@ -349,7 +350,13 @@ class DuckDBCandleStore(CandleStore):
         df = df[~df.index.duplicated(keep="last")].sort_index()
         return df
 
-    def _save_duckdb(self, symbol: str, history: pd.DataFrame) -> None:
+    def _save_duckdb(
+        self,
+        symbol: str,
+        history: pd.DataFrame,
+        *,
+        max_backfill_complete: bool | None = None,
+    ) -> None:
         sym = str(symbol).strip().upper()
         if not sym:
             raise CandleCacheError("symbol required")
@@ -392,16 +399,15 @@ class DuckDBCandleStore(CandleStore):
         now = datetime.now(timezone.utc)
         start_ts = out["ts"].min()
         end_ts = out["ts"].max()
+        if max_backfill_complete is None:
+            existing_meta = self._load_meta_duckdb(sym)
+            effective_max_backfill_complete = bool(
+                (existing_meta or {}).get("max_backfill_complete")
+            )
+        else:
+            effective_max_backfill_complete = bool(max_backfill_complete)
 
         with self.warehouse.transaction() as tx:
-            tx.execute(
-                """
-                DELETE FROM candles_daily
-                WHERE symbol = ? AND interval = ? AND auto_adjust = ? AND back_adjust = ?
-                """,
-                [sym, self.interval, bool(self.auto_adjust), bool(self.back_adjust)],
-            )
-
             out["symbol"] = sym
             out["interval"] = self.interval
             out["auto_adjust"] = bool(self.auto_adjust)
@@ -417,21 +423,35 @@ class DuckDBCandleStore(CandleStore):
                 SELECT symbol, interval, auto_adjust, back_adjust, ts,
                        open, high, low, close, volume, vwap, trade_count, dividends, splits, capital_gains
                 FROM tmp_candles
+                ON CONFLICT(symbol, interval, auto_adjust, back_adjust, ts)
+                DO UPDATE SET
+                  open = EXCLUDED.open,
+                  high = EXCLUDED.high,
+                  low = EXCLUDED.low,
+                  close = EXCLUDED.close,
+                  volume = EXCLUDED.volume,
+                  vwap = EXCLUDED.vwap,
+                  trade_count = EXCLUDED.trade_count,
+                  dividends = EXCLUDED.dividends,
+                  splits = EXCLUDED.splits,
+                  capital_gains = EXCLUDED.capital_gains
                 """
             )
             tx.unregister("tmp_candles")
 
             tx.execute(
                 """
-                DELETE FROM candles_meta
-                WHERE symbol = ? AND interval = ? AND auto_adjust = ? AND back_adjust = ?
-                """,
-                [sym, self.interval, bool(self.auto_adjust), bool(self.back_adjust)],
-            )
-            tx.execute(
-                """
-                INSERT INTO candles_meta(symbol, interval, auto_adjust, back_adjust, updated_at, rows, start_ts, end_ts)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO candles_meta(
+                  symbol, interval, auto_adjust, back_adjust, updated_at, rows, start_ts, end_ts, max_backfill_complete
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(symbol, interval, auto_adjust, back_adjust)
+                DO UPDATE SET
+                  updated_at = EXCLUDED.updated_at,
+                  rows = EXCLUDED.rows,
+                  start_ts = EXCLUDED.start_ts,
+                  end_ts = EXCLUDED.end_ts,
+                  max_backfill_complete = EXCLUDED.max_backfill_complete
                 """,
                 [
                     sym,
@@ -442,6 +462,7 @@ class DuckDBCandleStore(CandleStore):
                     int(len(out)),
                     start_ts,
                     end_ts,
+                    effective_max_backfill_complete,
                 ],
             )
 
@@ -584,31 +605,26 @@ class DuckDBOptionContractsStore:
             tx.register("tmp_contracts", contracts_df)
             tx.execute(
                 """
-                DELETE FROM option_contracts
-                WHERE contract_symbol IN (SELECT contract_symbol FROM tmp_contracts)
-                """
-            )
-            tx.execute(
-                """
                 INSERT INTO option_contracts(
                   contract_symbol, underlying, expiry, option_type, strike, multiplier, provider, updated_at
                 )
                 SELECT contract_symbol, underlying, expiry, option_type, strike, multiplier, provider, updated_at
                 FROM tmp_contracts
+                ON CONFLICT(contract_symbol)
+                DO UPDATE SET
+                  underlying = EXCLUDED.underlying,
+                  expiry = EXCLUDED.expiry,
+                  option_type = EXCLUDED.option_type,
+                  strike = EXCLUDED.strike,
+                  multiplier = EXCLUDED.multiplier,
+                  provider = EXCLUDED.provider,
+                  updated_at = EXCLUDED.updated_at
                 """
             )
             tx.unregister("tmp_contracts")
 
             if not snapshots_df.empty:
                 tx.register("tmp_contract_snapshots", snapshots_df)
-                tx.execute(
-                    """
-                    DELETE FROM option_contract_snapshots
-                    WHERE provider = ? AND as_of_date = ?
-                      AND contract_symbol IN (SELECT contract_symbol FROM tmp_contract_snapshots)
-                    """,
-                    [provider_name, as_of],
-                )
                 tx.execute(
                     """
                     INSERT INTO option_contract_snapshots(
@@ -618,6 +634,14 @@ class DuckDBOptionContractsStore:
                     SELECT contract_symbol, as_of_date, open_interest, open_interest_date,
                            close_price, close_price_date, provider, updated_at, raw_json
                     FROM tmp_contract_snapshots
+                    ON CONFLICT(contract_symbol, as_of_date, provider)
+                    DO UPDATE SET
+                      open_interest = EXCLUDED.open_interest,
+                      open_interest_date = EXCLUDED.open_interest_date,
+                      close_price = EXCLUDED.close_price,
+                      close_price_date = EXCLUDED.close_price_date,
+                      updated_at = EXCLUDED.updated_at,
+                      raw_json = EXCLUDED.raw_json
                     """
                 )
                 tx.unregister("tmp_contract_snapshots")
@@ -1233,6 +1257,7 @@ class DuckDBOptionsSnapshotStore:
 
     lake_root: Path
     warehouse: DuckDBWarehouse
+    sync_legacy_files: bool = False
 
     def _symbol_dir(self, symbol: str) -> Path:
         return self.lake_root / str(symbol).strip().upper()
@@ -1467,16 +1492,17 @@ class DuckDBOptionsSnapshotStore:
                 ],
             )
 
-        # Keep legacy day-folder CSV/raw artifacts in sync for commands/tests that
-        # consume the filesystem snapshot layout directly.
-        self._filesystem_store().save_day_snapshot(
-            sym,
-            snapshot_date,
-            chain=chain,
-            expiries=expiries,
-            raw_by_expiry=raw_by_expiry,
-            meta=meta_payload,
-        )
+        if self.sync_legacy_files:
+            # Optional compatibility path for legacy commands/tests that read
+            # day-folder CSV/meta artifacts directly.
+            self._filesystem_store().save_day_snapshot(
+                sym,
+                snapshot_date,
+                chain=chain,
+                expiries=expiries,
+                raw_by_expiry=raw_by_expiry,
+                meta=meta_payload,
+            )
 
         return chain_path
 
@@ -1488,8 +1514,6 @@ class DuckDBOptionsSnapshotStore:
         fs_day = fs_store.load_day(sym, snapshot_date)
         if not fs_day.empty:
             return _dedupe_contracts(fs_day)
-        if self._day_dir(sym, snapshot_date).exists():
-            return fs_day
 
         row = self._select_header_row(sym, snapshot_date)
         if row is None:

@@ -456,27 +456,54 @@ def _merge_trades_to_quotes(
     quotes: pd.DataFrame,
     quote_tolerance: pd.Timedelta | None,
 ) -> pd.DataFrame:
-    left = trades.sort_values(["timestamp", "contract_symbol"], kind="mergesort")
+    left = trades.sort_values(["contract_symbol", "timestamp"], kind="mergesort")
     if quotes.empty:
         merged = left.copy()
         merged["bid"] = float("nan")
         merged["ask"] = float("nan")
         return merged
 
-    right = quotes.sort_values(["timestamp", "contract_symbol"], kind="mergesort")
+    right = quotes.sort_values(["contract_symbol", "timestamp"], kind="mergesort")
     right = right[
         ["contract_symbol", "timestamp", "bid", "ask", "symbol", "expiry", "option_type", "strike", "bs_delta"]
     ]
+    merged_parts: list[pd.DataFrame] = []
+    for contract_symbol, left_part in left.groupby("contract_symbol", dropna=False, sort=False):
+        left_part = left_part.sort_values(["timestamp"], kind="mergesort")
+        if pd.isna(contract_symbol):
+            part = left_part.copy()
+            part["bid"] = float("nan")
+            part["ask"] = float("nan")
+            merged_parts.append(part)
+            continue
 
-    merged = pd.merge_asof(
-        left,
-        right,
-        on="timestamp",
-        by="contract_symbol",
-        direction="backward",
-        suffixes=("", "_quote"),
-        tolerance=quote_tolerance,
-    )
+        right_part = right[right["contract_symbol"] == contract_symbol].copy()
+        if right_part.empty:
+            part = left_part.copy()
+            part["bid"] = float("nan")
+            part["ask"] = float("nan")
+            merged_parts.append(part)
+            continue
+
+        right_part = right_part.sort_values(["timestamp"], kind="mergesort")
+        part = pd.merge_asof(
+            left_part,
+            right_part,
+            on="timestamp",
+            direction="backward",
+            suffixes=("", "_quote"),
+            tolerance=quote_tolerance,
+        )
+        merged_parts.append(part)
+
+    if not merged_parts:
+        merged = left.copy()
+        merged["bid"] = float("nan")
+        merged["ask"] = float("nan")
+        return merged
+
+    merged = pd.concat(merged_parts, ignore_index=True)
+    merged = merged.sort_values(["timestamp", "contract_symbol"], kind="mergesort")
 
     for col in ("symbol", "expiry", "option_type", "strike", "bs_delta"):
         quote_col = f"{col}_quote"

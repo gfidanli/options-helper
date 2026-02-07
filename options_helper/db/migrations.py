@@ -38,6 +38,7 @@ def ensure_schema(warehouse: DuckDBWarehouse) -> SchemaInfo:
     v1_path = Path(__file__).with_name("schema_v1.sql")
     v2_path = Path(__file__).with_name("schema_v2.sql")
     v3_path = Path(__file__).with_name("schema_v3.sql")
+    v4_path = Path(__file__).with_name("schema_v4.sql")
     v = current_schema_version(warehouse)
 
     if v < 1:
@@ -87,5 +88,21 @@ def ensure_schema(warehouse: DuckDBWarehouse) -> SchemaInfo:
                 """
             )
         v = 3
+
+    if v < 4:
+        schema_sql = v4_path.read_text(encoding="utf-8")
+        with warehouse.transaction() as tx:
+            _ensure_migrations_table(tx)
+            tx.execute(schema_sql)
+
+            # Record that v4 is applied (idempotent).
+            tx.execute(
+                """
+                INSERT INTO schema_migrations(schema_version)
+                SELECT 4
+                WHERE NOT EXISTS (SELECT 1 FROM schema_migrations WHERE schema_version = 4);
+                """
+            )
+        v = 4
 
     return SchemaInfo(path=warehouse.path, schema_version=v)

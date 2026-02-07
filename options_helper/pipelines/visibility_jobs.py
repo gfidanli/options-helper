@@ -46,7 +46,6 @@ from options_helper.data.ingestion.options_bars import (
 )
 from options_helper.data.ingestion.tuning import EndpointStats
 from options_helper.data.market_types import DataFetchError
-from options_helper.data.options_snapshots import OptionsSnapshotStore
 from options_helper.data.quality_checks import (
     persist_quality_checks,
     run_candle_quality_checks,
@@ -165,12 +164,8 @@ class _FetchOnlyOptionBarsStore:
         return {}
 
 
-def _filesystem_compatible_snapshot_store(cache_dir: Path, store: Any) -> Any:
-    # The CLI snapshot/report flows are offline-file-first and tests exercise CSV/meta.json
-    # directories. If storage runtime resolved a DuckDB snapshot store, switch to filesystem
-    # store to preserve existing command behavior.
-    if store.__class__.__name__.startswith("DuckDB"):
-        return OptionsSnapshotStore(cache_dir)
+def _active_snapshot_store(store: Any) -> Any:
+    # Snapshot/report flows should use the active storage backend end-to-end.
     return store
 
 
@@ -414,12 +409,30 @@ def run_ingest_options_bars_job(
         )
 
     if contracts_store is not None:
-        contracts_store.upsert_contracts(
-            discovery.contracts,
-            provider="alpaca",
-            as_of_date=run_day,
-            raw_by_contract_symbol=discovery.raw_by_symbol,
-        )
+        contracts_frame = discovery.contracts.reset_index(drop=True)
+        contract_write_batch_size = max(1, int(contracts_page_size or 10000))
+        for offset in range(0, len(contracts_frame), contract_write_batch_size):
+            chunk = contracts_frame.iloc[offset : offset + contract_write_batch_size].copy()
+            if chunk.empty:
+                continue
+            chunk_symbols: set[str] = set()
+            if "contractSymbol" in chunk.columns:
+                chunk_symbols = {
+                    str(value).strip().upper()
+                    for value in chunk["contractSymbol"].tolist()
+                    if str(value or "").strip()
+                }
+            chunk_raw = (
+                {key: val for key, val in discovery.raw_by_symbol.items() if key in chunk_symbols}
+                if chunk_symbols
+                else None
+            )
+            contracts_store.upsert_contracts(
+                chunk,
+                provider="alpaca",
+                as_of_date=run_day,
+                raw_by_contract_symbol=chunk_raw,
+            )
 
     prepared = prepare_contracts_for_bars(
         discovery.contracts,
@@ -528,7 +541,7 @@ def run_snapshot_options_job(
 
     quality_logger = _resolve_quality_run_logger(run_logger)
     portfolio = portfolio_loader(portfolio_path)
-    store = _filesystem_compatible_snapshot_store(cache_dir, snapshot_store_builder(cache_dir))
+    store = _active_snapshot_store(snapshot_store_builder(cache_dir))
     provider = provider_builder()
     candle_store = candle_store_builder(candle_cache_dir, provider=provider)
     provider_name = getattr(provider, "name", "unknown")
@@ -886,7 +899,7 @@ def run_flow_report_job(
     portfolio = portfolio_loader(portfolio_path)
     renderables: list[RenderableType] = []
 
-    store = _filesystem_compatible_snapshot_store(cache_dir, snapshot_store_builder(cache_dir))
+    store = _active_snapshot_store(snapshot_store_builder(cache_dir))
     flow_store = flow_store_builder(cache_dir)
     use_watchlists = bool(watchlist) or all_watchlists
     if use_watchlists:
@@ -1200,7 +1213,7 @@ def run_derived_update_job(
     run_logger: Any | None = None,
 ) -> DerivedUpdateJobResult:
     quality_logger = _resolve_quality_run_logger(run_logger)
-    store = _filesystem_compatible_snapshot_store(cache_dir, snapshot_store_builder(cache_dir))
+    store = _active_snapshot_store(snapshot_store_builder(cache_dir))
     derived = _filesystem_compatible_derived_store(derived_dir, derived_store_builder(derived_dir))
     candle_store = _filesystem_compatible_candle_store(candle_cache_dir, candle_store_builder(candle_cache_dir))
 
@@ -1316,7 +1329,7 @@ def run_briefing_job(
     if not symbols:
         raise VisibilityJobExecutionError("no symbols selected (empty portfolio and no watchlists)")
 
-    store = _filesystem_compatible_snapshot_store(cache_dir, snapshot_store_builder(cache_dir))
+    store = _active_snapshot_store(snapshot_store_builder(cache_dir))
     derived_store = _filesystem_compatible_derived_store(derived_dir, derived_store_builder(derived_dir))
     candle_store = _filesystem_compatible_candle_store(candle_cache_dir, candle_store_builder(candle_cache_dir))
     earnings_store = earnings_store_builder(Path("data/earnings"))

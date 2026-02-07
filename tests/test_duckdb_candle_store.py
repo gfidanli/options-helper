@@ -37,3 +37,36 @@ def test_duckdb_candle_store_save_and_load(tmp_path):
     assert meta is not None
     assert meta.get("symbol") == "AAPL"
     assert int(meta.get("rows")) == 2
+
+
+def test_duckdb_candle_store_upsert_preserves_existing_rows_and_meta_state(tmp_path):
+    wh = DuckDBWarehouse(tmp_path / "options.duckdb")
+    ensure_schema(wh)
+
+    store = DuckDBCandleStore(root_dir=tmp_path / "candles", warehouse=wh)
+
+    idx = pd.to_datetime(["2026-02-01", "2026-02-02"])
+    history = pd.DataFrame(
+        {
+            "Open": [100.0, 101.0],
+            "High": [102.0, 103.0],
+            "Low": [99.0, 100.5],
+            "Close": [101.0, 102.5],
+            "Volume": [10_000, 12_000],
+        },
+        index=idx,
+    )
+    store.save("AAPL", history, max_backfill_complete=True)
+
+    incremental = history.iloc[1:].copy()
+    incremental.loc[incremental.index[0], "Close"] = 200.0
+    store.save("AAPL", incremental, max_backfill_complete=True)
+
+    loaded = store.load("AAPL")
+    assert len(loaded) == 2
+    assert float(loaded.loc[pd.Timestamp("2026-02-02"), "Close"]) == 200.0
+    assert float(loaded.loc[pd.Timestamp("2026-02-01"), "Close"]) == 101.0
+
+    meta = store.load_meta("AAPL")
+    assert meta is not None
+    assert bool(meta.get("max_backfill_complete")) is True

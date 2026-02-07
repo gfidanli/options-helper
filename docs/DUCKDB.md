@@ -59,6 +59,8 @@ options-helper --storage filesystem analyze --symbol AAPL
 
 - `--storage filesystem|duckdb` (default: `duckdb`)
 - `--duckdb-path PATH` (only used in duckdb mode)
+- `--duckdb-snapshot-legacy-files/--no-duckdb-snapshot-legacy-files`
+  (default: `--duckdb-snapshot-legacy-files`; disable for faster snapshot writes with no CSV/raw sidecars)
 
 ## Operational notes
 

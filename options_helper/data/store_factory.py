@@ -69,7 +69,11 @@ def get_options_snapshot_store(root_dir: Path) -> OptionsSnapshotStore:
     if cfg.backend == "duckdb":
         from options_helper.data.stores_duckdb import DuckDBOptionsSnapshotStore
 
-        return DuckDBOptionsSnapshotStore(lake_root=root_dir, warehouse=get_warehouse())
+        return DuckDBOptionsSnapshotStore(
+            lake_root=root_dir,
+            warehouse=get_warehouse(),
+            sync_legacy_files=bool(cfg.duckdb_snapshot_legacy_files),
+        )
     return OptionsSnapshotStore(root_dir)
 
 

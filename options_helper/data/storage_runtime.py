@@ -10,12 +10,17 @@ _DEFAULT_DUCKDB_PATH: ContextVar[Path] = ContextVar(
     "options_helper_default_duckdb_path",
     default=Path("data/warehouse/options.duckdb"),
 )
+_DEFAULT_DUCKDB_SNAPSHOT_LEGACY_FILES: ContextVar[bool] = ContextVar(
+    "options_helper_default_duckdb_snapshot_legacy_files",
+    default=True,
+)
 
 
 @dataclass(frozen=True)
 class StorageRuntimeConfig:
     backend: str
     duckdb_path: Path
+    duckdb_snapshot_legacy_files: bool
 
 
 def get_default_storage_backend() -> str:
@@ -46,5 +51,21 @@ def reset_default_duckdb_path(token: Token[Path]) -> None:
     _DEFAULT_DUCKDB_PATH.reset(token)
 
 
+def get_default_duckdb_snapshot_legacy_files() -> bool:
+    return bool(_DEFAULT_DUCKDB_SNAPSHOT_LEGACY_FILES.get())
+
+
+def set_default_duckdb_snapshot_legacy_files(enabled: bool | None) -> Token[bool]:
+    return _DEFAULT_DUCKDB_SNAPSHOT_LEGACY_FILES.set(bool(enabled))
+
+
+def reset_default_duckdb_snapshot_legacy_files(token: Token[bool]) -> None:
+    _DEFAULT_DUCKDB_SNAPSHOT_LEGACY_FILES.reset(token)
+
+
 def get_storage_runtime_config() -> StorageRuntimeConfig:
-    return StorageRuntimeConfig(backend=get_default_storage_backend(), duckdb_path=get_default_duckdb_path())
+    return StorageRuntimeConfig(
+        backend=get_default_storage_backend(),
+        duckdb_path=get_default_duckdb_path(),
+        duckdb_snapshot_legacy_files=get_default_duckdb_snapshot_legacy_files(),
+    )

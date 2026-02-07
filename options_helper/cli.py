@@ -25,8 +25,10 @@ from options_helper.commands.workflows import register as register_workflow_comm
 from options_helper.data.providers.runtime import reset_default_provider_name, set_default_provider_name
 from options_helper.data.storage_runtime import (
     reset_default_duckdb_path,
+    reset_default_duckdb_snapshot_legacy_files,
     reset_default_storage_backend,
     set_default_duckdb_path,
+    set_default_duckdb_snapshot_legacy_files,
     set_default_storage_backend,
 )
 from options_helper.observability import finalize_run_logger, setup_run_logger
@@ -85,6 +87,14 @@ def main(
         "--duckdb-path",
         help="DuckDB file path (defaults to data/warehouse/options.duckdb).",
     ),
+    duckdb_snapshot_legacy_files: bool = typer.Option(
+        True,
+        "--duckdb-snapshot-legacy-files/--no-duckdb-snapshot-legacy-files",
+        help=(
+            "In duckdb mode, also write legacy snapshot CSV/raw files "
+            "under data/options_snapshots (compatibility path)."
+        ),
+    ),
 ) -> None:
     command_name = ctx.info_name or "options-helper"
     if ctx.invoked_subcommand:
@@ -93,8 +103,12 @@ def main(
     provider_token = set_default_provider_name(provider)
     storage_token = set_default_storage_backend(storage.value)
     duckdb_path_token = set_default_duckdb_path(duckdb_path)
+    duckdb_snapshot_legacy_files_token = set_default_duckdb_snapshot_legacy_files(
+        duckdb_snapshot_legacy_files
+    )
 
     def _on_close() -> None:
+        reset_default_duckdb_snapshot_legacy_files(duckdb_snapshot_legacy_files_token)
         reset_default_duckdb_path(duckdb_path_token)
         reset_default_storage_backend(storage_token)
         reset_default_provider_name(provider_token)

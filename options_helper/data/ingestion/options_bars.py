@@ -285,7 +285,7 @@ def discover_option_contracts(
     max_requests_per_second: float | None = None,
     fail_fast: bool = False,
 ) -> ContractDiscoveryOutput:
-    frames: list[pd.DataFrame] = []
+    contracts_by_symbol: dict[str, dict[str, Any]] = {}
     raw_by_symbol: dict[str, dict[str, Any]] = {}
     summaries: list[UnderlyingDiscoverySummary] = []
     method = getattr(client, "list_option_contracts")
@@ -364,7 +364,13 @@ def discover_option_contracts(
             df = contracts_to_df(raw_contracts)
             df = _normalize_contracts_frame(df)
             if not df.empty:
-                frames.append(df)
+                for row in df.to_dict("records"):
+                    symbol = _contract_symbol_from_raw(row)
+                    if not symbol:
+                        continue
+                    payload = dict(row)
+                    payload["contractSymbol"] = symbol
+                    contracts_by_symbol[symbol] = payload
             for raw in raw_contracts:
                 symbol = _contract_symbol_from_raw(raw)
                 if symbol:
@@ -382,7 +388,7 @@ def discover_option_contracts(
             )
         )
 
-    if not frames:
+    if not contracts_by_symbol:
         empty = contracts_to_df([])
         endpoint_stats = build_endpoint_stats(
             calls=calls,
@@ -399,11 +405,12 @@ def discover_option_contracts(
             endpoint_stats=ContractDiscoveryStats(endpoint_stats=endpoint_stats),
         )
 
-    combined = pd.concat(frames, ignore_index=True)
+    combined = pd.DataFrame(list(contracts_by_symbol.values()))
     combined = _normalize_contracts_frame(combined)
     if "contractSymbol" in combined.columns:
         combined = combined.dropna(subset=["contractSymbol"])
         combined = combined.drop_duplicates(subset=["contractSymbol"], keep="last")
+        combined = combined.sort_values(by=["contractSymbol"], kind="stable")
 
     endpoint_stats = build_endpoint_stats(
         calls=calls,

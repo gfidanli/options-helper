@@ -149,7 +149,7 @@ class CandleStore:
     # yfinance can error on very old start dates (negative epoch). 1970-01-01 is a
     # pragmatic "max" backfill floor for modern equities/options workflows.
     _MAX_BACKFILL_START: ClassVar[date] = date(1970, 1, 1)
-    _META_SCHEMA_VERSION: ClassVar[int] = 1
+    _META_SCHEMA_VERSION: ClassVar[int] = 2
 
     def _path_for_symbol(self, symbol: str) -> Path:
         safe = symbol.upper().replace("/", "_")
@@ -175,6 +175,7 @@ class CandleStore:
                 "interval": "1d",
                 "auto_adjust": False,
                 "back_adjust": False,
+                "max_backfill_complete": False,
                 "source": "legacy",
             }
         try:
@@ -182,7 +183,7 @@ class CandleStore:
         except Exception:  # noqa: BLE001
             return None
 
-    def _write_meta(self, symbol: str, history: pd.DataFrame) -> None:
+    def _write_meta(self, symbol: str, history: pd.DataFrame, *, max_backfill_complete: bool = False) -> None:
         path = self._meta_path_for_symbol(symbol)
         payload = {
             "schema_version": self._META_SCHEMA_VERSION,
@@ -190,6 +191,7 @@ class CandleStore:
             "interval": self.interval,
             "auto_adjust": bool(self.auto_adjust),
             "back_adjust": bool(self.back_adjust),
+            "max_backfill_complete": bool(max_backfill_complete),
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "rows": int(len(history)) if history is not None else 0,
             "start": None if history is None or history.empty else history.index.min().isoformat(),
@@ -275,11 +277,23 @@ class CandleStore:
         df = pd.read_csv(path, index_col=0, parse_dates=True)
         return _normalize_history(df)
 
-    def save(self, symbol: str, history: pd.DataFrame) -> None:
+    def save(
+        self,
+        symbol: str,
+        history: pd.DataFrame,
+        *,
+        max_backfill_complete: bool | None = None,
+    ) -> None:
         self.root_dir.mkdir(parents=True, exist_ok=True)
         path = self._path_for_symbol(symbol)
         history.to_csv(path)
-        self._write_meta(symbol, history)
+        meta = self.load_meta(symbol)
+        effective_max_backfill_complete = (
+            bool(meta.get("max_backfill_complete"))
+            if max_backfill_complete is None and isinstance(meta, dict)
+            else bool(max_backfill_complete)
+        )
+        self._write_meta(symbol, history, max_backfill_complete=effective_max_backfill_complete)
 
     def get_daily_history(self, symbol: str, *, period: str = "2y", today: date | None = None) -> pd.DataFrame:
         """
@@ -297,6 +311,7 @@ class CandleStore:
 
         cached = self.load(symbol)
         cached_meta = self.load_meta(symbol) if not cached.empty else None
+        max_backfill_complete = bool((cached_meta or {}).get("max_backfill_complete"))
 
         # If a legacy/unversioned cache exists but we now want adjusted candles, upgrade it
         # locally (no network) using Adj Close ratio.
@@ -322,6 +337,7 @@ class CandleStore:
         # If cache settings don't match, ignore cached data to avoid mixing adjusted/unadjusted series.
         if not cached.empty and not self._meta_matches_settings(cached_meta):
             cached = pd.DataFrame()
+            max_backfill_complete = False
 
         merged = cached
 
@@ -332,18 +348,21 @@ class CandleStore:
             if wants_max:
                 merged = _normalize_history(self._fetch_with_retry(symbol, None, None))
                 did_full_fetch = True
+                max_backfill_complete = True
             elif desired_start is None:
                 merged = _normalize_history(self._fetch_with_retry(symbol, None, None))
                 did_full_fetch = True
             else:
                 merged = _normalize_history(self._fetch_with_retry(symbol, desired_start, None))
         elif wants_max:
-            first_cached = merged.index.min().date()
-            fetched = self._fetch_with_retry(symbol, self._MAX_BACKFILL_START, first_cached)
-            fetched = _normalize_history(fetched)
-            if not fetched.empty:
-                merged = pd.concat([fetched, merged])
-                merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+            if not max_backfill_complete:
+                first_cached = merged.index.min().date()
+                fetched = self._fetch_with_retry(symbol, self._MAX_BACKFILL_START, first_cached)
+                fetched = _normalize_history(fetched)
+                if not fetched.empty:
+                    merged = pd.concat([fetched, merged])
+                    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+                max_backfill_complete = True
         elif desired_start is not None:
             first_cached = merged.index.min().date()
             if desired_start < first_cached:
@@ -374,6 +393,8 @@ class CandleStore:
                 if has_action and (bool(self.auto_adjust) or bool(self.back_adjust)):
                     if wants_max or desired_start is None:
                         merged = _normalize_history(self._fetch_with_retry(symbol, None, None))
+                        if wants_max:
+                            max_backfill_complete = True
                     else:
                         merged = _normalize_history(self._fetch_with_retry(symbol, desired_start, None))
                     did_full_fetch = True
@@ -386,7 +407,7 @@ class CandleStore:
 
         # Persist only if we have something; avoid writing empty files for invalid symbols.
         if not merged.empty:
-            self.save(symbol, merged)
+            self.save(symbol, merged, max_backfill_complete=max_backfill_complete)
 
         return merged
 

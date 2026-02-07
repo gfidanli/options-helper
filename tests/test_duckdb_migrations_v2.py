@@ -42,14 +42,14 @@ def _bootstrap_v2_database(wh: DuckDBWarehouse) -> None:
         tx.execute("INSERT INTO schema_migrations(schema_version) VALUES (1), (2);")
 
 
-def test_duckdb_migrations_v3_contains_v2_and_new_meta_tables(tmp_path):
+def test_duckdb_migrations_v4_contains_v2_and_new_meta_tables(tmp_path):
     db_path = tmp_path / "options.duckdb"
     wh = DuckDBWarehouse(db_path)
 
     info = ensure_schema(wh)
-    assert info.schema_version == 3
+    assert info.schema_version == 4
     assert info.path == db_path
-    assert current_schema_version(wh) == 3
+    assert current_schema_version(wh) == 4
 
     conn = wh.connect(read_only=True)
     try:
@@ -78,6 +78,8 @@ def test_duckdb_migrations_v3_contains_v2_and_new_meta_tables(tmp_path):
 
         candle_cols = _table_columns(conn, "candles_daily")
         assert {"vwap", "trade_count"}.issubset(candle_cols)
+        candle_meta_cols = _table_columns(conn, "candles_meta")
+        assert {"max_backfill_complete"}.issubset(candle_meta_cols)
 
         contract_cols = _table_columns(conn, "option_contracts")
         assert {
@@ -177,7 +179,7 @@ def test_duckdb_migrations_v3_contains_v2_and_new_meta_tables(tmp_path):
         conn.close()
 
 
-def test_duckdb_migrations_upgrade_v2_to_v3(tmp_path):
+def test_duckdb_migrations_upgrade_v2_to_v4(tmp_path):
     db_path = tmp_path / "options.duckdb"
     wh = DuckDBWarehouse(db_path)
     _bootstrap_v2_database(wh)
@@ -185,11 +187,11 @@ def test_duckdb_migrations_upgrade_v2_to_v3(tmp_path):
     assert current_schema_version(wh) == 2
 
     info = ensure_schema(wh)
-    assert info.schema_version == 3
-    assert current_schema_version(wh) == 3
+    assert info.schema_version == 4
+    assert current_schema_version(wh) == 4
 
     # Idempotent repeat should not duplicate migration rows.
-    assert ensure_schema(wh).schema_version == 3
+    assert ensure_schema(wh).schema_version == 4
 
     conn = wh.connect(read_only=True)
     try:
@@ -203,6 +205,6 @@ def test_duckdb_migrations_upgrade_v2_to_v3(tmp_path):
                 """
             ).fetchall()
         ]
-        assert versions == [1, 2, 3]
+        assert versions == [1, 2, 3, 4]
     finally:
         conn.close()

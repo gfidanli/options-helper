@@ -316,3 +316,75 @@ def test_snapshot_options_position_expiries_caps_watchlists_by_default(tmp_path:
         assert (day_dir / f"{exp.isoformat()}.raw.json").exists()
     assert not (day_dir / f"{expiries[2].isoformat()}.csv").exists()
     assert not (day_dir / f"{expiries[2].isoformat()}.raw.json").exists()
+
+
+def test_snapshot_options_can_write_parquet_without_legacy_sidecars(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    portfolio_path = tmp_path / "portfolio.json"
+    portfolio_path.write_text(
+        '{"cash": 0, "risk_profile": {"tolerance": "high", "max_portfolio_risk_pct": null, "max_single_position_risk_pct": null}}',
+        encoding="utf-8",
+    )
+
+    watchlists_path = tmp_path / "watchlists.json"
+    watchlists_path.write_text(
+        '{"watchlists":{"monitor":["AAA"],"positions":["AAA"]}}',
+        encoding="utf-8",
+    )
+
+    candle_day = date(2026, 1, 28)
+
+    def _stub_history(self, symbol: str, *, period: str = "10d"):  # noqa: ARG001
+        idx = pd.to_datetime([candle_day.replace(day=candle_day.day - 1), candle_day])
+        return pd.DataFrame({"Close": [100.0, 101.0]}, index=idx)
+
+    monkeypatch.setattr("options_helper.data.candles.CandleStore.get_daily_history", _stub_history)
+
+    expiry = date(2026, 2, 20)
+
+    class _StubProvider:
+        name = "stub"
+        version = "0.0"
+
+        def get_underlying(self, symbol: str, *, period: str = "10d", interval: str = "1d"):  # noqa: ARG002
+            raise AssertionError("Candle history should provide spot in this test")
+
+        def list_option_expiries(self, symbol: str):  # noqa: ARG002
+            return [expiry]
+
+        def get_options_chain_raw(self, symbol: str, expiry: date):  # noqa: ARG002
+            return {
+                "expirationDate": int(pd.Timestamp(expiry).timestamp()),
+                "underlying": {"regularMarketPrice": 101.0},
+                "calls": [{"contractSymbol": "AAA_CALL", "strike": 100.0, "lastPrice": 2.0}],
+                "puts": [{"contractSymbol": "AAA_PUT", "strike": 100.0, "lastPrice": 1.5}],
+            }
+
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda *_args, **_kwargs: _StubProvider())
+
+    cache_dir = tmp_path / "snapshots"
+    duckdb_path = tmp_path / "warehouse.duckdb"
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--duckdb-path",
+            str(duckdb_path),
+            "--no-duckdb-snapshot-legacy-files",
+            "snapshot-options",
+            str(portfolio_path),
+            "--watchlists-path",
+            str(watchlists_path),
+            "--all-watchlists",
+            "--cache-dir",
+            str(cache_dir),
+            "--candle-cache-dir",
+            str(tmp_path / "candles"),
+        ],
+    )
+    assert res.exit_code == 0, res.output
+
+    day_dir = cache_dir / "AAA" / candle_day.isoformat()
+    assert (day_dir / "chain.parquet").exists()
+    assert not (day_dir / f"{expiry.isoformat()}.csv").exists()
+    assert (day_dir / "meta.json.gz").exists()
