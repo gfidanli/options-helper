@@ -95,12 +95,10 @@ fi
   --watchlists-path "${WATCHLISTS}" \
   --watchlist monitor \
   --watchlist positions \
-  --max-expiries 2 \
+  --all-expiries \
+  --full-chain \
   --require-data-date today \
   --require-data-tz "${DATA_TZ}" \
-  --windowed \
-  --position-expiries \
-  --window-pct 1.0 \
   >> "${LOG_PATH}" 2>&1
 
 SCRIPT_FINISH_TS="$(date +%s)"

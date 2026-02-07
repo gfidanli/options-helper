@@ -70,11 +70,10 @@ fi
 "${VENV_BIN}/options-helper" --provider "${PROVIDER}" --log-dir "${LOG_DIR}" --log-path "${LOG_PATH}" snapshot-options "${PORTFOLIO}" \
   --cache-dir "${REPO_DIR}/data/options_snapshots" \
   --candle-cache-dir "${REPO_DIR}/data/candles" \
+  --all-expiries \
+  --full-chain \
   --require-data-date today \
   --require-data-tz "${DATA_TZ}" \
-  --windowed \
-  --position-expiries \
-  --window-pct 1.0 \
   >> "${LOG_PATH}" 2>&1
 
 SCRIPT_FINISH_TS="$(date +%s)"
