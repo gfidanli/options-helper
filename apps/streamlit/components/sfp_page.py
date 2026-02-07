@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import inspect
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,27 @@ from options_helper.technicals_backtesting.rsi_divergence import rsi_regime_tag
 
 _CANDLES_COLUMNS = ["ts", "open", "high", "low", "close", "volume"]
 _HORIZONS = (1, 5, 10)
+
+
+def _compute_sfp_signals_compat(
+    ohlc: pd.DataFrame,
+    *,
+    swing_left_bars: int,
+    swing_right_bars: int,
+    min_swing_distance_bars: int,
+    ignore_swept_swings: bool,
+    timeframe: str,
+) -> pd.DataFrame:
+    params = inspect.signature(compute_sfp_signals).parameters
+    kwargs: dict[str, Any] = {
+        "swing_left_bars": int(swing_left_bars),
+        "swing_right_bars": int(swing_right_bars),
+        "min_swing_distance_bars": int(min_swing_distance_bars),
+        "timeframe": timeframe,
+    }
+    if "ignore_swept_swings" in params:
+        kwargs["ignore_swept_swings"] = bool(ignore_swept_swings)
+    return compute_sfp_signals(ohlc, **kwargs)
 
 
 def resolve_duckdb_path(database_path: str | Path | None = None) -> Path:
@@ -174,11 +196,11 @@ def _build_sfp_payload_cached(
         .to_dict()
     )
 
-    daily_signals = compute_sfp_signals(
+    daily_signals = _compute_sfp_signals_compat(
         daily_ohlc,
-        swing_left_bars=int(swing_left_bars),
-        swing_right_bars=int(swing_right_bars),
-        min_swing_distance_bars=int(min_swing_distance_bars),
+        swing_left_bars=swing_left_bars,
+        swing_right_bars=swing_right_bars,
+        min_swing_distance_bars=min_swing_distance_bars,
         ignore_swept_swings=bool(ignore_swept_swings),
         timeframe="native",
     )
@@ -206,11 +228,11 @@ def _build_sfp_payload_cached(
     weekly_close = weekly_ohlc["Close"].astype("float64")
     weekly_rsi = _rsi_series(weekly_close)
     weekly_ext, weekly_ext_pct = _compute_extension_percentile_series(weekly_ohlc)
-    weekly_signals = compute_sfp_signals(
+    weekly_signals = _compute_sfp_signals_compat(
         weekly_ohlc,
-        swing_left_bars=int(swing_left_bars),
-        swing_right_bars=int(swing_right_bars),
-        min_swing_distance_bars=int(min_swing_distance_bars),
+        swing_left_bars=swing_left_bars,
+        swing_right_bars=swing_right_bars,
+        min_swing_distance_bars=min_swing_distance_bars,
         ignore_swept_swings=bool(ignore_swept_swings),
         timeframe="native",
     )

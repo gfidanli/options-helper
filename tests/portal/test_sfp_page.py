@@ -211,3 +211,44 @@ def test_forward_max_move_uses_next_open_entry_and_directional_sign() -> None:
     # 5d window here truncates to available future bars; bullish max high=105, bearish min low=80.
     assert bullish["forward_5d_pct"] == pytest.approx(16.67, abs=1e-2)
     assert bearish["forward_5d_pct"] == pytest.approx(-11.11, abs=1e-2)
+
+
+def test_sfp_page_compat_with_legacy_compute_signature(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("streamlit")
+    from apps.streamlit.components import sfp_page
+    from options_helper.analysis.sfp import compute_sfp_signals as current_compute
+
+    db_path = tmp_path / "portal_legacy.duckdb"
+    _seed_candles(db_path, symbol="SPY", periods=220)
+
+    def legacy_compute_sfp_signals(
+        ohlc: pd.DataFrame,
+        *,
+        swing_left_bars: int = 1,
+        swing_right_bars: int = 1,
+        min_swing_distance_bars: int = 1,
+        timeframe: str | None = None,
+    ) -> pd.DataFrame:
+        return current_compute(
+            ohlc,
+            swing_left_bars=swing_left_bars,
+            swing_right_bars=swing_right_bars,
+            min_swing_distance_bars=min_swing_distance_bars,
+            timeframe=timeframe,
+        )
+
+    monkeypatch.setattr(sfp_page, "compute_sfp_signals", legacy_compute_sfp_signals)
+
+    payload, note = sfp_page.load_sfp_payload(
+        symbol="SPY",
+        lookback_days=365,
+        tail_low_pct=5.0,
+        tail_high_pct=95.0,
+        swing_left_bars=1,
+        swing_right_bars=1,
+        min_swing_distance_bars=1,
+        ignore_swept_swings=True,
+        database_path=str(db_path),
+    )
+    assert note is None
+    assert payload is not None

@@ -118,8 +118,8 @@ with st.sidebar:
         ),
     )
     with st.expander("Advanced Settings", expanded=False):
-        swing_left = st.slider("Swing left bars", min_value=1, max_value=5, value=2, step=1)
-        swing_right = st.slider("Swing right bars", min_value=1, max_value=5, value=2, step=1)
+        swing_left = st.slider("Swing left bars", min_value=1, max_value=5, value=1, step=1)
+        swing_right = st.slider("Swing right bars", min_value=1, max_value=5, value=1, step=1)
         min_swing_distance = st.slider("Min bars from swept swing", min_value=1, max_value=10, value=1, step=1)
         rsi_extremes = st.slider("RSI extreme band", min_value=5, max_value=45, value=(30, 70), step=1)
 
