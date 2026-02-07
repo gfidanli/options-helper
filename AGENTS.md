@@ -67,3 +67,10 @@ This repo is an information/decision-support tool. Keep outputs and docs clear t
 ## Completion sound (Terminal.app)
 - When you finish a task and are **waiting for user input**, play the macOS “Glass” sound via: `afplay /System/Library/Sounds/Glass.aiff`
 - Don’t rely on the terminal bell (`\a`) for notifications (it’s disabled/muted in this setup).
+
+## Skills
+### napkin (always on)
+- Skill file: `$CODEX_HOME/skills/napkin/SKILL.md` (never hardcode user-specific absolute paths)
+- This skill activates every session, unconditionally.
+- Before doing anything else, read `.codex/napkin.md`.
+- Update `.codex/napkin.md` continuously as you work with mistakes, corrections, and patterns that worked/didn’t work.
