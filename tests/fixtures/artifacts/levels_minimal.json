@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-07T15:00:00+00:00",
+  "as_of": "2026-02-07",
+  "symbol": "SPY",
+  "disclaimer": "Not financial advice.",
+  "summary": {
+    "symbol": "SPY",
+    "as_of": "2026-02-07",
+    "spot": 502.0,
+    "prev_close": 500.0,
+    "session_open": 501.0,
+    "gap_pct": 0.002,
+    "prior_high": 505.0,
+    "prior_low": 495.0,
+    "rolling_high": 510.0,
+    "rolling_low": 490.0,
+    "rs_ratio": 1.01,
+    "beta_20d": 1.05,
+    "corr_20d": 0.88,
+    "warnings": []
+  },
+  "anchored_vwap": [
+    {
+      "symbol": "SPY",
+      "as_of": "2026-02-07",
+      "anchor_id": "session_open",
+      "anchor_type": "session_open",
+      "anchor_ts_utc": "2026-02-07T14:30:00+00:00",
+      "anchor_price": 501.0,
+      "anchored_vwap": 501.6,
+      "distance_from_spot_pct": 0.0008
+    }
+  ],
+  "volume_profile": [
+    {
+      "symbol": "SPY",
+      "as_of": "2026-02-07",
+      "price_bin_low": 500.0,
+      "price_bin_high": 501.0,
+      "volume": 10000.0,
+      "volume_pct": 0.4,
+      "is_poc": true,
+      "is_hvn": true,
+      "is_lvn": false
+    }
+  ],
+  "volume_profile_poc": 500.5,
+  "volume_profile_hvn_candidates": [500.5],
+  "volume_profile_lvn_candidates": [503.5],
+  "warnings": []
+}

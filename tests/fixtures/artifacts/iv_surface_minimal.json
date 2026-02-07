@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-07T15:00:00+00:00",
+  "as_of": "2026-02-07",
+  "symbol": "SPY",
+  "spot": 500.0,
+  "disclaimer": "Not financial advice.",
+  "tenor_targets_dte": [7, 14, 30, 60, 90, 180],
+  "tenor": [
+    {
+      "symbol": "SPY",
+      "as_of": "2026-02-07",
+      "tenor_target_dte": 30,
+      "expiry": "2026-03-09",
+      "dte": 30,
+      "tenor_gap_dte": 0,
+      "atm_strike": 500.0,
+      "atm_iv": 0.24,
+      "atm_mark": 12.5,
+      "straddle_mark": 25.0,
+      "expected_move_pct": 0.05,
+      "skew_25d_pp": 3.4,
+      "skew_10d_pp": 5.8,
+      "contracts_used": 20,
+      "warnings": []
+    }
+  ],
+  "delta_buckets": [
+    {
+      "symbol": "SPY",
+      "as_of": "2026-02-07",
+      "tenor_target_dte": 30,
+      "expiry": "2026-03-09",
+      "option_type": "call",
+      "delta_bucket": "d40_60",
+      "avg_iv": 0.23,
+      "median_iv": 0.23,
+      "n_contracts": 4,
+      "warnings": []
+    }
+  ],
+  "tenor_changes": [],
+  "delta_bucket_changes": [],
+  "warnings": []
+}

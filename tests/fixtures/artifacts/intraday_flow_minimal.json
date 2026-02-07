@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-07T15:00:00+00:00",
+  "as_of": "2026-02-07",
+  "symbol": "SPY",
+  "market_date": "2026-02-07",
+  "source": "stream",
+  "bucket_minutes": 5,
+  "disclaimer": "Not financial advice.",
+  "contract_flow": [
+    {
+      "symbol": "SPY",
+      "market_date": "2026-02-07",
+      "source": "stream",
+      "contract_symbol": "SPY260320C00500000",
+      "expiry": "2026-03-20",
+      "option_type": "call",
+      "strike": 500.0,
+      "delta_bucket": "d40_60",
+      "buy_volume": 10.0,
+      "sell_volume": 5.0,
+      "unknown_volume": 1.0,
+      "buy_notional": 1200.0,
+      "sell_notional": 450.0,
+      "net_notional": 750.0,
+      "trade_count": 16,
+      "unknown_trade_share": 0.0625,
+      "quote_coverage_pct": 0.9375,
+      "warnings": []
+    }
+  ],
+  "time_buckets": [
+    {
+      "symbol": "SPY",
+      "market_date": "2026-02-07",
+      "bucket_start_utc": "2026-02-07T14:30:00+00:00",
+      "bucket_minutes": 5,
+      "contract_symbol": "SPY260320C00500000",
+      "expiry": "2026-03-20",
+      "option_type": "call",
+      "strike": 500.0,
+      "delta_bucket": "d40_60",
+      "buy_notional": 1200.0,
+      "sell_notional": 450.0,
+      "net_notional": 750.0,
+      "trade_count": 4,
+      "unknown_trade_share": 0.25
+    }
+  ],
+  "warnings": []
+}

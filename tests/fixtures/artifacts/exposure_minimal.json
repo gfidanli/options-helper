@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-07T15:00:00+00:00",
+  "as_of": "2026-02-07",
+  "symbol": "SPY",
+  "spot": 500.0,
+  "signed_exposure_convention": "calls_positive_puts_negative",
+  "disclaimer": "Not financial advice.",
+  "slices": [
+    {
+      "mode": "all",
+      "available_expiries": ["2026-02-20", "2026-03-20"],
+      "included_expiries": ["2026-02-20", "2026-03-20"],
+      "strike_rows": [
+        {
+          "symbol": "SPY",
+          "as_of": "2026-02-07",
+          "expiry": "2026-02-20",
+          "strike": 500.0,
+          "call_oi": 100.0,
+          "put_oi": 80.0,
+          "call_gex": 2500000.0,
+          "put_gex": 2200000.0,
+          "net_gex": 300000.0
+        }
+      ],
+      "summary": {
+        "symbol": "SPY",
+        "as_of": "2026-02-07",
+        "spot": 500.0,
+        "flip_strike": 498.0,
+        "total_call_gex": 2500000.0,
+        "total_put_gex": 2200000.0,
+        "total_net_gex": 300000.0,
+        "warnings": []
+      },
+      "top_abs_net_levels": [
+        {
+          "strike": 500.0,
+          "net_gex": 300000.0,
+          "abs_net_gex": 300000.0
+        }
+      ]
+    }
+  ]
+}

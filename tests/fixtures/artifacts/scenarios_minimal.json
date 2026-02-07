@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-07T15:00:00+00:00",
+  "as_of": "2026-02-07",
+  "symbol": "SPY",
+  "contract_symbol": "SPY260320C00500000",
+  "disclaimer": "Not financial advice.",
+  "summary": {
+    "symbol": "SPY",
+    "as_of": "2026-02-07",
+    "contract_symbol": "SPY260320C00500000",
+    "option_type": "call",
+    "side": "long",
+    "contracts": 2,
+    "spot": 500.0,
+    "strike": 500.0,
+    "expiry": "2026-03-20",
+    "mark": 12.5,
+    "iv": 0.24,
+    "intrinsic": 0.0,
+    "extrinsic": 12.5,
+    "theta_burn_dollars_day": 6.1,
+    "theta_burn_pct_premium_day": 0.0024,
+    "warnings": []
+  },
+  "grid": [
+    {
+      "symbol": "SPY",
+      "as_of": "2026-02-07",
+      "contract_symbol": "SPY260320C00500000",
+      "spot_change_pct": 0.0,
+      "iv_change_pp": 0.0,
+      "days_forward": 0,
+      "scenario_spot": 500.0,
+      "scenario_iv": 0.24,
+      "days_to_expiry": 41,
+      "theoretical_price": 12.5,
+      "pnl_per_contract": 0.0,
+      "pnl_position": 0.0
+    }
+  ]
+}

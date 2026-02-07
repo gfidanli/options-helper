@@ -32,6 +32,31 @@ All artifacts include:
 - Source: `options-helper flow ... --out ...`
 - Schema: `options_helper.schemas.flow.FlowArtifact`
 
+### IV surface report
+- Path: `data/reports/iv_surface/{SYMBOL}/{YYYY-MM-DD}.json`
+- Source: `options-helper market-analysis iv-surface ... --out ...`
+- Schema: `options_helper.schemas.iv_surface.IvSurfaceArtifact`
+
+### Exposure report
+- Path: `data/reports/exposure/{SYMBOL}/{YYYY-MM-DD}.json`
+- Source: `options-helper market-analysis exposure ... --out ...`
+- Schema: `options_helper.schemas.exposure.ExposureArtifact`
+
+### Intraday flow report
+- Path: `data/reports/intraday_flow/{SYMBOL}/{YYYY-MM-DD}.json`
+- Source: `options-helper intraday flow ... --out ...`
+- Schema: `options_helper.schemas.intraday_flow.IntradayFlowArtifact`
+
+### Levels report
+- Path: `data/reports/levels/{SYMBOL}/{YYYY-MM-DD}.json`
+- Source: `options-helper market-analysis levels ... --out ...`
+- Schema: `options_helper.schemas.levels.LevelsArtifact`
+
+### Scenarios report
+- Path: `data/reports/scenarios/{SYMBOL}/{YYYY-MM-DD}_{CONTRACT}.json`
+- Source: `options-helper scenarios ... --out ...`
+- Schema: `options_helper.schemas.scenarios.ScenariosArtifact`
+
 ### Scanner shortlist
 - Path: `data/scanner/runs/{RUN_ID}/shortlist.json`
 - Source: `options-helper scanner run ... --write-shortlist`
