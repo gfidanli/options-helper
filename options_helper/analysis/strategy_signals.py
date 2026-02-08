@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 
@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from options_helper.analysis.msb import compute_msb_signals, extract_msb_signal_candidates
+from options_helper.analysis.orb import compute_orb_signals, extract_orb_signal_candidates
 from options_helper.analysis.sfp import compute_sfp_signals, extract_sfp_signal_candidates
 from options_helper.schemas.strategy_modeling_contracts import EntryPriceSource, StrategySignalEvent
 
@@ -264,6 +265,78 @@ def normalize_msb_signal_events(
     return events
 
 
+def normalize_orb_signal_events(
+    signals: pd.DataFrame,
+    *,
+    symbol: str,
+    timeframe: str | None = "1m",
+    entry_price_source: EntryPriceSource = _DEFAULT_ENTRY_PRICE_SOURCE,
+) -> list[StrategySignalEvent]:
+    if signals is None or signals.empty:
+        return []
+
+    normalized_symbol = str(symbol).strip().upper()
+    if not normalized_symbol:
+        raise ValueError("symbol must be non-empty")
+
+    timeframe_label = _normalize_timeframe_label(timeframe or "1m")
+    events: list[StrategySignalEvent] = []
+
+    for row in extract_orb_signal_candidates(signals):
+        direction = str(row.get("direction") or "").strip().lower()
+        if direction not in {"long", "short"}:
+            continue
+
+        signal_ts = _to_datetime(row["signal_ts"])
+        signal_confirmed_ts = _to_datetime(row["signal_confirmed_ts"])
+        entry_ts = _to_datetime(row["entry_ts"])
+        if entry_ts <= signal_confirmed_ts:
+            continue
+
+        signal_open = _float_or_none(row.get("candle_open"))
+        signal_high = _float_or_none(row.get("candle_high"))
+        signal_low = _float_or_none(row.get("candle_low"))
+        signal_close = _float_or_none(row.get("candle_close"))
+        stop_price = _float_or_none(row.get("stop_price"))
+
+        range_end_ts = row.get("range_end_ts")
+        cutoff_ts = row.get("cutoff_ts")
+        notes = [
+            f"session_date={row.get('session_date')}",
+            f"opening_range_high={row.get('opening_range_high')}",
+            f"opening_range_low={row.get('opening_range_low')}",
+            f"range_end_ts={pd.Timestamp(range_end_ts).isoformat()}" if range_end_ts is not None else "range_end_ts=",
+            f"cutoff_ts={pd.Timestamp(cutoff_ts).isoformat()}" if cutoff_ts is not None else "cutoff_ts=",
+            "entry_ts_policy=next_bar_open_after_signal_confirmed_ts",
+        ]
+
+        event_id = (
+            f"orb:{normalized_symbol}:{timeframe_label}:"
+            f"{pd.Timestamp(signal_ts).isoformat()}:{direction}"
+        )
+        events.append(
+            StrategySignalEvent(
+                event_id=event_id,
+                strategy="orb",
+                symbol=normalized_symbol,
+                timeframe=timeframe_label,
+                direction=direction,  # type: ignore[arg-type]
+                signal_ts=signal_ts,
+                signal_confirmed_ts=signal_confirmed_ts,
+                entry_ts=entry_ts,
+                entry_price_source=entry_price_source,
+                signal_open=signal_open,
+                signal_high=signal_high,
+                signal_low=signal_low,
+                signal_close=signal_close,
+                stop_price=stop_price,
+                notes=notes,
+            )
+        )
+
+    return events
+
+
 def adapt_sfp_signal_events(
     ohlc: pd.DataFrame,
     *,
@@ -318,17 +391,80 @@ def adapt_msb_signal_events(
     )
 
 
+def _resolve_orb_intraday_bars(
+    *,
+    symbol: str,
+    intraday_bars: pd.DataFrame | None,
+    intraday_bars_by_symbol: Mapping[str, pd.DataFrame] | None,
+) -> pd.DataFrame | None:
+    if intraday_bars is not None:
+        return intraday_bars
+    if not intraday_bars_by_symbol:
+        return None
+
+    normalized_symbol = str(symbol).strip().upper()
+    direct = intraday_bars_by_symbol.get(symbol)
+    if direct is not None:
+        return direct
+
+    direct = intraday_bars_by_symbol.get(normalized_symbol)
+    if direct is not None:
+        return direct
+
+    for raw_symbol, frame in intraday_bars_by_symbol.items():
+        if str(raw_symbol).strip().upper() == normalized_symbol:
+            return frame
+    return None
+
+
+def adapt_orb_signal_events(
+    ohlc: pd.DataFrame,
+    *,
+    symbol: str,
+    timeframe: str | None = "1m",
+    intraday_bars: pd.DataFrame | None = None,
+    intraday_bars_by_symbol: Mapping[str, pd.DataFrame] | None = None,
+    orb_range_minutes: int = 15,
+    orb_confirmation_cutoff_et: str = "10:30",
+    entry_price_source: EntryPriceSource = _DEFAULT_ENTRY_PRICE_SOURCE,
+    **_: Any,
+) -> list[StrategySignalEvent]:
+    _ = ohlc
+    intraday = _resolve_orb_intraday_bars(
+        symbol=symbol,
+        intraday_bars=intraday_bars,
+        intraday_bars_by_symbol=intraday_bars_by_symbol,
+    )
+    if intraday is None or intraday.empty:
+        return []
+
+    signals = compute_orb_signals(
+        intraday,
+        range_minutes=orb_range_minutes,
+        cutoff_et=orb_confirmation_cutoff_et,
+    )
+    return normalize_orb_signal_events(
+        signals,
+        symbol=symbol,
+        timeframe=timeframe,
+        entry_price_source=entry_price_source,
+    )
+
+
 register_strategy_signal_adapter("sfp", adapt_sfp_signal_events, replace=True)
 register_strategy_signal_adapter("msb", adapt_msb_signal_events, replace=True)
+register_strategy_signal_adapter("orb", adapt_orb_signal_events, replace=True)
 
 
 __all__ = [
     "StrategySignalAdapter",
+    "adapt_orb_signal_events",
     "adapt_msb_signal_events",
     "adapt_sfp_signal_events",
     "build_strategy_signal_events",
     "get_strategy_signal_adapter",
     "list_registered_strategy_signal_adapters",
+    "normalize_orb_signal_events",
     "normalize_msb_signal_events",
     "normalize_sfp_signal_events",
     "register_strategy_signal_adapter",

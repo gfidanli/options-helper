@@ -150,7 +150,7 @@ T1 ─┬─ T2 ─┬─ T4 ─┬─ T5 ─┬─ T6 ─┬─ T7 ─┬─ T9
   - Kept `allow_shorts=True` by default while leaving all explicit filter toggles off, so baseline behavior remains unchanged.
   - Added result-level filter/directional placeholders now so downstream T4/T5 can fill logic without another contract break.
 
-### T2: Implement ORB module + strategy_signals adapter
+### T2: Implement ORB module + strategy_signals adapter (Complete)
 - **depends_on**: [T1]
 - **location**:
   - `options_helper/analysis/orb.py` (new)
@@ -164,6 +164,21 @@ T1 ─┬─ T2 ─┬─ T4 ─┬─ T5 ─┬─ T6 ─┬─ T7 ─┬─ T9
 - **validation**:
   - `tests/test_orb.py`: opening range, breakout detection, cutoff handling, missing bars.
   - `tests/test_strategy_signals.py`: registry includes `orb`; ORB event fields match `STRATEGY_SIGNAL_EVENT_FIELDS`.
+- **work log**:
+  - Added new `analysis/orb.py` module with deterministic intraday normalization (UTC + regular session filter), opening-range computation, breakout-by-close detection, cutoff enforcement, and one-event-per-session selection.
+  - Implemented anti-lookahead ORB timestamps (`signal_ts`, close-confirmed `signal_confirmed_ts`, next-bar `entry_ts`) and stop assignment from opening-range boundaries.
+  - Added ORB adapter + normalization path in `strategy_signals` and registered `strategy="orb"` in the adapter registry.
+  - ORB adapter accepts intraday data via kwargs as either `intraday_bars` or `intraday_bars_by_symbol` mapping for symbol-level resolution.
+  - Added deterministic tests for ORB core logic and strategy-signal contract parity.
+- **files touched**:
+  - `options_helper/analysis/orb.py`
+  - `options_helper/analysis/strategy_signals.py`
+  - `tests/test_orb.py`
+  - `tests/test_strategy_signals.py`
+  - `docs/plans/MODULAR-STRATEGY-MODELING-IMPROVED-PLAN.md`
+- **gotchas**:
+  - Close-confirmed ORB signals were modeled as `bar_open + bar_duration - 1 microsecond` so `entry_ts` (next bar open) remains strictly greater than confirmation and stays simulator-compatible.
+  - ORB detection ignores pre/post-market bars by filtering to regular session (`09:30-16:00 ET`) before opening-range and breakout checks.
 
 ### T3: Extend strategy feature enrichment for EMA9 + ATR (Complete)
 - **depends_on**: []
