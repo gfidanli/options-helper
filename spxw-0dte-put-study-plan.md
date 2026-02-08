@@ -158,9 +158,10 @@ T12,T13,T15,T16 -> T17 -> T18
 - **location**: `options_helper/backtesting/zero_dte_put.py`
 - **description**: Simulate short-put outcomes per decision event using selected strike/premium assumptions and close-settlement intrinsic payoff. Include fees/slippage, position sizing modes, explicit same-day position concurrency caps, and parallel outcome tracks for `hold_to_close` and `adaptive_exit`.
 - **validation**: Scenario tests for full-win, partial-win, ITM loss, deep-loss tails, settlement-mode correctness, concurrency-cap enforcement, and parity checks between both exit tracks.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added deterministic simulator module `simulate_zero_dte_put_outcomes` with explicit fee/slippage knobs, three sizing modes (`fixed_contracts`, `risk_pct_of_equity`, `target_notional`), same-day/total open-position concurrency caps, and side-by-side `hold_to_close` / `adaptive_exit` tracks. Implemented close intrinsic settlement logic with fail-closed pricing validation and stable row ordering for reproducible outputs.
+- **files edited/created**: `options_helper/backtesting/zero_dte_put.py`, `tests/test_zero_dte_backtesting.py`, `spxw-0dte-put-study-plan.md`
+- **gotchas/errors**: Simulator output initially omitted explicit fill status, which blocked robust grouped trade summaries; added `status` as a first-class output field and hardened numeric field fallback handling when primary inputs were `NaN`.
 
 ### T8: Build Calibration Metrics Module
 - **depends_on**: [T5]
@@ -197,9 +198,10 @@ T12,T13,T15,T16 -> T17 -> T18
 - **location**: `options_helper/backtesting/zero_dte_walk_forward.py`
 - **description**: Run rolling train/test windows where each test day uses only prior history/model snapshots. Produce calibration metrics and trading outcomes by risk tier, decision-time mode (`fixed` vs `rolling`), decision time bucket, regime, and exit mode (`hold_to_close`, `adaptive_exit`).
 - **validation**: Deterministic tests verify split boundaries, no future leakage, and reproducible outputs for fixed fixtures.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Implemented `run_zero_dte_walk_forward` with rolling train/test session splits and per-test-day model fitting so each scored day uses only prior-session history (`trained_through_session < session_date`). Added deterministic scoring joins, grouped calibration summaries by risk tier/decision mode/time bucket/regime, and grouped trade summaries by the same dimensions plus exit mode. Enforced no-future-leakage checks and deterministic sort paths for reproducibility.
+- **files edited/created**: `options_helper/backtesting/zero_dte_walk_forward.py`, `tests/test_zero_dte_backtesting.py`, `spxw-0dte-put-study-plan.md`
+- **gotchas/errors**: Normalization initially used `fillna(None)` for nullable metadata fields, which fails on pandas; switched to null-safe object defaulting with `.where(series.notna(), None)` and added regression coverage via focused walk-forward tests.
 
 ### T11: Define Artifact Contracts + Upsert Keys (Pre-Implementation)
 - **depends_on**: [T1, T9]
