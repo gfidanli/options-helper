@@ -79,7 +79,9 @@ All ingestion writes to the DuckDB warehouse (default: `data/warehouse/options.d
 - Large universes can take time; start with `--max-underlyings` or `--dry-run`.
 - If you see 403/402 errors, your data entitlement likely needs adjustment.
 - Avoid running multiple ingestion jobs concurrently (DuckDB is single-writer).
+- For historical options backfills, include expired contracts with `--contracts-status inactive` (or `all`).
 - `ingest options-bars` is resumable: it records per-contract attempts in `option_bars_meta`, skips contracts already attempted today, and avoids refetching historical data for expired expiries.
+- Alpaca/Yahoo chain snapshot endpoints are live-oriented; do not expect full expired-history reconstruction from `snapshot-options`.
 - Endpoint tuning baseline (Alpaca): keep `--contracts-max-rps` around `2.5` and start bars at `--bars-concurrency 8 --bars-max-rps 30.0`.
 - Throughput tuning loop: enable `--log-rate-limits`, increase bars knobs until you first observe bars `status=429`, then back off to ~80% of that setting.
 - If bars throughput plateaus before any 429s, raise Alpaca HTTP pool sizes (for example `--alpaca-http-pool-maxsize 256 --alpaca-http-pool-connections 256`) before pushing concurrency/RPS higher.

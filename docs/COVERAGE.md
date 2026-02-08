@@ -52,6 +52,7 @@ Coverage suggestions are deterministic and local-data-only:
 Notes:
 
 - OI history is point-in-time; many missing historical OI days cannot be backfilled.
+- Sparse options snapshot-day coverage often reflects live-only chain snapshot behavior; use bars backfills for historical studies and snapshots for forward daily capture.
 - Weekends/holidays are treated as non-business days and are not counted as gaps.
 
 ## Streamlit

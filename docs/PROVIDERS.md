@@ -55,6 +55,23 @@ Current Alpaca coverage:
 Not yet implemented:
 - Streaming news and other websocket feeds (post-IMP-029 follow-ons)
 
+## Historical Availability Notes
+
+Not all provider endpoints can be backfilled historically. Use this matrix when planning ingestion:
+
+| Data type | Endpoint family | Historical backfill support | Notes |
+| --- | --- | --- | --- |
+| Stock bars | Alpaca historical bars | Yes | Backfillable by date range (subject to plan/feed entitlements and recency buffers). |
+| Option bars | Alpaca historical option bars | Yes | Primary historical path for options studies. Combine with `ingest options-bars --contracts-status inactive|all` for expired contracts. |
+| Option contracts metadata | Alpaca options contracts | Partial | Historical contract symbols can be discovered when status includes `inactive`/`all`; OI/close fields are point-in-time snapshots, not full historical series. |
+| Option chain snapshots | Alpaca option-chain snapshots | No (for expired-history backfill) | Live-oriented chain snapshots; expired historical days are not fully recoverable from this endpoint. |
+| Underlying quote snapshot | Alpaca stock snapshot/latest trade | No | Point-in-time quote/trade values only. |
+| Yahoo option chain/expiries | yfinance `ticker.options` / `option_chain` | No (expired-history backfill) | Exposes currently listed expiries/chains; not a historical expired-chain archive. |
+
+Practical rule:
+- Use bars endpoints (`stock bars`, `option bars`) for historical studies/backfills.
+- Use snapshot endpoints for ongoing daily capture, not retroactive expired-history reconstruction.
+
 ## Provider contract (dev)
 
 The interface lives in:
