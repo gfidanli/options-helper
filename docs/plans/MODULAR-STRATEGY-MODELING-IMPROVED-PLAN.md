@@ -264,7 +264,7 @@ T1 ─┬─ T2 ─┬─ T4 ─┬─ T5 ─┬─ T6 ─┬─ T7 ─┬─ T9
   - Trade IDs alone are not always sufficient for robust target matching; subset selection now uses both trade-id suffix labels and computed target-R fallback matching to stay deterministic across mixed payload quality.
   - Directional buckets are rerun through the same portfolio builder and metrics computer, so portfolio sizing/overlap rules apply consistently instead of behaving like post-hoc metric slices.
 
-### T6: CLI wiring + validation + output updates
+### T6: CLI wiring + validation + output updates (Complete)
 - **depends_on**: [T1, T4, T5]
 - **location**:
   - `options_helper/commands/technicals.py`
@@ -276,6 +276,19 @@ T1 ─┬─ T2 ─┬─ T4 ─┬─ T5 ─┬─ T6 ─┬─ T7 ─┬─ T9
 - **validation**:
   - CLI tests for invalid strategy, invalid cutoff, invalid regimes, and `orb` accepted.
   - Ensure defaults preserve current behavior (all new filters OFF).
+- **work log**:
+  - Added strategy-model CLI flags for strategy selection (`sfp|msb|orb`), short toggle, ORB confirmation controls, ATR stop floor, RSI/EMA9/volatility gates, and volatility regime allowlist.
+  - Added explicit CLI validation helpers for ORB cutoff (`HH:MM` ET string), ORB stop policy enum, and volatility regime CSV parsing.
+  - Constructed a validated `filter_config` from CLI flags and passed it through the strategy-model request payload.
+  - Extended CLI summary output to print filter summary counts (`base/kept/rejected` + non-zero reject reasons) and directional headline metrics (`combined`, `long_only`, `short_only`) when present.
+  - Expanded CLI tests to cover invalid cutoff/regimes, ORB strategy acceptance, filter_config pass-through, and new output lines.
+- **files touched**:
+  - `options_helper/commands/technicals.py`
+  - `tests/test_strategy_modeling_cli.py`
+  - `docs/plans/MODULAR-STRATEGY-MODELING-IMPROVED-PLAN.md`
+- **gotchas**:
+  - Typer wraps long `BadParameter` messages across lines in CLI output, so tests assert stable substrings instead of brittle full-line matches.
+  - Defaults are intentionally preserved: `allow_shorts=True` and all new filter toggles remain disabled unless explicitly enabled.
 
 ### T7: Artifacts: summary.json + trades.csv + summary.md enhancements
 - **depends_on**: [T5, T6]

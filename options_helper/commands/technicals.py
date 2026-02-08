@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, replace
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 import time
 from types import SimpleNamespace
@@ -2315,6 +2315,145 @@ def _split_csv_option(value: str | None, *, uppercase: bool = True) -> list[str]
     return items
 
 
+def _normalize_hhmm_et_cutoff(value: str, *, option_name: str) -> str:
+    token = str(value or "").strip()
+    if not token:
+        raise typer.BadParameter(f"{option_name} must be HH:MM in 24-hour ET time.")
+    try:
+        datetime.strptime(token, "%H:%M")
+    except ValueError as exc:
+        raise typer.BadParameter(f"{option_name} must be HH:MM in 24-hour ET time.") from exc
+    return token
+
+
+def _normalize_orb_stop_policy(value: str, *, option_name: str) -> str:
+    token = str(value or "").strip().lower()
+    allowed = ("base", "orb_range", "tighten")
+    if token not in allowed:
+        raise typer.BadParameter(f"{option_name} must be one of: {', '.join(allowed)}")
+    return token
+
+
+def _parse_allowed_volatility_regimes(value: str, *, option_name: str) -> tuple[str, ...]:
+    allowed = ("low", "normal", "high")
+    parsed = tuple(item.strip().lower() for item in str(value or "").split(",") if item.strip())
+    if not parsed:
+        raise typer.BadParameter(
+            f"{option_name} must include at least one regime from: {', '.join(allowed)}"
+        )
+    if len(set(parsed)) != len(parsed):
+        raise typer.BadParameter(f"{option_name} must not include duplicate regimes.")
+    invalid = [item for item in parsed if item not in allowed]
+    if invalid:
+        raise typer.BadParameter(
+            f"{option_name} contains invalid regime(s): {', '.join(invalid)}. "
+            f"Allowed: {', '.join(allowed)}"
+        )
+    return parsed
+
+
+def _build_strategy_filter_config(
+    *,
+    allow_shorts: bool,
+    enable_orb_confirmation: bool,
+    orb_range_minutes: int,
+    orb_confirmation_cutoff_et: str,
+    orb_stop_policy: str,
+    enable_atr_stop_floor: bool,
+    atr_stop_floor_multiple: float,
+    enable_rsi_extremes: bool,
+    enable_ema9_regime: bool,
+    ema9_slope_lookback_bars: int,
+    enable_volatility_regime: bool,
+    allowed_volatility_regimes: str,
+):
+    from pydantic import ValidationError
+
+    from options_helper.schemas.strategy_modeling_filters import StrategyEntryFilterConfig
+
+    if orb_range_minutes < 1 or orb_range_minutes > 120:
+        raise typer.BadParameter("--orb-range-minutes must be between 1 and 120.")
+    if atr_stop_floor_multiple <= 0.0:
+        raise typer.BadParameter("--atr-stop-floor-multiple must be > 0.")
+    if ema9_slope_lookback_bars < 1:
+        raise typer.BadParameter("--ema9-slope-lookback-bars must be >= 1.")
+
+    cutoff = _normalize_hhmm_et_cutoff(
+        orb_confirmation_cutoff_et,
+        option_name="--orb-confirmation-cutoff-et",
+    )
+    normalized_stop_policy = _normalize_orb_stop_policy(
+        orb_stop_policy,
+        option_name="--orb-stop-policy",
+    )
+    parsed_regimes = _parse_allowed_volatility_regimes(
+        allowed_volatility_regimes,
+        option_name="--allowed-volatility-regimes",
+    )
+
+    payload = {
+        "allow_shorts": bool(allow_shorts),
+        "enable_orb_confirmation": bool(enable_orb_confirmation),
+        "orb_range_minutes": int(orb_range_minutes),
+        "orb_confirmation_cutoff_et": cutoff,
+        "orb_stop_policy": normalized_stop_policy,
+        "enable_atr_stop_floor": bool(enable_atr_stop_floor),
+        "atr_stop_floor_multiple": float(atr_stop_floor_multiple),
+        "enable_rsi_extremes": bool(enable_rsi_extremes),
+        "enable_ema9_regime": bool(enable_ema9_regime),
+        "ema9_slope_lookback_bars": int(ema9_slope_lookback_bars),
+        "enable_volatility_regime": bool(enable_volatility_regime),
+        "allowed_volatility_regimes": parsed_regimes,
+    }
+    try:
+        return StrategyEntryFilterConfig.model_validate(payload)
+    except ValidationError as exc:
+        detail = "; ".join(error.get("msg", "invalid value") for error in exc.errors())
+        raise typer.BadParameter(f"Invalid strategy filter configuration: {detail}") from exc
+
+
+def _coerce_int(value: object) -> int | None:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float(value: object) -> float | None:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _mapping_view(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, SimpleNamespace):
+        return vars(value)
+    if hasattr(value, "__dict__"):
+        try:
+            return dict(vars(value))
+        except TypeError:
+            return {}
+    return {}
+
+
+def _extract_directional_headline(bucket: object) -> tuple[int | None, float | None]:
+    payload = _mapping_view(bucket)
+    if not payload:
+        return None, None
+
+    trade_count = _coerce_int(payload.get("trade_count"))
+    if trade_count is None:
+        trade_count = _coerce_int(payload.get("closed_trade_count"))
+
+    total_return = _coerce_float(payload.get("total_return_pct"))
+    if total_return is None:
+        total_return = _coerce_float(_mapping_view(payload.get("portfolio_metrics")).get("total_return_pct"))
+    return trade_count, total_return
+
+
 def _build_target_ladder(
     *,
     min_tenths: int,
@@ -2422,7 +2561,67 @@ def _intraday_coverage_block_message(preflight: object | None) -> str | None:
 
 @app.command("strategy-model")
 def technicals_strategy_model(
-    strategy: str = typer.Option("sfp", "--strategy", help="Strategy to model: sfp or msb."),
+    strategy: str = typer.Option("sfp", "--strategy", help="Strategy to model: sfp, msb, or orb."),
+    allow_shorts: bool = typer.Option(
+        True,
+        "--allow-shorts/--no-allow-shorts",
+        help="Allow short-direction events to pass entry filters.",
+    ),
+    enable_orb_confirmation: bool = typer.Option(
+        False,
+        "--enable-orb-confirmation/--no-enable-orb-confirmation",
+        help="Require ORB breakout confirmation by cutoff for SFP/MSB events.",
+    ),
+    orb_range_minutes: int = typer.Option(
+        15,
+        "--orb-range-minutes",
+        help="Opening-range window in minutes for ORB confirmation.",
+    ),
+    orb_confirmation_cutoff_et: str = typer.Option(
+        "10:30",
+        "--orb-confirmation-cutoff-et",
+        help="Cutoff for ORB confirmation in ET (HH:MM, 24-hour).",
+    ),
+    orb_stop_policy: str = typer.Option(
+        "base",
+        "--orb-stop-policy",
+        help="ORB stop policy: base, orb_range, or tighten.",
+    ),
+    enable_atr_stop_floor: bool = typer.Option(
+        False,
+        "--enable-atr-stop-floor/--no-enable-atr-stop-floor",
+        help="Apply ATR stop floor gate to entries.",
+    ),
+    atr_stop_floor_multiple: float = typer.Option(
+        0.5,
+        "--atr-stop-floor-multiple",
+        help="ATR multiple required for ATR stop floor gate.",
+    ),
+    enable_rsi_extremes: bool = typer.Option(
+        False,
+        "--enable-rsi-extremes/--no-enable-rsi-extremes",
+        help="Require RSI extreme context for entries.",
+    ),
+    enable_ema9_regime: bool = typer.Option(
+        False,
+        "--enable-ema9-regime/--no-enable-ema9-regime",
+        help="Require EMA9 regime alignment for entries.",
+    ),
+    ema9_slope_lookback_bars: int = typer.Option(
+        3,
+        "--ema9-slope-lookback-bars",
+        help="Lookback bars for EMA9 slope regime computation.",
+    ),
+    enable_volatility_regime: bool = typer.Option(
+        False,
+        "--enable-volatility-regime/--no-enable-volatility-regime",
+        help="Enable volatility-regime allowlist filtering.",
+    ),
+    allowed_volatility_regimes: str = typer.Option(
+        "low,normal,high",
+        "--allowed-volatility-regimes",
+        help="Comma-separated volatility regimes to allow: low,normal,high.",
+    ),
     symbols: str | None = typer.Option(
         None,
         "--symbols",
@@ -2539,8 +2738,8 @@ def technicals_strategy_model(
     console = Console(width=200)
 
     normalized_strategy = strategy.strip().lower()
-    if normalized_strategy not in {"sfp", "msb"}:
-        raise typer.BadParameter("--strategy must be one of: sfp, msb")
+    if normalized_strategy not in {"sfp", "msb", "orb"}:
+        raise typer.BadParameter("--strategy must be one of: sfp, msb, orb")
     if starting_capital <= 0.0:
         raise typer.BadParameter("--starting-capital must be > 0")
     if risk_per_trade_pct <= 0.0 or risk_per_trade_pct > 100.0:
@@ -2559,6 +2758,20 @@ def technicals_strategy_model(
     parsed_end_date = _parse_iso_date(end_date, option_name="--end-date")
     if parsed_start_date and parsed_end_date and parsed_start_date > parsed_end_date:
         raise typer.BadParameter("--start-date must be <= --end-date")
+    filter_config = _build_strategy_filter_config(
+        allow_shorts=allow_shorts,
+        enable_orb_confirmation=enable_orb_confirmation,
+        orb_range_minutes=int(orb_range_minutes),
+        orb_confirmation_cutoff_et=orb_confirmation_cutoff_et,
+        orb_stop_policy=orb_stop_policy,
+        enable_atr_stop_floor=enable_atr_stop_floor,
+        atr_stop_floor_multiple=float(atr_stop_floor_multiple),
+        enable_rsi_extremes=enable_rsi_extremes,
+        enable_ema9_regime=enable_ema9_regime,
+        ema9_slope_lookback_bars=int(ema9_slope_lookback_bars),
+        enable_volatility_regime=enable_volatility_regime,
+        allowed_volatility_regimes=allowed_volatility_regimes,
+    )
 
     target_ladder = _build_target_ladder(
         min_tenths=int(r_ladder_min_tenths),
@@ -2697,6 +2910,7 @@ def technicals_strategy_model(
         intraday_timeframe=intraday_timeframe,
         target_ladder=target_ladder,
         starting_capital=float(starting_capital),
+        filter_config=filter_config,
         policy={
             "require_intraday_bars": True,
             "sizing_rule": "risk_pct_of_equity",
@@ -2754,6 +2968,44 @@ def technicals_strategy_model(
             f"trades={trade_count} segments_shown={segments_shown}"
         )
     )
+
+    filter_summary = _mapping_view(getattr(run_result, "filter_summary", None))
+    if filter_summary:
+        base_events = _coerce_int(filter_summary.get("base_event_count"))
+        kept_events = _coerce_int(filter_summary.get("kept_event_count"))
+        rejected_events = _coerce_int(filter_summary.get("rejected_event_count"))
+        if base_events is not None and kept_events is not None and rejected_events is not None:
+            console.print(f"filters base={base_events} kept={kept_events} rejected={rejected_events}")
+
+        reject_counts = _mapping_view(filter_summary.get("reject_counts"))
+        reject_parts: list[str] = []
+        for reason, count in reject_counts.items():
+            parsed = _coerce_int(count)
+            if parsed is None or parsed <= 0:
+                continue
+            reject_parts.append(f"{reason}={parsed}")
+        if reject_parts:
+            console.print(f"filter_rejects {', '.join(reject_parts)}")
+
+    directional_metrics = _mapping_view(getattr(run_result, "directional_metrics", None))
+    if directional_metrics:
+        directional_parts: list[str] = []
+        for label in ("combined", "long_only", "short_only"):
+            trade_count_value, total_return_value = _extract_directional_headline(
+                directional_metrics.get(label)
+            )
+            if trade_count_value is None and total_return_value is None:
+                continue
+
+            part = label
+            if trade_count_value is not None:
+                part = f"{part} trades={trade_count_value}"
+            if total_return_value is not None:
+                part = f"{part} return={total_return_value:.2f}%"
+            directional_parts.append(part)
+        if directional_parts:
+            console.print(f"directional {' | '.join(directional_parts)}")
+
     if write_json:
         console.print(f"Wrote summary JSON: {paths.summary_json}")
     if write_csv:

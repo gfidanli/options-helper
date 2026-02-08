@@ -174,6 +174,30 @@ def _build_run_result(*, request, preflight):  # noqa: ANN001
         portfolio_metrics=portfolio_metrics,
         target_hit_rates=target_hit_rates,
         segment_records=segment_records,
+        filter_summary={
+            "base_event_count": 5,
+            "kept_event_count": 2,
+            "rejected_event_count": 3,
+            "reject_counts": {
+                "shorts_disabled": 1,
+                "rsi_not_extreme": 2,
+                "orb_breakout_missing": 0,
+            },
+        },
+        directional_metrics={
+            "combined": {
+                "trade_count": 2,
+                "portfolio_metrics": {"total_return_pct": 2.5},
+            },
+            "long_only": {
+                "trade_count": 1,
+                "portfolio_metrics": {"total_return_pct": 5.0},
+            },
+            "short_only": {
+                "trade_count": 1,
+                "portfolio_metrics": {"total_return_pct": -2.0},
+            },
+        },
     )
 
 
@@ -203,6 +227,73 @@ def test_strategy_model_rejects_invalid_strategy_value() -> None:
     assert "--strategy must be one of:" in res.output
 
 
+def test_strategy_model_rejects_invalid_orb_confirmation_cutoff() -> None:
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--symbols",
+            "SPY",
+            "--orb-confirmation-cutoff-et",
+            "10-30",
+        ],
+    )
+    assert res.exit_code != 0
+    assert "--orb-confirmation-cutoff-et must be HH:MM" in res.output
+    assert "24-hour ET" in res.output
+
+
+def test_strategy_model_rejects_invalid_allowed_volatility_regimes() -> None:
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--symbols",
+            "SPY",
+            "--allowed-volatility-regimes",
+            "low,extreme",
+        ],
+    )
+    assert res.exit_code != 0
+    assert "--allowed-volatility-regimes contains invalid regime(s):" in res.output
+    assert "extreme" in res.output
+
+
+def test_strategy_model_accepts_orb_strategy(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    stub = _StubStrategyModelingService(blocked=False)
+    monkeypatch.setattr(
+        "options_helper.commands.technicals.cli_deps.build_strategy_modeling_service",
+        lambda: stub,
+    )
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--strategy",
+            "orb",
+            "--symbols",
+            "SPY",
+        ],
+    )
+
+    assert res.exit_code == 0, res.output
+    assert stub.last_request is not None
+    assert stub.last_request.strategy == "orb"
+
+
 def test_strategy_model_success_parses_options_and_runs_service(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     stub = _StubStrategyModelingService(blocked=False)
     monkeypatch.setattr(
@@ -220,6 +311,24 @@ def test_strategy_model_success_parses_options_and_runs_service(monkeypatch) -> 
             "strategy-model",
             "--strategy",
             "msb",
+            "--no-allow-shorts",
+            "--enable-orb-confirmation",
+            "--orb-range-minutes",
+            "20",
+            "--orb-confirmation-cutoff-et",
+            "10:15",
+            "--orb-stop-policy",
+            "tighten",
+            "--enable-atr-stop-floor",
+            "--atr-stop-floor-multiple",
+            "0.8",
+            "--enable-rsi-extremes",
+            "--enable-ema9-regime",
+            "--ema9-slope-lookback-bars",
+            "5",
+            "--enable-volatility-regime",
+            "--allowed-volatility-regimes",
+            "low,normal",
             "--symbols",
             "spy,qqq",
             "--exclude-symbols",
@@ -274,8 +383,25 @@ def test_strategy_model_success_parses_options_and_runs_service(monkeypatch) -> 
     assert req.segment_values == ("spy", "long")
     assert req.segment_min_trades == 2
     assert req.segment_limit == 5
+    assert req.filter_config.allow_shorts is False
+    assert req.filter_config.enable_orb_confirmation is True
+    assert req.filter_config.orb_range_minutes == 20
+    assert req.filter_config.orb_confirmation_cutoff_et == "10:15"
+    assert req.filter_config.orb_stop_policy == "tighten"
+    assert req.filter_config.enable_atr_stop_floor is True
+    assert req.filter_config.atr_stop_floor_multiple == 0.8
+    assert req.filter_config.enable_rsi_extremes is True
+    assert req.filter_config.enable_ema9_regime is True
+    assert req.filter_config.ema9_slope_lookback_bars == 5
+    assert req.filter_config.enable_volatility_regime is True
+    assert req.filter_config.allowed_volatility_regimes == ("low", "normal")
     assert "strategy=msb" in res.output
     assert "segments_shown=3" in res.output
+    assert "filters base=5 kept=2 rejected=3" in res.output
+    assert "filter_rejects shorts_disabled=1, rsi_not_extreme=2" in res.output
+    assert "directional combined trades=2 return=2.50%" in res.output
+    assert "long_only trades=1 return=5.00%" in res.output
+    assert "short_only trades=1 return=-2.00%" in res.output
 
 
 def test_strategy_model_success_resolves_universe_filters(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -303,6 +429,12 @@ def test_strategy_model_success_resolves_universe_filters(monkeypatch) -> None: 
     assert res.exit_code == 0, res.output
     assert stub.universe_calls == [None]
     assert tuple(stub.last_request.symbols) == ("SPY",)
+    assert stub.last_request.filter_config.allow_shorts is True
+    assert stub.last_request.filter_config.enable_orb_confirmation is False
+    assert stub.last_request.filter_config.enable_atr_stop_floor is False
+    assert stub.last_request.filter_config.enable_rsi_extremes is False
+    assert stub.last_request.filter_config.enable_ema9_regime is False
+    assert stub.last_request.filter_config.enable_volatility_regime is False
 
 
 def test_strategy_model_filters_fail_when_no_symbols_remain(monkeypatch) -> None:  # type: ignore[no-untyped-def]
