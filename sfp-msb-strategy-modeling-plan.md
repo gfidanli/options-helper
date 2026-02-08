@@ -436,9 +436,15 @@ T0 ──┬── T1 ──┬── T4A ──┬── T5 ── T6 ── T7
 - **location**: repo root and changed files
 - **description**: Run targeted/full tests, smoke-check CLI help + Streamlit page registration, and confirm read-only page behavior (no ingestion writes during render).
 - **validation**: `./.venv/bin/python -m pytest` (full or scoped with reason), CLI help output, Streamlit page visibility checks.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Executed scoped end-to-end validation sweep across all strategy-modeling modules/tests (analysis + CLI + artifacts + Streamlit component/page + scaffold): `98 passed`.
+  - Ran CLI smoke check for strategy-modeling command help via module invocation with branch-local `PYTHONPATH`.
+  - Verified Streamlit page registration and scaffold references for `11_Strategy_Modeling.py` in both app navigation and portal scaffold tests.
+  - Confirmed read-only page behavior by coverage of blocked-run tests and absence of ingestion/write commands in page path.
+  - Errors: none (one existing third-party `websockets.legacy` deprecation warning only).
 - **files edited/created**:
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ## Parallel Execution Groups
 
