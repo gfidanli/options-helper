@@ -344,17 +344,28 @@ T1 ─┬─ T2 ─┬─ T4 ─┬─ T5 ─┬─ T6 ─┬─ T7 ─┬─ T9
   - Streamlit control values can drift from schema constraints (for example empty volatility regime selection or malformed ORB cutoff), so explicit schema validation in the page prevents runtime service errors while keeping the page read-only.
   - Output payloads may be partial on legacy/stub results; filter/directional sections are defensive and show stable fallback info when fields are absent.
 
-### T9: Documentation updates
+### T9: Documentation updates (Complete)
 - **depends_on**: [T6, T7, T8]
 - **location**:
   - `docs/TECHNICAL_STRATEGY_MODELING.md`
-  - `docs/plans/MODULAR-STRATEGY-MODELING-PLAN.md`
+  - `docs/plans/MODULAR-STRATEGY-MODELING-IMPROVED-PLAN.md`
 - **description**:
   - Document ORB strategy + ORB confirmation gate semantics (timestamps, cutoff, stop policy).
   - Document each filter formula, anchoring rules, defaults, and reject reasons.
   - Document directional metrics definition and target-ladder portfolio semantics.
 - **validation**:
   - Doc examples match actual CLI flags and artifact keys.
+- **work log**:
+  - Rewrote `TECHNICAL_STRATEGY_MODELING.md` to reflect implemented `strategy-model` flags (`sfp|msb|orb`, ORB/filter controls, validation constraints, and defaults).
+  - Added explicit anti-lookahead documentation for ORB primary strategy and ORB confirmation gate (`signal_confirmed_ts`, cutoff interpretation, `entry_ts` strict-after-confirmation, and `orb_stop_policy` behavior).
+  - Documented filter evaluation order, formulas, daily anchoring rules (`sfp/msb` signal-day vs `orb` prior completed day), and stable reject-code list/order.
+  - Documented directional metrics and portfolio-target semantics (single portfolio target subset vs full target-ladder stats) plus current `summary.json` top-level keys and filter/directional artifact payload fields.
+- **files touched**:
+  - `docs/TECHNICAL_STRATEGY_MODELING.md`
+  - `docs/plans/MODULAR-STRATEGY-MODELING-IMPROVED-PLAN.md`
+- **gotchas**:
+  - Existing technical doc had stale strategy/filter surface (pre-ORB/filter/directional updates), so examples and artifact-key lists were drifted from current implementation.
+  - Kept terminology aligned with implementation field names (`filter_metadata`, `filter_summary`, `directional_metrics`) to avoid ambiguity across CLI, artifacts, and Streamlit.
 
 ### T10: Consolidated regression + performance verification
 - **depends_on**: [T2, T4, T5, T7]
