@@ -367,12 +367,22 @@ T1 ─┬─ T2 ─┬─ T4 ─┬─ T5 ─┬─ T6 ─┬─ T7 ─┬─ T9
   - Existing technical doc had stale strategy/filter surface (pre-ORB/filter/directional updates), so examples and artifact-key lists were drifted from current implementation.
   - Kept terminology aligned with implementation field names (`filter_metadata`, `filter_summary`, `directional_metrics`) to avoid ambiguity across CLI, artifacts, and Streamlit.
 
-### T10: Consolidated regression + performance verification
+### T10: Consolidated regression + performance verification (Complete)
 - **depends_on**: [T2, T4, T5, T7]
 - **location**: `tests/`
 - **description**:
   - Add/extend deterministic regression tests for lookahead rules and ORB gating.
   - Run targeted suite + performance smoke.
+- **work log**:
+  - Added deterministic ORB gate regression for filter-engine cutoff semantics (`orb_breakout_missing` when breakout confirmation lands after configured cutoff).
+  - Updated CLI artifact contract assertion to required-key subset semantics so additive `summary.json` sections (`filter_metadata`, `filter_summary`, `directional_metrics`) do not create false negatives.
+  - Ran the full targeted verification suite plus performance smoke and confirmed all required commands pass.
+- **files touched**:
+  - `tests/test_strategy_modeling_regression.py`
+  - `tests/test_strategy_modeling_cli.py`
+  - `docs/plans/MODULAR-STRATEGY-MODELING-IMPROVED-PLAN.md`
+- **gotchas**:
+  - Initial targeted run failed in `test_strategy_model_writes_artifacts_and_summary_contract` because the test asserted an exact top-level key set while artifact schema evolved additively; switched to subset assertion for forward-compatible contract coverage.
 - **validation commands**:
   - `./.venv/bin/python -m pytest tests/test_strategy_signals.py tests/test_orb.py -q`
   - `./.venv/bin/python -m pytest tests/test_strategy_modeling_service.py tests/test_strategy_modeling_regression.py -q`

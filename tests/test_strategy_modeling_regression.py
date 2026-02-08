@@ -578,6 +578,42 @@ def test_apply_entry_filters_reject_reason_orb_breakout_missing() -> None:
     _assert_single_reject(summary, "orb_breakout_missing")
 
 
+def test_apply_entry_filters_reject_reason_orb_breakout_after_cutoff() -> None:
+    event = _strategy_event(
+        event_id="evt-orb-breakout-after-cutoff",
+        direction="long",
+        signal_day="2026-01-05",
+        entry_day="2026-01-06",
+    )
+    intraday = _intraday_frame(
+        "2026-01-06",
+        [
+            ("09:30", 100.0, 102.0, 99.0, 101.0),
+            ("09:35", 101.0, 103.0, 100.0, 102.0),
+            ("09:40", 102.0, 104.0, 101.0, 103.0),
+            ("09:45", 103.0, 103.8, 102.0, 103.2),
+            ("09:50", 103.2, 103.8, 102.9, 103.3),
+            ("09:55", 103.3, 103.9, 103.0, 103.4),
+            ("10:00", 103.4, 106.0, 103.2, 105.5),  # Breakout confirms after cutoff.
+            ("10:05", 105.6, 106.1, 105.4, 105.8),
+        ],
+    )
+    filtered, summary, _ = apply_entry_filters(
+        [event],
+        filter_config=StrategyEntryFilterConfig(
+            enable_orb_confirmation=True,
+            orb_confirmation_cutoff_et="10:00",
+        ),
+        feature_config=StrategyFeatureConfig(),
+        daily_features_by_symbol={},
+        daily_ohlc_by_symbol={},
+        intraday_bars_by_symbol={"SPY": intraday},
+    )
+
+    assert filtered == ()
+    _assert_single_reject(summary, "orb_breakout_missing")
+
+
 def test_apply_entry_filters_reject_reason_atr_floor_failed() -> None:
     event = _strategy_event(event_id="evt-atr-floor-fail", signal_close=100.0, stop_price=99.0)
     features = _daily_features_frame([("2026-01-05", 20.0, 2.0, 99.0, 1.0, "normal")])

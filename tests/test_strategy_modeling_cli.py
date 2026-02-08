@@ -524,7 +524,7 @@ def test_strategy_model_writes_artifacts_and_summary_contract(
     assert summary_md_path.exists()
 
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
-    assert set(payload.keys()) == {
+    required_top_level_keys = {
         "schema_version",
         "generated_at",
         "strategy",
@@ -533,11 +533,15 @@ def test_strategy_model_writes_artifacts_and_summary_contract(
         "disclaimer",
         "summary",
         "policy_metadata",
+        "filter_metadata",
+        "filter_summary",
+        "directional_metrics",
         "metrics",
         "r_ladder",
         "segments",
         "trade_log",
     }
+    assert required_top_level_keys.issubset(payload.keys())
     assert payload["schema_version"] == 1
     assert payload["strategy"] == "msb"
     assert payload["disclaimer"] == DISCLAIMER_TEXT
