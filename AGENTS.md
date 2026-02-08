@@ -33,6 +33,15 @@ This repo is an information/decision-support tool. Keep outputs and docs clear t
   - docs (one feature per doc in `docs/`),
   - tests (offline, deterministic).
 
+## Performance architecture guardrails
+- Treat performance as a first-class requirement for modeling/backtesting paths, not a post-hoc cleanup item.
+- In hot paths, precompute symbol-level structures once (sorted timestamp `int64` arrays, session-date arrays/masks, OHLC numpy views) and reuse them.
+- Cache per-event decisions (entry row, entry price, initial risk, reject code) so target ladders do not recompute identical work.
+- Avoid repeated pandas slicing/timezone conversions/`iterrows()` inside per-trade loops; prefer index-based/vectorized operations (`np.searchsorted`, boolean masks, ndarray loops).
+- Keep long-running CLI commands transparent with stage progress and timings.
+- Any hot-path behavior change should include deterministic tests plus a targeted before/after timing check.
+- See `docs/PERFORMANCE_ARCHITECTURE.md` for repository-wide implementation guidance.
+
 ## Context7 (Library/API docs)
 - Always use the Context7 MCP tools when you need library/API documentation, code generation, or setup/configuration steps (even if the user doesn’t explicitly ask).
 - Call `mcp__context7__resolve-library-id` first, then `mcp__context7__query-docs`, and prefer official/primary docs surfaced there.

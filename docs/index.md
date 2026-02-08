@@ -7,7 +7,7 @@
 
 - Start here: [Briefing](BRIEFING.md), [Dashboard](DASHBOARD.md), [Automation](AUTOMATION.md)
 - Data and artifacts: [Candle cache](CANDLE_CACHE.md), [Options flow](OPTIONS_FLOW.md), [Chain reports](CHAIN_REPORT.md)
-- Research: [Research workflow](RESEARCH.md), [SPXW 0DTE put study](SPXW_0DTE_PUT_STUDY.md), [IV surface](IV_SURFACE.md), [Dealer exposure](DEALER_EXPOSURE.md), [Intraday flow](INTRADAY_FLOW.md), [Levels](LEVELS.md), [Backtesting](BACKTESTING.md), [Technical strategy modeling](TECHNICAL_STRATEGY_MODELING.md)
+- Research: [Research workflow](RESEARCH.md), [SPXW 0DTE put study](SPXW_0DTE_PUT_STUDY.md), [IV surface](IV_SURFACE.md), [Dealer exposure](DEALER_EXPOSURE.md), [Intraday flow](INTRADAY_FLOW.md), [Levels](LEVELS.md), [Backtesting](BACKTESTING.md), [Technical strategy modeling](TECHNICAL_STRATEGY_MODELING.md), [Performance architecture](PERFORMANCE_ARCHITECTURE.md)
 - Documentation tooling: [Diagram workflow](DIAGRAMS.md), [Docs site](DOCS_SITE.md)
 - Project planning: [Backlog](BACKLOG.md), [Plans index](plans/README.md)
 
