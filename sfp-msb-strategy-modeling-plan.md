@@ -246,9 +246,16 @@ T0 ──┬── T1 ──┬── T4A ──┬── T5 ── T6 ── T7
 - **location**: `tests/test_strategy_modeling_msb.py`
 - **description**: Add MSB-specific parity tests to confirm the shared engine, CLI, and segmentation outputs work identically under the registry contract used by SFP.
 - **validation**: Deterministic tests pass for MSB modeling and match contract invariants.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added deterministic MSB parity regression suite `tests/test_strategy_modeling_msb.py`.
+  - Verified scan-level registry contract invariants by comparing shared SFP/MSB event fields, next-bar-open forward-return anchor metadata, and direct adapter (`extract_*_events`) timestamp parity.
+  - Verified `technicals strategy-model` registry/service mapping parity for `--strategy msb` versus `--strategy sfp`, including identical non-strategy request contracts and identical segmentation payload propagation into written artifacts.
+  - Validation: `./.venv/bin/python -m pytest tests/test_strategy_modeling_msb.py -q` (2 passed).
+  - Errors: none.
 - **files edited/created**:
+  - `tests/test_strategy_modeling_msb.py`
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ### T15: CLI Integration Tests
 - **depends_on**: [T10, T14, T14B]
@@ -264,9 +271,16 @@ T0 ──┬── T1 ──┬── T4A ──┬── T5 ── T6 ── T7
 - **location**: `tests/portal/test_strategy_modeling_page.py`
 - **description**: Test component + page behavior with seeded temp DuckDB fixtures and missing-DB resilience.
 - **validation**: Portal tests pass offline, including empty/unavailable data states.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added integration-style portal test module `tests/portal/test_strategy_modeling_page.py` covering seeded DuckDB + intraday fixture success path for component payload loading and symbol listing.
+  - Added missing/unavailable-data resilience coverage for missing DB and missing `candles_daily` table states.
+  - Added blocked-run coverage for intraday preflight gaps and page-level run-button disable behavior (service construction forbidden when blocked).
+  - Validation: `./.venv/bin/python -m pytest tests/portal/test_strategy_modeling_page.py -q` (`4 skipped`, deterministic/offline; this branch currently lacks strategy-modeling Streamlit source modules so tests skip via `importorskip` guards).
+  - Errors: none.
 - **files edited/created**:
+  - `tests/portal/test_strategy_modeling_page.py`
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ### T17: User Documentation
 - **depends_on**: [T10, T11, T13]
