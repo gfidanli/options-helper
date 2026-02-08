@@ -50,6 +50,7 @@ from options_helper.schemas.strategy_modeling_contracts import (
     StrategySignalEvent,
     StrategyTradeSimulation,
 )
+from options_helper.schemas.strategy_modeling_filters import StrategyEntryFilterConfig
 from options_helper.schemas.strategy_modeling_policy import StrategyModelingPolicyConfig
 
 _EPSILON = 1e-12
@@ -222,6 +223,7 @@ class StrategyModelingRequest:
     policy: StrategyModelingPolicyConfig | Mapping[str, Any] | None = None
     feature_config: StrategyFeatureConfig | Mapping[str, Any] | None = None
     segmentation_config: StrategySegmentationConfig | Mapping[str, Any] | None = None
+    filter_config: StrategyEntryFilterConfig | Mapping[str, Any] | None = None
     adjusted_data_fallback_mode: AdjustedDataFallbackMode = "warn_and_skip_symbol"
     signal_kwargs: Mapping[str, Any] | None = None
     starting_capital: float = 10_000.0
@@ -267,6 +269,9 @@ class StrategyModelingRunResult:
     segmentation: StrategySegmentationResult
     segment_records: tuple[StrategySegmentRecord, ...]
     segment_context: tuple[dict[str, str], ...]
+    filter_metadata: dict[str, Any] = field(default_factory=dict)
+    filter_summary: dict[str, Any] = field(default_factory=dict)
+    directional_metrics: dict[str, Any] = field(default_factory=dict)
     notes: tuple[str, ...] = field(default_factory=tuple)
 
     @property
@@ -292,6 +297,7 @@ class StrategyModelingService:
         policy = _resolve_policy_config(request.policy)
         feature_config = _resolve_feature_config(request.feature_config)
         segmentation_config = _resolve_segmentation_config(request.segmentation_config)
+        filter_config = _resolve_filter_config(request.filter_config)
         signal_kwargs = dict(request.signal_kwargs or {})
 
         universe = self.list_universe_loader(database_path=request.database_path)
@@ -383,6 +389,11 @@ class StrategyModelingService:
             portfolio.equity_curve,
             starting_capital=float(request.starting_capital),
         )
+        directional_metrics = _build_directional_metrics(sorted_trades, metrics=metrics)
+        filter_summary = _build_default_filter_summary(
+            base_event_count=len(sorted_events),
+            kept_event_count=len(sorted_events),
+        )
         segmentation = self.segmentation_aggregator(
             sorted_trades,
             segment_context=sorted_segment_context,
@@ -423,6 +434,9 @@ class StrategyModelingService:
             segmentation=segmentation,
             segment_records=segment_records,
             segment_context=sorted_segment_context,
+            filter_metadata=filter_config.model_dump(mode="json"),
+            filter_summary=filter_summary,
+            directional_metrics=directional_metrics,
             notes=notes,
         )
 
@@ -482,6 +496,16 @@ def _resolve_segmentation_config(
     if isinstance(value, StrategySegmentationConfig):
         return value
     return parse_strategy_segmentation_config(value)
+
+
+def _resolve_filter_config(
+    value: StrategyEntryFilterConfig | Mapping[str, Any] | None,
+) -> StrategyEntryFilterConfig:
+    if value is None:
+        return StrategyEntryFilterConfig()
+    if isinstance(value, StrategyEntryFilterConfig):
+        return value
+    return StrategyEntryFilterConfig.model_validate(dict(value))
 
 
 def _resolve_requested_symbols(
@@ -663,6 +687,41 @@ def _signal_event_sort_key(event: StrategySignalEvent) -> tuple[Any, ...]:
         event.symbol,
         event.event_id,
     )
+
+
+def _build_default_filter_summary(
+    *,
+    base_event_count: int,
+    kept_event_count: int,
+) -> dict[str, Any]:
+    rejected_count = max(0, int(base_event_count) - int(kept_event_count))
+    return {
+        "base_event_count": int(base_event_count),
+        "kept_event_count": int(kept_event_count),
+        "rejected_event_count": rejected_count,
+        "reject_counts": {},
+    }
+
+
+def _build_directional_metrics(
+    trades: Sequence[StrategyTradeSimulation],
+    *,
+    metrics: StrategyMetricsResult,
+) -> dict[str, Any]:
+    closed_trades = [trade for trade in trades if _is_closed_trade(trade)]
+    long_count = sum(1 for trade in closed_trades if str(trade.direction) == "long")
+    short_count = sum(1 for trade in closed_trades if str(trade.direction) == "short")
+    return {
+        "combined": {
+            "trade_count": int(metrics.portfolio_metrics.trade_count),
+        },
+        "long_only": {
+            "trade_count": long_count,
+        },
+        "short_only": {
+            "trade_count": short_count,
+        },
+    }
 
 
 def _segment_records_from_segmentation(

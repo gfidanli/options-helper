@@ -121,7 +121,7 @@ T1 ─┬─ T2 ─┬─ T4 ─┬─ T5 ─┬─ T6 ─┬─ T7 ─┬─ T9
 
 ## Tasks
 
-### T1: Update strategy contracts + add filter config schema
+### T1: Update strategy contracts + add filter config schema (Complete)
 - **depends_on**: []
 - **location**:
   - `options_helper/schemas/strategy_modeling_contracts.py`
@@ -134,6 +134,21 @@ T1 ─┬─ T2 ─┬─ T4 ─┬─ T5 ─┬─ T6 ─┬─ T7 ─┬─ T9
 - **validation**:
   - Update/extend `tests/test_strategy_modeling_contracts.py` for new `StrategyId`.
   - New unit test for filter config validation (unknown fields rejected, domain constraints enforced).
+- **work log**:
+  - Added `"orb"` to `StrategyId`.
+  - Added strict `StrategyEntryFilterConfig` with domain validation (cutoff format, ranges, regime set constraints) and `orb_stop_policy`.
+  - Extended `StrategyModelingRequest` (`filter_config`) and `StrategyModelingRunResult` (`filter_metadata`, `filter_summary`, `directional_metrics`) and wired deterministic default population in service results.
+  - Added tests for ORB contract acceptance, filter schema validation, and dataclass-field presence checks.
+- **files touched**:
+  - `options_helper/schemas/strategy_modeling_contracts.py`
+  - `options_helper/schemas/strategy_modeling_filters.py`
+  - `options_helper/analysis/strategy_modeling.py`
+  - `tests/test_strategy_modeling_contracts.py`
+  - `tests/test_strategy_modeling_filters.py`
+  - `docs/plans/MODULAR-STRATEGY-MODELING-IMPROVED-PLAN.md`
+- **gotchas**:
+  - Kept `allow_shorts=True` by default while leaving all explicit filter toggles off, so baseline behavior remains unchanged.
+  - Added result-level filter/directional placeholders now so downstream T4/T5 can fill logic without another contract break.
 
 ### T2: Implement ORB module + strategy_signals adapter
 - **depends_on**: [T1]

@@ -33,6 +33,35 @@ def _ts(day: int, hour: int) -> datetime:
     return datetime(2026, 1, day, hour, 0, tzinfo=timezone.utc)
 
 
+def test_strategy_contracts_accept_orb_strategy_id() -> None:
+    event = StrategySignalEvent(
+        event_id="orb-evt-1",
+        strategy="orb",
+        symbol="SPY",
+        direction="long",
+        signal_ts=_ts(3, 16),
+        signal_confirmed_ts=_ts(3, 16),
+        entry_ts=_ts(4, 9),
+        entry_price_source="first_tradable_bar_open_after_signal_confirmed_ts",
+    )
+    trade = StrategyTradeSimulation(
+        trade_id="orb-tr-1",
+        event_id="orb-evt-1",
+        strategy="orb",
+        symbol="SPY",
+        direction="long",
+        signal_ts=event.signal_ts,
+        signal_confirmed_ts=event.signal_confirmed_ts,
+        entry_ts=event.entry_ts,
+        entry_price_source=event.entry_price_source,
+        entry_price=100.0,
+        initial_risk=1.0,
+        holding_bars=1,
+    )
+    assert event.strategy == "orb"
+    assert trade.strategy == "orb"
+
+
 @pytest.mark.parametrize(
     "missing_field",
     ("signal_ts", "signal_confirmed_ts", "entry_ts", "entry_price_source"),
