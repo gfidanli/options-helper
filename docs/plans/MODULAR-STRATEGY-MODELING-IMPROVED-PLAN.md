@@ -150,7 +150,7 @@ T1 ─┬─ T2 ─┬─ T4 ─┬─ T5 ─┬─ T6 ─┬─ T7 ─┬─ T9
   - `tests/test_orb.py`: opening range, breakout detection, cutoff handling, missing bars.
   - `tests/test_strategy_signals.py`: registry includes `orb`; ORB event fields match `STRATEGY_SIGNAL_EVENT_FIELDS`.
 
-### T3: Extend strategy feature enrichment for EMA9 + ATR
+### T3: Extend strategy feature enrichment for EMA9 + ATR (Complete)
 - **depends_on**: []
 - **location**:
   - `options_helper/analysis/strategy_features.py`
@@ -160,6 +160,16 @@ T1 ─┬─ T2 ─┬─ T4 ─┬─ T5 ─┬─ T6 ─┬─ T7 ─┬─ T9
   - Provide slope computation helper (from `ema9` + configurable lookback).
 - **validation**:
   - Deterministic unit tests for EMA9 and slope, ATR presence, NaN stability.
+- **work log**:
+  - Added additive feature columns: `atr`, `ema9`, and `ema9_slope`.
+  - Added `ema9_slope_lookback_bars` to `StrategyFeatureConfig` (default `3`) and public helper `compute_ema_slope(...)`.
+  - Extended `tests/test_strategy_features.py` with deterministic ATR/EMA9/slope assertions and NaN-safe slope coverage.
+- **files touched**:
+  - `options_helper/analysis/strategy_features.py`
+  - `tests/test_strategy_features.py`
+  - `docs/plans/MODULAR-STRATEGY-MODELING-IMPROVED-PLAN.md`
+- **gotchas**:
+  - EMA9 uses `min_periods=9`, so short histories intentionally produce `NaN` for `ema9` and `ema9_slope`.
 
 ### T4: Build filter/gate engine (including ORB confirmation gate)
 - **depends_on**: [T1, T2, T3]

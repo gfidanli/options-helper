@@ -19,6 +19,7 @@ class StrategyFeatureConfig:
     extension_percentile_window: int = 252
     extension_bucket_low_pct: float = 5.0
     extension_bucket_high_pct: float = 95.0
+    ema9_slope_lookback_bars: int = 3
     rsi_window: int = 14
     rsi_overbought: float = 70.0
     rsi_oversold: float = 30.0
@@ -36,6 +37,7 @@ class StrategyFeatureConfig:
         _validate_positive_window(self.extension_sma_window, "extension_sma_window")
         _validate_positive_window(self.extension_atr_window, "extension_atr_window")
         _validate_min_window(self.extension_percentile_window, "extension_percentile_window", minimum=2)
+        _validate_positive_window(self.ema9_slope_lookback_bars, "ema9_slope_lookback_bars")
         _validate_positive_window(self.rsi_window, "rsi_window")
         _validate_min_window(self.rsi_divergence_left_window_bars, "rsi_divergence_left_window_bars", minimum=2)
         _validate_min_window(
@@ -96,6 +98,8 @@ def compute_strategy_features(
     low = pd.to_numeric(frame["Low"], errors="coerce").astype("float64")
 
     atr = _atr_series(high=high, low=low, close=close, window=cfg.extension_atr_window)
+    ema9 = _ema_series(close=close, span=9)
+    ema9_slope = compute_ema_slope(ema9, lookback_bars=cfg.ema9_slope_lookback_bars)
     sma = close.rolling(window=cfg.extension_sma_window, min_periods=cfg.extension_sma_window).mean()
     extension_atr = (close - sma) / atr.replace(0.0, np.nan)
     extension_atr = extension_atr.astype("float64")
@@ -157,6 +161,9 @@ def compute_strategy_features(
         )
 
     out = pd.DataFrame(index=index)
+    out["atr"] = atr
+    out["ema9"] = ema9
+    out["ema9_slope"] = ema9_slope
     out["extension_atr"] = extension_atr
     out["extension_percentile"] = extension_percentile
     out["extension_bucket"] = extension_bucket
@@ -214,6 +221,19 @@ def label_bars_since_swing_bucket(
     if value_f < float(b2):
         return f"{b1}-{b2 - 1}"
     return f"{b2}+"
+
+
+def compute_ema_slope(
+    ema_series: pd.Series,
+    *,
+    lookback_bars: int,
+) -> pd.Series:
+    if ema_series.empty:
+        return pd.Series([], index=ema_series.index, dtype="float64")
+    lookback = int(lookback_bars)
+    _validate_min_window(lookback, "lookback_bars", minimum=1)
+    ema_values = pd.to_numeric(ema_series, errors="coerce").astype("float64")
+    return ((ema_values - ema_values.shift(lookback)) / float(lookback)).astype("float64")
 
 
 def _compute_divergence_columns(
@@ -285,6 +305,10 @@ def _atr_series(*, high: pd.Series, low: pd.Series, close: pd.Series, window: in
     return tr.rolling(window=window, min_periods=window).mean()
 
 
+def _ema_series(*, close: pd.Series, span: int) -> pd.Series:
+    return close.ewm(span=span, adjust=False, min_periods=span).mean().astype("float64")
+
+
 def _rsi_series(*, close: pd.Series, window: int) -> pd.Series:
     delta = close.diff()
     gain = delta.clip(lower=0.0)
@@ -301,6 +325,9 @@ def _map_labels(series: pd.Series, mapper: Any) -> pd.Series:
 
 def _empty_strategy_features(index: pd.Index) -> pd.DataFrame:
     out = pd.DataFrame(index=index)
+    out["atr"] = pd.Series([], index=index, dtype="float64")
+    out["ema9"] = pd.Series([], index=index, dtype="float64")
+    out["ema9_slope"] = pd.Series([], index=index, dtype="float64")
     out["extension_atr"] = pd.Series([], index=index, dtype="float64")
     out["extension_percentile"] = pd.Series([], index=index, dtype="float64")
     out["extension_bucket"] = pd.Series([], index=index, dtype="object")
@@ -350,6 +377,7 @@ def _validate_bars_since_swing_boundaries(boundaries: Sequence[int]) -> None:
 
 __all__ = [
     "StrategyFeatureConfig",
+    "compute_ema_slope",
     "compute_strategy_features",
     "label_bars_since_swing_bucket",
     "label_percentile_bucket",

@@ -6,6 +6,7 @@ import pandas.testing as pdt
 
 from options_helper.analysis.strategy_features import (
     StrategyFeatureConfig,
+    compute_ema_slope,
     compute_strategy_features,
     label_bars_since_swing_bucket,
     label_percentile_bucket,
@@ -43,6 +44,9 @@ def test_compute_strategy_features_short_history_is_stable() -> None:
     )
 
     assert list(features.index) == list(idx)
+    assert features["atr"].isna().all()
+    assert features["ema9"].isna().all()
+    assert features["ema9_slope"].isna().all()
     assert features["extension_atr"].isna().all()
     assert features["extension_percentile"].isna().all()
     assert features["rsi"].isna().all()
@@ -78,9 +82,45 @@ def test_compute_strategy_features_is_deterministic_with_nans() -> None:
     second = compute_strategy_features(frame, config=cfg)
 
     pdt.assert_frame_equal(first, second)
+    assert {"atr", "ema9", "ema9_slope"}.issubset(first.columns)
     assert set(first["rsi_regime"].dropna().unique()).issubset({"overbought", "oversold", "neutral"})
     assert set(first["rsi_divergence"].dropna().unique()).issubset({"bearish", "bullish"})
     assert set(first["realized_vol_regime"].dropna().unique()).issubset({"low", "normal", "high"})
+
+
+def test_compute_strategy_features_includes_atr_ema9_and_slope() -> None:
+    idx = pd.date_range("2026-01-01", periods=20, freq="B")
+    close = pd.Series(np.linspace(100.0, 119.0, len(idx)), index=idx, dtype="float64")
+
+    cfg = StrategyFeatureConfig(
+        extension_sma_window=5,
+        extension_atr_window=3,
+        extension_percentile_window=10,
+        ema9_slope_lookback_bars=2,
+        rsi_window=4,
+        realized_vol_window=5,
+        realized_vol_percentile_window=10,
+    )
+    features = compute_strategy_features(_build_ohlc(close), config=cfg)
+
+    expected_atr = pd.Series(np.nan, index=idx, dtype="float64")
+    expected_atr.iloc[2:] = 2.0
+    expected_ema9 = close.ewm(span=9, adjust=False, min_periods=9).mean().astype("float64")
+    expected_ema9_slope = compute_ema_slope(expected_ema9, lookback_bars=cfg.ema9_slope_lookback_bars)
+
+    pdt.assert_series_equal(features["atr"], expected_atr, check_names=False)
+    pdt.assert_series_equal(features["ema9"], expected_ema9, check_names=False)
+    pdt.assert_series_equal(features["ema9_slope"], expected_ema9_slope, check_names=False)
+
+
+def test_compute_ema_slope_is_nan_safe() -> None:
+    idx = pd.date_range("2026-01-01", periods=6, freq="B")
+    ema9 = pd.Series([np.nan, 100.0, 101.0, np.nan, 103.0, 104.0], index=idx, dtype="float64")
+
+    slope = compute_ema_slope(ema9, lookback_bars=2)
+    expected = pd.Series([np.nan, np.nan, np.nan, np.nan, 1.0, np.nan], index=idx, dtype="float64")
+
+    pdt.assert_series_equal(slope, expected, check_names=False)
 
 
 def test_rsi_divergence_uses_configurable_left_window() -> None:
