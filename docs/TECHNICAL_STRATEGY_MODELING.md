@@ -30,6 +30,7 @@ Baseline policy contract: `options_helper.schemas.strategy_modeling_policy.Strat
 
 For close-confirmed signals:
 - `entry_ts` must be the first tradable bar open strictly after `signal_confirmed_ts`.
+- For daily signal modeling, entry anchoring uses the next regular-session market open (`09:30 America/New_York`) after confirmation.
 - Same-bar close fills are disallowed.
 - When immediate next bars are non-tradable or missing, anchor at the next tradable bar open.
 
@@ -71,6 +72,7 @@ Example run:
   --segment-values SPY,long \
   --segment-min-trades 2 \
   --segment-limit 10 \
+  --output-timezone America/Chicago \
   --out data/reports/technicals/strategy_modeling
 ```
 
@@ -80,6 +82,7 @@ Implemented option behavior:
 - `--gap-fill-policy` currently supports only `fill_at_open`.
 - `--risk-per-trade-pct` must be `> 0` and `<= 100`.
 - `--universe-limit`, `--segment-min-trades`, `--segment-limit` must be `>= 1` when provided.
+- `--output-timezone` controls serialized timestamp timezone in report outputs (default: `America/Chicago`; aliases `CST`/`CDT` supported).
 - Intraday preflight failures stop the run with blocked symbol coverage details.
 
 Output location:
@@ -119,7 +122,7 @@ Important:
 
 `summary.json` top-level:
 - `schema_version`: artifact schema version (`1`).
-- `generated_at`: UTC timestamp.
+- `generated_at`: timestamp in `policy_metadata.output_timezone` (default `America/Chicago`).
 - `strategy`: normalized strategy id.
 - `requested_symbols`, `modeled_symbols`.
 - `disclaimer`: informational-only / not financial advice text.

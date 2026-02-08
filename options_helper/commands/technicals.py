@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import typer
 from rich.console import Console
@@ -16,6 +17,7 @@ from options_helper.data.technical_backtesting_config import load_technical_back
 
 if TYPE_CHECKING:
     import pandas as pd
+    from options_helper.analysis.strategy_simulator import StrategyRTarget
 
 app = typer.Typer(help="Technical indicators + backtesting/optimization.")
 
@@ -2317,7 +2319,9 @@ def _build_target_ladder(
     min_tenths: int,
     max_tenths: int,
     step_tenths: int,
-) -> tuple[SimpleNamespace, ...]:
+) -> tuple[StrategyRTarget, ...]:
+    from options_helper.analysis.strategy_simulator import build_r_target_ladder
+
     if min_tenths < 1:
         raise typer.BadParameter("--r-ladder-min-tenths must be >= 1")
     if max_tenths < min_tenths:
@@ -2325,11 +2329,32 @@ def _build_target_ladder(
     if step_tenths < 1:
         raise typer.BadParameter("--r-ladder-step-tenths must be >= 1")
 
-    ladder: list[SimpleNamespace] = []
-    for tenths in range(min_tenths, max_tenths + 1, step_tenths):
-        target_r = float(tenths) / 10.0
-        ladder.append(SimpleNamespace(target_label=f"{target_r:.1f}R", target_r=target_r))
-    return tuple(ladder)
+    return build_r_target_ladder(
+        min_target_tenths=min_tenths,
+        max_target_tenths=max_tenths,
+        step_tenths=step_tenths,
+    )
+
+
+_OUTPUT_TIMEZONE_ALIASES: dict[str, str] = {
+    "CST": "America/Chicago",
+    "CDT": "America/Chicago",
+}
+
+
+def _normalize_output_timezone(value: str, *, option_name: str = "--output-timezone") -> str:
+    token = str(value or "").strip()
+    if not token:
+        raise typer.BadParameter(f"{option_name} must be a non-empty IANA timezone.")
+
+    canonical = _OUTPUT_TIMEZONE_ALIASES.get(token.upper(), token)
+    try:
+        ZoneInfo(canonical)
+    except ZoneInfoNotFoundError as exc:
+        raise typer.BadParameter(
+            f"{option_name}={value!r} is invalid. Use an IANA timezone (for example America/Chicago)."
+        ) from exc
+    return canonical
 
 
 def _resolve_strategy_symbols(
@@ -2487,6 +2512,11 @@ def technicals_strategy_model(
         "--segment-limit",
         help="Maximum segments to summarize in CLI output.",
     ),
+    output_timezone: str = typer.Option(
+        "America/Chicago",
+        "--output-timezone",
+        help="Timezone used for serialized report timestamps (IANA name, e.g. America/Chicago).",
+    ),
     out: Path = typer.Option(
         Path("data/reports/technicals/strategy_modeling"),
         "--out",
@@ -2497,6 +2527,7 @@ def technicals_strategy_model(
     write_md: bool = typer.Option(True, "--write-md/--no-write-md", help="Write markdown summary."),
 ) -> None:
     """Run strategy-modeling service and write JSON/CSV/Markdown artifacts."""
+    from options_helper.analysis.strategy_modeling import StrategyModelingRequest
     from options_helper.data.strategy_modeling_artifacts import write_strategy_modeling_artifacts
 
     console = Console(width=200)
@@ -2516,6 +2547,7 @@ def technicals_strategy_model(
         raise typer.BadParameter("--segment-limit must be >= 1")
     if universe_limit is not None and universe_limit < 1:
         raise typer.BadParameter("--universe-limit must be >= 1")
+    normalized_output_timezone = _normalize_output_timezone(output_timezone)
 
     parsed_start_date = _parse_iso_date(start_date, option_name="--start-date")
     parsed_end_date = _parse_iso_date(end_date, option_name="--end-date")
@@ -2538,13 +2570,12 @@ def technicals_strategy_model(
     if not resolved_symbols:
         raise typer.BadParameter("No symbols remain after applying include/exclude/universe filters.")
 
-    request = SimpleNamespace(
+    base_request = StrategyModelingRequest(
         strategy=normalized_strategy,
         symbols=resolved_symbols,
         start_date=parsed_start_date,
         end_date=parsed_end_date,
         intraday_timeframe=intraday_timeframe,
-        intraday_source=intraday_source,
         target_ladder=target_ladder,
         starting_capital=float(starting_capital),
         policy={
@@ -2554,9 +2585,15 @@ def technicals_strategy_model(
             "gap_fill_policy": gap_fill_policy,
             "entry_ts_anchor_policy": "first_tradable_bar_open_after_signal_confirmed_ts",
         },
+    )
+
+    request = SimpleNamespace(
+        **vars(base_request),
+        intraday_source=intraday_source,
         gap_fill_policy=gap_fill_policy,
         intra_bar_tie_break_rule="stop_first",
         signal_confirmation_lag_bars=signal_confirmation_lag_bars,
+        output_timezone=normalized_output_timezone,
         segment_dimensions=tuple(_split_csv_option(segment_dimensions, uppercase=False)),
         segment_values=tuple(_split_csv_option(segment_values, uppercase=False)),
         segment_min_trades=int(segment_min_trades),

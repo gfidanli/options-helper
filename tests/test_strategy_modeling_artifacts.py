@@ -23,6 +23,7 @@ def _sample_request() -> SimpleNamespace:
         intraday_timeframe="5Min",
         intraday_source="alpaca",
         signal_confirmation_lag_bars=2,
+        output_timezone="America/Chicago",
         policy={
             "require_intraday_bars": True,
             "risk_per_trade_pct": 1.0,
@@ -122,7 +123,12 @@ def test_strategy_modeling_artifacts_include_required_metadata_and_disclaimer(tm
     assert payload["policy_metadata"]["require_intraday_bars"] is True
     assert payload["policy_metadata"]["gap_fill_policy"] == "fill_at_open"
     assert payload["policy_metadata"]["intra_bar_tie_break_rule"] == "stop_first"
+    assert payload["policy_metadata"]["output_timezone"] == "America/Chicago"
+    assert payload["generated_at"] == "2026-02-08T06:30:00-06:00"
     assert payload["summary"]["losses_below_minus_one_r"] == 1
+    assert payload["trade_log"][0]["signal_confirmed_ts"] == "2026-01-06T14:55:00-06:00"
+    assert payload["trade_log"][0]["entry_ts"] == "2026-01-06T15:00:00-06:00"
+    assert payload["trade_log"][0]["exit_ts"] == "2026-01-06T15:05:00-06:00"
 
     markdown = paths.summary_md.read_text(encoding="utf-8")
     assert DISCLAIMER_TEXT in markdown
@@ -143,6 +149,9 @@ def test_strategy_modeling_trade_csv_surfaces_gap_and_stop_slippage(tmp_path) ->
         rows = list(csv.DictReader(handle))
     assert len(rows) == 1
     row = rows[0]
+    assert row["signal_confirmed_ts"] == "2026-01-06T14:55:00-06:00"
+    assert row["entry_ts"] == "2026-01-06T15:00:00-06:00"
+    assert row["exit_ts"] == "2026-01-06T15:05:00-06:00"
     assert row["realized_r"] == "-1.25"
     assert row["gap_fill_applied"] == "True"
     assert row["gap_exit"] == "True"

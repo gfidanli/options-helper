@@ -261,6 +261,7 @@ def test_strategy_model_success_parses_options_and_runs_service(monkeypatch) -> 
     assert req.start_date.isoformat() == "2026-01-01"
     assert req.end_date.isoformat() == "2026-01-31"
     assert req.intraday_timeframe == "5Min"
+    assert [target.label for target in req.target_ladder] == ["1.2R", "1.4R", "1.6R"]
     assert [round(target.target_r, 1) for target in req.target_ladder] == [1.2, 1.4, 1.6]
     assert req.starting_capital == 25000.0
     assert req.policy["risk_per_trade_pct"] == 2.5
@@ -268,6 +269,7 @@ def test_strategy_model_success_parses_options_and_runs_service(monkeypatch) -> 
     assert req.policy["sizing_rule"] == "risk_pct_of_equity"
     assert req.policy["entry_ts_anchor_policy"] == "first_tradable_bar_open_after_signal_confirmed_ts"
     assert req.signal_confirmation_lag_bars == 2
+    assert req.output_timezone == "America/Chicago"
     assert req.segment_dimensions == ("symbol", "direction")
     assert req.segment_values == ("spy", "long")
     assert req.segment_min_trades == 2
@@ -423,6 +425,7 @@ def test_strategy_model_writes_artifacts_and_summary_contract(
     assert payload["policy_metadata"]["sizing_rule"] == "risk_pct_of_equity"
     assert payload["policy_metadata"]["gap_fill_policy"] == "fill_at_open"
     assert payload["policy_metadata"]["intra_bar_tie_break_rule"] == "stop_first"
+    assert payload["policy_metadata"]["output_timezone"] == "America/Chicago"
     assert payload["policy_metadata"]["entry_ts_anchor_policy"] == (
         "first_tradable_bar_open_after_signal_confirmed_ts"
     )

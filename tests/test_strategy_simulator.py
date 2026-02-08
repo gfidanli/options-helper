@@ -22,6 +22,18 @@ def _bars(rows: list[tuple[str, float, float, float, float]]) -> pd.DataFrame:
     return frame
 
 
+def _bars_with_session(
+    rows: list[tuple[str, str, float, float, float, float]],
+) -> pd.DataFrame:
+    frame = pd.DataFrame(
+        rows,
+        columns=["timestamp", "session_date", "open", "high", "low", "close"],
+    )
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
+    frame["session_date"] = pd.to_datetime(frame["session_date"], errors="coerce").dt.date
+    return frame
+
+
 def _event(
     *,
     event_id: str,
@@ -269,3 +281,31 @@ def test_simulator_uses_first_tradable_session_after_entry_anchor_gap() -> None:
     assert trade.status == "closed"
     assert trade.entry_ts == datetime(2026, 1, 6, 14, 30, tzinfo=timezone.utc)
     assert trade.exit_reason == "target_hit"
+
+
+def test_simulator_enters_at_regular_open_and_ignores_cross_session_after_hours_rows() -> None:
+    event = _event(
+        event_id="evt-regular-open",
+        signal_ts="2026-01-14 00:00:00+00:00",
+        entry_ts="2026-01-15 00:00:00+00:00",
+        stop_price=693.0,
+    )
+    bars = _bars_with_session(
+        [
+            ("2026-01-15 00:00:00+00:00", "2026-01-14", 689.55, 689.60, 689.40, 689.45),
+            ("2026-01-15 09:00:00+00:00", "2026-01-15", 691.10, 691.63, 690.65, 691.63),
+            ("2026-01-15 14:30:00+00:00", "2026-01-15", 694.57, 694.69, 693.97, 694.07),
+            ("2026-01-15 14:31:00+00:00", "2026-01-15", 694.07, 694.20, 693.90, 694.00),
+        ]
+    )
+
+    trade = simulate_strategy_trade_paths(
+        [event],
+        {"SPY": bars},
+        max_hold_bars=2,
+        target_ladder=_single_target_ladder(),
+    )[0]
+
+    assert trade.status == "closed"
+    assert trade.entry_ts == datetime(2026, 1, 15, 14, 30, tzinfo=timezone.utc)
+    assert trade.entry_price == pytest.approx(694.57)

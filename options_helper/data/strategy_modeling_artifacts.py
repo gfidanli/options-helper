@@ -6,6 +6,7 @@ from datetime import date, datetime, timezone
 import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel
 
@@ -14,6 +15,11 @@ from options_helper.schemas.common import clean_nan
 DISCLAIMER_TEXT = "Informational output only; this tool is not financial advice."
 _ENTRY_ANCHOR_LABEL = "next_bar_open"
 _INTRABAR_TIE_BREAK_DEFAULT = "stop_first"
+_DEFAULT_OUTPUT_TIMEZONE = "UTC"
+_OUTPUT_TIMEZONE_ALIASES: dict[str, str] = {
+    "CST": "America/Chicago",
+    "CDT": "America/Chicago",
+}
 
 _TRADE_LOG_FIELDS: tuple[str, ...] = (
     "trade_id",
@@ -105,6 +111,9 @@ def write_strategy_modeling_artifacts(
     if generated_ts.tzinfo is None:
         generated_ts = generated_ts.replace(tzinfo=timezone.utc)
     generated_ts = generated_ts.astimezone(timezone.utc)
+    output_timezone = _resolve_output_timezone(getattr(request, "output_timezone", None))
+    output_timezone_name = _output_timezone_name(output_timezone)
+    generated_output_ts = generated_ts.astimezone(output_timezone)
 
     as_of_label = _resolve_as_of_label(request=request, run_result=run_result, generated_at=generated_ts)
     paths = build_strategy_modeling_artifact_paths(out_dir, strategy=strategy, as_of=as_of_label)
@@ -114,7 +123,7 @@ def write_strategy_modeling_artifacts(
     r_ladder_rows = _normalize_records(getattr(run_result, "target_hit_rates", ()) or ())
     segment_rows = _normalize_records(getattr(run_result, "segment_records", ()) or ())
     trade_rows = [
-        _build_trade_log_row(row)
+        _build_trade_log_row(row, output_timezone=output_timezone)
         for row in _normalize_records(getattr(run_result, "trade_simulations", ()) or ())
     ]
 
@@ -133,7 +142,7 @@ def write_strategy_modeling_artifacts(
     payload = clean_nan(
         {
             "schema_version": 1,
-            "generated_at": generated_ts.isoformat(),
+            "generated_at": generated_output_ts.isoformat(),
             "strategy": strategy.lower(),
             "requested_symbols": requested_symbols,
             "modeled_symbols": modeled_symbols,
@@ -145,7 +154,11 @@ def write_strategy_modeling_artifacts(
                 "skipped_trade_count": len(skipped_trade_ids),
                 "losses_below_minus_one_r": losses_below_one_r,
             },
-            "policy_metadata": _build_policy_metadata(request=request, run_result=run_result),
+            "policy_metadata": _build_policy_metadata(
+                request=request,
+                run_result=run_result,
+                output_timezone_name=output_timezone_name,
+            ),
             "metrics": metrics,
             "r_ladder": r_ladder_rows,
             "segments": segment_rows,
@@ -192,7 +205,12 @@ def _resolve_as_of_label(*, request: object, run_result: object, generated_at: d
     return generated_at.date().isoformat()
 
 
-def _build_policy_metadata(*, request: object, run_result: object) -> dict[str, Any]:
+def _build_policy_metadata(
+    *,
+    request: object,
+    run_result: object,
+    output_timezone_name: str,
+) -> dict[str, Any]:
     policy_payload = _to_mapping(getattr(request, "policy", None))
     preflight = getattr(run_result, "intraday_preflight", None)
     preflight_payload = _to_mapping(preflight)
@@ -229,6 +247,7 @@ def _build_policy_metadata(*, request: object, run_result: object) -> dict[str, 
             "intraday_source": _as_str_or_none(getattr(request, "intraday_source", None)),
             "gap_fill_policy": gap_policy,
             "intra_bar_tie_break_rule": tie_break_rule,
+            "output_timezone": output_timezone_name,
             "max_hold_bars": _as_int_or_none(policy_payload.get("max_hold_bars")),
             "risk_per_trade_pct": _as_float_or_none(policy_payload.get("risk_per_trade_pct")),
             "sizing_rule": _as_str_or_none(policy_payload.get("sizing_rule")),
@@ -274,6 +293,7 @@ def _render_summary_markdown(payload: Mapping[str, Any]) -> str:
         "intraday_source",
         "gap_fill_policy",
         "intra_bar_tie_break_rule",
+        "output_timezone",
     ):
         if key in policy:
             lines.append(f"- {key}: `{policy.get(key)}`")
@@ -329,7 +349,11 @@ def _render_summary_markdown(payload: Mapping[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _build_trade_log_row(payload: Mapping[str, Any]) -> dict[str, Any]:
+def _build_trade_log_row(
+    payload: Mapping[str, Any],
+    *,
+    output_timezone: ZoneInfo,
+) -> dict[str, Any]:
     src = _to_mapping(payload)
     realized_r = _coerce_realized_r(src)
     exit_reason = _as_str_or_none(src.get("exit_reason"))
@@ -349,13 +373,22 @@ def _build_trade_log_row(payload: Mapping[str, Any]) -> dict[str, Any]:
             "symbol": _as_str_or_none(src.get("symbol")),
             "direction": _as_str_or_none(src.get("direction")),
             "status": _as_str_or_none(src.get("status")),
-            "signal_confirmed_ts": _as_str_or_none(src.get("signal_confirmed_ts")),
-            "entry_ts": _as_str_or_none(src.get("entry_ts")),
+            "signal_confirmed_ts": _to_output_timezone_iso(
+                src.get("signal_confirmed_ts"),
+                output_timezone=output_timezone,
+            ),
+            "entry_ts": _to_output_timezone_iso(
+                src.get("entry_ts"),
+                output_timezone=output_timezone,
+            ),
             "entry_price_source": _as_str_or_none(src.get("entry_price_source")),
             "entry_price": _as_float_or_none(src.get("entry_price")),
             "stop_price": _as_float_or_none(src.get("stop_price")),
             "target_price": _as_float_or_none(src.get("target_price")),
-            "exit_ts": _as_str_or_none(src.get("exit_ts")),
+            "exit_ts": _to_output_timezone_iso(
+                src.get("exit_ts"),
+                output_timezone=output_timezone,
+            ),
             "exit_price": _as_float_or_none(src.get("exit_price")),
             "exit_reason": exit_reason,
             "initial_risk": _as_float_or_none(src.get("initial_risk")),
@@ -497,6 +530,43 @@ def _date_label(value: object) -> str | None:
         return datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
     except ValueError:
         return text.split("T")[0]
+
+
+def _resolve_output_timezone(value: object) -> ZoneInfo:
+    token = _as_str_or_none(value) or _DEFAULT_OUTPUT_TIMEZONE
+    canonical = _OUTPUT_TIMEZONE_ALIASES.get(token.upper(), token)
+    try:
+        return ZoneInfo(canonical)
+    except ZoneInfoNotFoundError:
+        return ZoneInfo(_DEFAULT_OUTPUT_TIMEZONE)
+
+
+def _output_timezone_name(value: ZoneInfo) -> str:
+    key = getattr(value, "key", None)
+    if isinstance(key, str) and key.strip():
+        return key
+    return str(value)
+
+
+def _to_output_timezone_iso(value: object, *, output_timezone: ZoneInfo) -> str | None:
+    dt = _coerce_datetime(value)
+    if dt is None:
+        return _as_str_or_none(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(output_timezone).isoformat()
+
+
+def _coerce_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    text = _as_str_or_none(value)
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _as_str_or_none(value: object) -> str | None:

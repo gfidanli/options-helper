@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import math
 from typing import Any, Iterable, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -17,11 +18,12 @@ from options_helper.schemas.strategy_modeling_contracts import (
 from options_helper.schemas.strategy_modeling_policy import GapFillPolicy, StrategyModelingPolicyConfig
 
 
-_INTRADAY_COLUMNS: tuple[str, ...] = ("timestamp", "open", "high", "low", "close")
+_INTRADAY_COLUMNS: tuple[str, ...] = ("timestamp", "open", "high", "low", "close", "session_date")
 _DEFAULT_MIN_TARGET_TENTHS = 10
 _DEFAULT_MAX_TARGET_TENTHS = 20
 _DEFAULT_STEP_TENTHS = 1
 _EPSILON = 1e-12
+_MARKET_TZ = ZoneInfo("America/New_York")
 
 
 @dataclass(frozen=True)
@@ -127,7 +129,7 @@ def _simulate_one_target(
     if entry_candidates.empty:
         return _rejected_trade(event=event, target=target, reject_code="missing_entry_bar")
 
-    entry_row = entry_candidates.iloc[0]
+    entry_row = _select_entry_row(entry_candidates, entry_cutoff=entry_cutoff)
     entry_row_index = int(entry_row.name)
     entry_ts = _to_utc_timestamp(entry_row["timestamp"])
     entry_price = _finite_float(entry_row["open"])
@@ -356,6 +358,10 @@ def _normalize_intraday_frame(frame: pd.DataFrame | None) -> pd.DataFrame:
         return pd.DataFrame(columns=list(_INTRADAY_COLUMNS))
 
     out["timestamp"] = pd.to_datetime(out[ts_column], errors="coerce", utc=True)
+    if "session_date" in out.columns:
+        out["session_date"] = pd.to_datetime(out["session_date"], errors="coerce").dt.date
+    else:
+        out["session_date"] = out["timestamp"].dt.date
     for column in ("open", "high", "low", "close"):
         if column in out.columns:
             out[column] = pd.to_numeric(out[column], errors="coerce")
@@ -499,6 +505,38 @@ def _to_utc_timestamp(value: object) -> pd.Timestamp | None:
     if ts.tzinfo is None:
         return ts.tz_localize("UTC")
     return ts.tz_convert("UTC")
+
+
+def _select_entry_row(entry_candidates: pd.DataFrame, *, entry_cutoff: pd.Timestamp) -> pd.Series:
+    """Pick entry row at next regular-session open after cutoff, fallback to first candidate."""
+    if entry_candidates.empty:
+        raise ValueError("entry_candidates must be non-empty")
+
+    session_days = _entry_session_days(entry_candidates)
+    anchor_day = entry_cutoff.date()
+    eligible = entry_candidates.loc[session_days >= anchor_day]
+    if eligible.empty:
+        eligible = entry_candidates
+
+    open_rows = _regular_open_rows(eligible)
+    if not open_rows.empty:
+        return open_rows.iloc[0]
+    return eligible.iloc[0]
+
+
+def _entry_session_days(frame: pd.DataFrame) -> pd.Series:
+    ts = pd.to_datetime(frame["timestamp"], errors="coerce", utc=True)
+    if "session_date" in frame.columns:
+        session_days = pd.to_datetime(frame["session_date"], errors="coerce").dt.date
+        return session_days.where(session_days.notna(), ts.dt.date)
+    return ts.dt.date
+
+
+def _regular_open_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    ts = pd.to_datetime(frame["timestamp"], errors="coerce", utc=True)
+    market_ts = ts.dt.tz_convert(_MARKET_TZ)
+    is_open = market_ts.dt.hour.eq(9) & market_ts.dt.minute.eq(30)
+    return frame.loc[is_open.fillna(False)]
 
 
 def _timestamp_to_datetime(value: pd.Timestamp) -> datetime:
