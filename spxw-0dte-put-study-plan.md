@@ -228,18 +228,20 @@ T12,T13,T15,T16 -> T17 -> T18
 - **location**: `options_helper/commands/market_analysis.py`, `options_helper/cli.py`, `options_helper/cli_deps.py`
 - **description**: Add command group (for example `market-analysis zero-dte-put-study`) with options for symbol (default SPY proxy), date range, decision mode/time(s), risk tiers, strike grid, fill model/slippage (default bid), and output format/path. Keep command layer thin and delegate to analysis/backtesting modules.
 - **validation**: CLI tests validate registration, option parsing, locked default binding, error messages, proxy-disclaimer presence, and deterministic JSON/console outputs.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added `market-analysis zero-dte-put-study` with thin CLI wiring for symbol/date range/decision mode+times/risk tiers/strike grid/fill model+slippage/output flags, delegating computation to existing zero-DTE dataset/features/labels/preflight/policy/walk-forward modules. Command output now emits explicit SPY-proxy and not-financial-advice language, persists study artifact JSON, and writes frozen active model metadata for downstream forward scoring.
+- **files edited/created**: `options_helper/commands/market_analysis.py`, `tests/test_zero_dte_cli.py`, `spxw-0dte-put-study-plan.md`
+- **gotchas/errors**: Artifact writer module referenced in the plan (`options_helper/data/zero_dte_artifacts.py`) was not present in this branch, so CLI persistence currently uses local JSON/JSONL writer helpers in `market_analysis.py` with deterministic keying.
 
 ### T13: Add Forward-Test Snapshot Job (Paper Tracking)
 - **depends_on**: [T0, T3, T4A, T4B, T6, T9, T9A, T11A, T12]
 - **location**: `options_helper/commands/market_analysis.py`, `options_helper/data/zero_dte_artifacts.py`
 - **description**: Add command to score current/most-recent session intraday state using frozen model state only, emit recommendation snapshots, and later reconcile realized close outcome for ongoing forward-test calibration tracking across both exit modes.
 - **validation**: Tests verify as-of cutoff integrity, idempotent writes via unique key, day reconciliation logic, and handling of incomplete sessions.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added `market-analysis zero-dte-put-forward-snapshot` that loads a frozen active model only, scores the requested/latest session, emits recommendation snapshots, and upserts forward rows idempotently via unique key (`symbol`, `session_date`, `decision_ts`, `risk_tier`, `model_version`, `assumptions_hash`). Forward rows carry reconciliation fields so reruns can transition `pending_close` rows to finalized outcomes when close labels become available.
+- **files edited/created**: `options_helper/commands/market_analysis.py`, `tests/test_zero_dte_cli.py`, `spxw-0dte-put-study-plan.md`
+- **gotchas/errors**: Forward snapshot defaults to scanning `data/intraday/stocks/bars/1Min/{symbol}` for the most recent session and fails closed with explicit errors when frozen model/session constraints are violated.
 
 ### T14: Build Streamlit Data Component (Read-only)
 - **depends_on**: [T11A]
