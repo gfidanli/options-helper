@@ -6,6 +6,7 @@ import math
 from typing import Any, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 
 from options_helper.analysis.strategy_modeling_contracts import parse_strategy_signal_events
@@ -31,6 +32,33 @@ class StrategyRTarget:
     label: str
     target_r: float
     target_tenths: int
+
+
+@dataclass(frozen=True)
+class _PreparedIntraday:
+    frame: pd.DataFrame
+    timestamp_ns: np.ndarray
+    session_days: np.ndarray
+    regular_open_mask: np.ndarray
+    open_values: np.ndarray
+    high_values: np.ndarray
+    low_values: np.ndarray
+    close_values: np.ndarray
+
+    @property
+    def row_count(self) -> int:
+        return int(self.timestamp_ns.size)
+
+
+@dataclass(frozen=True)
+class _EntryDecision:
+    reject_code: TradeRejectCode | None
+    direction: str | None = None
+    stop_price: float | None = None
+    entry_row_index: int | None = None
+    entry_ts: pd.Timestamp | None = None
+    entry_price: float | None = None
+    initial_risk: float | None = None
 
 
 def build_r_target_ladder(
@@ -70,9 +98,11 @@ def simulate_strategy_trade_paths(
     """Simulate one path per (event, target) with deterministic reject/exit semantics."""
 
     cfg = policy or StrategyModelingPolicyConfig()
-    max_hold = int(max_hold_bars if max_hold_bars is not None else cfg.max_hold_bars)
-    if max_hold < 1:
-        raise ValueError("max_hold_bars must be >= 1")
+    max_hold: int | None = max_hold_bars if max_hold_bars is not None else cfg.max_hold_bars
+    if max_hold is not None:
+        max_hold = int(max_hold)
+        if max_hold < 1:
+            raise ValueError("max_hold_bars must be >= 1")
     if cfg.gap_fill_policy != "fill_at_open":
         raise ValueError(f"Unsupported gap_fill_policy: {cfg.gap_fill_policy}")
 
@@ -81,18 +111,25 @@ def simulate_strategy_trade_paths(
         raise ValueError("target_ladder cannot be empty")
 
     normalized_intraday = _normalize_intraday_by_symbol(intraday_bars_by_symbol)
+    prepared_intraday = _prepare_intraday_by_symbol(normalized_intraday)
     parsed_events = parse_strategy_signal_events(events)
     sorted_events = sorted(parsed_events, key=_event_sort_key)
 
+    entry_decisions: dict[str, _EntryDecision] = {}
     trades: list[StrategyTradeSimulation] = []
     for event in sorted_events:
         symbol = _normalize_symbol(event.symbol)
-        symbol_bars = normalized_intraday.get(symbol)
+        prepared = prepared_intraday.get(symbol)
+        decision = entry_decisions.get(event.event_id)
+        if decision is None:
+            decision = _resolve_entry_decision(event=event, prepared=prepared)
+            entry_decisions[event.event_id] = decision
         for target in ladder:
             trades.append(
                 _simulate_one_target(
                     event=event,
-                    bars=symbol_bars,
+                    prepared=prepared,
+                    entry_decision=decision,
                     target=target,
                     max_hold_bars=max_hold,
                     gap_fill_policy=cfg.gap_fill_policy,
@@ -104,57 +141,55 @@ def simulate_strategy_trade_paths(
 def _simulate_one_target(
     *,
     event: StrategySignalEvent,
-    bars: pd.DataFrame | None,
+    prepared: _PreparedIntraday | None,
+    entry_decision: _EntryDecision,
     target: StrategyRTarget,
-    max_hold_bars: int,
+    max_hold_bars: int | None,
     gap_fill_policy: GapFillPolicy,
 ) -> StrategyTradeSimulation:
-    direction = str(event.direction).strip().lower()
-    if direction not in {"long", "short"}:
-        return _rejected_trade(event=event, target=target, reject_code="invalid_signal")
-
-    stop_price = _finite_float(event.stop_price)
-    signal_confirmed_ts = _to_utc_timestamp(event.signal_confirmed_ts)
-    entry_anchor_ts = _to_utc_timestamp(event.entry_ts)
-    if stop_price is None or signal_confirmed_ts is None or entry_anchor_ts is None:
-        return _rejected_trade(event=event, target=target, reject_code="invalid_signal")
-    if entry_anchor_ts <= signal_confirmed_ts:
-        return _rejected_trade(event=event, target=target, reject_code="invalid_signal")
-
-    if bars is None or bars.empty:
-        return _rejected_trade(event=event, target=target, reject_code="missing_intraday_coverage")
-
-    entry_cutoff = max(entry_anchor_ts, signal_confirmed_ts + pd.Timedelta(microseconds=1))
-    entry_candidates = bars.loc[bars["timestamp"] >= entry_cutoff]
-    if entry_candidates.empty:
-        return _rejected_trade(event=event, target=target, reject_code="missing_entry_bar")
-
-    entry_row = _select_entry_row(entry_candidates, entry_cutoff=entry_cutoff)
-    entry_row_index = int(entry_row.name)
-    entry_ts = _to_utc_timestamp(entry_row["timestamp"])
-    entry_price = _finite_float(entry_row["open"])
-    if entry_ts is None or entry_price is None:
-        return _rejected_trade(event=event, target=target, reject_code="missing_entry_bar")
-
-    if direction == "long":
-        initial_risk = entry_price - stop_price
-    else:
-        initial_risk = stop_price - entry_price
-    if initial_risk <= 0.0:
+    if entry_decision.reject_code is not None:
         return _rejected_trade(
             event=event,
             target=target,
-            reject_code="non_positive_risk",
-            entry_ts=entry_ts,
-            entry_price=entry_price,
-            stop_price=stop_price,
-            initial_risk=initial_risk,
+            reject_code=entry_decision.reject_code,
+            entry_ts=entry_decision.entry_ts,
+            entry_price=entry_decision.entry_price,
+            stop_price=entry_decision.stop_price,
+            initial_risk=entry_decision.initial_risk,
+        )
+
+    direction = entry_decision.direction
+    stop_price = entry_decision.stop_price
+    entry_row_index = entry_decision.entry_row_index
+    entry_ts = entry_decision.entry_ts
+    entry_price = entry_decision.entry_price
+    initial_risk = entry_decision.initial_risk
+    if (
+        direction is None
+        or stop_price is None
+        or entry_row_index is None
+        or entry_ts is None
+        or entry_price is None
+        or initial_risk is None
+        or prepared is None
+    ):
+        return _rejected_trade(
+            event=event,
+            target=target,
+            reject_code="invalid_signal",
         )
 
     target_price = _target_price(direction=direction, entry_price=entry_price, risk=initial_risk, target_r=target.target_r)
 
-    eval_bars = bars.iloc[entry_row_index : entry_row_index + max_hold_bars]
-    if eval_bars.empty:
+    eval_start = int(entry_row_index)
+    eval_end = _evaluation_end_index(
+        prepared=prepared,
+        entry_row_index=entry_row_index,
+        entry_ts=entry_ts,
+        max_hold_bars=max_hold_bars,
+    )
+    eval_len = int(eval_end - eval_start)
+    if eval_len <= 0:
         return _rejected_trade(
             event=event,
             target=target,
@@ -174,24 +209,17 @@ def _simulate_one_target(
     exit_reason: TradeExitReason | None = None
     holding_bars = 0
 
-    for holding_bars, (_, row) in enumerate(eval_bars.iterrows(), start=1):
-        bar_ts = _to_utc_timestamp(row["timestamp"])
-        open_price = _finite_float(row["open"])
-        high_price = _finite_float(row["high"])
-        low_price = _finite_float(row["low"])
-        close_price = _finite_float(row["close"])
-        if (
-            bar_ts is None
-            or open_price is None
-            or high_price is None
-            or low_price is None
-            or close_price is None
-        ):
-            continue
+    for offset, row_index in enumerate(range(eval_start, eval_end), start=1):
+        holding_bars = offset
+        open_price = float(prepared.open_values[row_index])
+        high_price = float(prepared.high_values[row_index])
+        low_price = float(prepared.low_values[row_index])
+        close_price = float(prepared.close_values[row_index])
 
         stop_at_open = _open_hits_stop(direction=direction, open_price=open_price, stop_price=stop_price)
         target_at_open = _open_hits_target(direction=direction, open_price=open_price, target_price=target_price)
         if stop_at_open or target_at_open:
+            bar_ts = _timestamp_from_ns(int(prepared.timestamp_ns[row_index]))
             if stop_at_open:
                 exit_reason = "stop_hit"
                 exit_price = open_price
@@ -220,6 +248,7 @@ def _simulate_one_target(
         )
         if stop_touched and target_touched:
             # Conservative tie-break: treat stop as hit first.
+            bar_ts = _timestamp_from_ns(int(prepared.timestamp_ns[row_index]))
             exit_reason = "stop_hit"
             exit_price = stop_price
             exit_ts = bar_ts
@@ -233,6 +262,7 @@ def _simulate_one_target(
             )
             break
         if stop_touched:
+            bar_ts = _timestamp_from_ns(int(prepared.timestamp_ns[row_index]))
             exit_reason = "stop_hit"
             exit_price = stop_price
             exit_ts = bar_ts
@@ -246,6 +276,7 @@ def _simulate_one_target(
             )
             break
         if target_touched:
+            bar_ts = _timestamp_from_ns(int(prepared.timestamp_ns[row_index]))
             exit_reason = "target_hit"
             exit_price = target_price
             exit_ts = bar_ts
@@ -269,7 +300,7 @@ def _simulate_one_target(
         )
 
     if exit_reason is None or exit_price is None or exit_ts is None:
-        if len(eval_bars) < max_hold_bars:
+        if max_hold_bars is not None and eval_len < max_hold_bars:
             return _rejected_trade(
                 event=event,
                 target=target,
@@ -283,26 +314,13 @@ def _simulate_one_target(
                 mfe_r=mfe_r,
             )
 
-        final_bar = eval_bars.iloc[-1]
-        final_ts = _to_utc_timestamp(final_bar["timestamp"])
-        final_close = _finite_float(final_bar["close"])
-        if final_ts is None or final_close is None:
-            return _rejected_trade(
-                event=event,
-                target=target,
-                reject_code="insufficient_future_bars",
-                entry_ts=entry_ts,
-                entry_price=entry_price,
-                stop_price=stop_price,
-                target_price=target_price,
-                initial_risk=initial_risk,
-                mae_r=mae_r,
-                mfe_r=mfe_r,
-            )
+        final_row_index = int(eval_end - 1)
+        final_ts = _timestamp_from_ns(int(prepared.timestamp_ns[final_row_index]))
+        final_close = float(prepared.close_values[final_row_index])
         exit_reason = "time_stop"
         exit_ts = final_ts
         exit_price = final_close
-        holding_bars = max_hold_bars
+        holding_bars = eval_len if max_hold_bars is None else max_hold_bars
 
     realized_r = _price_to_r(
         direction=direction,
@@ -346,6 +364,59 @@ def _normalize_intraday_by_symbol(
         symbol = _normalize_symbol(raw_symbol)
         out[symbol] = _normalize_intraday_frame(intraday_bars_by_symbol[raw_symbol])
     return out
+
+
+def _prepare_intraday_by_symbol(
+    intraday_by_symbol: Mapping[str, pd.DataFrame],
+) -> dict[str, _PreparedIntraday]:
+    out: dict[str, _PreparedIntraday] = {}
+    for symbol in sorted(intraday_by_symbol):
+        out[symbol] = _prepare_intraday_frame(intraday_by_symbol[symbol])
+    return out
+
+
+def _prepare_intraday_frame(frame: pd.DataFrame) -> _PreparedIntraday:
+    if frame.empty:
+        empty_float = np.array([], dtype="float64")
+        empty_int = np.array([], dtype="int64")
+        empty_obj = np.array([], dtype="object")
+        empty_bool = np.array([], dtype="bool")
+        return _PreparedIntraday(
+            frame=frame,
+            timestamp_ns=empty_int,
+            session_days=empty_obj,
+            regular_open_mask=empty_bool,
+            open_values=empty_float,
+            high_values=empty_float,
+            low_values=empty_float,
+            close_values=empty_float,
+        )
+
+    ts = pd.to_datetime(frame["timestamp"], errors="coerce", utc=True)
+    timestamp_ns = ts.astype("int64").to_numpy(copy=False)
+
+    session_series = pd.Series(frame["session_date"], index=frame.index)
+    missing_mask = pd.isna(session_series)
+    if bool(missing_mask.any()):
+        session_series = session_series.where(~missing_mask, ts.dt.date)
+    session_days = session_series.to_numpy(copy=False)
+
+    market_ts = ts.dt.tz_convert(_MARKET_TZ)
+    regular_open_mask = (
+        market_ts.dt.hour.eq(9).to_numpy(copy=False)
+        & market_ts.dt.minute.eq(30).to_numpy(copy=False)
+    )
+
+    return _PreparedIntraday(
+        frame=frame,
+        timestamp_ns=timestamp_ns,
+        session_days=session_days,
+        regular_open_mask=np.asarray(regular_open_mask, dtype="bool"),
+        open_values=frame["open"].to_numpy(dtype="float64", copy=False),
+        high_values=frame["high"].to_numpy(dtype="float64", copy=False),
+        low_values=frame["low"].to_numpy(dtype="float64", copy=False),
+        close_values=frame["close"].to_numpy(dtype="float64", copy=False),
+    )
 
 
 def _normalize_intraday_frame(frame: pd.DataFrame | None) -> pd.DataFrame:
@@ -507,36 +578,133 @@ def _to_utc_timestamp(value: object) -> pd.Timestamp | None:
     return ts.tz_convert("UTC")
 
 
-def _select_entry_row(entry_candidates: pd.DataFrame, *, entry_cutoff: pd.Timestamp) -> pd.Series:
-    """Pick entry row at next regular-session open after cutoff, fallback to first candidate."""
-    if entry_candidates.empty:
-        raise ValueError("entry_candidates must be non-empty")
+def _resolve_entry_decision(
+    *,
+    event: StrategySignalEvent,
+    prepared: _PreparedIntraday | None,
+) -> _EntryDecision:
+    direction = str(event.direction).strip().lower()
+    if direction not in {"long", "short"}:
+        return _EntryDecision(reject_code="invalid_signal")
 
-    session_days = _entry_session_days(entry_candidates)
+    stop_price = _finite_float(event.stop_price)
+    signal_confirmed_ts = _to_utc_timestamp(event.signal_confirmed_ts)
+    entry_anchor_ts = _to_utc_timestamp(event.entry_ts)
+    if stop_price is None or signal_confirmed_ts is None or entry_anchor_ts is None:
+        return _EntryDecision(reject_code="invalid_signal")
+    if entry_anchor_ts <= signal_confirmed_ts:
+        return _EntryDecision(reject_code="invalid_signal")
+
+    if prepared is None or prepared.row_count == 0:
+        return _EntryDecision(reject_code="missing_intraday_coverage")
+
+    entry_cutoff = max(entry_anchor_ts, signal_confirmed_ts + pd.Timedelta(microseconds=1))
+    entry_row_index = _select_entry_row_index(prepared, entry_cutoff=entry_cutoff)
+    if entry_row_index is None:
+        return _EntryDecision(reject_code="missing_entry_bar")
+
+    entry_ts = _timestamp_from_ns(int(prepared.timestamp_ns[entry_row_index]))
+    entry_price = float(prepared.open_values[entry_row_index])
+
+    signal_low = _finite_float(event.signal_low)
+    signal_high = _finite_float(event.signal_high)
+    if direction == "long" and signal_low is not None and entry_price < (signal_low - _EPSILON):
+        return _EntryDecision(
+            reject_code="entry_open_outside_signal_range",
+            stop_price=stop_price,
+            entry_row_index=entry_row_index,
+            entry_ts=entry_ts,
+            entry_price=entry_price,
+        )
+    if direction == "short" and signal_high is not None and entry_price > (signal_high + _EPSILON):
+        return _EntryDecision(
+            reject_code="entry_open_outside_signal_range",
+            stop_price=stop_price,
+            entry_row_index=entry_row_index,
+            entry_ts=entry_ts,
+            entry_price=entry_price,
+        )
+
+    if direction == "long":
+        initial_risk = entry_price - stop_price
+    else:
+        initial_risk = stop_price - entry_price
+    if initial_risk <= 0.0:
+        return _EntryDecision(
+            reject_code="non_positive_risk",
+            stop_price=stop_price,
+            entry_row_index=entry_row_index,
+            entry_ts=entry_ts,
+            entry_price=entry_price,
+            initial_risk=initial_risk,
+        )
+
+    return _EntryDecision(
+        reject_code=None,
+        direction=direction,
+        stop_price=stop_price,
+        entry_row_index=entry_row_index,
+        entry_ts=entry_ts,
+        entry_price=entry_price,
+        initial_risk=initial_risk,
+    )
+
+
+def _select_entry_row_index(
+    prepared: _PreparedIntraday,
+    *,
+    entry_cutoff: pd.Timestamp,
+) -> int | None:
+    """Pick next regular open after cutoff; fallback to first candidate at/after cutoff."""
+    row_count = prepared.row_count
+    if row_count <= 0:
+        return None
+
+    start = int(np.searchsorted(prepared.timestamp_ns, int(entry_cutoff.value), side="left"))
+    if start >= row_count:
+        return None
+
     anchor_day = entry_cutoff.date()
-    eligible = entry_candidates.loc[session_days >= anchor_day]
-    if eligible.empty:
-        eligible = entry_candidates
+    eligible_start = start
+    while eligible_start < row_count:
+        session_day = prepared.session_days[eligible_start]
+        if session_day is not None and not pd.isna(session_day) and session_day >= anchor_day:
+            break
+        eligible_start += 1
+    if eligible_start >= row_count:
+        eligible_start = start
 
-    open_rows = _regular_open_rows(eligible)
-    if not open_rows.empty:
-        return open_rows.iloc[0]
-    return eligible.iloc[0]
-
-
-def _entry_session_days(frame: pd.DataFrame) -> pd.Series:
-    ts = pd.to_datetime(frame["timestamp"], errors="coerce", utc=True)
-    if "session_date" in frame.columns:
-        session_days = pd.to_datetime(frame["session_date"], errors="coerce").dt.date
-        return session_days.where(session_days.notna(), ts.dt.date)
-    return ts.dt.date
+    open_offsets = np.flatnonzero(prepared.regular_open_mask[eligible_start:])
+    if open_offsets.size > 0:
+        return int(eligible_start + int(open_offsets[0]))
+    return int(eligible_start)
 
 
-def _regular_open_rows(frame: pd.DataFrame) -> pd.DataFrame:
-    ts = pd.to_datetime(frame["timestamp"], errors="coerce", utc=True)
-    market_ts = ts.dt.tz_convert(_MARKET_TZ)
-    is_open = market_ts.dt.hour.eq(9) & market_ts.dt.minute.eq(30)
-    return frame.loc[is_open.fillna(False)]
+def _evaluation_end_index(
+    *,
+    prepared: _PreparedIntraday,
+    entry_row_index: int,
+    entry_ts: pd.Timestamp,
+    max_hold_bars: int | None,
+) -> int:
+    if max_hold_bars is not None:
+        return min(prepared.row_count, int(entry_row_index + max_hold_bars))
+
+    entry_session_date = prepared.session_days[entry_row_index]
+    if entry_session_date is None or pd.isna(entry_session_date):
+        entry_session_date = entry_ts.tz_convert(_MARKET_TZ).date()
+
+    end = int(entry_row_index + 1)
+    while end < prepared.row_count:
+        session_day = prepared.session_days[end]
+        if session_day != entry_session_date:
+            break
+        end += 1
+    return end
+
+
+def _timestamp_from_ns(value: int) -> pd.Timestamp:
+    return pd.Timestamp(value, unit="ns", tz="UTC")
 
 
 def _timestamp_to_datetime(value: pd.Timestamp) -> datetime:

@@ -17,7 +17,8 @@ class StrategyModelingPolicyConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     require_intraday_bars: bool = True
-    max_hold_bars: int = Field(default=20, ge=1)
+    # When None, hold the trade until the last available intraday bar of the entry session.
+    max_hold_bars: int | None = Field(default=None, ge=1)
     sizing_rule: SizingRule = "risk_pct_of_equity"
     risk_per_trade_pct: float = Field(default=1.0, gt=0.0, le=100.0)
     one_open_per_symbol: bool = True
@@ -26,4 +27,3 @@ class StrategyModelingPolicyConfig(BaseModel):
         "first_tradable_bar_open_after_signal_confirmed_ts"
     )
     price_adjustment_policy: PriceAdjustmentPolicy = "adjusted_ohlc"
-

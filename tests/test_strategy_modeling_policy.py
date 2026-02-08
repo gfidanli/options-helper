@@ -12,7 +12,7 @@ from options_helper.analysis.strategy_modeling_policy import (
 def test_strategy_modeling_policy_defaults() -> None:
     cfg = StrategyModelingPolicyConfig()
     assert cfg.require_intraday_bars is True
-    assert cfg.max_hold_bars == 20
+    assert cfg.max_hold_bars is None
     assert cfg.sizing_rule == "risk_pct_of_equity"
     assert cfg.risk_per_trade_pct == 1.0
     assert cfg.one_open_per_symbol is True
@@ -46,3 +46,7 @@ def test_parse_strategy_modeling_policy_config_rejects_invalid_risk() -> None:
     with pytest.raises(ValidationError):
         parse_strategy_modeling_policy_config({"risk_per_trade_pct": 0.0})
 
+
+def test_parse_strategy_modeling_policy_config_rejects_invalid_max_hold_bars() -> None:
+    with pytest.raises(ValidationError):
+        parse_strategy_modeling_policy_config({"max_hold_bars": 0})

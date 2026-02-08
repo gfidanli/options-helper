@@ -16,7 +16,7 @@ Baseline policy contract: `options_helper.schemas.strategy_modeling_policy.Strat
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `require_intraday_bars` | `bool` | `true` | Modeling runs require intraday bars for requested scope; missing coverage blocks simulation. |
-| `max_hold_bars` | `int` | `20` | Time-stop after 20 bars if stop/target logic does not exit earlier. |
+| `max_hold_bars` | `int \| null` | `null` | If set, time-stop after N bars; if null, hold through the rest of the entry session and exit on that session's last available intraday bar close. |
 | `sizing_rule` | `Literal["risk_pct_of_equity"]` | `"risk_pct_of_equity"` | Size each trade from a fixed risk percent of current equity. |
 | `risk_per_trade_pct` | `float` | `1.0` | Per-trade risk budget as a percent of current equity. |
 | `one_open_per_symbol` | `bool` | `true` | At most one open position per symbol at a time. |
@@ -41,7 +41,7 @@ CLI/Streamlit override payloads parse through:
 
 Validation behavior:
 - Unknown fields rejected (`extra="forbid"`).
-- Domain constraints enforced (`max_hold_bars >= 1`, `0 < risk_per_trade_pct <= 100`).
+- Domain constraints enforced (`max_hold_bars` is null or `>= 1`, `0 < risk_per_trade_pct <= 100`).
 
 ## CLI Usage
 

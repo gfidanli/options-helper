@@ -22,6 +22,7 @@ TradeRejectCode = Literal[
     "invalid_signal",
     "missing_intraday_coverage",
     "missing_entry_bar",
+    "entry_open_outside_signal_range",
     "non_positive_risk",
     "insufficient_future_bars",
 ]

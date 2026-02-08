@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict, replace
 from datetime import date
 from pathlib import Path
+import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -2525,6 +2526,11 @@ def technicals_strategy_model(
     write_json: bool = typer.Option(True, "--write-json/--no-write-json", help="Write summary JSON."),
     write_csv: bool = typer.Option(True, "--write-csv/--no-write-csv", help="Write CSV artifacts."),
     write_md: bool = typer.Option(True, "--write-md/--no-write-md", help="Write markdown summary."),
+    show_progress: bool = typer.Option(
+        True,
+        "--show-progress/--no-show-progress",
+        help="Print stage status updates while strategy modeling runs.",
+    ),
 ) -> None:
     """Run strategy-modeling service and write JSON/CSV/Markdown artifacts."""
     from options_helper.analysis.strategy_modeling import StrategyModelingRequest
@@ -2561,6 +2567,119 @@ def technicals_strategy_model(
     )
 
     service = cli_deps.build_strategy_modeling_service()
+    stage_timings: dict[str, float] = {}
+
+    def _format_seconds(value: float) -> str:
+        return f"{value:.2f}s"
+
+    def _accumulate_timing(name: str, elapsed: float) -> None:
+        stage_timings[name] = stage_timings.get(name, 0.0) + elapsed
+
+    def _safe_detail(detail_builder, output, args, kwargs) -> str:  # noqa: ANN001
+        if detail_builder is None:
+            return ""
+        try:
+            detail = detail_builder(output, args, kwargs)
+        except Exception:  # noqa: BLE001
+            return ""
+        if not detail:
+            return ""
+        return f" | {detail}"
+
+    def _timed_stage(name: str, fn, detail_builder=None):  # noqa: ANN001
+        def _wrapped(*args, **kwargs):  # noqa: ANN002,ANN003
+            if show_progress:
+                console.print(f"[cyan]... {name}[/cyan]")
+            started = time.perf_counter()
+            output = fn(*args, **kwargs)
+            elapsed = time.perf_counter() - started
+            _accumulate_timing(name, elapsed)
+            if show_progress:
+                detail = _safe_detail(detail_builder, output, args, kwargs)
+                console.print(f"[green]OK  {name} ({_format_seconds(elapsed)}){detail}[/green]")
+            return output
+
+        return _wrapped
+
+    service_stage_attrs = (
+        "list_universe_loader",
+        "daily_loader",
+        "required_sessions_builder",
+        "intraday_loader",
+        "feature_computer",
+        "signal_builder",
+        "trade_simulator",
+        "portfolio_builder",
+        "metrics_computer",
+        "segmentation_aggregator",
+    )
+    if show_progress and all(hasattr(service, attr) for attr in service_stage_attrs):
+        from options_helper.analysis.strategy_modeling import StrategyModelingService
+
+        service = StrategyModelingService(
+            list_universe_loader=_timed_stage(
+                "Loading universe",
+                service.list_universe_loader,
+                lambda out, _a, _k: f"symbols={len(tuple(getattr(out, 'symbols', ()) or ())) or 0}",
+            ),
+            daily_loader=_timed_stage(
+                "Loading daily candles",
+                service.daily_loader,
+                lambda out, _a, _k: (
+                    f"loaded={len(getattr(out, 'candles_by_symbol', {}) or {})} "
+                    f"skipped={len(tuple(getattr(out, 'skipped_symbols', ()) or ())) or 0} "
+                    f"missing={len(tuple(getattr(out, 'missing_symbols', ()) or ())) or 0}"
+                ),
+            ),
+            required_sessions_builder=_timed_stage(
+                "Building required sessions",
+                service.required_sessions_builder,
+                lambda out, _a, _k: (
+                    f"symbols={len(out or {})} "
+                    f"sessions={sum(len(tuple(v or ())) for v in (out or {}).values())}"
+                ),
+            ),
+            intraday_loader=_timed_stage(
+                "Loading intraday bars",
+                service.intraday_loader,
+                lambda out, _a, _k: (
+                    f"symbols={len(getattr(out, 'bars_by_symbol', {}) or {})} "
+                    f"blocked={len(tuple(getattr(getattr(out, 'preflight', None), 'blocked_symbols', ()) or ())) or 0}"
+                ),
+            ),
+            feature_computer=_timed_stage("Computing features", service.feature_computer),
+            signal_builder=_timed_stage(
+                "Building signals",
+                service.signal_builder,
+                lambda out, _a, kwargs: (
+                    f"symbol={str(kwargs.get('symbol', '')).upper()} events={len(tuple(out or ())) or 0}"
+                ),
+            ),
+            trade_simulator=_timed_stage(
+                "Simulating trades",
+                service.trade_simulator,
+                lambda out, args, kwargs: (
+                    f"events={len(tuple(args[0] or ())) if args else 0} "
+                    f"targets={len(tuple(kwargs.get('target_ladder') or ())) or 0} "
+                    f"trades={len(tuple(out or ())) or 0}"
+                ),
+            ),
+            portfolio_builder=_timed_stage(
+                "Building portfolio ledger",
+                service.portfolio_builder,
+                lambda out, _a, _k: (
+                    f"accepted={len(tuple(getattr(out, 'accepted_trade_ids', ()) or ())) or 0} "
+                    f"skipped={len(tuple(getattr(out, 'skipped_trade_ids', ()) or ())) or 0}"
+                ),
+            ),
+            metrics_computer=_timed_stage("Computing metrics", service.metrics_computer),
+            segmentation_aggregator=_timed_stage(
+                "Building segmentation",
+                service.segmentation_aggregator,
+                lambda out, _a, _k: f"segments={len(tuple(getattr(out, 'segments', ()) or ())) or 0}",
+            ),
+        )
+
     resolved_symbols = _resolve_strategy_symbols(
         service=service,
         requested_symbols=_split_csv_option(symbols),
@@ -2600,7 +2719,18 @@ def technicals_strategy_model(
         segment_limit=int(segment_limit),
     )
 
+    if show_progress:
+        console.print(
+            (
+                f"[cyan]Starting strategy-model run: strategy={normalized_strategy} "
+                f"symbols={len(resolved_symbols)} timeframe={intraday_timeframe}[/cyan]"
+            )
+        )
+    run_started = time.perf_counter()
     run_result = service.run(request)
+    run_elapsed = time.perf_counter() - run_started
+    if show_progress:
+        console.print(f"[green]Run complete in {_format_seconds(run_elapsed)}[/green]")
     block_message = _intraday_coverage_block_message(getattr(run_result, "intraday_preflight", None))
     if block_message is not None:
         raise typer.BadParameter(block_message)
@@ -2632,3 +2762,7 @@ def technicals_strategy_model(
         console.print(f"Wrote segments CSV: {paths.segments_csv}")
     if write_md:
         console.print(f"Wrote summary Markdown: {paths.summary_md}")
+    if show_progress and stage_timings:
+        console.print("Stage timings:")
+        for name in sorted(stage_timings, key=stage_timings.get, reverse=True):
+            console.print(f"  - {name}: {_format_seconds(stage_timings[name])}")

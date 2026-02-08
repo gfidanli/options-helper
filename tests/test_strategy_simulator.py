@@ -42,6 +42,8 @@ def _event(
     signal_ts: str = "2026-01-02 21:00:00+00:00",
     entry_ts: str = "2026-01-05 00:00:00+00:00",
     stop_price: float | None = 99.0,
+    signal_high: float | None = None,
+    signal_low: float | None = None,
 ) -> StrategySignalEvent:
     return StrategySignalEvent(
         event_id=event_id,
@@ -52,6 +54,8 @@ def _event(
         signal_confirmed_ts=_ts(signal_ts),
         entry_ts=_ts(entry_ts),
         entry_price_source="first_tradable_bar_open_after_signal_confirmed_ts",
+        signal_high=signal_high,
+        signal_low=signal_low,
         stop_price=stop_price,
     )
 
@@ -241,6 +245,44 @@ def test_simulator_rejects_non_positive_risk() -> None:
     assert trade.reject_code == "non_positive_risk"
 
 
+def test_simulator_rejects_long_when_entry_open_below_signal_low() -> None:
+    event = _event(
+        event_id="evt-entry-below-signal-low",
+        direction="long",
+        stop_price=98.0,
+        signal_low=100.0,
+    )
+    bars = _bars([("2026-01-05 14:30:00+00:00", 99.5, 100.0, 98.9, 99.8)])
+
+    trade = simulate_strategy_trade_paths(
+        [event],
+        {"SPY": bars},
+        target_ladder=_single_target_ladder(),
+    )[0]
+
+    assert trade.status == "rejected"
+    assert trade.reject_code == "entry_open_outside_signal_range"
+
+
+def test_simulator_rejects_short_when_entry_open_above_signal_high() -> None:
+    event = _event(
+        event_id="evt-entry-above-signal-high",
+        direction="short",
+        stop_price=103.0,
+        signal_high=100.0,
+    )
+    bars = _bars([("2026-01-05 14:30:00+00:00", 100.5, 101.0, 99.9, 100.2)])
+
+    trade = simulate_strategy_trade_paths(
+        [event],
+        {"SPY": bars},
+        target_ladder=_single_target_ladder(),
+    )[0]
+
+    assert trade.status == "rejected"
+    assert trade.reject_code == "entry_open_outside_signal_range"
+
+
 def test_simulator_rejects_when_future_bars_are_insufficient() -> None:
     event = _event(event_id="evt-insufficient-bars", stop_price=99.0)
     bars = _bars([("2026-01-05 14:30:00+00:00", 100.0, 100.2, 99.7, 100.0)])
@@ -254,6 +296,31 @@ def test_simulator_rejects_when_future_bars_are_insufficient() -> None:
 
     assert trade.status == "rejected"
     assert trade.reject_code == "insufficient_future_bars"
+
+
+def test_simulator_without_max_hold_exits_at_end_of_entry_session() -> None:
+    event = _event(event_id="evt-unbounded-hold", stop_price=99.0)
+    bars = _bars_with_session(
+        [
+            ("2026-01-05 14:30:00+00:00", "2026-01-05", 100.0, 100.5, 99.5, 100.2),
+            ("2026-01-05 14:31:00+00:00", "2026-01-05", 100.2, 100.4, 99.7, 100.3),
+            ("2026-01-05 14:32:00+00:00", "2026-01-05", 100.3, 100.6, 99.8, 100.4),
+            # Next-session rows should not be included when max_hold_bars is unlimited.
+            ("2026-01-06 14:30:00+00:00", "2026-01-06", 100.4, 101.8, 100.1, 101.6),
+            ("2026-01-06 14:31:00+00:00", "2026-01-06", 101.6, 102.0, 101.2, 101.8),
+        ]
+    )
+
+    trade = simulate_strategy_trade_paths(
+        [event],
+        {"SPY": bars},
+        target_ladder=_single_target_ladder(),
+    )[0]
+
+    assert trade.status == "closed"
+    assert trade.exit_reason == "time_stop"
+    assert trade.exit_ts == datetime(2026, 1, 5, 14, 32, tzinfo=timezone.utc)
+    assert trade.holding_bars == 3
 
 
 def test_simulator_uses_first_tradable_session_after_entry_anchor_gap() -> None:
