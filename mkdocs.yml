@@ -54,6 +54,7 @@ nav:
       - Technical Extension (RSI Divergence): TECHNICAL_EXTENSION_RSI_DIVERGENCE.md
       - Technical SFP Scan: TECHNICAL_SFP.md
       - Technical MSB Scan: TECHNICAL_MSB.md
+      - Technical Strategy Modeling: TECHNICAL_STRATEGY_MODELING.md
   - Visibility & Portal:
       - Next Stage Overview: NEXT_STAGE_VISIBILITY_PORTAL.md
       - Observability + Health: OBSERVABILITY.md

@@ -287,9 +287,17 @@ T0 ──┬── T1 ──┬── T4A ──┬── T5 ── T6 ── T7
 - **location**: `docs/TECHNICAL_STRATEGY_MODELING.md`, `docs/index.md`, `mkdocs.yml`
 - **description**: Document methodology, assumptions, CLI usage, dashboard usage, metric definitions, segmentation caveats, and non-financial-advice guardrails.
 - **validation**: Docs build passes and examples match implemented command/page options.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Expanded `docs/TECHNICAL_STRATEGY_MODELING.md` with methodology/policy assumptions, anti-lookahead anchor rules, exact `technicals strategy-model` CLI usage/options, artifact and metric field definitions, segmentation caveats, and explicit non-financial-advice guardrails.
+  - Added strategy-modeling documentation links to docs home quick links and MkDocs navigation.
+  - Validation: `./.venv/bin/mkdocs build --strict` (pass), `./.venv/bin/options-helper technicals strategy-model --help` (smoke-checked option docs).
+  - Errors: none.
 - **files edited/created**:
+  - `docs/TECHNICAL_STRATEGY_MODELING.md`
+  - `docs/index.md`
+  - `mkdocs.yml`
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ### T18: Universe-Scale Performance Gate
 - **depends_on**: [T10, T12, T14]
