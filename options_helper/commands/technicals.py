@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, replace
+from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import typer
 from rich.console import Console
 
+import options_helper.cli_deps as cli_deps
 from options_helper.commands.technicals_common import setup_technicals_logging
 from options_helper.data.technical_backtesting_config import load_technical_backtesting_config
 
@@ -2286,3 +2289,309 @@ def technicals_run_all(
             console.print(f"[green]Completed[/green] {symbol}")
         except Exception as exc:  # noqa: BLE001
             console.print(f"[red]{symbol} failed:[/red] {exc}")
+
+
+def _parse_iso_date(value: str | None, *, option_name: str) -> date | None:
+    if value is None:
+        return None
+    token = value.strip()
+    if not token:
+        return None
+    try:
+        return date.fromisoformat(token)
+    except ValueError as exc:
+        raise typer.BadParameter(f"{option_name} must be in YYYY-MM-DD format.") from exc
+
+
+def _split_csv_option(value: str | None, *, uppercase: bool = True) -> list[str]:
+    if value is None:
+        return []
+    items = [item.strip() for item in str(value).split(",") if item.strip()]
+    if uppercase:
+        return [item.upper() for item in items]
+    return items
+
+
+def _build_target_ladder(
+    *,
+    min_tenths: int,
+    max_tenths: int,
+    step_tenths: int,
+) -> tuple[SimpleNamespace, ...]:
+    if min_tenths < 1:
+        raise typer.BadParameter("--r-ladder-min-tenths must be >= 1")
+    if max_tenths < min_tenths:
+        raise typer.BadParameter("--r-ladder-max-tenths must be >= --r-ladder-min-tenths")
+    if step_tenths < 1:
+        raise typer.BadParameter("--r-ladder-step-tenths must be >= 1")
+
+    ladder: list[SimpleNamespace] = []
+    for tenths in range(min_tenths, max_tenths + 1, step_tenths):
+        target_r = float(tenths) / 10.0
+        ladder.append(SimpleNamespace(target_label=f"{target_r:.1f}R", target_r=target_r))
+    return tuple(ladder)
+
+
+def _resolve_strategy_symbols(
+    *,
+    service: object,
+    requested_symbols: list[str],
+    excluded_symbols: set[str],
+    universe_limit: int | None,
+) -> tuple[str, ...]:
+    candidates: list[str] = []
+    if requested_symbols:
+        candidates = requested_symbols
+    else:
+        loader = getattr(service, "list_universe_loader", None)
+        if not callable(loader):
+            raise typer.BadParameter(
+                "No --symbols provided and strategy-modeling service does not expose universe loader."
+            )
+        universe = loader(database_path=None)
+        symbols = getattr(universe, "symbols", ()) or ()
+        candidates = [str(symbol).upper() for symbol in symbols if str(symbol).strip()]
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for symbol in candidates:
+        token = str(symbol).strip().upper()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        deduped.append(token)
+
+    filtered = [symbol for symbol in deduped if symbol not in excluded_symbols]
+    if universe_limit is not None:
+        filtered = filtered[: int(universe_limit)]
+
+    return tuple(filtered)
+
+
+def _intraday_coverage_block_message(preflight: object | None) -> str | None:
+    if preflight is None:
+        return None
+
+    blocked_symbols = tuple(getattr(preflight, "blocked_symbols", ()) or ())
+    if not blocked_symbols:
+        return None
+
+    coverage_by_symbol = getattr(preflight, "coverage_by_symbol", {}) or {}
+    details: list[str] = []
+    for symbol in blocked_symbols:
+        coverage = coverage_by_symbol.get(symbol)
+        required_days = getattr(coverage, "required_days", ()) or ()
+        missing_days = getattr(coverage, "missing_days", ()) or ()
+        required = len(tuple(required_days))
+        missing = len(tuple(missing_days))
+        details.append(f"{symbol}({missing}/{required} missing)")
+
+    detail_text = ", ".join(details) if details else ", ".join(blocked_symbols)
+    message = f"Missing required intraday coverage for requested scope: {detail_text}"
+    notes = tuple(getattr(preflight, "notes", ()) or ())
+    if notes:
+        message = f"{message} | notes: {'; '.join(str(note) for note in notes)}"
+    return message
+
+
+@app.command("strategy-model")
+def technicals_strategy_model(
+    strategy: str = typer.Option("sfp", "--strategy", help="Strategy to model: sfp or msb."),
+    symbols: str | None = typer.Option(
+        None,
+        "--symbols",
+        help="Comma-separated symbols (if omitted, uses universe loader).",
+    ),
+    exclude_symbols: str | None = typer.Option(
+        None,
+        "--exclude-symbols",
+        help="Comma-separated symbols to exclude from modeled universe.",
+    ),
+    universe_limit: int | None = typer.Option(
+        None,
+        "--universe-limit",
+        help="Optional max number of resolved universe symbols.",
+    ),
+    start_date: str | None = typer.Option(
+        None,
+        "--start-date",
+        help="Optional ISO start date (YYYY-MM-DD).",
+    ),
+    end_date: str | None = typer.Option(
+        None,
+        "--end-date",
+        help="Optional ISO end date (YYYY-MM-DD).",
+    ),
+    intraday_timeframe: str = typer.Option(
+        "5Min",
+        "--intraday-timeframe",
+        help="Required intraday bar timeframe for simulation.",
+    ),
+    intraday_source: str = typer.Option(
+        "alpaca",
+        "--intraday-source",
+        help="Intraday source label for service request metadata.",
+    ),
+    r_ladder_min_tenths: int = typer.Option(
+        10,
+        "--r-ladder-min-tenths",
+        help="Minimum target R in tenths (10 => 1.0R).",
+    ),
+    r_ladder_max_tenths: int = typer.Option(
+        20,
+        "--r-ladder-max-tenths",
+        help="Maximum target R in tenths (20 => 2.0R).",
+    ),
+    r_ladder_step_tenths: int = typer.Option(
+        1,
+        "--r-ladder-step-tenths",
+        help="Step size for target ladder in tenths.",
+    ),
+    starting_capital: float = typer.Option(
+        100000.0,
+        "--starting-capital",
+        help="Starting portfolio capital for strategy modeling.",
+    ),
+    risk_per_trade_pct: float = typer.Option(
+        1.0,
+        "--risk-per-trade-pct",
+        help="Per-trade risk percent used with risk_pct_of_equity sizing.",
+    ),
+    gap_fill_policy: str = typer.Option(
+        "fill_at_open",
+        "--gap-fill-policy",
+        help="Gap fill policy for stop/target-through-open fills.",
+    ),
+    signal_confirmation_lag_bars: int | None = typer.Option(
+        None,
+        "--signal-confirmation-lag-bars",
+        help="Optional right-side confirmation lag metadata for close-confirmed signals.",
+    ),
+    segment_dimensions: str | None = typer.Option(
+        None,
+        "--segment-dimensions",
+        help="Comma-separated segment dimensions to display first.",
+    ),
+    segment_values: str | None = typer.Option(
+        None,
+        "--segment-values",
+        help="Comma-separated segment values to prioritize in output.",
+    ),
+    segment_min_trades: int = typer.Option(
+        1,
+        "--segment-min-trades",
+        help="Minimum trades required for segment display filters.",
+    ),
+    segment_limit: int = typer.Option(
+        10,
+        "--segment-limit",
+        help="Maximum segments to summarize in CLI output.",
+    ),
+    out: Path = typer.Option(
+        Path("data/reports/technicals/strategy_modeling"),
+        "--out",
+        help="Output root for strategy-modeling artifacts.",
+    ),
+    write_json: bool = typer.Option(True, "--write-json/--no-write-json", help="Write summary JSON."),
+    write_csv: bool = typer.Option(True, "--write-csv/--no-write-csv", help="Write CSV artifacts."),
+    write_md: bool = typer.Option(True, "--write-md/--no-write-md", help="Write markdown summary."),
+) -> None:
+    """Run strategy-modeling service and write JSON/CSV/Markdown artifacts."""
+    from options_helper.data.strategy_modeling_artifacts import write_strategy_modeling_artifacts
+
+    console = Console(width=200)
+
+    normalized_strategy = strategy.strip().lower()
+    if normalized_strategy not in {"sfp", "msb"}:
+        raise typer.BadParameter("--strategy must be one of: sfp, msb")
+    if starting_capital <= 0.0:
+        raise typer.BadParameter("--starting-capital must be > 0")
+    if risk_per_trade_pct <= 0.0 or risk_per_trade_pct > 100.0:
+        raise typer.BadParameter("--risk-per-trade-pct must be > 0 and <= 100")
+    if gap_fill_policy != "fill_at_open":
+        raise typer.BadParameter("--gap-fill-policy currently supports only fill_at_open")
+    if segment_min_trades < 1:
+        raise typer.BadParameter("--segment-min-trades must be >= 1")
+    if segment_limit < 1:
+        raise typer.BadParameter("--segment-limit must be >= 1")
+    if universe_limit is not None and universe_limit < 1:
+        raise typer.BadParameter("--universe-limit must be >= 1")
+
+    parsed_start_date = _parse_iso_date(start_date, option_name="--start-date")
+    parsed_end_date = _parse_iso_date(end_date, option_name="--end-date")
+    if parsed_start_date and parsed_end_date and parsed_start_date > parsed_end_date:
+        raise typer.BadParameter("--start-date must be <= --end-date")
+
+    target_ladder = _build_target_ladder(
+        min_tenths=int(r_ladder_min_tenths),
+        max_tenths=int(r_ladder_max_tenths),
+        step_tenths=int(r_ladder_step_tenths),
+    )
+
+    service = cli_deps.build_strategy_modeling_service()
+    resolved_symbols = _resolve_strategy_symbols(
+        service=service,
+        requested_symbols=_split_csv_option(symbols),
+        excluded_symbols=set(_split_csv_option(exclude_symbols)),
+        universe_limit=universe_limit,
+    )
+    if not resolved_symbols:
+        raise typer.BadParameter("No symbols remain after applying include/exclude/universe filters.")
+
+    request = SimpleNamespace(
+        strategy=normalized_strategy,
+        symbols=resolved_symbols,
+        start_date=parsed_start_date,
+        end_date=parsed_end_date,
+        intraday_timeframe=intraday_timeframe,
+        intraday_source=intraday_source,
+        target_ladder=target_ladder,
+        starting_capital=float(starting_capital),
+        policy={
+            "require_intraday_bars": True,
+            "sizing_rule": "risk_pct_of_equity",
+            "risk_per_trade_pct": float(risk_per_trade_pct),
+            "gap_fill_policy": gap_fill_policy,
+            "entry_ts_anchor_policy": "first_tradable_bar_open_after_signal_confirmed_ts",
+        },
+        gap_fill_policy=gap_fill_policy,
+        intra_bar_tie_break_rule="stop_first",
+        signal_confirmation_lag_bars=signal_confirmation_lag_bars,
+        segment_dimensions=tuple(_split_csv_option(segment_dimensions, uppercase=False)),
+        segment_values=tuple(_split_csv_option(segment_values, uppercase=False)),
+        segment_min_trades=int(segment_min_trades),
+        segment_limit=int(segment_limit),
+    )
+
+    run_result = service.run(request)
+    block_message = _intraday_coverage_block_message(getattr(run_result, "intraday_preflight", None))
+    if block_message is not None:
+        raise typer.BadParameter(block_message)
+
+    paths = write_strategy_modeling_artifacts(
+        out_dir=out,
+        strategy=normalized_strategy,
+        request=request,
+        run_result=run_result,
+        write_json=write_json,
+        write_csv=write_csv,
+        write_md=write_md,
+    )
+
+    segment_count = len(tuple(getattr(run_result, "segment_records", ()) or ()))
+    segments_shown = min(segment_count, int(segment_limit))
+    trade_count = len(tuple(getattr(run_result, "trade_simulations", ()) or ()))
+    console.print(
+        (
+            f"strategy={normalized_strategy} symbols={len(resolved_symbols)} "
+            f"trades={trade_count} segments_shown={segments_shown}"
+        )
+    )
+    if write_json:
+        console.print(f"Wrote summary JSON: {paths.summary_json}")
+    if write_csv:
+        console.print(f"Wrote trades CSV: {paths.trade_log_csv}")
+        console.print(f"Wrote R ladder CSV: {paths.r_ladder_csv}")
+        console.print(f"Wrote segments CSV: {paths.segments_csv}")
+    if write_md:
+        console.print(f"Wrote summary Markdown: {paths.summary_md}")

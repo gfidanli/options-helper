@@ -166,18 +166,38 @@ T0 ──┬── T1 ──┬── T4A ──┬── T5 ── T6 ── T7
 - **location**: `options_helper/commands/technicals.py`, `options_helper/cli.py`, `options_helper/cli_deps.py`
 - **description**: Add generic command (for example `technicals strategy-model`) with options for strategy, universe/symbol filters, date range, required intraday timeframe/source, R-ladder config, gap policy, starting capital, risk sizing, and segment filters. Command must fail fast when intraday coverage is missing for requested scope. Ship SFP-first, then expose MSB once T4B completes.
 - **validation**: CLI tests cover registration, parsing, fast-fail validation, and deterministic success path.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added `technicals strategy-model` command with strict `typer.BadParameter` validation for strategy (`sfp`/`msb`), symbol/universe filters, date range, intraday timeframe/source, fallback mode, R-ladder tenths, gap policy, starting capital/risk sizing inputs, and segment display filters.
+  - Routed command execution through shared T8A seam `cli_deps.build_strategy_modeling_service()` and mapped CLI options into `StrategyModelingRequest` + policy overrides.
+  - Enforced fail-fast behavior for missing required intraday coverage by raising `BadParameter` with blocked symbol coverage detail (`missing/required sessions`) before reporting success.
+  - Added deterministic CLI tests covering command registration/help visibility, invalid parse path, success request parsing path, universe-filter resolution path, and intraday fast-fail path.
+  - Validation: `./.venv/bin/python -m pytest tests/test_strategy_modeling_cli.py` (5 passed).
+  - Errors: initial implementation used `date`-typed Typer options; current Typer version here does not support `datetime.date` annotations. Fixed by parsing ISO date strings explicitly.
 - **files edited/created**:
+  - `options_helper/commands/technicals.py`
+  - `tests/test_strategy_modeling_cli.py`
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ### T10: Add CLI Artifact + Summary Writers
 - **depends_on**: [T9, T11]
 - **location**: `options_helper/data/strategy_modeling_artifacts.py` (new), `options_helper/commands/technicals.py`
 - **description**: Write JSON/CSV/Markdown outputs with metrics, R-ladder, segments, policy metadata (`entry_anchor=next_bar_open`, confirmation lag, intraday-required, gap/tie-break rules), and explicit not-financial-advice disclaimer. Include per-trade log fields that expose realized `R`, gap exits, and any stop slippage so losses below `-1.0R` are explicit.
 - **validation**: Schema-validation and golden-output tests assert stable required fields, disclaimer text, and trade-log examples where realized `R < -1.0R`.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added data-layer artifact writer `write_strategy_modeling_artifacts(...)` with stable JSON/CSV/Markdown outputs, schema versioning (`schema_version=1`), and explicit disclaimer text (`Informational output only; this tool is not financial advice.`).
+  - Captured required policy metadata in artifacts (`entry_anchor=next_bar_open`, confirmation lag, intraday requirement, gap fill policy, and intrabar tie-break rule) and carried these fields into markdown summary output.
+  - Added per-trade log enrichment (`realized_r`, `gap_exit`, `stop_slippage_r`, `loss_below_1r`) so gap-through stop outcomes where realized losses are below `-1.0R` are explicit in `trades.csv` and JSON.
+  - Integrated artifact writing into `technicals strategy-model` CLI flow while keeping output persistence in the data layer.
+  - Validation: `./.venv/bin/python -m pytest tests/test_strategy_modeling_artifacts.py` (3 passed).
+  - Errors: none.
 - **files edited/created**:
+  - `options_helper/data/strategy_modeling_artifacts.py`
+  - `options_helper/commands/technicals.py`
+  - `options_helper/cli_deps.py`
+  - `tests/test_strategy_modeling_artifacts.py`
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ### T11: Define Artifact Schema + Versioning
 - **depends_on**: [T1, T8]

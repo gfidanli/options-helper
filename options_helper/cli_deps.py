@@ -130,3 +130,15 @@ def build_run_logger(
         run_id=run_id,
     )
     return logger
+
+
+def build_strategy_modeling_service() -> object:
+    """Build shared strategy-modeling service (T8A seam)."""
+    try:
+        from options_helper.analysis.strategy_modeling import build_strategy_modeling_service as _build
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Strategy-modeling service is unavailable in this workspace. "
+            "Ensure T8A strategy-modeling modules are present."
+        ) from exc
+    return _build()
