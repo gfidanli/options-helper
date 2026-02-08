@@ -8,7 +8,7 @@ from typer.testing import CliRunner
 
 from options_helper.cli import app
 from options_helper.commands import market_analysis as market_analysis_command
-from options_helper.schemas.zero_dte_put_study import ZeroDtePutStudyArtifact
+from options_helper.schemas.zero_dte_put_study import DecisionMode, FillModel, ZeroDtePutStudyArtifact
 
 
 def test_zero_dte_put_study_registered_help() -> None:
@@ -253,3 +253,60 @@ def test_zero_dte_forward_snapshot_respects_custom_snapshot_path_json_output(
     assert snapshot_path.exists()
     lines = [line for line in snapshot_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert len(lines) == 1
+
+
+def test_assemble_zero_dte_candidate_rows_handles_missing_skip_columns() -> None:
+    features = market_analysis_command.pd.DataFrame(
+        [
+            {
+                "session_date": "2026-02-05",
+                "decision_ts": "2026-02-05T15:30:00+00:00",
+                "time_of_day_bucket": "10:30",
+                "intraday_return": -0.01,
+                "iv_regime": "unknown",
+                "feature_status": "ok",
+            }
+        ]
+    )
+    labels = market_analysis_command.pd.DataFrame(
+        [
+            {
+                "session_date": "2026-02-05",
+                "decision_ts": "2026-02-05T15:30:00+00:00",
+                "decision_bar_completed_ts": "2026-02-05T15:30:00+00:00",
+                "entry_anchor_ts": "2026-02-05T15:31:00+00:00",
+                "close_label_ts": "2026-02-05T21:00:00+00:00",
+                "close_price": 680.0,
+                "entry_anchor_price": 681.0,
+                "close_return_from_entry": -0.0015,
+                "label_status": "ok",
+            }
+        ]
+    )
+    snapshots = market_analysis_command.pd.DataFrame(
+        [
+            {
+                "session_date": "2026-02-05",
+                "decision_ts": "2026-02-05T15:30:00+00:00",
+                "entry_anchor_ts": "2026-02-05T15:31:00+00:00",
+                "target_strike_return": -0.01,
+                "target_strike_price": 674.19,
+                "strike_price": 674.0,
+                "entry_premium": 0.42,
+                "spread": 0.06,
+                "quote_quality_status": "good",
+            }
+        ]
+    )
+
+    out = market_analysis_command._assemble_zero_dte_candidate_rows(
+        features=features,
+        labels=labels,
+        snapshots=snapshots,
+        fill_model=FillModel.BID,
+        decision_mode=DecisionMode.FIXED_TIME,
+        risk_tiers=(0.01,),
+    )
+
+    assert not out.empty
+    assert out.iloc[0]["policy_status"] == "ok"

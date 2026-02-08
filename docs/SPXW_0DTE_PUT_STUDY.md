@@ -53,7 +53,41 @@ This workflow is informational decision support only and **not financial advice*
 - Walk-forward and forward snapshot scoring require frozen model state from prior sessions only.
 
 ## CLI Usage
-Run study/backtest artifact generation:
+### 1) Backfill contracts/bars first (required for historical studies)
+
+Use inactive contracts for expired-history ranges (for example 2025):
+
+```bash
+./.venv/bin/options-helper ingest options-bars \
+  --symbol SPY \
+  --contracts-status inactive \
+  --contracts-exp-start 2025-01-01 \
+  --contracts-exp-end 2025-12-31 \
+  --lookback-years 2 \
+  --resume
+```
+
+Use `--contracts-status all` if you want both active and inactive contracts.
+
+### 2) Run endpoint auto-tuning (recommended before large backfills)
+
+This probes Alpaca endpoint performance and updates `config/ingest_tuning.json`:
+
+```bash
+./.venv/bin/options-helper --storage filesystem ingest options-bars \
+  --symbol SPY \
+  --contracts-status inactive \
+  --contracts-exp-start 2025-01-01 \
+  --contracts-exp-end 2025-12-31 \
+  --lookback-years 2 \
+  --max-contracts 2000 \
+  --max-expiries 6 \
+  --fetch-only \
+  --auto-tune \
+  --tune-config config/ingest_tuning.json
+```
+
+### 3) Run study/backtest artifact generation
 
 ```bash
 ./.venv/bin/options-helper market-analysis zero-dte-put-study \
@@ -68,12 +102,22 @@ Run study/backtest artifact generation:
   --out data/reports
 ```
 
-Run forward snapshot scoring from frozen active model:
+### 4) Run forward snapshot scoring from frozen active model
 
 ```bash
 ./.venv/bin/options-helper market-analysis zero-dte-put-forward-snapshot \
   --symbol SPY \
   --out data/reports
+```
+
+Notes:
+- Alpaca option-chain snapshot APIs are live-oriented and do not provide full expired-contract historical backfill.
+- For historical 0DTE studies, treat `ingest options-bars --contracts-status inactive|all` as the primary backfill path.
+
+### 5) Quick coverage check
+
+```bash
+./.venv/bin/options-helper coverage SPY --days 260 --json
 ```
 
 ## Artifact Outputs

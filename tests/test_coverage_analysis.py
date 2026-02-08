@@ -144,4 +144,12 @@ def test_build_repair_suggestions_prioritizes_gap_commands() -> None:
     commands = [str(row.get("command") or "") for row in rows]
     assert any("ingest candles --symbol SPY" in cmd for cmd in commands)
     assert any("--contracts-only" in cmd for cmd in commands)
+    assert any("--contracts-status all" in cmd for cmd in commands)
     assert any("ingest options-bars --symbol SPY" in cmd for cmd in commands)
+
+    snapshot_capture = next(
+        (row for row in rows if row.get("category") == "snapshot_headers" and "snapshot-options" in str(row.get("command"))),
+        None,
+    )
+    assert snapshot_capture is not None
+    assert "live-only" in str(snapshot_capture.get("note") or "")

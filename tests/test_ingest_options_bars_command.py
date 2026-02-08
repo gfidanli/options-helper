@@ -25,13 +25,20 @@ class _FakeAlpacaClient:
         self,
         underlying: str,
         *,
+        contract_status: str | None = None,
         exp_gte: date | None = None,
         exp_lte: date | None = None,
         limit: int | None = None,
         page_limit: int | None = None,  # noqa: ARG002
     ) -> list[dict[str, object]]:
         self.contract_calls.append(
-            {"underlying": underlying, "exp_gte": exp_gte, "exp_lte": exp_lte, "limit": limit}
+            {
+                "underlying": underlying,
+                "contract_status": contract_status,
+                "exp_gte": exp_gte,
+                "exp_lte": exp_lte,
+                "limit": limit,
+            }
         )
         contracts = [
             {
@@ -315,6 +322,38 @@ def test_ingest_options_bars_contracts_only_writes_contract_snapshots(tmp_path: 
     assert int(bars.iloc[0]["n"]) == 0
     assert int(bars_meta.iloc[0]["n"]) == 0
     assert len(fake_client.bars_calls) == 0
+
+
+def test_ingest_options_bars_passes_contracts_status(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda: _StubProvider())
+    fake_client = _FakeAlpacaClient()
+    monkeypatch.setattr(ingest, "AlpacaClient", lambda: fake_client)
+
+    runner = CliRunner()
+    duckdb_path = tmp_path / "options.duckdb"
+    result = runner.invoke(
+        app,
+        [
+            "--provider",
+            "alpaca",
+            "--duckdb-path",
+            str(duckdb_path),
+            "ingest",
+            "options-bars",
+            "--symbol",
+            "SPY",
+            "--contracts-status",
+            "inactive",
+            "--contracts-exp-start",
+            "2025-01-01",
+            "--contracts-exp-end",
+            "2026-12-31",
+            "--contracts-only",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert any(call.get("contract_status") == "inactive" for call in fake_client.contract_calls)
 
 
 def test_ingest_options_bars_supports_contracts_root_symbol_and_prefix(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

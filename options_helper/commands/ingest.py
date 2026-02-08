@@ -397,6 +397,11 @@ def ingest_options_bars_command(
         "--contracts-exp-end",
         help="Contracts expiration end date (YYYY-MM-DD). Defaults to today + 5y.",
     ),
+    contracts_status: str = typer.Option(
+        "all",
+        "--contracts-status",
+        help="Contracts discovery status filter: active, inactive, or all (default: all).",
+    ),
     lookback_years: int = typer.Option(
         10,
         "--lookback-years",
@@ -571,6 +576,7 @@ def ingest_options_bars_command(
             "contracts_symbol_prefix": contracts_symbol_prefix,
             "contracts_exp_start": contracts_exp_start,
             "contracts_exp_end": contracts_exp_end,
+            "contracts_status": contracts_status,
             "lookback_years": lookback_years,
             "page_limit": page_limit,
             "contracts_page_size": effective_contracts_page_size,
@@ -622,6 +628,7 @@ def ingest_options_bars_command(
                 contract_symbol_prefix=contracts_symbol_prefix,
                 contracts_exp_start=contracts_exp_start,
                 contracts_exp_end=contracts_exp_end,
+                contracts_status=contracts_status,
                 lookback_years=lookback_years,
                 page_limit=page_limit,
                 contracts_page_size=effective_contracts_page_size,

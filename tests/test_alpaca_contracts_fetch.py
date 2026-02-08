@@ -19,6 +19,9 @@ class _StubTradingClient:
 
     def get_option_contracts(self, **kwargs):
         self.calls.append(kwargs)
+        status = kwargs.get("status")
+        if status == "inactive":
+            return _StubPage([{"symbol": "BRK240216P00350000"}], None)
         token = kwargs.get("page_token")
         if token == "page2":
             return _StubPage([{"symbol": "BRK240119P00350000"}], None)
@@ -45,6 +48,26 @@ def test_list_option_contracts_paginates() -> None:
     assert any(
         val == "BRK.B" or (isinstance(val, list) and "BRK.B" in val) for val in stub.calls[0].values()
     )
+
+
+def test_list_option_contracts_supports_all_status() -> None:
+    client = AlpacaClient(api_key_id="key", api_secret_key="secret")
+    stub = _StubTradingClient()
+    client._trading_client = stub
+
+    contracts = client.list_option_contracts(
+        "BRK-B",
+        exp_gte=date(2024, 1, 1),
+        exp_lte=date(2024, 2, 1),
+        contract_status="all",
+        limit=2,
+        page_limit=5,
+    )
+
+    statuses = [str(call.get("status")) for call in stub.calls]
+    assert "active" in statuses
+    assert "inactive" in statuses
+    assert any(raw.get("symbol") == "BRK240216P00350000" for raw in contracts)
 
 
 def test_contracts_to_df_normalizes() -> None:
@@ -101,4 +124,3 @@ def test_contracts_to_df_normalizes() -> None:
     assert fallback["optionType"] == "call"
     assert fallback["expiry"] == "2024-01-19"
     assert pd.notna(fallback["strike"])
-

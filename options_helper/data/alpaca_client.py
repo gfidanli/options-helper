@@ -2145,6 +2145,7 @@ class AlpacaClient:
         root_symbol: str | None = None,
         exp_gte: date | None = None,
         exp_lte: date | None = None,
+        contract_status: str | None = None,
         limit: int | None = None,
         page_limit: int | None = None,
         max_requests_per_second: float | None = None,
@@ -2165,8 +2166,11 @@ class AlpacaClient:
             raise DataFetchError("Alpaca trading client missing get_option_contracts.")
 
         request_cls = _load_option_contracts_request()
-        page_token: str | None = None
-        page_count = 0
+        status_raw = str(contract_status or "active").strip().lower()
+        if status_raw not in {"active", "inactive", "all"}:
+            raise DataFetchError("contract_status must be one of: active, inactive, all")
+        status_values = ("active", "inactive") if status_raw == "all" else (status_raw,)
+
         out: list[dict[str, Any]] = []
         if max_requests_per_second is None or max_requests_per_second <= 0:
             min_interval_seconds = 0.0
@@ -2206,50 +2210,74 @@ class AlpacaClient:
                     time.sleep(delay)
             raise DataFetchError("Failed to fetch Alpaca option contracts after retries.")
 
-        while True:
-            page_count += 1
-            if page_limit is not None and page_count > page_limit:
-                raise DataFetchError("Exceeded Alpaca option contracts page limit.")
+        for status in status_values:
+            page_token: str | None = None
+            page_count = 0
+            while True:
+                page_count += 1
+                if page_limit is not None and page_count > page_limit:
+                    raise DataFetchError("Exceeded Alpaca option contracts page limit.")
 
-            kwargs = {
-                "underlying_symbol": alpaca_symbol or None,
-                "underlying_symbols": [alpaca_symbol] if alpaca_symbol else None,
-                "underlying": alpaca_symbol or None,
-                "symbol": alpaca_symbol or None,
-                "root_symbol": root_val or None,
-                "root_symbols": [root_val] if root_val else None,
-                "rootSymbol": root_val or None,
-                "rootSymbols": [root_val] if root_val else None,
-                "expiration_date_gte": exp_gte,
-                "expiration_date_lte": exp_lte,
-                "exp_gte": exp_gte,
-                "exp_lte": exp_lte,
-                "limit": limit,
-                "page_token": page_token,
-            }
+                kwargs = {
+                    "underlying_symbol": alpaca_symbol or None,
+                    "underlying_symbols": [alpaca_symbol] if alpaca_symbol else None,
+                    "underlying": alpaca_symbol or None,
+                    "symbol": alpaca_symbol or None,
+                    "root_symbol": root_val or None,
+                    "root_symbols": [root_val] if root_val else None,
+                    "rootSymbol": root_val or None,
+                    "rootSymbols": [root_val] if root_val else None,
+                    "expiration_date_gte": exp_gte,
+                    "expiration_date_lte": exp_lte,
+                    "exp_gte": exp_gte,
+                    "exp_lte": exp_lte,
+                    "status": status,
+                    "limit": limit,
+                    "page_token": page_token,
+                }
 
-            payload = None
-            if request_cls is not None:
-                try:
-                    request_kwargs = _filter_kwargs(request_cls, kwargs)
-                    request = request_cls(**request_kwargs)
+                payload = None
+                if request_cls is not None:
+                    try:
+                        request_kwargs = _filter_kwargs(request_cls, kwargs)
+                        request = request_cls(**request_kwargs)
+                        _wait_turn()
+                        payload = _call_with_backoff(lambda: method(request))
+                    except TypeError:
+                        payload = None
+
+                if payload is None:
                     _wait_turn()
-                    payload = _call_with_backoff(lambda: method(request))
-                except TypeError:
-                    payload = None
+                    payload = _call_with_backoff(lambda: method(**_filter_kwargs(method, kwargs)))
 
-            if payload is None:
-                _wait_turn()
-                payload = _call_with_backoff(lambda: method(**_filter_kwargs(method, kwargs)))
+                contracts, next_token = _extract_contracts_page(payload)
+                if contracts:
+                    out.extend(_contract_to_dict(c) for c in contracts)
+                if not next_token:
+                    break
+                page_token = str(next_token)
 
-            contracts, next_token = _extract_contracts_page(payload)
-            if contracts:
-                out.extend(_contract_to_dict(c) for c in contracts)
-            if not next_token:
-                break
-            page_token = str(next_token)
+        if len(out) <= 1:
+            return out
 
-        return out
+        deduped_by_symbol: dict[str, dict[str, Any]] = {}
+        unresolved: list[dict[str, Any]] = []
+        for item in out:
+            contract = _contract_to_dict(item)
+            symbol = (
+                contract.get("symbol")
+                or contract.get("contractSymbol")
+                or contract.get("option_symbol")
+            )
+            key = str(symbol or "").strip().upper()
+            if not key:
+                unresolved.append(contract)
+                continue
+            deduped_by_symbol[key] = contract
+
+        if not deduped_by_symbol:
+            return unresolved
+        return [*deduped_by_symbol.values(), *unresolved]
 
     def get_option_chain_snapshots(
         self,

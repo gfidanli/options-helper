@@ -1186,6 +1186,32 @@ def _assemble_zero_dte_candidate_rows(
     snap["entry_anchor_ts"] = pd.to_datetime(snap["entry_anchor_ts"], errors="coerce", utc=True)
     merged = snap.merge(base, on=["session_date", "decision_ts"], how="left", sort=True)
 
+    for column in (
+        "entry_anchor_ts",
+        "decision_bar_completed_ts",
+        "close_label_ts",
+        "close_price",
+        "entry_anchor_price",
+        "close_return_from_entry",
+        "label_status",
+        "skip_reason",
+    ):
+        if column in merged.columns:
+            continue
+        left = merged.get(f"{column}_x")
+        right = merged.get(f"{column}_y")
+        if left is None and right is None:
+            continue
+        if left is None:
+            merged[column] = right
+        elif right is None:
+            merged[column] = left
+        else:
+            merged[column] = left
+            missing_mask = merged[column].isna()
+            if bool(missing_mask.any()):
+                merged.loc[missing_mask, column] = right.loc[missing_mask]
+
     merged["strike_return"] = pd.to_numeric(merged["target_strike_return"], errors="coerce")
     merged["target_strike_price"] = pd.to_numeric(merged["target_strike_price"], errors="coerce")
     merged["strike_price"] = pd.to_numeric(merged.get("strike_price"), errors="coerce")
@@ -1202,7 +1228,11 @@ def _assemble_zero_dte_candidate_rows(
     merged["policy_reason"] = None
 
     skip_snapshot = merged.get("skip_reason")
+    if skip_snapshot is None:
+        skip_snapshot = pd.Series([None] * len(merged), index=merged.index, dtype="object")
     skip_label = merged.get("label_skip_reason")
+    if skip_label is None:
+        skip_label = pd.Series([None] * len(merged), index=merged.index, dtype="object")
     invalid_premium = ~pd.to_numeric(merged["premium_estimate"], errors="coerce").gt(0.0)
     has_snapshot_skip = skip_snapshot.notna() & skip_snapshot.astype(str).str.strip().ne("")
     has_label_skip = skip_label.notna() & skip_label.astype(str).str.strip().ne("")

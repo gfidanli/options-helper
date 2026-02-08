@@ -243,11 +243,24 @@ def _looks_like_429(exc: Exception) -> bool:
 
 
 def _supports_max_rps_kw(method: Any) -> bool:
+    return _supports_kw(method, "max_requests_per_second")
+
+
+def _supports_kw(method: Any, keyword: str) -> bool:
     try:
         signature = inspect.signature(method)
     except (TypeError, ValueError):
         return False
-    return "max_requests_per_second" in signature.parameters
+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()):
+        return True
+    return keyword in signature.parameters
+
+
+def _normalize_contract_status(value: str | None) -> str:
+    raw = str(value or "active").strip().lower()
+    if raw in {"active", "inactive", "all"}:
+        return raw
+    raise ValueError("contract_status must be one of: active, inactive, all")
 
 
 def _list_option_contracts(
@@ -261,6 +274,7 @@ def _list_option_contracts(
     page_limit: int | None,
     max_requests_per_second: float | None,
     supports_max_rps_kw: bool,
+    contract_status: str | None,
 ) -> list[dict[str, Any]]:
     method = getattr(client, "list_option_contracts")
     kwargs: dict[str, Any] = {
@@ -269,6 +283,11 @@ def _list_option_contracts(
         "limit": limit,
         "page_limit": page_limit,
     }
+    if contract_status:
+        if _supports_kw(method, "contract_status"):
+            kwargs["contract_status"] = contract_status
+        elif _supports_kw(method, "status"):
+            kwargs["status"] = contract_status
     if root_symbol:
         kwargs["root_symbol"] = root_symbol
     if supports_max_rps_kw and max_requests_per_second is not None:
@@ -288,8 +307,10 @@ def discover_option_contracts(
     page_limit: int | None = None,
     max_contracts: int | None = None,
     max_requests_per_second: float | None = None,
+    contract_status: str | None = "active",
     fail_fast: bool = False,
 ) -> ContractDiscoveryOutput:
+    resolved_contract_status = _normalize_contract_status(contract_status)
     contracts_by_symbol: dict[str, dict[str, Any]] = {}
     raw_by_symbol: dict[str, dict[str, Any]] = {}
     summaries: list[UnderlyingDiscoverySummary] = []
@@ -343,6 +364,7 @@ def discover_option_contracts(
                     page_limit=page_limit,
                     max_requests_per_second=max_requests_per_second,
                     supports_max_rps_kw=supports_max_rps_kw,
+                    contract_status=resolved_contract_status,
                 )
             except Exception as exc:  # noqa: BLE001
                 latencies_ms.append((time_mod.perf_counter() - started) * 1000.0)

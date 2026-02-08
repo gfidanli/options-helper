@@ -301,6 +301,7 @@ def run_ingest_options_bars_job(
     resume: bool,
     dry_run: bool,
     fail_fast: bool,
+    contracts_status: str = "all",
     contracts_only: bool = False,
     fetch_only: bool = False,
     provider_builder: Callable[[], Any] = cli_deps.build_provider,
@@ -393,6 +394,12 @@ def run_ingest_options_bars_job(
 
     if exp_end < exp_start:
         raise VisibilityJobParameterError("contracts-exp-end must be >= contracts-exp-start")
+    contract_status = str(contracts_status or "").strip().lower()
+    if contract_status not in {"active", "inactive", "all"}:
+        raise VisibilityJobParameterError(
+            "contracts-status must be one of: active, inactive, all",
+            param_hint="--contracts-status",
+        )
 
     contracts_store = contracts_store_builder(contracts_store_dir) if not dry_run and not fetch_only else None
     bars_store: Any
@@ -413,6 +420,7 @@ def run_ingest_options_bars_job(
         page_limit=page_limit,
         max_contracts=max_contracts,
         max_requests_per_second=contracts_max_requests_per_second,
+        contract_status=contract_status,
         fail_fast=fail_fast,
     )
 

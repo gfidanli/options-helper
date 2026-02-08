@@ -46,7 +46,7 @@ def build_repair_suggestions(
                 "reason": "daily contract/OI snapshots are incomplete",
                 "command": (
                     f"./.venv/bin/options-helper ingest options-bars --symbol {sym} --contracts-only "
-                    "--contracts-exp-start 2000-01-01"
+                    "--contracts-status all --contracts-exp-start 2000-01-01"
                 ),
                 "note": "Open interest history is point-in-time; missing historical days usually cannot be backfilled.",
             }
@@ -63,7 +63,7 @@ def build_repair_suggestions(
                 "reason": "option bars coverage is incomplete",
                 "command": (
                     f"./.venv/bin/options-helper ingest options-bars --symbol {sym} "
-                    f"--lookback-years {lookback_years} --resume"
+                    f"--contracts-status all --lookback-years {lookback_years} --resume"
                 ),
             }
         )
@@ -89,6 +89,10 @@ def build_repair_suggestions(
                 "command": (
                     "./.venv/bin/options-helper snapshot-options portfolio.json "
                     "--watchlist monitor --all-expiries --full-chain"
+                ),
+                "note": (
+                    "Alpaca option-chain snapshots are live-only; expired historical dates are not fully backfillable "
+                    "from this endpoint."
                 ),
             }
         )

@@ -87,6 +87,24 @@ class _ClientTimingProbeNoRps:
         return []
 
 
+class _ClientWithContractStatus:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def list_option_contracts(
+        self,
+        underlying: str,
+        *,
+        contract_status: str | None = None,
+        exp_gte: date | None = None,  # noqa: ARG002
+        exp_lte: date | None = None,  # noqa: ARG002
+        limit: int | None = None,  # noqa: ARG002
+        page_limit: int | None = None,  # noqa: ARG002
+    ) -> list[dict[str, object]]:
+        self.calls.append({"underlying": underlying, "contract_status": contract_status})
+        return [_raw_contract(underlying)]
+
+
 def test_discover_option_contracts_passes_max_rps_when_supported() -> None:
     client = _ClientWithContractsRps()
 
@@ -168,3 +186,18 @@ def test_discover_option_contracts_passes_limit_page_size() -> None:
 
     assert not result.contracts.empty
     assert client.calls[0]["limit"] == 10000
+
+
+def test_discover_option_contracts_passes_contract_status_when_supported() -> None:
+    client = _ClientWithContractStatus()
+
+    result = discover_option_contracts(
+        client,  # type: ignore[arg-type]
+        underlyings=["AAA"],
+        exp_start=date(2026, 1, 1),
+        exp_end=date(2026, 12, 31),
+        contract_status="inactive",
+    )
+
+    assert not result.contracts.empty
+    assert client.calls[0]["contract_status"] == "inactive"

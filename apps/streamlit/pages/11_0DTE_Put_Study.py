@@ -42,6 +42,18 @@ def _fmt_date(value: object) -> str:
     return parsed.date().isoformat()
 
 
+def _dedupe_notes(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        note = str(value or "").strip()
+        if not note or note in seen:
+            continue
+        seen.add(note)
+        out.append(note)
+    return out
+
+
 st.title("0DTE Put Study (SPY Proxy)")
 st.caption("Informational and educational use only. Not financial advice.")
 st.info(
@@ -169,15 +181,17 @@ forward_df, forward_notes = load_forward_snapshots(
     max_strike_distance_pct=strike_distance_filter,
 )
 
-for note in [
-    *base_probability_notes,
-    *base_ladder_notes,
-    *probability_notes,
-    *ladder_notes,
-    *walk_notes,
-    *calibration_notes,
-    *forward_notes,
-]:
+for note in _dedupe_notes(
+    [
+        *base_probability_notes,
+        *base_ladder_notes,
+        *probability_notes,
+        *ladder_notes,
+        *walk_notes,
+        *calibration_notes,
+        *forward_notes,
+    ]
+):
     st.warning(note)
 
 metric_cols = st.columns(4)
