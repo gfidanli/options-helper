@@ -29,6 +29,17 @@ class StrategyMetricsResult:
     expectancy_dollars: float | None = None
 
 
+def serialize_strategy_metrics_result(result: StrategyMetricsResult) -> dict[str, Any]:
+    """Return a JSON-safe summary payload for downstream reporting surfaces."""
+
+    return {
+        "trade_count": int(result.portfolio_metrics.trade_count),
+        "target_hit_rate_count": int(len(result.target_hit_rates)),
+        "expectancy_dollars": result.expectancy_dollars,
+        "portfolio_metrics": result.portfolio_metrics.to_dict(),
+    }
+
+
 def compute_strategy_metrics(
     trades: Iterable[Mapping[str, Any] | StrategyTradeSimulation],
     equity_curve: Iterable[Mapping[str, Any] | StrategyEquityPoint],
@@ -488,4 +499,5 @@ __all__ = [
     "compute_strategy_metrics",
     "compute_strategy_portfolio_metrics",
     "compute_strategy_target_hit_rates",
+    "serialize_strategy_metrics_result",
 ]

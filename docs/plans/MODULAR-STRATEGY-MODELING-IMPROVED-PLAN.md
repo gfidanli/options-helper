@@ -231,7 +231,7 @@ T1 ─┬─ T2 ─┬─ T4 ─┬─ T5 ─┬─ T6 ─┬─ T7 ─┬─ T9
   - EMA9 regime validation now recomputes slope from daily `ema9` using the filter-config lookback, so short context windows can legitimately resolve to `missing_daily_context`.
   - ORB confirmation precompute is cached once per symbol/session and reused across events; event-level gate checks only read that cache to avoid repeated intraday recomputation.
 
-### T5: Directional counterfactual results + “portfolio trade subset” clarification
+### T5: Directional counterfactual results + “portfolio trade subset” clarification (Complete)
 - **depends_on**: [T4]
 - **location**:
   - `options_helper/analysis/strategy_modeling.py`
@@ -247,6 +247,22 @@ T1 ─┬─ T2 ─┬─ T4 ─┬─ T5 ─┬─ T6 ─┬─ T7 ─┬─ T9
 - **validation**:
   - `tests/test_strategy_modeling_service.py`: directional metrics shape + stable values on deterministic fixtures.
   - Regression that `directional_metrics.long_only` differs when shorts exist.
+- **work log**:
+  - Added deterministic portfolio-target subset selection (`select_portfolio_trade_subset`) with explicit preference support for the first ladder target (`label`/`target_r`) and stable fallback inference when preferred target metadata is missing.
+  - Updated service orchestration so portfolio ledger, portfolio metrics, accepted/skipped ids, and segmentation run on one consistent portfolio-target subset, while full simulated trade outputs are still retained.
+  - Switched `target_hit_rates` computation to run across all simulated targets explicitly, preserving full ladder statistics independent of portfolio-target subsetting.
+  - Reworked `directional_metrics` to run real counterfactual reruns (`combined`, `long_only`, `short_only`) with the same portfolio rules and same selected portfolio target subset, and to emit deterministic count + metric payloads.
+  - Added a metrics serializer helper for JSON-safe directional metric payloads.
+  - Extended service tests with a deterministic two-symbol, two-target long/short fixture asserting subset semantics, full-ladder stats retention, and long-only divergence when short trades exist.
+- **files touched**:
+  - `options_helper/analysis/strategy_modeling.py`
+  - `options_helper/analysis/strategy_portfolio.py`
+  - `options_helper/analysis/strategy_metrics.py`
+  - `tests/test_strategy_modeling_service.py`
+  - `docs/plans/MODULAR-STRATEGY-MODELING-IMPROVED-PLAN.md`
+- **gotchas**:
+  - Trade IDs alone are not always sufficient for robust target matching; subset selection now uses both trade-id suffix labels and computed target-R fallback matching to stay deterministic across mixed payload quality.
+  - Directional buckets are rerun through the same portfolio builder and metrics computer, so portfolio sizing/overlap rules apply consistently instead of behaving like post-hoc metric slices.
 
 ### T6: CLI wiring + validation + output updates
 - **depends_on**: [T1, T4, T5]

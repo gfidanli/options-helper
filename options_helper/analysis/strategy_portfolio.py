@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 import math
+import re
 from typing import Any, Iterable, Literal, Mapping
 
 import pandas as pd
@@ -11,6 +12,7 @@ from options_helper.schemas.strategy_modeling_policy import StrategyModelingPoli
 
 _EPSILON = 1e-12
 _FAR_FUTURE_TS = pd.Timestamp("2262-04-11 23:47:16.854775+00:00")
+_TARGET_R_TOLERANCE = 1e-6
 
 try:  # T1 contract models may not be present on intermediate branches.
     from options_helper.schemas.strategy_modeling_contracts import (
@@ -65,6 +67,14 @@ class StrategyPortfolioLedgerResult:
 
 
 @dataclass(frozen=True)
+class StrategyPortfolioTargetSubset:
+    target_label: str | None
+    target_r: float | None
+    selection_source: str
+    trade_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class _OpenPosition:
     trade_id: str
     symbol: str
@@ -87,6 +97,7 @@ class _TradeRecord:
     exit_ts: object | None
     status: str
     entry_price: object
+    target_price: object | None
     exit_price: object | None
     initial_risk: object
 
@@ -367,6 +378,103 @@ def build_strategy_portfolio_ledger(
     )
 
 
+def select_portfolio_trade_subset(
+    trades: Iterable[Mapping[str, Any] | object],
+    *,
+    preferred_target_label: str | None = None,
+    preferred_target_r: float | None = None,
+) -> StrategyPortfolioTargetSubset:
+    """Select one deterministic target subset for portfolio construction."""
+
+    parsed = _parse_trade_simulations(trades)
+    all_ids = tuple(trade.trade_id for trade in parsed)
+    if not parsed:
+        return StrategyPortfolioTargetSubset(
+            target_label=_normalize_target_label(preferred_target_label),
+            target_r=_normalize_target_r(preferred_target_r),
+            selection_source="empty",
+            trade_ids=(),
+        )
+
+    normalized_label = _normalize_target_label(preferred_target_label)
+    normalized_target_r = _normalize_target_r(preferred_target_r)
+
+    if normalized_label is not None:
+        matched = tuple(
+            trade.trade_id for trade in parsed if _trade_matches_target(trade, target_label=normalized_label, target_r=None)
+        )
+        if matched:
+            matched_ids = set(matched)
+            inferred_target_r = normalized_target_r
+            if inferred_target_r is None:
+                for trade in parsed:
+                    if trade.trade_id not in matched_ids:
+                        continue
+                    inferred_target_r = _trade_target_r(trade)
+                    if inferred_target_r is not None:
+                        break
+            return StrategyPortfolioTargetSubset(
+                target_label=normalized_label,
+                target_r=inferred_target_r,
+                selection_source="preferred_target_label",
+                trade_ids=matched,
+            )
+
+    if normalized_target_r is not None:
+        matched = tuple(
+            trade.trade_id
+            for trade in parsed
+            if _trade_matches_target(trade, target_label=None, target_r=normalized_target_r)
+        )
+        if matched:
+            matched_ids = set(matched)
+            inferred_label: str | None = None
+            for trade in parsed:
+                if trade.trade_id not in matched_ids:
+                    continue
+                inferred_label = _trade_target_label(trade)
+                if inferred_label is not None:
+                    break
+            return StrategyPortfolioTargetSubset(
+                target_label=inferred_label,
+                target_r=normalized_target_r,
+                selection_source="preferred_target_r",
+                trade_ids=matched,
+            )
+
+    inferred_label, inferred_target_r = _infer_first_target(parsed)
+    if inferred_label is None and inferred_target_r is None:
+        return StrategyPortfolioTargetSubset(
+            target_label=normalized_label,
+            target_r=normalized_target_r,
+            selection_source="all_trades",
+            trade_ids=all_ids,
+        )
+
+    matched = tuple(
+        trade.trade_id
+        for trade in parsed
+        if _trade_matches_target(
+            trade,
+            target_label=inferred_label,
+            target_r=inferred_target_r,
+        )
+    )
+    if not matched:
+        return StrategyPortfolioTargetSubset(
+            target_label=normalized_label,
+            target_r=normalized_target_r,
+            selection_source="all_trades",
+            trade_ids=all_ids,
+        )
+    return StrategyPortfolioTargetSubset(
+        target_label=inferred_label,
+        target_r=inferred_target_r,
+        selection_source="inferred_first_target",
+        trade_ids=matched,
+    )
+
+
 def _skip_reason_for_trade(trade: _TradeRecord) -> PortfolioSkipReason | None:
     if trade.status != "closed":
         return "non_closed_trade_status"
@@ -405,6 +513,7 @@ def _parse_trade_simulations(
                         "exit_ts": payload.exit_ts,
                         "status": payload.status,
                         "entry_price": payload.entry_price,
+                        "target_price": payload.target_price,
                         "exit_price": payload.exit_price,
                         "initial_risk": payload.initial_risk,
                     }
@@ -424,6 +533,7 @@ def _parse_trade_simulations(
                         "exit_ts": model.exit_ts,
                         "status": model.status,
                         "entry_price": model.entry_price,
+                        "target_price": model.target_price,
                         "exit_price": model.exit_price,
                         "initial_risk": model.initial_risk,
                     }
@@ -445,6 +555,7 @@ def _trade_record_from_mapping(payload: object) -> _TradeRecord:
         exit_ts=row.get("exit_ts"),
         status=str(row.get("status", "")).strip().lower(),
         entry_price=row.get("entry_price"),
+        target_price=row.get("target_price"),
         exit_price=row.get("exit_price"),
         initial_risk=row.get("initial_risk"),
     )
@@ -483,6 +594,113 @@ def _is_finite_positive(value: object) -> bool:
 
 def _normalize_symbol(value: object) -> str:
     return str(value or "").strip().upper()
+
+
+def _normalize_target_label(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    match = re.match(r"^([0-9]+(?:\.[0-9]+)?)\s*[Rr]$", text)
+    if match is None:
+        return None
+    target_r = _normalize_target_r(match.group(1))
+    if target_r is None:
+        return None
+    tenths = round(target_r * 10.0)
+    if abs(target_r - (tenths / 10.0)) <= _TARGET_R_TOLERANCE:
+        return f"{tenths / 10.0:.1f}R"
+    return f"{target_r:.4f}".rstrip("0").rstrip(".") + "R"
+
+
+def _normalize_target_r(value: object) -> float | None:
+    try:
+        number = float(value)
+    except Exception:  # noqa: BLE001
+        return None
+    if not math.isfinite(number) or number <= 0.0:
+        return None
+    return number
+
+
+def _trade_target_label(trade: _TradeRecord) -> str | None:
+    _, separator, suffix = str(trade.trade_id).rpartition(":")
+    if not separator:
+        return None
+    return _normalize_target_label(suffix)
+
+
+def _trade_target_r(trade: _TradeRecord) -> float | None:
+    entry_price = _normalize_target_r(trade.entry_price)
+    target_price = _normalize_target_r(trade.target_price)
+    initial_risk = _normalize_target_r(trade.initial_risk)
+    if entry_price is None or target_price is None or initial_risk is None:
+        return None
+    if initial_risk <= _EPSILON:
+        return None
+
+    direction = str(trade.direction).strip().lower()
+    if direction == "long":
+        target_r = (target_price - entry_price) / initial_risk
+    elif direction == "short":
+        target_r = (entry_price - target_price) / initial_risk
+    else:
+        return None
+
+    if not math.isfinite(target_r) or target_r <= _EPSILON:
+        return None
+    return target_r
+
+
+def _trade_matches_target(
+    trade: _TradeRecord,
+    *,
+    target_label: str | None,
+    target_r: float | None,
+) -> bool:
+    trade_label = _trade_target_label(trade)
+    if target_label is not None and trade_label is not None and trade_label != target_label:
+        return False
+
+    trade_target_r = _trade_target_r(trade)
+    if target_r is not None and trade_target_r is not None:
+        if abs(trade_target_r - target_r) > _TARGET_R_TOLERANCE:
+            return False
+    elif target_r is not None and target_label is None:
+        return False
+
+    if target_label is not None and trade_label is None and target_r is None:
+        return False
+    return True
+
+
+def _infer_first_target(trades: list[_TradeRecord]) -> tuple[str | None, float | None]:
+    candidates: list[tuple[float, str | None]] = []
+    for trade in trades:
+        target_r = _trade_target_r(trade)
+        if target_r is None:
+            continue
+        candidates.append((target_r, _trade_target_label(trade)))
+
+    if candidates:
+        min_target_r = min(target_r for target_r, _ in candidates)
+        labels = sorted(
+            {
+                label
+                for target_r, label in candidates
+                if label is not None and abs(target_r - min_target_r) <= _TARGET_R_TOLERANCE
+            }
+        )
+        target_label = labels[0] if labels else None
+        return (target_label, min_target_r)
+
+    labels = sorted({label for label in (_trade_target_label(trade) for trade in trades) if label is not None})
+    if labels:
+        inferred_label = labels[0]
+        inferred_target_r = _normalize_target_r(inferred_label.rstrip("Rr"))
+        return (inferred_label, inferred_target_r)
+    return (None, None)
 
 
 def _build_equity_point(
@@ -525,5 +743,7 @@ __all__ = [
     "StrategyPortfolioLedgerResult",
     "StrategyPortfolioLedgerRow",
     "StrategyPortfolioEquityPoint",
+    "StrategyPortfolioTargetSubset",
     "build_strategy_portfolio_ledger",
+    "select_portfolio_trade_subset",
 ]

@@ -16,14 +16,21 @@ from options_helper.analysis.strategy_features import (
     label_bars_since_swing_bucket,
     parse_strategy_feature_config,
 )
-from options_helper.analysis.strategy_metrics import StrategyMetricsResult, compute_strategy_metrics
+from options_helper.analysis.strategy_metrics import (
+    StrategyMetricsResult,
+    compute_strategy_metrics,
+    compute_strategy_target_hit_rates,
+    serialize_strategy_metrics_result,
+)
 from options_helper.analysis.strategy_modeling_contracts import parse_strategy_trade_simulations
 from options_helper.analysis.strategy_modeling_filters import apply_entry_filters
 from options_helper.analysis.strategy_modeling_policy import parse_strategy_modeling_policy_config
 from options_helper.analysis.strategy_portfolio import (
     StrategyPortfolioLedgerResult,
     StrategyPortfolioLedgerRow,
+    StrategyPortfolioTargetSubset,
     build_strategy_portfolio_ledger,
+    select_portfolio_trade_subset,
 )
 from options_helper.analysis.strategy_signals import build_strategy_signal_events
 from options_helper.analysis.strategy_simulator import (
@@ -384,10 +391,10 @@ class StrategyModelingService:
             and bool(policy.require_intraday_bars)
             and intraday.preflight.is_blocked
         )
+        target_ladder = tuple(request.target_ladder) if request.target_ladder is not None else None
         if block_simulation:
             trade_simulations: list[StrategyTradeSimulation] = []
         else:
-            target_ladder = tuple(request.target_ladder) if request.target_ladder is not None else None
             trade_simulations = self.trade_simulator(
                 sorted_events,
                 intraday.bars_by_symbol,
@@ -396,21 +403,37 @@ class StrategyModelingService:
                 target_ladder=target_ladder,
             )
         sorted_trades = tuple(sorted(trade_simulations, key=_trade_sort_key))
+        portfolio_subset = _select_portfolio_target_subset(
+            sorted_trades,
+            target_ladder=target_ladder,
+        )
+        subset_ids = set(portfolio_subset.trade_ids)
+        portfolio_trades = tuple(trade for trade in sorted_trades if trade.trade_id in subset_ids)
 
         portfolio = self.portfolio_builder(
-            sorted_trades,
+            portfolio_trades,
             starting_capital=float(request.starting_capital),
             policy=policy,
             max_concurrent_positions=request.max_concurrent_positions,
         )
-        metrics = self.metrics_computer(
-            sorted_trades,
+        portfolio_metrics_result = self.metrics_computer(
+            portfolio_trades,
             portfolio.equity_curve,
             starting_capital=float(request.starting_capital),
         )
-        directional_metrics = _build_directional_metrics(sorted_trades, metrics=metrics)
+        target_hit_rates = tuple(compute_strategy_target_hit_rates(sorted_trades))
+        directional_metrics = _build_directional_metrics(
+            all_trades=sorted_trades,
+            portfolio_trades=portfolio_trades,
+            portfolio_subset=portfolio_subset,
+            portfolio_builder=self.portfolio_builder,
+            metrics_computer=self.metrics_computer,
+            policy=policy,
+            starting_capital=float(request.starting_capital),
+            max_concurrent_positions=request.max_concurrent_positions,
+        )
         segmentation = self.segmentation_aggregator(
-            sorted_trades,
+            portfolio_trades,
             segment_context=sorted_segment_context,
             config=segmentation_config,
         )
@@ -443,9 +466,9 @@ class StrategyModelingService:
             equity_curve=tuple(portfolio.equity_curve),
             accepted_trade_ids=tuple(portfolio.accepted_trade_ids),
             skipped_trade_ids=tuple(portfolio.skipped_trade_ids),
-            portfolio_metrics=metrics.portfolio_metrics,
-            target_hit_rates=tuple(metrics.target_hit_rates),
-            expectancy_dollars=metrics.expectancy_dollars,
+            portfolio_metrics=portfolio_metrics_result.portfolio_metrics,
+            target_hit_rates=target_hit_rates,
+            expectancy_dollars=portfolio_metrics_result.expectancy_dollars,
             segmentation=segmentation,
             segment_records=segment_records,
             segment_context=sorted_segment_context,
@@ -718,25 +741,125 @@ def _build_default_filter_summary(
     }
 
 
-def _build_directional_metrics(
+def _select_portfolio_target_subset(
     trades: Sequence[StrategyTradeSimulation],
     *,
-    metrics: StrategyMetricsResult,
+    target_ladder: Sequence[StrategyRTarget] | None,
+) -> StrategyPortfolioTargetSubset:
+    preferred_target_label: str | None = None
+    preferred_target_r: float | None = None
+    if target_ladder:
+        first = target_ladder[0]
+        preferred_target_label = str(first.label).strip() or None
+        preferred_target_r = float(first.target_r)
+    return select_portfolio_trade_subset(
+        trades,
+        preferred_target_label=preferred_target_label,
+        preferred_target_r=preferred_target_r,
+    )
+
+
+def _build_directional_metrics(
+    *,
+    all_trades: Sequence[StrategyTradeSimulation],
+    portfolio_trades: Sequence[StrategyTradeSimulation],
+    portfolio_subset: StrategyPortfolioTargetSubset,
+    portfolio_builder: StrategyPortfolioBuilder,
+    metrics_computer: StrategyMetricsComputer,
+    policy: StrategyModelingPolicyConfig,
+    starting_capital: float,
+    max_concurrent_positions: int | None,
 ) -> dict[str, Any]:
-    closed_trades = [trade for trade in trades if _is_closed_trade(trade)]
-    long_count = sum(1 for trade in closed_trades if str(trade.direction) == "long")
-    short_count = sum(1 for trade in closed_trades if str(trade.direction) == "short")
+    combined_trades = tuple(portfolio_trades)
+    long_trades = tuple(trade for trade in combined_trades if str(trade.direction).strip().lower() == "long")
+    short_trades = tuple(trade for trade in combined_trades if str(trade.direction).strip().lower() == "short")
+
+    closed_combined = sum(1 for trade in combined_trades if _is_closed_trade(trade))
+    closed_long = sum(1 for trade in long_trades if _is_closed_trade(trade))
+    closed_short = sum(1 for trade in short_trades if _is_closed_trade(trade))
+
+    combined_payload = _run_directional_counterfactual(
+        combined_trades,
+        portfolio_builder=portfolio_builder,
+        metrics_computer=metrics_computer,
+        policy=policy,
+        starting_capital=starting_capital,
+        max_concurrent_positions=max_concurrent_positions,
+    )
+    long_payload = _run_directional_counterfactual(
+        long_trades,
+        portfolio_builder=portfolio_builder,
+        metrics_computer=metrics_computer,
+        policy=policy,
+        starting_capital=starting_capital,
+        max_concurrent_positions=max_concurrent_positions,
+    )
+    short_payload = _run_directional_counterfactual(
+        short_trades,
+        portfolio_builder=portfolio_builder,
+        metrics_computer=metrics_computer,
+        policy=policy,
+        starting_capital=starting_capital,
+        max_concurrent_positions=max_concurrent_positions,
+    )
+
     return {
+        "counts": {
+            "all_simulated_trade_count": int(len(all_trades)),
+            "portfolio_subset_trade_count": int(len(combined_trades)),
+            "portfolio_subset_closed_trade_count": int(closed_combined),
+            "portfolio_subset_long_trade_count": int(len(long_trades)),
+            "portfolio_subset_long_closed_trade_count": int(closed_long),
+            "portfolio_subset_short_trade_count": int(len(short_trades)),
+            "portfolio_subset_short_closed_trade_count": int(closed_short),
+        },
+        "portfolio_target": {
+            "target_label": portfolio_subset.target_label,
+            "target_r": portfolio_subset.target_r,
+            "selection_source": portfolio_subset.selection_source,
+        },
         "combined": {
-            "trade_count": int(metrics.portfolio_metrics.trade_count),
+            **combined_payload,
         },
         "long_only": {
-            "trade_count": long_count,
+            **long_payload,
         },
         "short_only": {
-            "trade_count": short_count,
+            **short_payload,
         },
     }
+
+
+def _run_directional_counterfactual(
+    trades: Sequence[StrategyTradeSimulation],
+    *,
+    portfolio_builder: StrategyPortfolioBuilder,
+    metrics_computer: StrategyMetricsComputer,
+    policy: StrategyModelingPolicyConfig,
+    starting_capital: float,
+    max_concurrent_positions: int | None,
+) -> dict[str, Any]:
+    portfolio = portfolio_builder(
+        trades,
+        starting_capital=starting_capital,
+        policy=policy,
+        max_concurrent_positions=max_concurrent_positions,
+    )
+    metrics = metrics_computer(
+        trades,
+        portfolio.equity_curve,
+        starting_capital=starting_capital,
+    )
+    payload = serialize_strategy_metrics_result(metrics)
+    payload.update(
+        {
+            "simulated_trade_count": int(len(trades)),
+            "closed_trade_count": int(sum(1 for trade in trades if _is_closed_trade(trade))),
+            "accepted_trade_count": int(len(portfolio.accepted_trade_ids)),
+            "skipped_trade_count": int(len(portfolio.skipped_trade_ids)),
+        }
+    )
+    return payload
 
 
 def _segment_records_from_segmentation(

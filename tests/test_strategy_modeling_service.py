@@ -15,7 +15,7 @@ from options_helper.data.strategy_modeling_io import (
     StrategyModelingIntradayPreflightResult,
     StrategyModelingUniverseLoadResult,
 )
-from options_helper.schemas.strategy_modeling_contracts import StrategySignalEvent
+from options_helper.schemas.strategy_modeling_contracts import StrategySignalEvent, StrategyTradeSimulation
 
 
 def _sample_daily_candles() -> pd.DataFrame:
@@ -250,3 +250,184 @@ def test_strategy_modeling_service_enters_at_regular_open_after_daily_confirmati
     trade = result.trade_simulations[0]
     assert trade.entry_ts == pd.Timestamp("2026-01-15T14:30:00Z").to_pydatetime()
     assert float(trade.entry_price) == 694.57
+
+
+def test_strategy_modeling_service_directional_counterfactuals_use_portfolio_target_subset() -> None:
+    """Portfolio metrics/ledger/segmentation use one target subset while ladder stats stay global."""
+
+    def _stub_universe(*, database_path=None):  # noqa: ANN001,ANN202
+        return StrategyModelingUniverseLoadResult(
+            symbols=["SPY", "QQQ"],
+            notes=["stub:universe"],
+            database_path=Path("/tmp/strategy-modeling-test.duckdb"),
+            database_exists=True,
+        )
+
+    def _stub_daily_loader(symbols, **_):  # noqa: ANN001,ANN202
+        requested = [str(symbol).upper() for symbol in symbols]
+        candles_by_symbol = {symbol: _sample_daily_candles() for symbol in requested if symbol in {"SPY", "QQQ"}}
+        source_by_symbol = {symbol: "adjusted" for symbol in candles_by_symbol}
+        missing = [symbol for symbol in requested if symbol not in candles_by_symbol]
+        return StrategyModelingDailyLoadResult(
+            candles_by_symbol=candles_by_symbol,
+            source_by_symbol=source_by_symbol,
+            skipped_symbols=[],
+            missing_symbols=missing,
+            notes=["stub:daily"],
+        )
+
+    def _stub_intraday_loader(required_sessions_by_symbol, **_):  # noqa: ANN001,ANN202
+        coverage_by_symbol: dict[str, IntradayCoverageBySymbol] = {}
+        bars_by_symbol: dict[str, pd.DataFrame] = {}
+        for symbol, days in required_sessions_by_symbol.items():
+            required_days = tuple(sorted(set(days)))
+            coverage_by_symbol[symbol] = IntradayCoverageBySymbol(
+                symbol=symbol,
+                required_days=required_days,
+                covered_days=required_days,
+                missing_days=(),
+            )
+            bars_by_symbol[symbol] = _sample_intraday_bars()
+
+        preflight = StrategyModelingIntradayPreflightResult(
+            require_intraday_bars=True,
+            coverage_by_symbol=coverage_by_symbol,
+            blocked_symbols=[],
+            notes=["stub:preflight"],
+        )
+        return StrategyModelingIntradayLoadResult(
+            bars_by_symbol=bars_by_symbol,
+            preflight=preflight,
+            notes=["stub:intraday"],
+        )
+
+    def _stub_signal_builder(*_args, symbol=None, timeframe="1d", **_kwargs):  # noqa: ANN001,ANN202
+        normalized = str(symbol or "").upper()
+        direction = "long" if normalized == "SPY" else "short"
+        stop_price = 9.0 if direction == "long" else 21.0
+        base_ts = pd.Timestamp("2026-01-12T14:30:00Z") if normalized == "SPY" else pd.Timestamp("2026-07-13T14:30:00Z")
+        return [
+            StrategySignalEvent(
+                event_id=f"evt-{normalized.lower()}",
+                strategy="sfp",
+                symbol=normalized,
+                timeframe=str(timeframe or "1d"),
+                direction=direction,  # type: ignore[arg-type]
+                signal_ts=base_ts.to_pydatetime(),
+                signal_confirmed_ts=base_ts.to_pydatetime(),
+                entry_ts=base_ts.to_pydatetime(),
+                entry_price_source="first_tradable_bar_open_after_signal_confirmed_ts",
+                stop_price=stop_price,
+                notes=[],
+            )
+        ]
+
+    def _stub_trade_simulator(events, _bars_by_symbol, *, target_ladder=None, **_):  # noqa: ANN001,ANN202
+        ladder = tuple(target_ladder or build_r_target_ladder(min_target_tenths=10, max_target_tenths=20, step_tenths=10))
+        out: list[StrategyTradeSimulation] = []
+        for event in events:
+            direction = str(event.direction).strip().lower()
+            entry_price = 10.0 if direction == "long" else 20.0
+            initial_risk = 1.0
+            stop_price = entry_price - initial_risk if direction == "long" else entry_price + initial_risk
+            entry_ts = pd.Timestamp(event.entry_ts)
+            exit_ts = (entry_ts + pd.Timedelta(days=30)).to_pydatetime()
+
+            for target in ladder:
+                target_r = float(target.target_r)
+                target_price = entry_price + target_r if direction == "long" else entry_price - target_r
+
+                if direction == "long" and target.label == "1.0R":
+                    exit_price = target_price
+                    exit_reason = "target_hit"
+                    realized_r = 1.0
+                elif direction == "long":
+                    exit_price = stop_price
+                    exit_reason = "stop_hit"
+                    realized_r = -1.0
+                elif target.label == "1.0R":
+                    exit_price = stop_price
+                    exit_reason = "stop_hit"
+                    realized_r = -1.0
+                else:
+                    exit_price = target_price
+                    exit_reason = "target_hit"
+                    realized_r = target_r
+
+                out.append(
+                    StrategyTradeSimulation(
+                        trade_id=f"{event.event_id}:{target.label}",
+                        event_id=event.event_id,
+                        strategy=event.strategy,
+                        symbol=event.symbol,
+                        direction=event.direction,
+                        signal_ts=event.signal_ts,
+                        signal_confirmed_ts=event.signal_confirmed_ts,
+                        entry_ts=entry_ts.to_pydatetime(),
+                        entry_price_source=event.entry_price_source,
+                        entry_price=entry_price,
+                        stop_price=stop_price,
+                        target_price=target_price,
+                        exit_ts=exit_ts,
+                        exit_price=exit_price,
+                        status="closed",
+                        exit_reason=exit_reason,  # type: ignore[arg-type]
+                        reject_code=None,
+                        initial_risk=initial_risk,
+                        realized_r=realized_r,
+                        mae_r=min(0.0, realized_r),
+                        mfe_r=max(0.0, realized_r),
+                        holding_bars=1,
+                        gap_fill_applied=False,
+                    )
+                )
+        return out
+
+    service = strategy_modeling.build_strategy_modeling_service(
+        list_universe_loader=_stub_universe,
+        daily_loader=_stub_daily_loader,
+        intraday_loader=_stub_intraday_loader,
+        feature_computer=lambda *_args, **_kwargs: pd.DataFrame(),
+        signal_builder=_stub_signal_builder,
+        trade_simulator=_stub_trade_simulator,
+    )
+
+    request = StrategyModelingRequest(
+        strategy="sfp",
+        symbols=("SPY", "QQQ"),
+        target_ladder=build_r_target_ladder(min_target_tenths=10, max_target_tenths=20, step_tenths=10),
+        max_hold_bars=2,
+    )
+
+    result = service.run(request)
+
+    assert len(result.trade_simulations) == 4
+    assert result.portfolio_metrics.trade_count == 2
+    assert set(result.accepted_trade_ids) == {"evt-spy:1.0R", "evt-qqq:1.0R"}
+    assert result.segmentation.base_trade_count == 2
+
+    ladder_by_label = {row.target_label: row for row in result.target_hit_rates}
+    assert set(ladder_by_label) == {"1.0R", "2.0R"}
+    assert ladder_by_label["1.0R"].trade_count == 2
+    assert ladder_by_label["2.0R"].trade_count == 2
+    assert ladder_by_label["1.0R"].hit_count == 1
+    assert ladder_by_label["2.0R"].hit_count == 1
+
+    directional = result.directional_metrics
+    assert {"counts", "portfolio_target", "combined", "long_only", "short_only"}.issubset(set(directional))
+    assert directional["counts"]["all_simulated_trade_count"] == 4
+    assert directional["counts"]["portfolio_subset_trade_count"] == 2
+    assert directional["portfolio_target"]["target_label"] == "1.0R"
+    assert directional["portfolio_target"]["selection_source"] == "preferred_target_label"
+
+    assert directional["combined"]["trade_count"] == 2
+    assert directional["long_only"]["trade_count"] == 1
+    assert directional["short_only"]["trade_count"] == 1
+    assert directional["combined"]["trade_count"] == result.portfolio_metrics.trade_count
+
+    long_return = directional["long_only"]["portfolio_metrics"]["total_return_pct"]
+    short_return = directional["short_only"]["portfolio_metrics"]["total_return_pct"]
+    combined_return = directional["combined"]["portfolio_metrics"]["total_return_pct"]
+    assert long_return > 0.0
+    assert short_return < 0.0
+    assert long_return != combined_return
