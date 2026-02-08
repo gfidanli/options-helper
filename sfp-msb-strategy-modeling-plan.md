@@ -211,9 +211,15 @@ T0 ──┬── T1 ──┬── T4A ──┬── T5 ── T6 ── T7
 - **location**: `tests/test_strategy_modeling*.py`
 - **description**: Add deterministic offline tests for end-to-end engine behavior, especially anti-lookahead (next-bar-open anchor + confirmation lag), required-intraday gating, gap policy, overlap policy, and service parity.
 - **validation**: New analysis tests pass deterministically offline.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added deterministic offline regression suite `tests/test_strategy_modeling_regression.py` covering confirmation-lag anti-lookahead semantics, next-bar-open anchor parity between CLI scan artifacts and direct analysis outputs, required-intraday gating behavior, and gap/overlap policy regressions in portfolio ledger construction.
+  - Kept lookahead/policy assertions explicit (entry anchor timestamp/price, 1-day forward-return anchor math, pre-confirmation swing unavailability, `one_open_per_symbol` skip reason, and `realized_pnl < -risk_amount` gap-loss proxy).
+  - Validation: `./.venv/bin/python -m pytest tests/test_strategy_modeling_regression.py tests/test_strategy_modeling_policy.py -q` (10 passed).
+  - Errors: none.
 - **files edited/created**:
+  - `tests/test_strategy_modeling_regression.py`
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ### T14B: MSB Parity Regression Suite
 - **depends_on**: [T4B, T14]
