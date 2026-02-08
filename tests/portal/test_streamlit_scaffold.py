@@ -20,6 +20,7 @@ PAGE_FILES = [
     STREAMLIT_DIR / "pages" / "08_Coverage.py",
     STREAMLIT_DIR / "pages" / "09_SFP.py",
     STREAMLIT_DIR / "pages" / "10_MSB.py",
+    STREAMLIT_DIR / "pages" / "11_0DTE_Put_Study.py",
 ]
 
 
@@ -44,6 +45,7 @@ def test_streamlit_module_import_smoke() -> None:
     importlib.import_module("apps.streamlit.components.coverage_page")
     importlib.import_module("apps.streamlit.components.sfp_page")
     importlib.import_module("apps.streamlit.components.msb_page")
+    importlib.import_module("apps.streamlit.components.zero_dte_put_page")
 
     for page_file in PAGE_FILES:
         runpy.run_path(str(page_file), run_name=f"__streamlit_page_{page_file.stem}__")

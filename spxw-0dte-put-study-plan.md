@@ -248,18 +248,20 @@ T12,T13,T15,T16 -> T17 -> T18
 - **location**: `apps/streamlit/components/zero_dte_put_page.py`
 - **description**: Add cached query helpers for probability surfaces, strike tables, calibration curves, and backtest summaries from persisted artifacts/DuckDB with clear fallback notes for missing data. Forward-test panels should be optional/empty-state friendly until data exists.
 - **validation**: Portal query tests verify shape/contracts and missing-table/file behavior with temporary fixtures.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added read-only Streamlit artifact loader module with cached helpers for probability surfaces, strike ladders, walk-forward summaries, calibration/reliability bins (from finalized forward snapshots), and forward snapshot tables. Helpers now normalize nested anchor metadata, support decision/risk/strike/fill filters, and return explicit notes for missing directories/files or malformed JSON/JSONL rows without write paths.
+- **files edited/created**: `apps/streamlit/components/zero_dte_put_page.py`, `tests/portal/test_zero_dte_put_page.py`, `spxw-0dte-put-study-plan.md`
+- **gotchas/errors**: Current artifact schema does not include realized walk-forward breach labels directly in study JSON, so calibration curves are computed from finalized forward snapshot rows and clearly note when reconciliation data is unavailable.
 
 ### T15: Add Streamlit Page for 0DTE Put Study
 - **depends_on**: [T12, T14]
 - **location**: `apps/streamlit/pages/11_0DTE_Put_Study.py`, `apps/streamlit/streamlit_app.py`
 - **description**: Implement dashboard with controls for symbol, decision mode/time, risk tier, strike distance, and fill assumptions; display current-state probability table, recommended strike ladder, calibration/reliability charts, and walk-forward/forward-test tabs with side-by-side `hold_to_close` and `adaptive_exit` results plus clear missing-data states.
 - **validation**: Streamlit smoke/import tests and page-level tests confirm controls/sections render and remain read-only.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added Streamlit page `11_0DTE_Put_Study.py` with filters for symbol, decision mode/time, risk tier, strike distance, and fill assumptions; implemented tabs for current-state probabilities, recommended ladders, calibration/reliability, and combined walk-forward + forward-test views. Walk-forward section now renders side-by-side `hold_to_close` versus `adaptive_exit` summaries with explicit empty states, and the page is linked from the portal home scaffold.
+- **files edited/created**: `apps/streamlit/pages/11_0DTE_Put_Study.py`, `apps/streamlit/streamlit_app.py`, `tests/portal/test_streamlit_scaffold.py`, `tests/portal/test_zero_dte_put_page.py`, `spxw-0dte-put-study-plan.md`
+- **gotchas/errors**: Owned zero-DTE Streamlit files were not present initially in this branch, so page/component/test files were created from scratch and aligned to existing portal scaffolding/import-smoke conventions.
 
 ### T16: Expand Core Automated Tests (Analysis + Backtest + Artifacts)
 - **depends_on**: [T10, T11A]
