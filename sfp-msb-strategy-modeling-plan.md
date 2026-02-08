@@ -262,9 +262,16 @@ T0 ──┬── T1 ──┬── T4A ──┬── T5 ── T6 ── T7
 - **location**: `tests/test_strategy_modeling_cli.py`
 - **description**: Validate command execution, filter behavior, policy overrides, artifacts, and summary contracts.
 - **validation**: CLI integration tests pass with fixture-backed offline storage.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Expanded deterministic offline CLI integration coverage for `technicals strategy-model` execution path, universe/include/exclude filter behavior, policy override parsing, artifact write toggles, and intraday preflight fast-fail behavior.
+  - Added artifact/summary contract assertions for `summary.json` top-level keys, summary counts, policy metadata fields, disclaimer text, and CSV/Markdown artifact presence/content.
+  - Kept tests branch-compatible and offline by using local fixture namespaces for strategy-modeling preflight/metric payloads when optional strategy-modeling schema/io modules are not present.
+  - Validation: `./.venv/bin/python -m pytest tests/test_strategy_modeling_cli.py -q` (8 passed).
+  - Errors: initial collection failed from missing `options_helper.data.strategy_modeling_io` and `options_helper.schemas.strategy_modeling_contracts` imports on this branch; resolved by replacing hard imports with local deterministic fixture objects.
 - **files edited/created**:
+  - `tests/test_strategy_modeling_cli.py`
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ### T16: Streamlit Integration Tests
 - **depends_on**: [T13, T14]
