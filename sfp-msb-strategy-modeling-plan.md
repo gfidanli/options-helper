@@ -319,9 +319,20 @@ T0 ──┬── T1 ──┬── T4A ──┬── T5 ── T6 ── T7
 - **location**: `apps/streamlit/pages/11_Strategy_Modeling.py`, `apps/streamlit/streamlit_app.py`
 - **description**: Create dashboard with sidebar inputs: strategy, date range, intraday timeframe/source, starting capital, risk %, gap policy, max-hold, per-symbol overlap policy, ticker/segment filters. Page must require intraday coverage before enabling run actions (show blocking warning + missing coverage details). Main panels: key metrics, R-ladder chart/table, equity curve, segmented breakdowns, and trade log with realized `R` (including `< -1.0R` cases).
 - **validation**: Portal scaffold tests verify page import/render, required controls/sections, and blocked-run behavior when intraday coverage is missing.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added `11_Strategy_Modeling.py` Streamlit page with required sidebar controls (strategy, date range, intraday timeframe/source, starting capital, risk %, gap policy, max-hold, one-open-per-symbol policy, ticker filters, and segment filters).
+  - Wired page preflight coverage gating to T12 payload/blocking semantics via `load_strategy_modeling_data_payload(...)`; run action is disabled when `blocking.is_blocked=true`, and missing-coverage rows render explicitly.
+  - Added read-only run action flow using the shared modeling service seam and rendered required sections: key metrics, R-ladder chart/table, equity curve, segmented breakdowns, and trade log with explicit `< -1.0R` warning handling.
+  - Registered the page link in `streamlit_app.py` and extended portal tests for scaffold/import plus blocked-run behavior.
+  - Validation: `/Volumes/develop/options-helper/.venv/bin/python -m pytest tests/portal/test_strategy_modeling_page.py tests/portal/test_streamlit_scaffold.py::test_streamlit_scaffold_files_exist` (3 passed).
+  - Errors: none.
 - **files edited/created**:
+  - `apps/streamlit/pages/11_Strategy_Modeling.py`
+  - `apps/streamlit/streamlit_app.py`
+  - `tests/portal/test_streamlit_scaffold.py`
+  - `tests/portal/test_strategy_modeling_page.py`
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ### T14: Core Analysis Regression Suite
 - **depends_on**: [T3, T4A, T5, T6, T7, T8, T8A]
