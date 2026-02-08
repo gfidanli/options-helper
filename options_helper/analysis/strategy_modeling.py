@@ -1,12 +1,56 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from datetime import date
 import math
+from pathlib import Path
 from statistics import mean, pstdev
-from typing import Any, Iterable, Mapping
+from typing import Any
 
+import pandas as pd
+
+from options_helper.analysis.strategy_features import (
+    StrategyFeatureConfig,
+    compute_strategy_features,
+    label_bars_since_swing_bucket,
+    parse_strategy_feature_config,
+)
+from options_helper.analysis.strategy_metrics import StrategyMetricsResult, compute_strategy_metrics
 from options_helper.analysis.strategy_modeling_contracts import parse_strategy_trade_simulations
-from options_helper.schemas.strategy_modeling_contracts import SegmentDimension, StrategyTradeSimulation
+from options_helper.analysis.strategy_modeling_policy import parse_strategy_modeling_policy_config
+from options_helper.analysis.strategy_portfolio import (
+    StrategyPortfolioLedgerResult,
+    StrategyPortfolioLedgerRow,
+    build_strategy_portfolio_ledger,
+)
+from options_helper.analysis.strategy_signals import build_strategy_signal_events
+from options_helper.analysis.strategy_simulator import (
+    StrategyRTarget,
+    simulate_strategy_trade_paths,
+)
+from options_helper.data.strategy_modeling_io import (
+    AdjustedDataFallbackMode,
+    DailySourceMode,
+    StrategyModelingDailyLoadResult,
+    StrategyModelingIntradayLoadResult,
+    StrategyModelingIntradayPreflightResult,
+    StrategyModelingUniverseLoadResult,
+    build_required_intraday_sessions,
+    list_strategy_modeling_universe,
+    load_daily_ohlc_history,
+    load_required_intraday_bars,
+    normalize_symbol,
+)
+from options_helper.schemas.strategy_modeling_contracts import (
+    SegmentDimension,
+    StrategyPortfolioMetrics,
+    StrategyRLadderStat,
+    StrategySegmentRecord,
+    StrategySignalEvent,
+    StrategyTradeSimulation,
+)
+from options_helper.schemas.strategy_modeling_policy import StrategyModelingPolicyConfig
 
 _EPSILON = 1e-12
 
@@ -35,6 +79,12 @@ class StrategySegmentationConfig:
             raise ValueError("confidence_z_score must be finite and > 0")
         if not str(self.unknown_segment_value).strip():
             raise ValueError("unknown_segment_value must be non-empty")
+
+
+def parse_strategy_segmentation_config(
+    overrides: Mapping[str, Any] | None = None,
+) -> StrategySegmentationConfig:
+    return StrategySegmentationConfig(**dict(overrides or {}))
 
 
 @dataclass(frozen=True)
@@ -144,6 +194,497 @@ def aggregate_strategy_segmentation(
 
 def required_strategy_segment_dimensions() -> tuple[SegmentDimension, ...]:
     return _SEGMENT_DIMENSIONS
+
+
+StrategyUniverseLoader = Callable[..., StrategyModelingUniverseLoadResult]
+StrategyDailyLoader = Callable[..., StrategyModelingDailyLoadResult]
+StrategyRequiredSessionsBuilder = Callable[..., dict[str, list[date]]]
+StrategyIntradayLoader = Callable[..., StrategyModelingIntradayLoadResult]
+StrategyFeatureComputer = Callable[..., pd.DataFrame]
+StrategySignalBuilder = Callable[..., list[StrategySignalEvent]]
+StrategyTradeSimulator = Callable[..., list[StrategyTradeSimulation]]
+StrategyPortfolioBuilder = Callable[..., StrategyPortfolioLedgerResult]
+StrategyMetricsComputer = Callable[..., StrategyMetricsResult]
+StrategySegmentationAggregator = Callable[..., StrategySegmentationResult]
+
+
+@dataclass(frozen=True)
+class StrategyModelingRequest:
+    strategy: str
+    symbols: Sequence[str] | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    database_path: str | Path | None = None
+    intraday_dir: Path = Path("data/intraday")
+    intraday_timeframe: str = "1Min"
+    daily_interval: str = "1d"
+    signal_timeframe: str | None = "1d"
+    policy: StrategyModelingPolicyConfig | Mapping[str, Any] | None = None
+    feature_config: StrategyFeatureConfig | Mapping[str, Any] | None = None
+    segmentation_config: StrategySegmentationConfig | Mapping[str, Any] | None = None
+    adjusted_data_fallback_mode: AdjustedDataFallbackMode = "warn_and_skip_symbol"
+    signal_kwargs: Mapping[str, Any] | None = None
+    starting_capital: float = 10_000.0
+    max_concurrent_positions: int | None = None
+    max_hold_bars: int | None = None
+    target_ladder: Sequence[StrategyRTarget] | None = None
+    block_on_missing_intraday_coverage: bool = True
+
+    def __post_init__(self) -> None:
+        if not str(self.strategy).strip():
+            raise ValueError("strategy must be non-empty")
+        if not str(self.intraday_timeframe).strip():
+            raise ValueError("intraday_timeframe must be non-empty")
+        if not str(self.daily_interval).strip():
+            raise ValueError("daily_interval must be non-empty")
+        if not math.isfinite(float(self.starting_capital)) or float(self.starting_capital) <= 0.0:
+            raise ValueError("starting_capital must be > 0")
+
+
+@dataclass(frozen=True)
+class StrategyModelingRunResult:
+    strategy: str
+    policy: StrategyModelingPolicyConfig
+    feature_config: StrategyFeatureConfig
+    segmentation_config: StrategySegmentationConfig
+    requested_symbols: tuple[str, ...]
+    universe_symbols: tuple[str, ...]
+    modeled_symbols: tuple[str, ...]
+    skipped_symbols: tuple[str, ...]
+    missing_symbols: tuple[str, ...]
+    source_by_symbol: dict[str, DailySourceMode]
+    required_sessions_by_symbol: dict[str, tuple[date, ...]]
+    intraday_preflight: StrategyModelingIntradayPreflightResult
+    signal_events: tuple[StrategySignalEvent, ...]
+    trade_simulations: tuple[StrategyTradeSimulation, ...]
+    portfolio_ledger: tuple[StrategyPortfolioLedgerRow, ...]
+    equity_curve: tuple[Any, ...]
+    accepted_trade_ids: tuple[str, ...]
+    skipped_trade_ids: tuple[str, ...]
+    portfolio_metrics: StrategyPortfolioMetrics
+    target_hit_rates: tuple[StrategyRLadderStat, ...]
+    expectancy_dollars: float | None
+    segmentation: StrategySegmentationResult
+    segment_records: tuple[StrategySegmentRecord, ...]
+    segment_context: tuple[dict[str, str], ...]
+    notes: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def is_intraday_blocked(self) -> bool:
+        return self.intraday_preflight.is_blocked
+
+
+@dataclass(frozen=True)
+class StrategyModelingService:
+    list_universe_loader: StrategyUniverseLoader
+    daily_loader: StrategyDailyLoader
+    required_sessions_builder: StrategyRequiredSessionsBuilder
+    intraday_loader: StrategyIntradayLoader
+    feature_computer: StrategyFeatureComputer
+    signal_builder: StrategySignalBuilder
+    trade_simulator: StrategyTradeSimulator
+    portfolio_builder: StrategyPortfolioBuilder
+    metrics_computer: StrategyMetricsComputer
+    segmentation_aggregator: StrategySegmentationAggregator
+
+    def run(self, request: StrategyModelingRequest) -> StrategyModelingRunResult:
+        strategy = str(request.strategy).strip().lower()
+        policy = _resolve_policy_config(request.policy)
+        feature_config = _resolve_feature_config(request.feature_config)
+        segmentation_config = _resolve_segmentation_config(request.segmentation_config)
+        signal_kwargs = dict(request.signal_kwargs or {})
+
+        universe = self.list_universe_loader(database_path=request.database_path)
+        requested_symbols = _resolve_requested_symbols(
+            request.symbols,
+            universe_symbols=universe.symbols,
+        )
+
+        daily = self.daily_loader(
+            requested_symbols,
+            database_path=request.database_path,
+            policy=policy,
+            adjusted_data_fallback_mode=request.adjusted_data_fallback_mode,
+            start_date=request.start_date,
+            end_date=request.end_date,
+            interval=request.daily_interval,
+        )
+
+        required_sessions = _normalize_required_sessions(
+            self.required_sessions_builder(
+                daily.candles_by_symbol,
+                start_date=request.start_date,
+                end_date=request.end_date,
+            )
+        )
+        intraday = self.intraday_loader(
+            required_sessions,
+            intraday_dir=request.intraday_dir,
+            timeframe=request.intraday_timeframe,
+            require_intraday_bars=policy.require_intraday_bars,
+        )
+
+        events: list[StrategySignalEvent] = []
+        segment_context: list[dict[str, str]] = []
+
+        for symbol in sorted(daily.candles_by_symbol):
+            ohlc = _daily_candles_to_ohlc_frame(daily.candles_by_symbol[symbol])
+            if ohlc.empty:
+                continue
+
+            features = self.feature_computer(ohlc, config=feature_config)
+            symbol_events = self.signal_builder(
+                strategy,
+                ohlc,
+                symbol=symbol,
+                timeframe=request.signal_timeframe,
+                **signal_kwargs,
+            )
+            events.extend(symbol_events)
+            segment_context.extend(
+                _build_event_segment_context_rows(
+                    symbol=symbol,
+                    events=symbol_events,
+                    features=features,
+                    feature_config=feature_config,
+                    unknown_value=segmentation_config.unknown_segment_value,
+                )
+            )
+
+        sorted_events = tuple(sorted(events, key=_signal_event_sort_key))
+        sorted_segment_context = tuple(sorted(segment_context, key=lambda row: (row["event_id"], row["ticker"])))
+
+        block_simulation = (
+            bool(request.block_on_missing_intraday_coverage)
+            and bool(policy.require_intraday_bars)
+            and intraday.preflight.is_blocked
+        )
+        if block_simulation:
+            trade_simulations: list[StrategyTradeSimulation] = []
+        else:
+            target_ladder = tuple(request.target_ladder) if request.target_ladder is not None else None
+            trade_simulations = self.trade_simulator(
+                sorted_events,
+                intraday.bars_by_symbol,
+                policy=policy,
+                max_hold_bars=request.max_hold_bars,
+                target_ladder=target_ladder,
+            )
+        sorted_trades = tuple(sorted(trade_simulations, key=_trade_sort_key))
+
+        portfolio = self.portfolio_builder(
+            sorted_trades,
+            starting_capital=float(request.starting_capital),
+            policy=policy,
+            max_concurrent_positions=request.max_concurrent_positions,
+        )
+        metrics = self.metrics_computer(
+            sorted_trades,
+            portfolio.equity_curve,
+            starting_capital=float(request.starting_capital),
+        )
+        segmentation = self.segmentation_aggregator(
+            sorted_trades,
+            segment_context=sorted_segment_context,
+            config=segmentation_config,
+        )
+        segment_records = _segment_records_from_segmentation(segmentation)
+
+        notes = tuple(
+            [
+                *list(universe.notes),
+                *list(daily.notes),
+                *list(intraday.notes),
+            ]
+        )
+
+        return StrategyModelingRunResult(
+            strategy=strategy,
+            policy=policy,
+            feature_config=feature_config,
+            segmentation_config=segmentation_config,
+            requested_symbols=tuple(requested_symbols),
+            universe_symbols=tuple(universe.symbols),
+            modeled_symbols=tuple(sorted(daily.candles_by_symbol)),
+            skipped_symbols=tuple(daily.skipped_symbols),
+            missing_symbols=tuple(daily.missing_symbols),
+            source_by_symbol=dict(daily.source_by_symbol),
+            required_sessions_by_symbol=required_sessions,
+            intraday_preflight=intraday.preflight,
+            signal_events=sorted_events,
+            trade_simulations=sorted_trades,
+            portfolio_ledger=tuple(portfolio.ledger),
+            equity_curve=tuple(portfolio.equity_curve),
+            accepted_trade_ids=tuple(portfolio.accepted_trade_ids),
+            skipped_trade_ids=tuple(portfolio.skipped_trade_ids),
+            portfolio_metrics=metrics.portfolio_metrics,
+            target_hit_rates=tuple(metrics.target_hit_rates),
+            expectancy_dollars=metrics.expectancy_dollars,
+            segmentation=segmentation,
+            segment_records=segment_records,
+            segment_context=sorted_segment_context,
+            notes=notes,
+        )
+
+
+def build_strategy_modeling_service(
+    *,
+    list_universe_loader: StrategyUniverseLoader | None = None,
+    daily_loader: StrategyDailyLoader | None = None,
+    required_sessions_builder: StrategyRequiredSessionsBuilder | None = None,
+    intraday_loader: StrategyIntradayLoader | None = None,
+    feature_computer: StrategyFeatureComputer | None = None,
+    signal_builder: StrategySignalBuilder | None = None,
+    trade_simulator: StrategyTradeSimulator | None = None,
+    portfolio_builder: StrategyPortfolioBuilder | None = None,
+    metrics_computer: StrategyMetricsComputer | None = None,
+    segmentation_aggregator: StrategySegmentationAggregator | None = None,
+) -> StrategyModelingService:
+    return StrategyModelingService(
+        list_universe_loader=list_universe_loader or list_strategy_modeling_universe,
+        daily_loader=daily_loader or load_daily_ohlc_history,
+        required_sessions_builder=required_sessions_builder or build_required_intraday_sessions,
+        intraday_loader=intraday_loader or load_required_intraday_bars,
+        feature_computer=feature_computer or compute_strategy_features,
+        signal_builder=signal_builder or build_strategy_signal_events,
+        trade_simulator=trade_simulator or simulate_strategy_trade_paths,
+        portfolio_builder=portfolio_builder or build_strategy_portfolio_ledger,
+        metrics_computer=metrics_computer or compute_strategy_metrics,
+        segmentation_aggregator=segmentation_aggregator or aggregate_strategy_segmentation,
+    )
+
+
+def _resolve_policy_config(
+    value: StrategyModelingPolicyConfig | Mapping[str, Any] | None,
+) -> StrategyModelingPolicyConfig:
+    if value is None:
+        return StrategyModelingPolicyConfig()
+    if isinstance(value, StrategyModelingPolicyConfig):
+        return value
+    return parse_strategy_modeling_policy_config(value)
+
+
+def _resolve_feature_config(
+    value: StrategyFeatureConfig | Mapping[str, Any] | None,
+) -> StrategyFeatureConfig:
+    if value is None:
+        return StrategyFeatureConfig()
+    if isinstance(value, StrategyFeatureConfig):
+        return value
+    return parse_strategy_feature_config(value)
+
+
+def _resolve_segmentation_config(
+    value: StrategySegmentationConfig | Mapping[str, Any] | None,
+) -> StrategySegmentationConfig:
+    if value is None:
+        return StrategySegmentationConfig()
+    if isinstance(value, StrategySegmentationConfig):
+        return value
+    return parse_strategy_segmentation_config(value)
+
+
+def _resolve_requested_symbols(
+    requested: Sequence[str] | None,
+    *,
+    universe_symbols: Sequence[str],
+) -> list[str]:
+    if requested:
+        seed = requested
+    else:
+        seed = universe_symbols
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in seed:
+        symbol = normalize_symbol(value)
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        out.append(symbol)
+    return out
+
+
+def _normalize_required_sessions(
+    sessions: Mapping[str, Sequence[date]],
+) -> dict[str, tuple[date, ...]]:
+    out: dict[str, tuple[date, ...]] = {}
+    for symbol in sorted(sessions):
+        out[symbol] = tuple(sorted(set(sessions[symbol])))
+    return out
+
+
+def _daily_candles_to_ohlc_frame(frame: pd.DataFrame | None) -> pd.DataFrame:
+    if frame is None or frame.empty:
+        return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
+
+    out = frame.copy()
+    ts = pd.to_datetime(out.get("ts"), errors="coerce")
+    opened = pd.to_numeric(out.get("open"), errors="coerce")
+    high = pd.to_numeric(out.get("high"), errors="coerce")
+    low = pd.to_numeric(out.get("low"), errors="coerce")
+    close = pd.to_numeric(out.get("close"), errors="coerce")
+
+    normalized = pd.DataFrame(
+        {
+            "Open": opened.to_numpy(),
+            "High": high.to_numpy(),
+            "Low": low.to_numpy(),
+            "Close": close.to_numpy(),
+        },
+        index=pd.DatetimeIndex(ts),
+    )
+    normalized = normalized.dropna(subset=["Open", "High", "Low", "Close"])
+    normalized = normalized.loc[~normalized.index.isna()]
+    normalized = normalized.sort_index(kind="stable")
+    normalized = normalized.loc[~normalized.index.duplicated(keep="first")]
+    return normalized
+
+
+def _build_event_segment_context_rows(
+    *,
+    symbol: str,
+    events: Sequence[StrategySignalEvent],
+    features: pd.DataFrame,
+    feature_config: StrategyFeatureConfig,
+    unknown_value: str,
+) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    for event in sorted(events, key=_signal_event_sort_key):
+        feature_row = _feature_row_for_event(features, event.signal_ts)
+        note_map = _notes_to_map(event.notes)
+
+        bars_bucket = _string_or_none(feature_row.get("bars_since_swing_bucket"))
+        if bars_bucket is None:
+            bars_since_swing = _finite_float(note_map.get("bars_since_swing"))
+            bars_bucket = label_bars_since_swing_bucket(
+                bars_since_swing,
+                boundaries=feature_config.bars_since_swing_boundaries,
+            )
+
+        volatility_regime = _first_non_null(
+            feature_row.get("volatility_regime"),
+            feature_row.get("realized_vol_regime"),
+        )
+
+        out.append(
+            {
+                "event_id": str(event.event_id),
+                "ticker": normalize_symbol(symbol),
+                "extension_bucket": _normalize_segment_value(
+                    feature_row.get("extension_bucket"),
+                    unknown_value=unknown_value,
+                ),
+                "rsi_regime": _normalize_segment_value(
+                    feature_row.get("rsi_regime"),
+                    unknown_value=unknown_value,
+                ),
+                "rsi_divergence": _normalize_segment_value(
+                    feature_row.get("rsi_divergence"),
+                    unknown_value=unknown_value,
+                ),
+                "volatility_regime": _normalize_segment_value(
+                    volatility_regime,
+                    unknown_value=unknown_value,
+                ),
+                "bars_since_swing_bucket": _normalize_segment_value(
+                    bars_bucket,
+                    unknown_value=unknown_value,
+                ),
+            }
+        )
+    return out
+
+
+def _feature_row_for_event(features: pd.DataFrame, signal_ts: object) -> Mapping[str, Any]:
+    if features is None or features.empty:
+        return {}
+
+    try:
+        ts = pd.Timestamp(signal_ts)
+    except Exception:  # noqa: BLE001
+        return {}
+
+    candidates = [ts]
+    index = features.index
+    if isinstance(index, pd.DatetimeIndex):
+        if ts.tzinfo is not None and index.tz is None:
+            candidates.append(ts.tz_localize(None))
+        if ts.tzinfo is None and index.tz is not None:
+            candidates.append(ts.tz_localize(index.tz))
+        if ts.tzinfo is not None and index.tz is not None:
+            candidates.append(ts.tz_convert(index.tz))
+
+    for candidate in candidates:
+        if candidate in features.index:
+            row = features.loc[candidate]
+            if isinstance(row, pd.DataFrame):
+                row = row.iloc[-1]
+            if isinstance(row, pd.Series):
+                return row.to_dict()
+    return {}
+
+
+def _notes_to_map(notes: Sequence[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for note in notes:
+        if "=" not in note:
+            continue
+        key, value = str(note).split("=", 1)
+        key_text = str(key).strip()
+        value_text = str(value).strip()
+        if not key_text:
+            continue
+        out[key_text] = value_text
+    return out
+
+
+def _string_or_none(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"none", "null", "nan"}:
+        return None
+    return text
+
+
+def _first_non_null(*values: object) -> object | None:
+    for value in values:
+        if value is not None and str(value).strip().lower() not in {"nan", "none", "null", ""}:
+            return value
+    return None
+
+
+def _signal_event_sort_key(event: StrategySignalEvent) -> tuple[Any, ...]:
+    return (
+        event.signal_confirmed_ts,
+        event.signal_ts,
+        event.entry_ts,
+        event.symbol,
+        event.event_id,
+    )
+
+
+def _segment_records_from_segmentation(
+    segmentation: StrategySegmentationResult,
+) -> tuple[StrategySegmentRecord, ...]:
+    out: list[StrategySegmentRecord] = []
+    for row in segmentation.segments:
+        out.append(
+            StrategySegmentRecord(
+                segment_dimension=row.segment_dimension,  # type: ignore[arg-type]
+                segment_value=row.segment_value,
+                trade_count=row.trade_count,
+                win_rate=row.win_rate,
+                avg_realized_r=row.avg_realized_r,
+                expectancy_r=row.expectancy_r,
+                profit_factor=row.profit_factor,
+                sharpe_ratio=row.sharpe_ratio,
+                max_drawdown_pct=row.max_drawdown_pct,
+            )
+        )
+    out.sort(key=lambda item: (item.segment_dimension, item.segment_value))
+    return tuple(out)
 
 
 def _compute_segment_performance(
@@ -390,10 +931,15 @@ def _confidence_interval_label(z_score: float) -> str:
 
 
 __all__ = [
+    "StrategyModelingRequest",
+    "StrategyModelingRunResult",
+    "StrategyModelingService",
     "StrategySegmentationConfig",
     "StrategySegmentationResult",
     "StrategySegmentPerformance",
     "StrategySegmentReconciliation",
     "aggregate_strategy_segmentation",
+    "build_strategy_modeling_service",
+    "parse_strategy_segmentation_config",
     "required_strategy_segment_dimensions",
 ]

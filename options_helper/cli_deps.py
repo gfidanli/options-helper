@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from options_helper.analysis.strategy_modeling import StrategyModelingService
     from options_helper.data.candles import CandleStore, HistoryFetcher
     from options_helper.data.derived import DerivedStore
     from options_helper.data.earnings import EarningsStore
@@ -91,6 +92,12 @@ def build_research_metrics_store(root_dir: Path) -> DuckDBResearchMetricsStore:
     from options_helper.data.store_factory import get_research_metrics_store
 
     return get_research_metrics_store(root_dir)
+
+
+def build_strategy_modeling_service() -> StrategyModelingService:
+    from options_helper.analysis.strategy_modeling import build_strategy_modeling_service
+
+    return build_strategy_modeling_service()
 
 
 def build_run_logger(

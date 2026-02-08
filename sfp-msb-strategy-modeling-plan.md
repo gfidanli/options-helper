@@ -225,9 +225,18 @@ T0 ──┬── T1 ──┬── T4A ──┬── T5 ── T6 ── T7
 - **location**: `options_helper/analysis/strategy_modeling.py`, `options_helper/cli_deps.py`
 - **description**: Expose one deterministic orchestration seam composing loaders + features + signal adapters + simulator + ledger + metrics + segmentation for both CLI and Streamlit.
 - **validation**: Parity tests verify identical outputs for CLI-style and Streamlit-style callers under same inputs.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added `StrategyModelingService` orchestration seam with deterministic request/result contracts in `options_helper/analysis/strategy_modeling.py`, composing universe/daily/intraday loaders, feature enrichment, strategy signal adapters, trade simulation, portfolio ledger, metrics, and segmentation.
+  - Added `build_strategy_modeling_service()` stable seam in `options_helper/cli_deps.py` so CLI and Streamlit callers can share the same modeling factory path.
+  - Added parity test coverage proving CLI-style (`cli_deps` builder) and Streamlit-style (analysis builder) callers produce identical outputs under identical inputs and stubbed loaders.
+  - Validation: `./.venv/bin/python -m pytest tests/test_strategy_modeling.py tests/test_strategy_modeling_service.py` (3 passed).
+  - Errors: initial parity fixture hit existing ultra-short-window CAGR overflow in metrics; adjusted fixture to neutral return/time-stop path to keep T8A parity test focused on orchestration seam.
 - **files edited/created**:
+  - `options_helper/analysis/strategy_modeling.py`
+  - `options_helper/cli_deps.py`
+  - `tests/test_strategy_modeling_service.py`
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ### T9: Add CLI Command for Strategy Modeling Runs
 - **depends_on**: [T0, T8A]
