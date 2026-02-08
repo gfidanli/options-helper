@@ -92,6 +92,10 @@ from options_helper.schemas.strategy_modeling_contracts import (
     contract_defaults,
     contract_field_names,
 )
+from options_helper.schemas.strategy_modeling_artifact import (
+    STRATEGY_MODELING_ARTIFACT_SCHEMA_VERSION,
+    StrategyModelingArtifact,
+)
 
 __all__ = [
     "ArtifactBase",
@@ -159,6 +163,7 @@ __all__ = [
     "StrategyEquityPoint",
     "StrategyId",
     "StrategyModelingContractBase",
+    "StrategyModelingArtifact",
     "StrategyPortfolioMetrics",
     "StrategyRLadderStat",
     "StrategySegmentRecord",
@@ -169,6 +174,7 @@ __all__ = [
     "STRATEGY_PORTFOLIO_METRICS_FIELDS",
     "STRATEGY_R_LADDER_STAT_FIELDS",
     "STRATEGY_SEGMENT_RECORD_FIELDS",
+    "STRATEGY_MODELING_ARTIFACT_SCHEMA_VERSION",
     "STRATEGY_SIGNAL_EVENT_FIELDS",
     "STRATEGY_TRADE_SIMULATION_FIELDS",
     "TradeExitReason",

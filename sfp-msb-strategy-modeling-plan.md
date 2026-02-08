@@ -272,9 +272,20 @@ T0 ──┬── T1 ──┬── T4A ──┬── T5 ── T6 ── T7
 - **location**: `options_helper/schemas/`, `docs/ARTIFACT_SCHEMAS.md`
 - **description**: Formalize schema versions for strategy-modeling payloads consumed by CLI, tests, and Streamlit.
 - **validation**: Contract tests verify required keys, version field, and backward-compatible parsing.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added versioned `StrategyModelingArtifact` schema (v1) with explicit required payload sections for policy, metrics, ladder, segments, equity, trade simulations, and signal events.
+  - Added explicit parser/serializer seam with schema-version gating and deterministic backward-compatible mapping for unversioned legacy keys (`metrics`, `r_ladder`, `segments`, `equity`, `trades`, `signals`, `policy_overrides`, `universe`).
+  - Extended artifact schema docs with strategy-modeling artifact contract + compatibility parser usage.
+  - Added contract tests for required keys, schema version enforcement, unsupported-version failure, and legacy-unversioned parsing behavior.
+  - Errors: none.
 - **files edited/created**:
+  - `options_helper/schemas/strategy_modeling_artifact.py`
+  - `options_helper/analysis/strategy_modeling_artifact.py`
+  - `options_helper/schemas/__init__.py`
+  - `docs/ARTIFACT_SCHEMAS.md`
+  - `tests/test_strategy_modeling_artifact_schema.py`
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ### T12: Build Streamlit Data Component
 - **depends_on**: [T0, T8A, T11]

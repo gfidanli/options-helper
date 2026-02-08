@@ -62,6 +62,27 @@ All artifacts include:
 - Source: `options-helper scanner run ... --write-shortlist`
 - Schema: `options_helper.schemas.scanner_shortlist.ScannerShortlistArtifact`
 
+### Strategy modeling run
+- Path: `data/reports/strategy_modeling/{STRATEGY}/{RUN_ID}.json` (planned writer in strategy-modeling CLI flow)
+- Source: planned `options-helper technicals strategy-model ... --out ...`
+- Schema: `options_helper.schemas.strategy_modeling_artifact.StrategyModelingArtifact`
+- Required sections:
+  - `schema_version`, `generated_at`, `run_id`, `strategy`, `symbols`
+  - `policy` (locked modeling policy contract)
+  - `portfolio_metrics`, `target_hit_rates`, `segment_records`
+  - `equity_curve`, `trade_simulations`, `signal_events`
+- Compatibility parser:
+  - Use `options_helper.analysis.strategy_modeling_artifact.parse_strategy_modeling_artifact(...)`.
+  - Supports schema `v1` and legacy unversioned payloads by explicit key mapping:
+    - `metrics -> portfolio_metrics`
+    - `r_ladder -> target_hit_rates`
+    - `segments -> segment_records`
+    - `equity -> equity_curve`
+    - `trades -> trade_simulations`
+    - `signals -> signal_events`
+    - `policy_overrides -> policy`
+    - `universe -> symbols`
+
 ### Tail risk
 - Path: `data/reports/tail_risk/{SYMBOL}/tail_risk_{ASOF}_h{H}_n{N}_seed{SEED}.json` (when `--out` is used)
 - Source: `options-helper market-analysis tail-risk ... --out ...`
