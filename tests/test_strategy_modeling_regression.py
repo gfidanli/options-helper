@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
@@ -10,9 +11,13 @@ from typer.testing import CliRunner
 
 from options_helper.analysis.msb import compute_msb_signals, extract_msb_events
 from options_helper.analysis.sfp import compute_sfp_signals, extract_sfp_events
+from options_helper.analysis.strategy_features import StrategyFeatureConfig
+from options_helper.analysis.strategy_modeling_filters import FILTER_REJECT_REASONS, apply_entry_filters
 from options_helper.analysis.strategy_portfolio import build_strategy_portfolio_ledger
 from options_helper.data.intraday_store import IntradayStore
 from options_helper.data.zero_dte_dataset import ZeroDTEIntradayDatasetLoader
+from options_helper.schemas.strategy_modeling_contracts import StrategySignalEvent
+from options_helper.schemas.strategy_modeling_filters import StrategyEntryFilterConfig
 from options_helper.schemas.strategy_modeling_policy import StrategyModelingPolicyConfig
 from options_helper.cli import app
 
@@ -103,6 +108,99 @@ def _trade(
         "holding_bars": 1,
         "gap_fill_applied": False,
     }
+
+
+_MARKET_TZ = ZoneInfo("America/New_York")
+
+
+def _market_utc(day: str, hhmm: str) -> pd.Timestamp:
+    return pd.Timestamp(f"{day} {hhmm}", tz=_MARKET_TZ).tz_convert("UTC")
+
+
+def _strategy_event(
+    *,
+    event_id: str,
+    direction: str = "long",
+    strategy: str = "sfp",
+    symbol: str = "SPY",
+    signal_day: str = "2026-01-05",
+    entry_day: str = "2026-01-06",
+    signal_close: float = 100.0,
+    stop_price: float = 99.0,
+) -> StrategySignalEvent:
+    signal_ts = pd.Timestamp(f"{signal_day}T00:00:00Z")
+    entry_ts = pd.Timestamp(f"{entry_day}T00:00:00Z")
+    return StrategySignalEvent(
+        event_id=event_id,
+        strategy=strategy,  # type: ignore[arg-type]
+        symbol=symbol,
+        timeframe="1d",
+        direction=direction,  # type: ignore[arg-type]
+        signal_ts=signal_ts.to_pydatetime(),
+        signal_confirmed_ts=signal_ts.to_pydatetime(),
+        entry_ts=entry_ts.to_pydatetime(),
+        entry_price_source="first_tradable_bar_open_after_signal_confirmed_ts",
+        signal_open=signal_close - 0.5,
+        signal_high=signal_close + 0.5,
+        signal_low=signal_close - 1.0,
+        signal_close=signal_close,
+        stop_price=stop_price,
+        notes=[],
+    )
+
+
+def _daily_features_frame(
+    rows: list[tuple[str, float, float, float, float, str]],
+) -> pd.DataFrame:
+    index = [pd.Timestamp(f"{day}T00:00:00Z") for day, *_ in rows]
+    return pd.DataFrame(
+        {
+            "rsi": [rsi for _, rsi, _, _, _, _ in rows],
+            "atr": [atr for _, _, atr, _, _, _ in rows],
+            "ema9": [ema9 for _, _, _, ema9, _, _ in rows],
+            "ema9_slope": [ema9_slope for _, _, _, _, ema9_slope, _ in rows],
+            "volatility_regime": [regime for _, _, _, _, _, regime in rows],
+        },
+        index=index,
+    )
+
+
+def _daily_ohlc_frame(rows: list[tuple[str, float]]) -> pd.DataFrame:
+    index = [pd.Timestamp(f"{day}T00:00:00Z") for day, _ in rows]
+    close = [value for _, value in rows]
+    return pd.DataFrame(
+        {
+            "Open": close,
+            "High": [value + 1.0 for value in close],
+            "Low": [value - 1.0 for value in close],
+            "Close": close,
+        },
+        index=index,
+    )
+
+
+def _intraday_frame(day: str, rows: list[tuple[str, float, float, float, float]]) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "timestamp": [_market_utc(day, hhmm) for hhmm, *_ in rows],
+            "open": [open_ for _, open_, _, _, _ in rows],
+            "high": [high for _, _, high, _, _ in rows],
+            "low": [low for _, _, _, low, _ in rows],
+            "close": [close for _, _, _, _, close in rows],
+        }
+    )
+
+
+def _assert_single_reject(summary: dict[str, object], reason: str) -> None:
+    assert summary["base_event_count"] == 1
+    assert summary["kept_event_count"] == 0
+    assert summary["rejected_event_count"] == 1
+    reject_counts = summary["reject_counts"]
+    assert isinstance(reject_counts, dict)
+    assert reject_counts[reason] == 1
+    for key in FILTER_REJECT_REASONS:
+        if key != reason:
+            assert reject_counts[key] == 0
 
 
 @pytest.mark.parametrize(
@@ -275,3 +373,276 @@ def test_strategy_modeling_gap_and_overlap_policy_regressions() -> None:
         "overlap-other-symbol",
     }
     assert overlap_result.skipped_trade_ids == ()
+
+
+def test_apply_entry_filters_orb_confirmation_gate_shifts_entry_and_confirmation_timestamps() -> None:
+    event = _strategy_event(
+        event_id="evt-orb-pass",
+        direction="long",
+        signal_day="2026-01-05",
+        entry_day="2026-01-06",
+        signal_close=102.0,
+        stop_price=95.0,
+    )
+    intraday = _intraday_frame(
+        "2026-01-06",
+        [
+            ("09:30", 100.0, 102.0, 99.0, 101.0),
+            ("09:35", 101.0, 103.0, 100.0, 102.0),
+            ("09:40", 102.0, 104.0, 101.0, 103.0),
+            ("09:45", 103.0, 106.0, 102.0, 105.0),
+            ("09:50", 106.0, 107.0, 105.0, 106.0),
+        ],
+    )
+
+    filtered, summary, metadata = apply_entry_filters(
+        [event],
+        filter_config=StrategyEntryFilterConfig(
+            enable_orb_confirmation=True,
+            orb_range_minutes=15,
+            orb_confirmation_cutoff_et="10:30",
+            orb_stop_policy="orb_range",
+        ),
+        feature_config=StrategyFeatureConfig(),
+        daily_features_by_symbol={},
+        daily_ohlc_by_symbol={},
+        intraday_bars_by_symbol={"SPY": intraday},
+    )
+
+    assert len(filtered) == 1
+    updated = filtered[0]
+    expected_confirmed = _market_utc("2026-01-06", "09:50") - pd.Timedelta(microseconds=1)
+    expected_entry = _market_utc("2026-01-06", "09:50")
+    assert pd.Timestamp(updated.signal_confirmed_ts) == expected_confirmed
+    assert pd.Timestamp(updated.entry_ts) == expected_entry
+    assert pd.Timestamp(updated.entry_ts) > pd.Timestamp(updated.signal_confirmed_ts)
+    assert updated.stop_price == 99.0
+    assert summary["base_event_count"] == 1
+    assert summary["kept_event_count"] == 1
+    assert summary["rejected_event_count"] == 0
+    assert summary["reject_counts"]["orb_opening_range_missing"] == 0
+    assert summary["reject_counts"]["orb_breakout_missing"] == 0
+    assert metadata["parsed_orb_range_minutes"] == 15
+    assert metadata["parsed_orb_confirmation_cutoff_et"]["hour"] == 10
+    assert metadata["parsed_orb_confirmation_cutoff_et"]["minute"] == 30
+
+
+def test_apply_entry_filters_reject_reason_shorts_disabled() -> None:
+    event = _strategy_event(event_id="evt-short", direction="short", stop_price=101.0)
+    filtered, summary, _ = apply_entry_filters(
+        [event],
+        filter_config=StrategyEntryFilterConfig(allow_shorts=False),
+        feature_config=StrategyFeatureConfig(),
+        daily_features_by_symbol={},
+        daily_ohlc_by_symbol={},
+        intraday_bars_by_symbol={},
+    )
+
+    assert filtered == ()
+    _assert_single_reject(summary, "shorts_disabled")
+
+
+def test_apply_entry_filters_reject_reason_missing_daily_context() -> None:
+    event = _strategy_event(event_id="evt-missing-daily")
+    filtered, summary, _ = apply_entry_filters(
+        [event],
+        filter_config=StrategyEntryFilterConfig(enable_rsi_extremes=True),
+        feature_config=StrategyFeatureConfig(),
+        daily_features_by_symbol={},
+        daily_ohlc_by_symbol={},
+        intraday_bars_by_symbol={},
+    )
+
+    assert filtered == ()
+    _assert_single_reject(summary, "missing_daily_context")
+
+
+def test_apply_entry_filters_reject_reason_rsi_not_extreme() -> None:
+    event = _strategy_event(event_id="evt-rsi-fail")
+    features = _daily_features_frame([("2026-01-05", 50.0, 2.0, 99.0, 1.0, "normal")])
+    ohlc = _daily_ohlc_frame([("2026-01-05", 101.0)])
+    filtered, summary, _ = apply_entry_filters(
+        [event],
+        filter_config=StrategyEntryFilterConfig(enable_rsi_extremes=True),
+        feature_config=StrategyFeatureConfig(),
+        daily_features_by_symbol={"SPY": features},
+        daily_ohlc_by_symbol={"SPY": ohlc},
+        intraday_bars_by_symbol={},
+    )
+
+    assert filtered == ()
+    _assert_single_reject(summary, "rsi_not_extreme")
+
+
+def test_apply_entry_filters_reject_reason_ema9_regime_mismatch() -> None:
+    event = _strategy_event(event_id="evt-ema-fail")
+    features = _daily_features_frame(
+        [
+            ("2026-01-04", 20.0, 2.0, 106.0, 0.0, "normal"),
+            ("2026-01-05", 20.0, 2.0, 105.0, 0.0, "normal"),
+        ]
+    )
+    ohlc = _daily_ohlc_frame(
+        [
+            ("2026-01-04", 107.0),
+            ("2026-01-05", 101.0),
+        ]
+    )
+    filtered, summary, _ = apply_entry_filters(
+        [event],
+        filter_config=StrategyEntryFilterConfig(enable_ema9_regime=True, ema9_slope_lookback_bars=1),
+        feature_config=StrategyFeatureConfig(),
+        daily_features_by_symbol={"SPY": features},
+        daily_ohlc_by_symbol={"SPY": ohlc},
+        intraday_bars_by_symbol={},
+    )
+
+    assert filtered == ()
+    _assert_single_reject(summary, "ema9_regime_mismatch")
+
+
+def test_apply_entry_filters_reject_reason_volatility_regime_disallowed() -> None:
+    event = _strategy_event(event_id="evt-vol-fail")
+    features = _daily_features_frame([("2026-01-05", 20.0, 2.0, 99.0, 1.0, "normal")])
+    ohlc = _daily_ohlc_frame([("2026-01-05", 101.0)])
+    filtered, summary, _ = apply_entry_filters(
+        [event],
+        filter_config=StrategyEntryFilterConfig(
+            enable_volatility_regime=True,
+            allowed_volatility_regimes=("high",),
+        ),
+        feature_config=StrategyFeatureConfig(),
+        daily_features_by_symbol={"SPY": features},
+        daily_ohlc_by_symbol={"SPY": ohlc},
+        intraday_bars_by_symbol={},
+    )
+
+    assert filtered == ()
+    _assert_single_reject(summary, "volatility_regime_disallowed")
+
+
+def test_apply_entry_filters_reject_reason_orb_opening_range_missing() -> None:
+    event = _strategy_event(
+        event_id="evt-orb-range-missing",
+        direction="long",
+        signal_day="2026-01-05",
+        entry_day="2026-01-06",
+    )
+    intraday = _intraday_frame(
+        "2026-01-06",
+        [
+            ("09:45", 100.0, 101.0, 99.0, 100.0),
+            ("09:50", 100.0, 101.0, 99.0, 100.0),
+        ],
+    )
+    filtered, summary, _ = apply_entry_filters(
+        [event],
+        filter_config=StrategyEntryFilterConfig(enable_orb_confirmation=True),
+        feature_config=StrategyFeatureConfig(),
+        daily_features_by_symbol={},
+        daily_ohlc_by_symbol={},
+        intraday_bars_by_symbol={"SPY": intraday},
+    )
+
+    assert filtered == ()
+    _assert_single_reject(summary, "orb_opening_range_missing")
+
+
+def test_apply_entry_filters_reject_reason_orb_breakout_missing() -> None:
+    event = _strategy_event(
+        event_id="evt-orb-breakout-missing",
+        direction="long",
+        signal_day="2026-01-05",
+        entry_day="2026-01-06",
+    )
+    intraday = _intraday_frame(
+        "2026-01-06",
+        [
+            ("09:30", 100.0, 102.0, 99.0, 101.0),
+            ("09:35", 101.0, 103.0, 100.0, 102.0),
+            ("09:40", 102.0, 104.0, 101.0, 103.0),
+            ("09:45", 103.0, 103.8, 102.0, 103.2),
+            ("09:50", 103.2, 103.5, 102.8, 103.1),
+        ],
+    )
+    filtered, summary, _ = apply_entry_filters(
+        [event],
+        filter_config=StrategyEntryFilterConfig(enable_orb_confirmation=True),
+        feature_config=StrategyFeatureConfig(),
+        daily_features_by_symbol={},
+        daily_ohlc_by_symbol={},
+        intraday_bars_by_symbol={"SPY": intraday},
+    )
+
+    assert filtered == ()
+    _assert_single_reject(summary, "orb_breakout_missing")
+
+
+def test_apply_entry_filters_reject_reason_atr_floor_failed() -> None:
+    event = _strategy_event(event_id="evt-atr-floor-fail", signal_close=100.0, stop_price=99.0)
+    features = _daily_features_frame([("2026-01-05", 20.0, 2.0, 99.0, 1.0, "normal")])
+    ohlc = _daily_ohlc_frame([("2026-01-05", 101.0)])
+    filtered, summary, _ = apply_entry_filters(
+        [event],
+        filter_config=StrategyEntryFilterConfig(
+            enable_atr_stop_floor=True,
+            atr_stop_floor_multiple=2.0,
+        ),
+        feature_config=StrategyFeatureConfig(),
+        daily_features_by_symbol={"SPY": features},
+        daily_ohlc_by_symbol={"SPY": ohlc},
+        intraday_bars_by_symbol={},
+    )
+
+    assert filtered == ()
+    _assert_single_reject(summary, "atr_floor_failed")
+
+
+def test_apply_entry_filters_deterministic_reject_ordering_and_kept_order() -> None:
+    short_event = _strategy_event(event_id="evt-short-reject", direction="short", stop_price=101.0)
+    rsi_event = _strategy_event(event_id="evt-rsi-reject", direction="long", signal_day="2026-01-05")
+    keep_a = _strategy_event(event_id="evt-keep-a", direction="long", signal_day="2026-01-06")
+    keep_b = _strategy_event(event_id="evt-keep-b", direction="long", signal_day="2026-01-07")
+
+    features = _daily_features_frame(
+        [
+            ("2026-01-05", 50.0, 2.0, 99.0, 1.0, "normal"),
+            ("2026-01-06", 20.0, 2.0, 99.0, 1.0, "normal"),
+            ("2026-01-07", 25.0, 2.0, 99.0, 1.0, "normal"),
+        ]
+    )
+    ohlc = _daily_ohlc_frame(
+        [
+            ("2026-01-05", 101.0),
+            ("2026-01-06", 102.0),
+            ("2026-01-07", 103.0),
+        ]
+    )
+    config = StrategyEntryFilterConfig(
+        allow_shorts=False,
+        enable_rsi_extremes=True,
+    )
+
+    filtered_a, summary_a, _ = apply_entry_filters(
+        [rsi_event, keep_b, short_event, keep_a],
+        filter_config=config,
+        feature_config=StrategyFeatureConfig(),
+        daily_features_by_symbol={"SPY": features},
+        daily_ohlc_by_symbol={"SPY": ohlc},
+        intraday_bars_by_symbol={},
+    )
+    filtered_b, summary_b, _ = apply_entry_filters(
+        [keep_a, short_event, keep_b, rsi_event],
+        filter_config=config,
+        feature_config=StrategyFeatureConfig(),
+        daily_features_by_symbol={"SPY": features},
+        daily_ohlc_by_symbol={"SPY": ohlc},
+        intraday_bars_by_symbol={},
+    )
+
+    assert summary_a == summary_b
+    assert [event.event_id for event in filtered_a] == ["evt-keep-a", "evt-keep-b"]
+    assert [event.event_id for event in filtered_b] == ["evt-keep-a", "evt-keep-b"]
+    assert summary_a["reject_counts"]["shorts_disabled"] == 1
+    assert summary_a["reject_counts"]["rsi_not_extreme"] == 1
+    assert list(summary_a["reject_counts"]) == list(FILTER_REJECT_REASONS)

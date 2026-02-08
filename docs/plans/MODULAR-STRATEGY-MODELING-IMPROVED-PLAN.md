@@ -201,7 +201,7 @@ T1 ─┬─ T2 ─┬─ T4 ─┬─ T5 ─┬─ T6 ─┬─ T7 ─┬─ T9
 - **gotchas**:
   - EMA9 uses `min_periods=9`, so short histories intentionally produce `NaN` for `ema9` and `ema9_slope`.
 
-### T4: Build filter/gate engine (including ORB confirmation gate)
+### T4: Build filter/gate engine (including ORB confirmation gate) (Complete)
 - **depends_on**: [T1, T2, T3]
 - **location**:
   - `options_helper/analysis/strategy_modeling_filters.py` (new)
@@ -216,6 +216,20 @@ T1 ─┬─ T2 ─┬─ T4 ─┬─ T5 ─┬─ T6 ─┬─ T7 ─┬─ T9
 - **validation**:
   - `tests/test_strategy_modeling_regression.py`: ORB gate shifts `signal_confirmed_ts` and sets `entry_ts` strictly after confirmation.
   - New tests for each reject reason code and ordering determinism.
+- **work log**:
+  - Added `apply_entry_filters(...)` in new `analysis/strategy_modeling_filters.py` with fixed reject-order handling and deterministic output contracts (`filtered events`, `filter_summary`, `filter_metadata`).
+  - Implemented daily filter gates (short toggle, RSI extremes, EMA9 regime, volatility regime, ATR floor) with anti-lookahead-safe daily anchoring and explicit `missing_daily_context` handling.
+  - Implemented ORB confirmation gate for SFP/MSB with per-symbol/per-session ORB cache precompute, directional breakout checks by cutoff, timestamp mutation (`signal_confirmed_ts`, `entry_ts`), and stop policy support (`base|orb_range|tighten`).
+  - Wired service orchestration to apply filters before simulation, pass filtered events into simulation, and prune segment context rows to kept event ids.
+  - Extended regression coverage for ORB gate mutation safety (`entry_ts > signal_confirmed_ts`), all required reject reasons, and deterministic ordering behavior.
+- **files touched**:
+  - `options_helper/analysis/strategy_modeling_filters.py`
+  - `options_helper/analysis/strategy_modeling.py`
+  - `tests/test_strategy_modeling_regression.py`
+  - `docs/plans/MODULAR-STRATEGY-MODELING-IMPROVED-PLAN.md`
+- **gotchas**:
+  - EMA9 regime validation now recomputes slope from daily `ema9` using the filter-config lookback, so short context windows can legitimately resolve to `missing_daily_context`.
+  - ORB confirmation precompute is cached once per symbol/session and reused across events; event-level gate checks only read that cache to avoid repeated intraday recomputation.
 
 ### T5: Directional counterfactual results + “portfolio trade subset” clarification
 - **depends_on**: [T4]

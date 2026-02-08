@@ -18,6 +18,7 @@ from options_helper.analysis.strategy_features import (
 )
 from options_helper.analysis.strategy_metrics import StrategyMetricsResult, compute_strategy_metrics
 from options_helper.analysis.strategy_modeling_contracts import parse_strategy_trade_simulations
+from options_helper.analysis.strategy_modeling_filters import apply_entry_filters
 from options_helper.analysis.strategy_modeling_policy import parse_strategy_modeling_policy_config
 from options_helper.analysis.strategy_portfolio import (
     StrategyPortfolioLedgerResult,
@@ -332,6 +333,8 @@ class StrategyModelingService:
 
         events: list[StrategySignalEvent] = []
         segment_context: list[dict[str, str]] = []
+        daily_ohlc_by_symbol: dict[str, pd.DataFrame] = {}
+        daily_features_by_symbol: dict[str, pd.DataFrame] = {}
 
         for symbol in sorted(daily.candles_by_symbol):
             ohlc = _daily_candles_to_ohlc_frame(daily.candles_by_symbol[symbol])
@@ -339,6 +342,8 @@ class StrategyModelingService:
                 continue
 
             features = self.feature_computer(ohlc, config=feature_config)
+            daily_ohlc_by_symbol[symbol] = ohlc
+            daily_features_by_symbol[symbol] = features
             symbol_events = self.signal_builder(
                 strategy,
                 ohlc,
@@ -357,8 +362,22 @@ class StrategyModelingService:
                 )
             )
 
-        sorted_events = tuple(sorted(events, key=_signal_event_sort_key))
-        sorted_segment_context = tuple(sorted(segment_context, key=lambda row: (row["event_id"], row["ticker"])))
+        filtered_events, filter_summary, filter_metadata = apply_entry_filters(
+            events,
+            filter_config=filter_config,
+            feature_config=feature_config,
+            daily_features_by_symbol=daily_features_by_symbol,
+            daily_ohlc_by_symbol=daily_ohlc_by_symbol,
+            intraday_bars_by_symbol=intraday.bars_by_symbol,
+        )
+        sorted_events = tuple(filtered_events)
+        kept_event_ids = {event.event_id for event in sorted_events}
+        sorted_segment_context = tuple(
+            sorted(
+                (row for row in segment_context if row["event_id"] in kept_event_ids),
+                key=lambda row: (row["event_id"], row["ticker"]),
+            )
+        )
 
         block_simulation = (
             bool(request.block_on_missing_intraday_coverage)
@@ -390,10 +409,6 @@ class StrategyModelingService:
             starting_capital=float(request.starting_capital),
         )
         directional_metrics = _build_directional_metrics(sorted_trades, metrics=metrics)
-        filter_summary = _build_default_filter_summary(
-            base_event_count=len(sorted_events),
-            kept_event_count=len(sorted_events),
-        )
         segmentation = self.segmentation_aggregator(
             sorted_trades,
             segment_context=sorted_segment_context,
@@ -434,7 +449,7 @@ class StrategyModelingService:
             segmentation=segmentation,
             segment_records=segment_records,
             segment_context=sorted_segment_context,
-            filter_metadata=filter_config.model_dump(mode="json"),
+            filter_metadata=filter_metadata,
             filter_summary=filter_summary,
             directional_metrics=directional_metrics,
             notes=notes,
