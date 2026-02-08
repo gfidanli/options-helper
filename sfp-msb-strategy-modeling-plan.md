@@ -208,9 +208,17 @@ T0 ──┬── T1 ──┬── T4A ──┬── T5 ── T6 ── T7
 - **location**: `options_helper/analysis/strategy_modeling.py`
 - **description**: Aggregate overall + sliced performance across ticker, direction, extension bucket, RSI regime, RSI divergence, volatility regime, and bars-since-swing buckets. Include reliability fields (`sample_size`, `min_sample_threshold`, optional confidence interval markers).
 - **validation**: Tests confirm slice counts reconcile to base trades and reliability gating is applied consistently.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added pure deterministic segmentation module `strategy_modeling.py` with `aggregate_strategy_segmentation(...)` covering overall + required slices (`symbol`, `direction`, `extension_bucket`, `rsi_regime`, `rsi_divergence`, `volatility_regime`, `bars_since_swing_bucket`).
+  - Added reliability fields on every output row (`sample_size`, `min_sample_threshold`, `is_reliable`) and optional Wilson win-rate confidence interval markers.
+  - Added deterministic per-dimension reconciliation output to assert that each slice-family count sums back to the closed base trade set.
+  - Validation: `./.venv/bin/python -m pytest tests/test_strategy_modeling.py` (2 passed).
+  - Errors: none.
 - **files edited/created**:
+  - `options_helper/analysis/strategy_modeling.py`
+  - `tests/test_strategy_modeling.py`
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ### T8A: Build Shared Modeling Service/Factory
 - **depends_on**: [T8]
