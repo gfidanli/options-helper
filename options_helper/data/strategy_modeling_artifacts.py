@@ -122,6 +122,9 @@ def write_strategy_modeling_artifacts(
     metrics = _to_mapping(getattr(run_result, "portfolio_metrics", None))
     r_ladder_rows = _normalize_records(getattr(run_result, "target_hit_rates", ()) or ())
     segment_rows = _normalize_records(getattr(run_result, "segment_records", ()) or ())
+    filter_metadata = _to_mapping(getattr(run_result, "filter_metadata", None))
+    filter_summary = _to_mapping(getattr(run_result, "filter_summary", None))
+    directional_metrics = _to_mapping(getattr(run_result, "directional_metrics", None))
     trade_rows = [
         _build_trade_log_row(row, output_timezone=output_timezone)
         for row in _normalize_records(getattr(run_result, "trade_simulations", ()) or ())
@@ -159,6 +162,9 @@ def write_strategy_modeling_artifacts(
                 run_result=run_result,
                 output_timezone_name=output_timezone_name,
             ),
+            "filter_metadata": filter_metadata,
+            "filter_summary": filter_summary,
+            "directional_metrics": directional_metrics,
             "metrics": metrics,
             "r_ladder": r_ladder_rows,
             "segments": segment_rows,
@@ -263,6 +269,9 @@ def _build_policy_metadata(
 def _render_summary_markdown(payload: Mapping[str, Any]) -> str:
     summary = _to_mapping(payload.get("summary"))
     policy = _to_mapping(payload.get("policy_metadata"))
+    filter_metadata = _to_mapping(payload.get("filter_metadata"))
+    filter_summary = _to_mapping(payload.get("filter_summary"))
+    directional_metrics = _to_mapping(payload.get("directional_metrics"))
     metrics = _to_mapping(payload.get("metrics"))
     r_ladder_rows = _normalize_records(payload.get("r_ladder", []))
     segments = _normalize_records(payload.get("segments", []))
@@ -297,6 +306,63 @@ def _render_summary_markdown(payload: Mapping[str, Any]) -> str:
     ):
         if key in policy:
             lines.append(f"- {key}: `{policy.get(key)}`")
+
+    lines.extend(["", "## Filters", ""])
+    if filter_summary:
+        lines.append(
+            (
+                "- Base / kept / rejected events: "
+                f"`{filter_summary.get('base_event_count', 0)}` / "
+                f"`{filter_summary.get('kept_event_count', 0)}` / "
+                f"`{filter_summary.get('rejected_event_count', 0)}`"
+            )
+        )
+        reject_counts = _to_mapping(filter_summary.get("reject_counts"))
+        rejects_with_count = [
+            f"{reason}={count}"
+            for reason, count in reject_counts.items()
+            if (_as_int_or_none(count) or 0) > 0
+        ]
+        if rejects_with_count:
+            lines.append(f"- Reject reasons: `{', '.join(rejects_with_count)}`")
+        else:
+            lines.append("- Reject reasons: `none`")
+    else:
+        lines.append("- No filter summary returned.")
+
+    active_filters = _normalize_string_sequence(filter_metadata.get("active_filters"))
+    if active_filters:
+        lines.append(f"- Active filters: `{', '.join(active_filters)}`")
+    elif filter_metadata:
+        lines.append("- Active filters: `none`")
+
+    lines.extend(["", "## Directional Results", ""])
+    if directional_metrics:
+        counts = _to_mapping(directional_metrics.get("counts"))
+        if counts:
+            lines.append(
+                (
+                    "- Portfolio subset trades: "
+                    f"all=`{counts.get('portfolio_subset_trade_count', 0)}` "
+                    f"closed=`{counts.get('portfolio_subset_closed_trade_count', 0)}` "
+                    f"long=`{counts.get('portfolio_subset_long_trade_count', 0)}` "
+                    f"short=`{counts.get('portfolio_subset_short_trade_count', 0)}`"
+                )
+            )
+
+        portfolio_target = _to_mapping(directional_metrics.get("portfolio_target"))
+        if portfolio_target:
+            target_label = portfolio_target.get("target_label") or portfolio_target.get("target_r")
+            lines.append(
+                (
+                    f"- Portfolio target: `{target_label}` "
+                    f"(source=`{portfolio_target.get('selection_source')}`)"
+                )
+            )
+
+        lines.extend(_render_directional_bucket_lines(directional_metrics))
+    else:
+        lines.append("- No directional metrics returned.")
 
     lines.extend(
         [
@@ -347,6 +413,33 @@ def _render_summary_markdown(payload: Mapping[str, Any]) -> str:
     )
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_directional_bucket_lines(directional_metrics: Mapping[str, Any]) -> list[str]:
+    lines: list[str] = []
+    for label, key in (
+        ("Combined", "combined"),
+        ("Long-only", "long_only"),
+        ("Short-only", "short_only"),
+    ):
+        bucket = _to_mapping(directional_metrics.get(key))
+        if not bucket:
+            lines.append(f"- {label}: no metrics returned.")
+            continue
+
+        portfolio_metrics = _to_mapping(bucket.get("portfolio_metrics"))
+        lines.append(
+            (
+                f"- {label}: "
+                f"simulated=`{bucket.get('simulated_trade_count', 0)}` "
+                f"closed=`{bucket.get('closed_trade_count', 0)}` "
+                f"accepted/skipped=`{bucket.get('accepted_trade_count', 0)}`/"
+                f"`{bucket.get('skipped_trade_count', 0)}` "
+                f"total_return_pct=`{portfolio_metrics.get('total_return_pct')}` "
+                f"avg_realized_r=`{portfolio_metrics.get('avg_realized_r')}`"
+            )
+        )
+    return lines
 
 
 def _build_trade_log_row(
@@ -514,6 +607,23 @@ def _to_string_list(value: object) -> list[str]:
         return items
     token = _as_str_or_none(value)
     return [token.upper()] if token else []
+
+
+def _normalize_string_sequence(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        token = _as_str_or_none(value)
+        return [token] if token else []
+    if isinstance(value, (list, tuple, set, frozenset)):
+        out: list[str] = []
+        for item in value:
+            token = _as_str_or_none(item)
+            if token:
+                out.append(token)
+        return out
+    token = _as_str_or_none(value)
+    return [token] if token else []
 
 
 def _date_label(value: object) -> str | None:

@@ -290,7 +290,7 @@ T1 ─┬─ T2 ─┬─ T4 ─┬─ T5 ─┬─ T6 ─┬─ T7 ─┬─ T9
   - Typer wraps long `BadParameter` messages across lines in CLI output, so tests assert stable substrings instead of brittle full-line matches.
   - Defaults are intentionally preserved: `allow_shorts=True` and all new filter toggles remain disabled unless explicitly enabled.
 
-### T7: Artifacts: summary.json + trades.csv + summary.md enhancements
+### T7: Artifacts: summary.json + trades.csv + summary.md enhancements (Complete)
 - **depends_on**: [T5, T6]
 - **location**:
   - `options_helper/data/strategy_modeling_artifacts.py`
@@ -303,6 +303,19 @@ T1 ─┬─ T2 ─┬─ T4 ─┬─ T5 ─┬─ T6 ─┬─ T7 ─┬─ T9
 - **validation**:
   - Update artifact tests for new fields + markdown content.
   - Ensure performance smoke remains within runtime/memory thresholds (adjust only if justified with measurement).
+- **work log**:
+  - Added additive JSON payload fields in artifact output: `filter_metadata`, `filter_summary`, and `directional_metrics` (schema remains `schema_version=1`).
+  - Extended summary markdown with `## Filters` and `## Directional Results`, including combined/long-only/short-only directional lines plus deterministic fallback text when data is missing.
+  - Updated artifact tests to assert required key subsets (top-level + summary keys) and validate new filter/directional content without brittle exact-key matching.
+  - Updated performance smoke test to assert required additive artifact keys while preserving existing runtime and peak-memory thresholds.
+- **files touched**:
+  - `options_helper/data/strategy_modeling_artifacts.py`
+  - `tests/test_strategy_modeling_artifacts.py`
+  - `tests/test_strategy_modeling_performance.py`
+  - `docs/plans/MODULAR-STRATEGY-MODELING-IMPROVED-PLAN.md`
+- **gotchas**:
+  - Markdown rendering now tolerates missing filter/directional payloads (legacy/partial runs) by emitting stable “No ... returned” lines instead of failing key lookups.
+  - Tests intentionally use subset assertions for required keys to remain forward-compatible with future additive artifact fields.
 
 ### T8: Streamlit Strategy Modeling page parity
 - **depends_on**: [T4, T5, T7]

@@ -81,6 +81,79 @@ def _sample_run_result() -> SimpleNamespace:
                 max_drawdown_pct=-2.5,
             ),
         ),
+        filter_metadata={
+            "allow_shorts": True,
+            "active_filters": ["rsi_extremes"],
+            "reject_reason_order": [
+                "shorts_disabled",
+                "missing_daily_context",
+                "rsi_not_extreme",
+                "ema9_regime_mismatch",
+                "volatility_regime_disallowed",
+                "orb_opening_range_missing",
+                "orb_breakout_missing",
+                "atr_floor_failed",
+            ],
+        },
+        filter_summary={
+            "base_event_count": 2,
+            "kept_event_count": 1,
+            "rejected_event_count": 1,
+            "reject_counts": {
+                "shorts_disabled": 0,
+                "missing_daily_context": 0,
+                "rsi_not_extreme": 1,
+                "ema9_regime_mismatch": 0,
+                "volatility_regime_disallowed": 0,
+                "orb_opening_range_missing": 0,
+                "orb_breakout_missing": 0,
+                "atr_floor_failed": 0,
+            },
+        },
+        directional_metrics={
+            "counts": {
+                "all_simulated_trade_count": 1,
+                "portfolio_subset_trade_count": 1,
+                "portfolio_subset_closed_trade_count": 1,
+                "portfolio_subset_long_trade_count": 1,
+                "portfolio_subset_short_trade_count": 0,
+            },
+            "portfolio_target": {
+                "target_label": "1.0R",
+                "target_r": 1.0,
+                "selection_source": "preferred_target_label",
+            },
+            "combined": {
+                "simulated_trade_count": 1,
+                "closed_trade_count": 1,
+                "accepted_trade_count": 1,
+                "skipped_trade_count": 0,
+                "portfolio_metrics": {
+                    "total_return_pct": -0.025,
+                    "avg_realized_r": -1.25,
+                },
+            },
+            "long_only": {
+                "simulated_trade_count": 1,
+                "closed_trade_count": 1,
+                "accepted_trade_count": 1,
+                "skipped_trade_count": 0,
+                "portfolio_metrics": {
+                    "total_return_pct": -0.025,
+                    "avg_realized_r": -1.25,
+                },
+            },
+            "short_only": {
+                "simulated_trade_count": 0,
+                "closed_trade_count": 0,
+                "accepted_trade_count": 0,
+                "skipped_trade_count": 0,
+                "portfolio_metrics": {
+                    "total_return_pct": 0.0,
+                    "avg_realized_r": None,
+                },
+            },
+        },
         trade_simulations=(
             {
                 "trade_id": "tr-1",
@@ -106,6 +179,38 @@ def _sample_run_result() -> SimpleNamespace:
     )
 
 
+def _assert_required_summary_keys(payload: dict[str, object]) -> None:
+    required_top_level_keys = {
+        "schema_version",
+        "generated_at",
+        "strategy",
+        "requested_symbols",
+        "modeled_symbols",
+        "disclaimer",
+        "summary",
+        "policy_metadata",
+        "filter_metadata",
+        "filter_summary",
+        "directional_metrics",
+        "metrics",
+        "r_ladder",
+        "segments",
+        "trade_log",
+    }
+    assert required_top_level_keys.issubset(payload.keys())
+
+    summary = payload.get("summary")
+    assert isinstance(summary, dict)
+    required_summary_keys = {
+        "signal_event_count",
+        "trade_count",
+        "accepted_trade_count",
+        "skipped_trade_count",
+        "losses_below_minus_one_r",
+    }
+    assert required_summary_keys.issubset(summary.keys())
+
+
 def test_strategy_modeling_artifacts_include_required_metadata_and_disclaimer(tmp_path) -> None:  # type: ignore[no-untyped-def]
     paths = write_strategy_modeling_artifacts(
         out_dir=tmp_path,
@@ -116,6 +221,7 @@ def test_strategy_modeling_artifacts_include_required_metadata_and_disclaimer(tm
     )
 
     payload = json.loads(paths.summary_json.read_text(encoding="utf-8"))
+    _assert_required_summary_keys(payload)
     assert payload["schema_version"] == 1
     assert payload["disclaimer"] == DISCLAIMER_TEXT
     assert payload["policy_metadata"]["entry_anchor"] == "next_bar_open"
@@ -126,12 +232,23 @@ def test_strategy_modeling_artifacts_include_required_metadata_and_disclaimer(tm
     assert payload["policy_metadata"]["output_timezone"] == "America/Chicago"
     assert payload["generated_at"] == "2026-02-08T06:30:00-06:00"
     assert payload["summary"]["losses_below_minus_one_r"] == 1
+    assert payload["filter_metadata"]["active_filters"] == ["rsi_extremes"]
+    assert payload["filter_summary"]["base_event_count"] == 2
+    assert payload["filter_summary"]["reject_counts"]["rsi_not_extreme"] == 1
+    assert payload["directional_metrics"]["portfolio_target"]["target_label"] == "1.0R"
+    assert payload["directional_metrics"]["combined"]["portfolio_metrics"]["total_return_pct"] == -0.025
     assert payload["trade_log"][0]["signal_confirmed_ts"] == "2026-01-06T14:55:00-06:00"
     assert payload["trade_log"][0]["entry_ts"] == "2026-01-06T15:00:00-06:00"
     assert payload["trade_log"][0]["exit_ts"] == "2026-01-06T15:05:00-06:00"
 
     markdown = paths.summary_md.read_text(encoding="utf-8")
     assert DISCLAIMER_TEXT in markdown
+    assert "## Filters" in markdown
+    assert "## Directional Results" in markdown
+    assert "Combined:" in markdown
+    assert "Long-only:" in markdown
+    assert "Short-only:" in markdown
+    assert "Reject reasons: `rsi_not_extreme=1`" in markdown
     assert "Not financial advice." in markdown
     assert "Gap-through stop fills can produce realized losses below `-1.0R`" in markdown
 
@@ -200,5 +317,6 @@ def test_strategy_model_cli_writes_strategy_modeling_artifacts(monkeypatch, tmp_
     summary_path = tmp_path / "sfp" / "2026-01-31" / "summary.json"
     assert summary_path.exists()
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    _assert_required_summary_keys(payload)
     assert payload["disclaimer"] == DISCLAIMER_TEXT
     assert payload["summary"]["losses_below_minus_one_r"] == 1

@@ -162,6 +162,25 @@ def test_strategy_modeling_universe_scale_smoke_runtime_and_memory(tmp_path) -> 
     )
 
     payload = json.loads(artifact_paths.summary_json.read_text(encoding="utf-8"))
+    required_top_level_keys = {
+        "summary",
+        "policy_metadata",
+        "filter_metadata",
+        "filter_summary",
+        "directional_metrics",
+        "trade_log",
+    }
+    assert required_top_level_keys.issubset(payload.keys())
+
+    summary = payload.get("summary")
+    assert isinstance(summary, dict)
+    required_summary_keys = {
+        "trade_count",
+        "accepted_trade_count",
+        "losses_below_minus_one_r",
+    }
+    assert required_summary_keys.issubset(summary.keys())
+
     assert payload["summary"]["trade_count"] == _EXPECTED_TRADE_COUNT
     assert payload["summary"]["accepted_trade_count"] == _EXPECTED_TRADE_COUNT
     assert payload["summary"]["losses_below_minus_one_r"] > 0
