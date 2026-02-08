@@ -190,9 +190,18 @@ T0 ──┬── T1 ──┬── T4A ──┬── T5 ── T6 ── T7
 - **location**: `options_helper/analysis/strategy_metrics.py`
 - **description**: Compute metrics from trades + equity curve: total return, CAGR, max drawdown, Sharpe, Sortino, Calmar, win rate, profit factor, expectancy (R/$), exposure, average hold, and target-level hit rates.
 - **validation**: Synthetic tests verify formulas and edge handling (zero variance, no losers/winners, sparse trades).
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added pure deterministic metrics module `strategy_metrics.py` with APIs to compute portfolio metrics from trade + equity outputs, including total return, CAGR, max drawdown, Sharpe, Sortino, Calmar, win/loss rates, profit factor, expectancy in R, average hold, and exposure.
+  - Added deterministic target-level hit-rate aggregation that produces `StrategyRLadderStat` rows by inferred target-R bucket, with hit counts/rates, bars-to-hit stats, and per-target expectancy in R.
+  - Added combined metrics result API exposing dollar expectancy (`expectancy_dollars`) alongside contract-aligned portfolio metrics and target-level stats.
+  - Added robust edge handling for sparse/no trades, zero-variance returns, no losers/no winners, missing equity durations, and optional `starting_capital` override paths.
+  - Validation: `./.venv/bin/python -m pytest tests/test_strategy_metrics.py` (4 passed).
+  - Errors: none.
 - **files edited/created**:
+  - `options_helper/analysis/strategy_metrics.py`
+  - `tests/test_strategy_metrics.py`
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ### T8: Build Segmentation + Reliability Aggregator
 - **depends_on**: [T0, T3, T5, T7]
