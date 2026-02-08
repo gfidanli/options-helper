@@ -40,6 +40,14 @@ These plans are written to be **LLM-agent friendly**: clear goals, bounded scope
 | 17 | IMP-030 | Repo cleanup: modular CLI + regression tests (no behavior changes) ([IMP-030](./IMP-030.md)) | done | M–L | Medium |
 | 18 | IMP-031 | Repo cleanup (cont.): finish modular CLI + stabilize test seams (no behavior changes) ([IMP-031](./IMP-031.md)) | done | M–L | Medium |
 
+## Additional plans (unranked / strategic)
+
+- [IMP-040](./IMP-040.md) — Initial DuckDB backend rollout.
+- [IMP-041](./IMP-041.md) — Intraday migration to DuckDB.
+- [IMP-042](./IMP-042.md) — Derived metrics migration to DuckDB.
+- [IMP-043](./IMP-043.md) — Options snapshot lake (Parquet) + DuckDB index.
+- [IMP-045](./IMP-045.md) — Live 0DTE monitor mode (streaming + auto-refreshing dashboard).
+
 ## Workflow for agents
 
 1. Pick the top 1–3 items in `docs/REPO_IMPROVEMENTS.md`.
