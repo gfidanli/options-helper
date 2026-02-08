@@ -282,9 +282,17 @@ T0 ──┬── T1 ──┬── T4A ──┬── T5 ── T6 ── T7
 - **location**: `tests/test_strategy_modeling_performance.py`, `docs/TECHNICAL_STRATEGY_MODELING.md`
 - **description**: Define and verify performance thresholds for all-symbol modeling runs (runtime and memory envelope) with deterministic fixture scale tests and documented acceptable bounds.
 - **validation**: Performance smoke tests pass thresholds; docs record benchmark setup and limits.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added deterministic universe-scale performance smoke test (`300` symbols, `3,600` synthetic trades) covering runtime + peak-memory gates for strategy-modeling artifact generation.
+  - Added explicit thresholds enforced in CI smoke test (`<= 1.5s` runtime, `<= 32 MiB` tracemalloc peak) and asserted summary trade counts for fixture integrity.
+  - Documented benchmark fixture setup, acceptable bounds, and targeted validation command in technical strategy-modeling docs.
+  - Validation: `./.venv/bin/python -m pytest tests/test_strategy_modeling_performance.py -q` (pass).
+  - Errors: none.
 - **files edited/created**:
+  - `tests/test_strategy_modeling_performance.py`
+  - `docs/TECHNICAL_STRATEGY_MODELING.md`
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ### T19: End-to-End Verification + Cleanup
 - **depends_on**: [T15, T16, T17, T18]

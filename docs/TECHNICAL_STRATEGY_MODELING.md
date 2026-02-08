@@ -36,3 +36,20 @@ CLI/Streamlit override payloads are parsed through:
 Parsing is strict:
 - Unknown fields are rejected (`extra="forbid"`).
 - Type/domain validation is enforced (`max_hold_bars >= 1`, `0 < risk_per_trade_pct <= 100`).
+
+## Universe-Scale Performance Smoke Gate (T18)
+
+Performance smoke test: `tests/test_strategy_modeling_performance.py`
+
+Deterministic benchmark setup:
+- `300` symbols (`SYM000..SYM299`)
+- `12` simulated trades per symbol (`3,600` total)
+- Full artifact write enabled (`summary.json`, `trades.csv`, `r_ladder.csv`, `segments.csv`, `summary.md`)
+- Fixed timestamps and fixed synthetic trade/segment payloads (no randomness, no network)
+
+CI smoke thresholds (single test run):
+- Runtime: `<= 1.5s` for one universe-scale artifact write
+- Peak memory (Python `tracemalloc`): `<= 32 MiB`
+
+Validation command:
+- `./.venv/bin/python -m pytest tests/test_strategy_modeling_performance.py -q`
