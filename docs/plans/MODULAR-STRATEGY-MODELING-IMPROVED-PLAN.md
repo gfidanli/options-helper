@@ -317,7 +317,7 @@ T1 ─┬─ T2 ─┬─ T4 ─┬─ T5 ─┬─ T6 ─┬─ T7 ─┬─ T9
   - Markdown rendering now tolerates missing filter/directional payloads (legacy/partial runs) by emitting stable “No ... returned” lines instead of failing key lookups.
   - Tests intentionally use subset assertions for required keys to remain forward-compatible with future additive artifact fields.
 
-### T8: Streamlit Strategy Modeling page parity
+### T8: Streamlit Strategy Modeling page parity (Complete)
 - **depends_on**: [T4, T5, T7]
 - **location**:
   - `apps/streamlit/pages/11_Strategy_Modeling.py`
@@ -330,6 +330,19 @@ T1 ─┬─ T2 ─┬─ T4 ─┬─ T5 ─┬─ T6 ─┬─ T7 ─┬─ T9
 - **validation**:
   - Portal page tests continue to pass (blocked-mode run button, payload shape).
   - Add a lightweight new portal test asserting `orb` appears in strategy options and that filter fields don’t crash request build.
+- **work log**:
+  - Added `orb` to the Streamlit strategy selector and added sidebar controls for all CLI entry-filter fields (`allow_shorts`, ORB confirmation controls, ATR floor, RSI/EMA9, volatility regimes).
+  - Added deterministic in-page filter-config validation (`StrategyEntryFilterConfig.model_validate(...)`) and disabled run when filter settings are invalid to avoid request-build crashes.
+  - Wired page runs to pass `filter_config` into `StrategyModelingRequest`.
+  - Added output sections for `Filter Summary` and `Directional Results`, rendering returned payloads when present.
+  - Added a new lightweight portal page test that drives ORB/filter controls, asserts request wiring, and verifies filter-summary/directional output rendering.
+- **files touched**:
+  - `apps/streamlit/pages/11_Strategy_Modeling.py`
+  - `tests/portal/test_strategy_modeling_page.py`
+  - `docs/plans/MODULAR-STRATEGY-MODELING-IMPROVED-PLAN.md`
+- **gotchas**:
+  - Streamlit control values can drift from schema constraints (for example empty volatility regime selection or malformed ORB cutoff), so explicit schema validation in the page prevents runtime service errors while keeping the page read-only.
+  - Output payloads may be partial on legacy/stub results; filter/directional sections are defensive and show stable fallback info when fields are absent.
 
 ### T9: Documentation updates
 - **depends_on**: [T6, T7, T8]

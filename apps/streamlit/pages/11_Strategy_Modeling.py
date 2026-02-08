@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import pandas as pd
+from pydantic import ValidationError
 import streamlit as st
 
 st.set_page_config(layout="wide", initial_sidebar_state="expanded")
@@ -15,6 +16,7 @@ from apps.streamlit.components.strategy_modeling_page import (
     load_strategy_modeling_data_payload,
 )
 from options_helper.analysis.strategy_modeling import StrategyModelingRequest
+from options_helper.schemas.strategy_modeling_filters import StrategyEntryFilterConfig
 
 DISCLAIMER_TEXT = "Informational and educational use only. Not financial advice."
 _SEGMENT_DIMENSIONS = [
@@ -26,6 +28,7 @@ _SEGMENT_DIMENSIONS = [
     "volatility_regime",
     "bars_since_swing_bucket",
 ]
+_VOLATILITY_REGIMES = ["low", "normal", "high"]
 _RESULT_STATE_KEY = "strategy_modeling_last_result"
 
 
@@ -42,6 +45,11 @@ def _to_dict(value: object) -> dict[str, Any]:
         data = value.model_dump()
         if isinstance(data, Mapping):
             return dict(data)
+    if hasattr(value, "__dict__"):
+        try:
+            return dict(vars(value))
+        except TypeError:
+            return {}
     return {}
 
 
@@ -95,6 +103,32 @@ def _format_metric(value: object, *, pct: bool = False) -> str:
     return f"{number:,.2f}"
 
 
+def _coerce_int(value: object) -> int | None:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float(value: object) -> float | None:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_volatility_regimes(raw_values: Sequence[str]) -> tuple[str, ...]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in raw_values:
+        token = str(value or "").strip().lower()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return tuple(out)
+
+
 st.title("Strategy Modeling")
 st.caption(DISCLAIMER_TEXT)
 st.info(
@@ -109,7 +143,7 @@ default_start = default_end - timedelta(days=365)
 with st.sidebar:
     st.markdown("### Modeling Inputs")
 
-    strategy = st.selectbox("Strategy", options=["sfp", "msb"], index=0)
+    strategy = st.selectbox("Strategy", options=["sfp", "msb", "orb"], index=0)
     start_date = st.date_input("Start date", value=default_start)
     end_date = st.date_input("End date", value=default_end)
     intraday_timeframe = st.selectbox("Intraday timeframe", options=["1Min", "5Min", "15Min", "30Min", "60Min"])
@@ -140,6 +174,28 @@ with st.sidebar:
         default=["symbol", "direction"],
     )
     segment_values_raw = st.text_input("Segment values (comma-separated)", value="")
+
+    st.markdown("### Entry Filters")
+    allow_shorts = st.checkbox("Allow short-direction entries", value=True)
+    enable_orb_confirmation = st.checkbox("Enable ORB confirmation gate", value=False)
+    orb_range_minutes = int(st.number_input("ORB range (minutes)", min_value=1, max_value=120, value=15, step=1))
+    orb_confirmation_cutoff_et = st.text_input("ORB confirmation cutoff ET (HH:MM)", value="10:30")
+    orb_stop_policy = st.selectbox("ORB stop policy", options=["base", "orb_range", "tighten"], index=0)
+    enable_atr_stop_floor = st.checkbox("Enable ATR stop floor", value=False)
+    atr_stop_floor_multiple = float(
+        st.number_input("ATR stop floor multiple", min_value=0.1, max_value=10.0, value=0.5, step=0.1)
+    )
+    enable_rsi_extremes = st.checkbox("Enable RSI extremes gate", value=False)
+    enable_ema9_regime = st.checkbox("Enable EMA9 regime gate", value=False)
+    ema9_slope_lookback_bars = int(
+        st.number_input("EMA9 slope lookback (bars)", min_value=1, max_value=50, value=3, step=1)
+    )
+    enable_volatility_regime = st.checkbox("Enable volatility regime gate", value=False)
+    allowed_volatility_regimes = st.multiselect(
+        "Allowed volatility regimes",
+        options=_VOLATILITY_REGIMES,
+        default=_VOLATILITY_REGIMES,
+    )
 
 for note in symbol_notes:
     st.warning(note)
@@ -173,19 +229,49 @@ if run_is_blocked:
         details = coverage_rows[[col for col in ["symbol", "required_count", "covered_count", "missing_count", "missing_days"] if col in coverage_rows.columns]]
         st.dataframe(details, hide_index=True, use_container_width=True)
 
+filter_config_payload = {
+    "allow_shorts": bool(allow_shorts),
+    "enable_orb_confirmation": bool(enable_orb_confirmation),
+    "orb_range_minutes": int(orb_range_minutes),
+    "orb_confirmation_cutoff_et": str(orb_confirmation_cutoff_et),
+    "orb_stop_policy": str(orb_stop_policy),
+    "enable_atr_stop_floor": bool(enable_atr_stop_floor),
+    "atr_stop_floor_multiple": float(atr_stop_floor_multiple),
+    "enable_rsi_extremes": bool(enable_rsi_extremes),
+    "enable_ema9_regime": bool(enable_ema9_regime),
+    "ema9_slope_lookback_bars": int(ema9_slope_lookback_bars),
+    "enable_volatility_regime": bool(enable_volatility_regime),
+    "allowed_volatility_regimes": _normalize_volatility_regimes(allowed_volatility_regimes),
+}
+filter_config: StrategyEntryFilterConfig | None = None
+filter_config_error: str | None = None
+try:
+    filter_config = StrategyEntryFilterConfig.model_validate(filter_config_payload)
+except ValidationError as exc:
+    detail = "; ".join(error.get("msg", "invalid value") for error in exc.errors())
+    filter_config_error = f"Invalid entry filter configuration: {detail}"
+
+if filter_config_error:
+    st.error(filter_config_error)
+
+run_disabled = run_is_blocked or filter_config is None
+run_help = "Runs local deterministic strategy modeling. Disabled when required intraday coverage is missing."
+if filter_config is None:
+    run_help = f"{run_help} Fix invalid entry-filter settings first."
+
 run_clicked = st.button(
     "Run Strategy Modeling",
     type="primary",
     use_container_width=True,
-    disabled=run_is_blocked,
-    help="Runs local deterministic strategy modeling. Disabled when required intraday coverage is missing.",
+    disabled=run_disabled,
+    help=run_help,
 )
 clear_clicked = st.button("Clear Results", use_container_width=True)
 
 if clear_clicked:
     st.session_state.pop(_RESULT_STATE_KEY, None)
 
-if run_clicked and not run_is_blocked:
+if run_clicked and not run_is_blocked and filter_config is not None:
     service = cli_deps.build_strategy_modeling_service()
     request = StrategyModelingRequest(
         strategy=strategy,
@@ -196,6 +282,7 @@ if run_clicked and not run_is_blocked:
         intraday_timeframe=intraday_timeframe,
         starting_capital=float(starting_capital),
         max_hold_bars=int(max_hold_bars),
+        filter_config=filter_config,
         policy={
             "require_intraday_bars": True,
             "risk_per_trade_pct": float(risk_pct),
@@ -213,6 +300,8 @@ r_ladder_df = _rows_to_df(getattr(result, "target_hit_rates", None))
 equity_df = _rows_to_df(getattr(result, "equity_curve", None))
 segment_df = _rows_to_df(getattr(result, "segment_records", None))
 trade_df = _rows_to_df(getattr(result, "trade_simulations", None))
+filter_summary_payload = _to_dict(getattr(result, "filter_summary", None))
+directional_payload = _to_dict(getattr(result, "directional_metrics", None))
 
 segment_values = _as_symbol_filter(segment_values_raw)
 if not segment_df.empty:
@@ -242,6 +331,57 @@ else:
         chart_data = ladder[["target_label", "hit_rate"]].set_index("target_label")
         st.bar_chart(chart_data)
     st.dataframe(ladder, hide_index=True, use_container_width=True)
+
+st.subheader("Filter Summary")
+if not filter_summary_payload:
+    st.info("No filter summary returned for this run.")
+else:
+    summary_rows = []
+    for field in ("base_event_count", "kept_event_count", "rejected_event_count"):
+        parsed = _coerce_int(filter_summary_payload.get(field))
+        if parsed is None:
+            continue
+        summary_rows.append({"metric": field, "value": parsed})
+    if summary_rows:
+        st.dataframe(pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
+
+    reject_counts = _to_dict(filter_summary_payload.get("reject_counts"))
+    reject_rows = []
+    for reason in sorted(reject_counts):
+        count = _coerce_int(reject_counts.get(reason))
+        if count is None or count <= 0:
+            continue
+        reject_rows.append({"reject_reason": reason, "count": count})
+    if reject_rows:
+        st.dataframe(pd.DataFrame(reject_rows), hide_index=True, use_container_width=True)
+    else:
+        st.info("No non-zero filter reject counts.")
+
+st.subheader("Directional Results")
+if not directional_payload:
+    st.info("No directional results returned for this run.")
+else:
+    directional_rows: list[dict[str, Any]] = []
+    for label in ("combined", "long_only", "short_only"):
+        bucket = _to_dict(directional_payload.get(label))
+        if not bucket:
+            continue
+        trade_count = _coerce_int(bucket.get("trade_count"))
+        total_return_pct = _coerce_float(bucket.get("total_return_pct"))
+        if total_return_pct is None:
+            total_return_pct = _coerce_float(_to_dict(bucket.get("portfolio_metrics")).get("total_return_pct"))
+        directional_rows.append(
+            {
+                "directional_bucket": label,
+                "trade_count": trade_count,
+                "total_return_pct": total_return_pct,
+            }
+        )
+
+    if directional_rows:
+        st.dataframe(pd.DataFrame(directional_rows), hide_index=True, use_container_width=True)
+    else:
+        st.info("Directional payload is present but empty.")
 
 st.subheader("Equity Curve")
 if equity_df.empty:
