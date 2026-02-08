@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from typer.testing import CliRunner
 
+from options_helper.cli import app
+from options_helper.commands import market_analysis as market_analysis_command
 from options_helper.schemas.zero_dte_put_study import (
     DecisionAnchorMetadata,
     DecisionMode,
@@ -305,3 +308,160 @@ def test_zero_dte_page_filters_apply_consistently(tmp_path: Path) -> None:
     assert pd.to_numeric(filtered["risk_tier"], errors="coerce").eq(0.01).all()
     assert pd.to_numeric(filtered["strike_return"], errors="coerce").abs().le(0.011).all()
 
+
+def test_zero_dte_page_reads_cli_seeded_artifacts(
+    monkeypatch,  # type: ignore[no-untyped-def]
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("streamlit")
+    from apps.streamlit.components import zero_dte_put_page as page
+
+    anchor = DecisionAnchorMetadata(
+        session_date=date(2026, 2, 10),
+        decision_ts=datetime(2026, 2, 10, 15, 30, tzinfo=timezone.utc),
+        decision_bar_completed_ts=datetime(2026, 2, 10, 15, 30, tzinfo=timezone.utc),
+        close_label_ts=datetime(2026, 2, 10, 21, 0, tzinfo=timezone.utc),
+        entry_anchor_ts=datetime(2026, 2, 10, 15, 31, tzinfo=timezone.utc),
+        decision_mode=DecisionMode.FIXED_TIME,
+    )
+
+    def _stub_study(**kwargs):  # type: ignore[no-untyped-def]
+        return market_analysis_command._ZeroDTEStudyResult(
+            artifact=ZeroDtePutStudyArtifact(
+                as_of=date(2026, 2, 10),
+                probability_rows=[
+                    ZeroDteProbabilityRow(
+                        symbol="SPY",
+                        risk_tier=0.01,
+                        strike_return=-0.01,
+                        breach_probability=0.11,
+                        breach_probability_ci_low=0.08,
+                        breach_probability_ci_high=0.16,
+                        sample_size=80,
+                        model_version="wf_1",
+                        assumptions_hash="hash-1",
+                        quote_quality_status=QuoteQualityStatus.GOOD,
+                        anchor=anchor,
+                    )
+                ],
+                strike_ladder_rows=[
+                    ZeroDteStrikeLadderRow(
+                        symbol="SPY",
+                        risk_tier=0.01,
+                        ladder_rank=1,
+                        strike_price=590.0,
+                        strike_return=-0.01,
+                        breach_probability=0.11,
+                        premium_estimate=1.05,
+                        fill_model=FillModel.BID,
+                        quote_quality_status=QuoteQualityStatus.GOOD,
+                        anchor=anchor,
+                    )
+                ],
+                simulation_rows=[
+                    ZeroDteSimulationRow(
+                        symbol="SPY",
+                        risk_tier=0.01,
+                        exit_mode=ExitMode.HOLD_TO_CLOSE,
+                        fill_model=FillModel.BID,
+                        quote_quality_status=QuoteQualityStatus.GOOD,
+                        anchor=anchor,
+                        pnl_per_contract=0.40,
+                        entry_premium=1.05,
+                        exit_premium=0.65,
+                        max_loss_proxy=100.0,
+                    )
+                ],
+            ),
+            active_model={
+                "schema_version": 1,
+                "symbol": "SPY",
+                "trained_through_session": "2026-02-10",
+                "tail_model": {
+                    "config": {},
+                    "strike_returns": [-0.01],
+                    "training_sample_size": 1,
+                    "global_stats": [],
+                    "parent_stats": [],
+                    "bucket_stats": [],
+                },
+                "assumptions": ZeroDtePutStudyArtifact(as_of=date(2026, 2, 10)).assumptions.model_dump(
+                    mode="json"
+                ),
+                "assumptions_hash": "hash-1",
+                "model_version": "active_2026-02-10",
+            },
+            preflight_passed=True,
+            preflight_messages=[],
+        )
+
+    def _stub_forward(**kwargs):  # type: ignore[no-untyped-def]
+        return market_analysis_command._ZeroDTEForwardResult(
+            payload={
+                "symbol": "SPY",
+                "session_date": "2026-02-11",
+                "rows": 1,
+                "pending_close_rows": 0,
+                "finalized_rows": 1,
+                "disclaimer": market_analysis_command.clean_nan(
+                    market_analysis_command.ZeroDteDisclaimerMetadata().model_dump(mode="json")
+                ),
+            },
+            rows=[
+                {
+                    "symbol": "SPY",
+                    "session_date": "2026-02-11",
+                    "decision_ts": "2026-02-11T15:30:00+00:00",
+                    "entry_anchor_ts": "2026-02-11T15:31:00+00:00",
+                    "close_label_ts": "2026-02-11T21:00:00+00:00",
+                    "risk_tier": 0.01,
+                    "ladder_rank": 1,
+                    "strike_return": -0.01,
+                    "strike_price": 591.0,
+                    "breach_probability": 0.11,
+                    "breach_probability_ci_low": 0.08,
+                    "breach_probability_ci_high": 0.16,
+                    "premium_estimate": 1.0,
+                    "policy_status": "ok",
+                    "policy_reason": None,
+                    "reconciliation_status": "finalized",
+                    "realized_close_return_from_entry": -0.009,
+                    "model_version": "active_2026-02-10",
+                    "assumptions_hash": "hash-1",
+                }
+            ],
+        )
+
+    monkeypatch.setattr(market_analysis_command, "_run_zero_dte_put_study_workflow", _stub_study)
+    monkeypatch.setattr(market_analysis_command, "_run_zero_dte_forward_snapshot_workflow", _stub_forward)
+
+    runner = CliRunner()
+    study = runner.invoke(
+        app,
+        ["market-analysis", "zero-dte-put-study", "--out", str(tmp_path)],
+    )
+    assert study.exit_code == 0, study.output
+
+    forward = runner.invoke(
+        app,
+        ["market-analysis", "zero-dte-put-forward-snapshot", "--out", str(tmp_path)],
+    )
+    assert forward.exit_code == 0, forward.output
+
+    page._list_symbols_cached.clear()
+    page._load_latest_study_payload.clear()
+    page._load_forward_rows.clear()
+
+    symbols, note = page.list_zero_dte_symbols(reports_root=tmp_path)
+    assert note is None
+    assert symbols == ["SPY"]
+
+    probabilities, probability_notes = page.load_probability_surface("SPY", reports_root=tmp_path)
+    assert probability_notes == []
+    assert len(probabilities) == 1
+    assert probabilities.iloc[0]["breach_probability"] == pytest.approx(0.11)
+
+    forward_rows, forward_notes = page.load_forward_snapshots("SPY", reports_root=tmp_path)
+    assert forward_notes == []
+    assert len(forward_rows) == 1
+    assert forward_rows.iloc[0]["reconciliation_status"] == "finalized"

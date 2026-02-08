@@ -264,6 +264,25 @@ def test_walk_forward_reproducible_with_stable_outputs() -> None:
     pd.testing.assert_frame_equal(first_summary, second_summary)
 
 
+def test_walk_forward_filters_non_causal_entry_anchors() -> None:
+    rows = _walk_forward_rows().copy()
+    rows["entry_anchor_ts"] = rows["decision_ts"]
+    cfg = ZeroDTEWalkForwardConfig(
+        train_sessions=3,
+        test_sessions=2,
+        step_sessions=2,
+        min_training_rows=1,
+        strike_returns=(-0.03, -0.02),
+        calibration_bins=3,
+    )
+
+    result = run_zero_dte_walk_forward(rows, config=cfg)
+
+    assert result.scored_rows.empty
+    assert result.model_snapshots.empty
+    assert all(int(fold["scored_rows"]) == 0 for fold in result.folds)
+
+
 def _candidate_row(
     *,
     session: date,

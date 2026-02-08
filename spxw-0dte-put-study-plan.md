@@ -268,27 +268,30 @@ T12,T13,T15,T16 -> T17 -> T18
 - **location**: `tests/test_zero_dte_*.py`
 - **description**: Add deterministic fixture-based tests for features, label anchors, preflight gates, tail model, policy, simulator, walk-forward no-leakage behavior, model snapshot lifecycle, and artifact upsert contracts.
 - **validation**: Targeted core pytest subset passes consistently offline.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Expanded deterministic core coverage with (1) walk-forward regression proving non-causal anchors (`entry_anchor_ts <= decision_ts`) are filtered before model fit/scoring and (2) artifact upsert regression proving deterministic key-based reconciliation, malformed-line tolerance, and stable row ordering for forward snapshot JSONL persistence.
+- **files edited/created**: `tests/test_zero_dte_backtesting.py`, `tests/test_zero_dte_artifacts.py`, `spxw-0dte-put-study-plan.md`
+- **gotchas/errors**: `options_helper/data/zero_dte_artifacts.py` is not present in this branch, so artifact lifecycle coverage was added against the current CLI upsert seam in `options_helper/commands/market_analysis.py`.
 
 ### T17: Add Integration Tests (CLI + Portal)
 - **depends_on**: [T12, T13, T15, T16]
 - **location**: `tests/test_zero_dte_cli.py`, `tests/portal/test_zero_dte_put_page.py`
 - **description**: Validate end-to-end command wiring, forward-test command behavior, and Streamlit query/page rendering against seeded temporary fixtures.
 - **validation**: CLI and portal integration tests pass with deterministic outputs and read-only guarantees.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Added integration coverage for CLI + portal 0DTE flows using temporary fixtures: CLI forward snapshot now has a custom `--snapshot-path` JSON-output contract test, and a new CLI-seeded portal test invokes both zero-DTE CLI commands (with deterministic fixture stubs) and verifies Streamlit helper reads for symbol discovery, probability rows, and reconciled forward rows.
+- **files edited/created**: `tests/test_zero_dte_cli.py`, `tests/portal/test_zero_dte_put_page.py`, `spxw-0dte-put-study-plan.md`
+- **gotchas/errors**: Integration remained deterministic by stubbing workflow seams while still exercising real CLI file persistence and portal read paths.
 
 ### T18: Documentation + End-to-End Verification
 - **depends_on**: [T15, T17]
 - **location**: `docs/SPXW_0DTE_PUT_STUDY.md`, `docs/index.md`, `mkdocs.yml`
 - **description**: Document methodology, assumptions, caveats, CLI usage, and dashboard interpretation. Run end-to-end checks (`cli --help`, study/backtest/forward-test command smoke, portal page import) and ensure all outputs explicitly state not-financial-advice, anti-lookahead assumptions, and SPY-proxy caveat (not true SPX/SPXW underlying).
 - **validation**: Docs build and targeted/full tests pass; manual smoke confirms command/page discoverability.
-- **status**: Not Completed
-- **log**:
-- **files edited/created**:
+- **status**: Completed
+- **log**: Expanded the SPXW 0DTE study doc with end-to-end methodology, hard anti-lookahead rules, SPY-proxy caveats, explicit not-financial-advice framing, CLI usage examples, artifact paths, and dashboard interpretation guidance. Updated docs landing page and MkDocs navigation for discoverability of the study doc.
+- **files edited/created**: `docs/SPXW_0DTE_PUT_STUDY.md`, `docs/index.md`, `mkdocs.yml`, `spxw-0dte-put-study-plan.md`
+- **gotchas/errors**: N/A
 
 ## Parallel Execution Groups
 

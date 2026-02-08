@@ -193,3 +193,63 @@ def test_zero_dte_forward_snapshot_surfaces_errors(
     result = runner.invoke(app, ["market-analysis", "zero-dte-put-forward-snapshot"])
     assert result.exit_code == 1
     assert "No frozen active model found" in result.output
+
+
+def test_zero_dte_forward_snapshot_respects_custom_snapshot_path_json_output(
+    monkeypatch,  # type: ignore[no-untyped-def]
+    tmp_path: Path,
+) -> None:
+    def _stub_forward(**kwargs):  # type: ignore[no-untyped-def]
+        return market_analysis_command._ZeroDTEForwardResult(
+            payload={
+                "symbol": "SPY",
+                "session_date": "2026-02-10",
+                "rows": 1,
+                "pending_close_rows": 1,
+                "finalized_rows": 0,
+                "disclaimer": market_analysis_command.clean_nan(
+                    market_analysis_command.ZeroDteDisclaimerMetadata().model_dump(mode="json")
+                ),
+            },
+            rows=[
+                {
+                    "symbol": "SPY",
+                    "session_date": "2026-02-10",
+                    "decision_ts": "2026-02-10T15:30:00+00:00",
+                    "risk_tier": 0.01,
+                    "model_version": "active_2026-02-09",
+                    "assumptions_hash": "hash-1",
+                    "reconciliation_status": "pending_close",
+                    "realized_close_return_from_entry": None,
+                }
+            ],
+        )
+
+    monkeypatch.setattr(
+        market_analysis_command,
+        "_run_zero_dte_forward_snapshot_workflow",
+        _stub_forward,
+    )
+
+    snapshot_path = tmp_path / "custom" / "snapshot.jsonl"
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "market-analysis",
+            "zero-dte-put-forward-snapshot",
+            "--out",
+            str(tmp_path),
+            "--snapshot-path",
+            str(snapshot_path),
+            "--format",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["persisted_rows"] == 1
+    assert payload["snapshot_path"] == str(snapshot_path)
+    assert snapshot_path.exists()
+    lines = [line for line in snapshot_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) == 1

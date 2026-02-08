@@ -43,6 +43,7 @@ nav:
   - Research & Analysis:
       - Research: RESEARCH.md
       - Market Analysis: MARKET_ANALYSIS.md
+      - SPXW 0DTE Put Study: SPXW_0DTE_PUT_STUDY.md
       - IV Surface: IV_SURFACE.md
       - Dealer Exposure: DEALER_EXPOSURE.md
       - Levels: LEVELS.md

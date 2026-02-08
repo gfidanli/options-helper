@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+import json
+from pathlib import Path
 
 import pytest
 
+from options_helper.commands.market_analysis import _upsert_forward_snapshot_records
 from options_helper.data.zero_dte_artifacts import (
     ModelStateMissingError,
     ModelStateStaleError,
@@ -309,3 +312,91 @@ def test_artifact_writers_upsert_rows_idempotently(tmp_path) -> None:  # type: i
         .status
         == "closed"
     )
+
+
+_FORWARD_KEY_FIELDS: tuple[str, ...] = (
+    "symbol",
+    "session_date",
+    "decision_ts",
+    "risk_tier",
+    "model_version",
+    "assumptions_hash",
+)
+
+
+def test_forward_snapshot_upsert_reconciles_and_is_deterministic(tmp_path: Path) -> None:
+    snapshot_path = tmp_path / "forward_snapshots.jsonl"
+    existing = [
+        {
+            "symbol": "SPY",
+            "session_date": "2026-02-10",
+            "decision_ts": "2026-02-10T15:30:00+00:00",
+            "risk_tier": 0.01,
+            "model_version": "active_2026-02-09",
+            "assumptions_hash": "hash-1",
+            "reconciliation_status": "pending_close",
+            "realized_close_return_from_entry": None,
+        },
+        {
+            "symbol": "SPY",
+            "session_date": "2026-02-11",
+            "decision_ts": "2026-02-11T15:30:00+00:00",
+            "risk_tier": 0.02,
+            "model_version": "active_2026-02-09",
+            "assumptions_hash": "hash-1",
+            "reconciliation_status": "pending_close",
+            "realized_close_return_from_entry": None,
+        },
+    ]
+    with snapshot_path.open("w", encoding="utf-8") as handle:
+        handle.write("{malformed-json}\n")
+        for row in existing:
+            handle.write(json.dumps(row) + "\n")
+
+    incoming = [
+        {
+            "symbol": "SPY",
+            "session_date": "2026-02-10",
+            "decision_ts": "2026-02-10T15:30:00+00:00",
+            "risk_tier": 0.01,
+            "model_version": "active_2026-02-09",
+            "assumptions_hash": "hash-1",
+            "reconciliation_status": "finalized",
+            "realized_close_return_from_entry": -0.012,
+        },
+        {
+            "symbol": "SPY",
+            "session_date": "2026-02-12",
+            "decision_ts": "2026-02-12T15:30:00+00:00",
+            "risk_tier": 0.05,
+            "model_version": "active_2026-02-09",
+            "assumptions_hash": "hash-1",
+            "reconciliation_status": "pending_close",
+            "realized_close_return_from_entry": None,
+        },
+        {
+            "symbol": "SPY",
+            "session_date": "2026-02-13",
+            "decision_ts": "2026-02-13T15:30:00+00:00",
+            "risk_tier": 0.01,
+            "assumptions_hash": "hash-1",
+            "reconciliation_status": "pending_close",
+        },
+    ]
+
+    count = _upsert_forward_snapshot_records(
+        snapshot_path,
+        rows=incoming,
+        key_fields=_FORWARD_KEY_FIELDS,
+    )
+
+    assert count == 3
+    lines = [line for line in snapshot_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) == 3
+    rows = [json.loads(line) for line in lines]
+    keys = [tuple(str(row[field]) for field in _FORWARD_KEY_FIELDS) for row in rows]
+    assert keys == sorted(keys)
+
+    updated = next(row for row in rows if row["session_date"] == "2026-02-10")
+    assert updated["reconciliation_status"] == "finalized"
+    assert updated["realized_close_return_from_entry"] == -0.012
