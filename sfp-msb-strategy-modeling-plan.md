@@ -301,9 +301,18 @@ T0 ──┬── T1 ──┬── T4A ──┬── T5 ── T6 ── T7
 - **location**: `apps/streamlit/components/strategy_modeling_page.py`
 - **description**: Add cached loaders and transformation helpers for interactive dashboard use with graceful failures for missing DB/table/symbol universe and invalid filter combinations. Include intraday preflight coverage checks and expose a blocking status payload when requirements are not met.
 - **validation**: Component tests validate payload shape, cache behavior, friendly error handling, and intraday-coverage blocking semantics.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added Streamlit strategy-modeling component module with cached universe loader and cached modeling-input payload loader for dashboard consumers.
+  - Added deterministic transformation helpers for required-session serialization, intraday preflight payload shaping, per-symbol coverage rows, and explicit blocking-status payloads used to gate runs when requirements are unmet.
+  - Implemented graceful failure handling for missing DuckDB/table/universe states, invalid date/symbol/fallback filter combinations, and no-data post-filter outcomes while preserving read-only behavior.
+  - Added deterministic portal component tests covering payload shape, missing DB/table handling, invalid filter/fallback errors, intraday preflight blocking semantics, and Streamlit cache behavior.
+  - Validation: `./.venv/bin/python -m pytest tests/portal/test_strategy_modeling_component.py` (5 passed).
+  - Errors: none.
 - **files edited/created**:
+  - `apps/streamlit/components/strategy_modeling_page.py`
+  - `tests/portal/test_strategy_modeling_component.py`
+  - `sfp-msb-strategy-modeling-plan.md`
 
 ### T13: Add Streamlit Strategy Modeling Page
 - **depends_on**: [T0, T12]
