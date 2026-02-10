@@ -310,6 +310,20 @@ T2 ─┘       │
 - Gotchas / errors:
   - None.
 
+### T6 ✅ Complete (2026-02-10)
+
+- Work log:
+  - Updated `docs/TECHNICAL_STRATEGY_MODELING.md` with read-only dashboard trade-review + drilldown behavior, including table-selection precedence (`best -> worst -> full log`) and drilldown fallback/guardrail semantics.
+  - Extended artifact contract docs with new files `top_20_best_trades.csv` / `top_20_worst_trades.csv` and additive `summary.json.trade_review` fields.
+  - Documented trade-review scope semantics explicitly: `accepted_closed_trades` is authoritative when `accepted_trade_ids` exists (including empty), and `closed_nonrejected_trades` is fallback only when the attribute is missing.
+  - Updated dashboard export guide to include the two new CSVs and the `summary.json.trade_review` contract for downstream analysis workflows.
+- Files changed:
+  - `docs/TECHNICAL_STRATEGY_MODELING.md`
+  - `docs/STRATEGY_MODELING_DASHBOARD_EXPORT.md`
+  - `STRATEGY_MODELING_TRADE_REVIEW_IMPROVED-PLAN.md`
+- Gotchas / errors:
+  - None.
+
 ## Task Completion Log
 
 ### T1 (Completed 2026-02-10)

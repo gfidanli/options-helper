@@ -6,7 +6,7 @@ This project is **not financial advice**. Strategy-modeling outputs are informat
 
 This page documents the implemented behavior of:
 - `options-helper technicals strategy-model`
-- Strategy-modeling artifacts (`summary.json`, `trades.csv`, `r_ladder.csv`, `segments.csv`, `summary.md`, `llm_analysis_prompt.md`)
+- Strategy-modeling artifacts (`summary.json`, `summary.md`, `llm_analysis_prompt.md`, `trades.csv`, `r_ladder.csv`, `segments.csv`, `top_20_best_trades.csv`, `top_20_worst_trades.csv`)
 - Streamlit strategy-modeling page parity (`apps/streamlit/pages/11_Strategy_Modeling.py`)
 
 For reusable run presets across CLI and dashboard, see [Strategy Modeling Profiles](STRATEGY_MODELING_PROFILES.md).
@@ -251,6 +251,30 @@ Each directional bucket contains serialized metrics (`portfolio_metrics`) plus:
 - `accepted_trade_count`
 - `skipped_trade_count`
 
+## Dashboard Trade Review + Drilldown (Read-Only)
+
+Trade log UI sections:
+- `Top 20 Best Trades (Realized R)`
+- `Top 20 Worst Trades (Realized R)`
+- `Full Trade Log`
+
+Ranking behavior:
+- Uses shared helper `rank_trades_for_review(...)` (same ranking contract used by artifact exports).
+- Ranking metric is `realized_r`.
+- Ranking scope label is shown in the dashboard (`Accepted closed trades` or `Closed non-rejected trades`).
+- Row selection is enabled on all three tables (`on_select="rerun"`, `selection_mode="single-row"`).
+- Deterministic selection precedence is `best -> worst -> full_log` when multiple selections are present.
+
+Trade drilldown behavior:
+- Read-only visualization; no order execution and no ingest/backfill writes.
+- Uses selected row `trade_id` and trade fields (`symbol`, `entry_ts`, `exit_ts`, entry/stop/target/exit prices).
+- Base bar loading preference: `1Min`, then run `intraday_timeframe`, then `5Min`.
+- Chart timeframe choices come from `supported_chart_timeframes(base_tf)` and are restricted to supported multiples in `1Min/5Min/15Min/30Min/60Min`.
+- Context window is controlled by user-selected pre/post context bars.
+- Resample guardrail: if chart bars would exceed `5000`, the page auto-upsamples timeframe; if still too large, chart render is skipped with warning.
+- Rendering uses Altair candlestick + markers when available, with close-line fallback and marker table when Altair is unavailable or rendering fails.
+- Missing selection, missing timestamps, and missing bars produce warnings (not crashes).
+
 ## Artifact Contract
 
 Output path:
@@ -259,10 +283,13 @@ Output path:
 
 Files:
 - `summary.json`
+- `summary.md`
+- `llm_analysis_prompt.md`
 - `trades.csv`
 - `r_ladder.csv`
 - `segments.csv`
-- `summary.md`
+- `top_20_best_trades.csv`
+- `top_20_worst_trades.csv`
 
 `summary.json` top-level keys:
 - `schema_version`
@@ -280,6 +307,7 @@ Files:
 - `r_ladder`
 - `segments`
 - `trade_log`
+- `trade_review` (additive)
 
 `summary` keys:
 - `signal_event_count`
@@ -327,6 +355,24 @@ Files:
 - `initial_risk`, `realized_r`, `stop_slippage_r`
 - `gap_fill_applied`, `gap_exit`, `loss_below_1r`
 - `exit_reason`, `reject_code`
+
+`summary.json.trade_review` contract:
+- `metric`: ranking metric string (currently `realized_r`).
+- `scope`:
+  - `accepted_closed_trades` when `run_result` includes `accepted_trade_ids` (including present-but-empty, which is authoritative and can yield zero rows).
+  - `closed_nonrejected_trades` only when `accepted_trade_ids` is missing from the run payload (legacy fallback).
+- `candidate_trade_count`: count of candidate rows in the resolved scope.
+- `top_best_count`: number of rows in `top_best`.
+- `top_worst_count`: number of rows in `top_worst`.
+- `top_best`: highlight rows (not full duplicates of `trade_log`) with fields:
+  - `rank`, `trade_id`, `symbol`, `direction`, `entry_ts`, `exit_ts`, `realized_r`, `exit_reason`
+- `top_worst`: same highlight schema as `top_best`.
+
+Trade-review candidate rules and ordering:
+- Candidates must be `status=closed` (case-insensitive), have finite `realized_r`, and have empty/null `reject_code`.
+- `top_20_best_trades.csv` sort order: `realized_r desc`, then `entry_ts asc`, then `trade_id asc`.
+- `top_20_worst_trades.csv` sort order: `realized_r asc`, then `entry_ts asc`, then `trade_id asc`.
+- Both CSVs include up to 20 rows and use field order: `rank` + `trades.csv` field order.
 
 ## Guardrails
 
