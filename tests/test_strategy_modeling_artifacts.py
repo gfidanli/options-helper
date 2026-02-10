@@ -196,6 +196,7 @@ def _assert_required_summary_keys(payload: dict[str, object]) -> None:
         "r_ladder",
         "segments",
         "trade_log",
+        "trade_review",
     }
     assert required_top_level_keys.issubset(payload.keys())
 
@@ -209,6 +210,19 @@ def _assert_required_summary_keys(payload: dict[str, object]) -> None:
         "losses_below_minus_one_r",
     }
     assert required_summary_keys.issubset(summary.keys())
+
+    trade_review = payload.get("trade_review")
+    assert isinstance(trade_review, dict)
+    required_trade_review_keys = {
+        "metric",
+        "scope",
+        "candidate_trade_count",
+        "top_best_count",
+        "top_worst_count",
+        "top_best",
+        "top_worst",
+    }
+    assert required_trade_review_keys.issubset(trade_review.keys())
 
 
 def test_strategy_modeling_artifacts_include_required_metadata_and_disclaimer(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -240,11 +254,21 @@ def test_strategy_modeling_artifacts_include_required_metadata_and_disclaimer(tm
     assert payload["trade_log"][0]["signal_confirmed_ts"] == "2026-01-06T14:55:00-06:00"
     assert payload["trade_log"][0]["entry_ts"] == "2026-01-06T15:00:00-06:00"
     assert payload["trade_log"][0]["exit_ts"] == "2026-01-06T15:05:00-06:00"
+    assert payload["trade_review"]["metric"] == "realized_r"
+    assert payload["trade_review"]["scope"] == "accepted_closed_trades"
+    assert payload["trade_review"]["candidate_trade_count"] == 1
+    assert payload["trade_review"]["top_best_count"] == 1
+    assert payload["trade_review"]["top_worst_count"] == 1
+    assert payload["trade_review"]["top_best"][0]["trade_id"] == "tr-1"
+    assert payload["trade_review"]["top_worst"][0]["trade_id"] == "tr-1"
 
     markdown = paths.summary_md.read_text(encoding="utf-8")
     assert DISCLAIMER_TEXT in markdown
     assert "## Filters" in markdown
     assert "## Directional Results" in markdown
+    assert "## Trade Review" in markdown
+    assert "- Scope: `accepted_closed_trades`" in markdown
+    assert "- Candidate trades / best / worst: `1` / `1` / `1`" in markdown
     assert "Combined:" in markdown
     assert "Long-only:" in markdown
     assert "Short-only:" in markdown
@@ -256,6 +280,8 @@ def test_strategy_modeling_artifacts_include_required_metadata_and_disclaimer(tm
     assert "Strategy Modeling LLM Analysis Prompt" in llm_prompt
     assert "Files To Read" in llm_prompt
     assert "`summary.json`" in llm_prompt
+    assert "`top_20_best_trades.csv`" in llm_prompt
+    assert "`top_20_worst_trades.csv`" in llm_prompt
     assert "Not financial advice." in llm_prompt
 
 
@@ -280,6 +306,62 @@ def test_strategy_modeling_trade_csv_surfaces_gap_and_stop_slippage(tmp_path) ->
     assert row["gap_exit"] == "True"
     assert row["stop_slippage_r"] == "-0.25"
     assert row["loss_below_1r"] == "True"
+
+    with paths.top_best_trades_csv.open("r", encoding="utf-8", newline="") as handle:
+        best_rows = list(csv.DictReader(handle))
+    with paths.top_worst_trades_csv.open("r", encoding="utf-8", newline="") as handle:
+        worst_rows = list(csv.DictReader(handle))
+    assert [row["rank"] for row in best_rows] == ["1"]
+    assert [row["rank"] for row in worst_rows] == ["1"]
+    assert [row["trade_id"] for row in best_rows] == ["tr-1"]
+    assert [row["trade_id"] for row in worst_rows] == ["tr-1"]
+
+
+def test_strategy_modeling_trade_review_scope_uses_fallback_only_when_accepted_ids_missing(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    empty_scope_result = _sample_run_result()
+    empty_scope_result.accepted_trade_ids = ()
+    empty_scope_paths = write_strategy_modeling_artifacts(
+        out_dir=tmp_path / "empty_scope",
+        strategy="sfp",
+        request=_sample_request(),
+        run_result=empty_scope_result,
+        generated_at=datetime(2026, 2, 8, 12, 30, tzinfo=timezone.utc),
+    )
+    empty_scope_payload = json.loads(empty_scope_paths.summary_json.read_text(encoding="utf-8"))
+    empty_scope_review = empty_scope_payload["trade_review"]
+    assert empty_scope_review["scope"] == "accepted_closed_trades"
+    assert empty_scope_review["candidate_trade_count"] == 0
+    assert empty_scope_review["top_best_count"] == 0
+    assert empty_scope_review["top_worst_count"] == 0
+    assert empty_scope_review["top_best"] == []
+    assert empty_scope_review["top_worst"] == []
+
+    with empty_scope_paths.top_best_trades_csv.open("r", encoding="utf-8", newline="") as handle:
+        empty_best_rows = list(csv.DictReader(handle))
+    with empty_scope_paths.top_worst_trades_csv.open("r", encoding="utf-8", newline="") as handle:
+        empty_worst_rows = list(csv.DictReader(handle))
+    assert empty_best_rows == []
+    assert empty_worst_rows == []
+
+    fallback_scope_result = _sample_run_result()
+    delattr(fallback_scope_result, "accepted_trade_ids")
+    fallback_scope_paths = write_strategy_modeling_artifacts(
+        out_dir=tmp_path / "fallback_scope",
+        strategy="sfp",
+        request=_sample_request(),
+        run_result=fallback_scope_result,
+        generated_at=datetime(2026, 2, 8, 12, 30, tzinfo=timezone.utc),
+    )
+    fallback_scope_payload = json.loads(fallback_scope_paths.summary_json.read_text(encoding="utf-8"))
+    fallback_scope_review = fallback_scope_payload["trade_review"]
+    assert fallback_scope_review["scope"] == "closed_nonrejected_trades"
+    assert fallback_scope_review["candidate_trade_count"] == 1
+    assert fallback_scope_review["top_best_count"] == 1
+    assert fallback_scope_review["top_worst_count"] == 1
+    assert fallback_scope_review["top_best"][0]["trade_id"] == "tr-1"
+    assert fallback_scope_review["top_worst"][0]["trade_id"] == "tr-1"
 
 
 def test_strategy_model_cli_writes_strategy_modeling_artifacts(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -321,8 +403,12 @@ def test_strategy_model_cli_writes_strategy_modeling_artifacts(monkeypatch, tmp_
     assert "strategy=sfp" in result.output
 
     summary_path = tmp_path / "sfp" / "2026-01-31" / "summary.json"
+    top_best_path = tmp_path / "sfp" / "2026-01-31" / "top_20_best_trades.csv"
+    top_worst_path = tmp_path / "sfp" / "2026-01-31" / "top_20_worst_trades.csv"
     llm_prompt_path = tmp_path / "sfp" / "2026-01-31" / "llm_analysis_prompt.md"
     assert summary_path.exists()
+    assert top_best_path.exists()
+    assert top_worst_path.exists()
     assert llm_prompt_path.exists()
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
     _assert_required_summary_keys(payload)

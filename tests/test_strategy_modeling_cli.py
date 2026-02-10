@@ -931,6 +931,8 @@ def test_strategy_model_writes_artifacts_and_summary_contract(
     trades_path = run_dir / "trades.csv"
     r_ladder_path = run_dir / "r_ladder.csv"
     segments_path = run_dir / "segments.csv"
+    top_best_path = run_dir / "top_20_best_trades.csv"
+    top_worst_path = run_dir / "top_20_worst_trades.csv"
     summary_md_path = run_dir / "summary.md"
     llm_prompt_path = run_dir / "llm_analysis_prompt.md"
 
@@ -938,6 +940,8 @@ def test_strategy_model_writes_artifacts_and_summary_contract(
     assert trades_path.exists()
     assert r_ladder_path.exists()
     assert segments_path.exists()
+    assert top_best_path.exists()
+    assert top_worst_path.exists()
     assert summary_md_path.exists()
     assert llm_prompt_path.exists()
 
@@ -958,6 +962,7 @@ def test_strategy_model_writes_artifacts_and_summary_contract(
         "r_ladder",
         "segments",
         "trade_log",
+        "trade_review",
     }
     assert required_top_level_keys.issubset(payload.keys())
     assert payload["schema_version"] == 1
@@ -988,6 +993,11 @@ def test_strategy_model_writes_artifacts_and_summary_contract(
     assert len(payload["r_ladder"]) == 1
     assert len(payload["segments"]) == 3
     assert len(payload["trade_log"]) == 3
+    assert payload["trade_review"]["metric"] == "realized_r"
+    assert payload["trade_review"]["scope"] == "accepted_closed_trades"
+    assert payload["trade_review"]["candidate_trade_count"] == 2
+    assert payload["trade_review"]["top_best_count"] == 2
+    assert payload["trade_review"]["top_worst_count"] == 2
     assert any(row.get("loss_below_1r") is True for row in payload["trade_log"])
 
     with trades_path.open("r", encoding="utf-8", newline="") as handle:
@@ -996,10 +1006,16 @@ def test_strategy_model_writes_artifacts_and_summary_contract(
         r_ladder_rows = list(csv.DictReader(handle))
     with segments_path.open("r", encoding="utf-8", newline="") as handle:
         segment_rows = list(csv.DictReader(handle))
+    with top_best_path.open("r", encoding="utf-8", newline="") as handle:
+        top_best_rows = list(csv.DictReader(handle))
+    with top_worst_path.open("r", encoding="utf-8", newline="") as handle:
+        top_worst_rows = list(csv.DictReader(handle))
 
     assert len(trade_rows) == 3
     assert len(r_ladder_rows) == 1
     assert len(segment_rows) == 3
+    assert [row["trade_id"] for row in top_best_rows] == ["tr-1", "tr-2"]
+    assert [row["trade_id"] for row in top_worst_rows] == ["tr-2", "tr-1"]
 
     summary_md = summary_md_path.read_text(encoding="utf-8")
     assert DISCLAIMER_TEXT in summary_md
@@ -1052,6 +1068,8 @@ def test_strategy_model_artifact_write_flags_are_respected(
     assert not (run_dir / "trades.csv").exists()
     assert not (run_dir / "r_ladder.csv").exists()
     assert not (run_dir / "segments.csv").exists()
+    assert not (run_dir / "top_20_best_trades.csv").exists()
+    assert not (run_dir / "top_20_worst_trades.csv").exists()
     assert not (run_dir / "summary.md").exists()
     assert not (run_dir / "llm_analysis_prompt.md").exists()
 

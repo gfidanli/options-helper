@@ -266,6 +266,21 @@ T2 ─┘       │
 - Gotchas / errors:
   - During test validation, resample VWAP fallback initially mutated the close column through a shared numpy view. Fixed by copying the close array before VWAP assignment.
 
+### T3 ✅ Complete (2026-02-10)
+
+- Work log:
+  - Extended artifact path contract with `top_20_best_trades.csv` and `top_20_worst_trades.csv`, and wrote both files when CSV output is enabled.
+  - Integrated `rank_trades_for_review(...)` into artifact generation with authoritative accepted-scope handling: pass `accepted_trade_ids=None` only when the attribute is missing, otherwise pass present IDs (including empty).
+  - Added additive `summary.json.trade_review` payload, a new Trade Review section in `summary.md`, and updated `llm_analysis_prompt.md` Files To Read with both new CSVs.
+  - Added regression coverage for accepted-scope behavior (present-empty vs missing), output schema keys, and CLI artifact file parity.
+- Files changed:
+  - `options_helper/data/strategy_modeling_artifacts.py`
+  - `tests/test_strategy_modeling_artifacts.py`
+  - `tests/test_strategy_modeling_cli.py`
+  - `STRATEGY_MODELING_TRADE_REVIEW_IMPROVED-PLAN.md`
+- Gotchas / errors:
+  - None.
+
 ### T4 ✅ Complete (2026-02-10)
 
 - Work log:

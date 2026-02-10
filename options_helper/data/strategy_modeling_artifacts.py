@@ -10,12 +10,14 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel
 
+from options_helper.analysis.strategy_modeling_trade_review import rank_trades_for_review
 from options_helper.schemas.common import clean_nan
 
 DISCLAIMER_TEXT = "Informational output only; this tool is not financial advice."
 _ENTRY_ANCHOR_LABEL = "next_bar_open"
 _INTRABAR_TIE_BREAK_DEFAULT = "stop_first"
 _DEFAULT_OUTPUT_TIMEZONE = "UTC"
+_TRADE_REVIEW_TOP_N = 20
 _OUTPUT_TIMEZONE_ALIASES: dict[str, str] = {
     "CST": "America/Chicago",
     "CDT": "America/Chicago",
@@ -44,6 +46,18 @@ _TRADE_LOG_FIELDS: tuple[str, ...] = (
     "stop_slippage_r",
     "loss_below_1r",
     "reject_code",
+)
+
+_TRADE_REVIEW_CSV_FIELDS: tuple[str, ...] = ("rank", *_TRADE_LOG_FIELDS)
+_TRADE_REVIEW_HIGHLIGHT_FIELDS: tuple[str, ...] = (
+    "rank",
+    "trade_id",
+    "symbol",
+    "direction",
+    "entry_ts",
+    "exit_ts",
+    "realized_r",
+    "exit_reason",
 )
 
 _R_LADDER_PREFERRED_FIELDS: tuple[str, ...] = (
@@ -77,6 +91,8 @@ class StrategyModelingArtifactPaths:
     trade_log_csv: Path
     r_ladder_csv: Path
     segments_csv: Path
+    top_best_trades_csv: Path
+    top_worst_trades_csv: Path
     summary_md: Path
     llm_analysis_prompt_md: Path
 
@@ -94,6 +110,8 @@ def build_strategy_modeling_artifact_paths(
         trade_log_csv=run_dir / "trades.csv",
         r_ladder_csv=run_dir / "r_ladder.csv",
         segments_csv=run_dir / "segments.csv",
+        top_best_trades_csv=run_dir / "top_20_best_trades.csv",
+        top_worst_trades_csv=run_dir / "top_20_worst_trades.csv",
         summary_md=run_dir / "summary.md",
         llm_analysis_prompt_md=run_dir / _LLM_PROMPT_FILENAME,
     )
@@ -142,8 +160,20 @@ def write_strategy_modeling_artifacts(
 
     signal_events = getattr(run_result, "signal_events", ()) or ()
     accepted_trade_ids = getattr(run_result, "accepted_trade_ids", ()) or ()
+    accepted_trade_ids_for_review: Sequence[str] | None = None
+    if hasattr(run_result, "accepted_trade_ids"):
+        accepted_trade_ids_for_review = tuple(
+            _normalize_string_sequence(getattr(run_result, "accepted_trade_ids", None))
+        )
     skipped_trade_ids = getattr(run_result, "skipped_trade_ids", ()) or ()
     losses_below_one_r = sum(1 for row in trade_rows if row.get("loss_below_1r") is True)
+    trade_review = rank_trades_for_review(
+        trade_rows,
+        accepted_trade_ids=accepted_trade_ids_for_review,
+        top_n=_TRADE_REVIEW_TOP_N,
+    )
+    top_best_trade_rows = [clean_nan(_to_mapping(row)) for row in trade_review.top_best_rows]
+    top_worst_trade_rows = [clean_nan(_to_mapping(row)) for row in trade_review.top_worst_rows]
 
     payload = clean_nan(
         {
@@ -172,6 +202,13 @@ def write_strategy_modeling_artifacts(
             "r_ladder": r_ladder_rows,
             "segments": segment_rows,
             "trade_log": trade_rows,
+            "trade_review": _build_trade_review_payload(
+                metric=trade_review.metric,
+                scope=trade_review.scope,
+                candidate_trade_count=trade_review.candidate_trade_count,
+                top_best_rows=top_best_trade_rows,
+                top_worst_rows=top_worst_trade_rows,
+            ),
         }
     )
 
@@ -189,6 +226,16 @@ def write_strategy_modeling_artifacts(
             path=paths.segments_csv,
             fieldnames=_csv_fields_for_rows(segment_rows, _SEGMENT_PREFERRED_FIELDS),
             rows=segment_rows,
+        )
+        _write_csv(
+            path=paths.top_best_trades_csv,
+            fieldnames=_TRADE_REVIEW_CSV_FIELDS,
+            rows=top_best_trade_rows,
+        )
+        _write_csv(
+            path=paths.top_worst_trades_csv,
+            fieldnames=_TRADE_REVIEW_CSV_FIELDS,
+            rows=top_worst_trade_rows,
         )
 
     if write_md:
@@ -271,6 +318,38 @@ def _build_policy_metadata(
     )
 
 
+def _build_trade_review_payload(
+    *,
+    metric: str,
+    scope: str,
+    candidate_trade_count: int,
+    top_best_rows: Sequence[Mapping[str, Any]],
+    top_worst_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    best_rows = [clean_nan(_to_mapping(row)) for row in top_best_rows]
+    worst_rows = [clean_nan(_to_mapping(row)) for row in top_worst_rows]
+    return clean_nan(
+        {
+            "metric": metric,
+            "scope": scope,
+            "candidate_trade_count": candidate_trade_count,
+            "top_best_count": len(best_rows),
+            "top_worst_count": len(worst_rows),
+            "top_best": _trade_review_highlights(best_rows),
+            "top_worst": _trade_review_highlights(worst_rows),
+        }
+    )
+
+
+def _trade_review_highlights(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    highlights: list[dict[str, Any]] = []
+    for row in rows:
+        src = _to_mapping(row)
+        highlight = {field: src.get(field) for field in _TRADE_REVIEW_HIGHLIGHT_FIELDS}
+        highlights.append(clean_nan(highlight))
+    return highlights
+
+
 def _render_summary_markdown(payload: Mapping[str, Any]) -> str:
     summary = _to_mapping(payload.get("summary"))
     policy = _to_mapping(payload.get("policy_metadata"))
@@ -281,6 +360,7 @@ def _render_summary_markdown(payload: Mapping[str, Any]) -> str:
     r_ladder_rows = _normalize_records(payload.get("r_ladder", []))
     segments = _normalize_records(payload.get("segments", []))
     trade_rows = _normalize_records(payload.get("trade_log", []))
+    trade_review = _to_mapping(payload.get("trade_review"))
 
     lines: list[str] = [
         f"# Strategy Modeling Summary ({str(payload.get('strategy', '')).upper()})",
@@ -404,6 +484,33 @@ def _render_summary_markdown(payload: Mapping[str, Any]) -> str:
     else:
         lines.append("- No segment records returned.")
 
+    lines.extend(["", "## Trade Review", ""])
+    if trade_review:
+        lines.append(f"- Scope: `{trade_review.get('scope', '-')}`")
+        lines.append(f"- Metric: `{trade_review.get('metric', 'realized_r')}`")
+        lines.append(
+            (
+                "- Candidate trades / best / worst: "
+                f"`{trade_review.get('candidate_trade_count', 0)}` / "
+                f"`{trade_review.get('top_best_count', 0)}` / "
+                f"`{trade_review.get('top_worst_count', 0)}`"
+            )
+        )
+
+        top_best = _normalize_records(trade_review.get("top_best", []))
+        if top_best:
+            lines.append(
+                f"- Best highlight: {_format_trade_review_highlight(top_best[0])}"
+            )
+
+        top_worst = _normalize_records(trade_review.get("top_worst", []))
+        if top_worst:
+            lines.append(
+                f"- Worst highlight: {_format_trade_review_highlight(top_worst[0])}"
+            )
+    else:
+        lines.append("- No trade-review rows returned.")
+
     lines.extend(
         [
             "",
@@ -418,6 +525,21 @@ def _render_summary_markdown(payload: Mapping[str, Any]) -> str:
     )
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _format_trade_review_highlight(row: Mapping[str, Any]) -> str:
+    src = _to_mapping(row)
+    rank = _as_int_or_none(src.get("rank")) or 1
+    trade_id = _as_str_or_none(src.get("trade_id")) or "-"
+    symbol = _as_str_or_none(src.get("symbol")) or "-"
+    direction = _as_str_or_none(src.get("direction")) or "-"
+    realized_r = _as_float_or_none(src.get("realized_r"))
+    exit_reason = _as_str_or_none(src.get("exit_reason")) or "-"
+    realized_r_label = "-" if realized_r is None else f"{realized_r:.6g}"
+    return (
+        f"`#{rank}` trade=`{trade_id}` symbol=`{symbol}` direction=`{direction}` "
+        f"realized_r=`{realized_r_label}` exit_reason=`{exit_reason}`"
+    )
 
 
 def _render_directional_bucket_lines(directional_metrics: Mapping[str, Any]) -> list[str]:
@@ -494,6 +616,8 @@ def _render_llm_analysis_prompt(payload: Mapping[str, Any]) -> str:
         "- `summary.json`: full machine-readable run payload and metrics.",
         "- `summary.md`: human summary and caveats.",
         "- `trades.csv`: per-trade outcomes (`realized_r`, stop slippage, gap exits).",
+        "- `top_20_best_trades.csv`: top accepted/fallback closed trades ranked by `realized_r`.",
+        "- `top_20_worst_trades.csv`: bottom accepted/fallback closed trades ranked by `realized_r`.",
         "- `segments.csv`: grouped performance by dimension/value.",
         "- `r_ladder.csv`: target hit rates and expectancy by R target.",
         "",
