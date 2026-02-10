@@ -289,7 +289,7 @@ T2 ──┘                                   └── T8
   - Extended `_build_signal_kwargs(...)` to accept `fib_retracement_pct`, normalize it via `normalize_fib_retracement_pct(...)`, and return fib signal kwargs for the fib strategy.
   - Extended profile save/load wiring to persist and hydrate `fib_retracement_pct` via `_build_profile_from_inputs(...)` and `_apply_loaded_profile_to_state(...)`.
 - Files modified: `apps/streamlit/pages/11_Strategy_Modeling.py`.
-- Validation: `./.venv/bin/python -m pytest /Volumes/develop/options-helper-fib-retracement/tests/portal/test_streamlit_scaffold.py` passed (`1 passed, 3 skipped`).
+- Validation: `./.venv/bin/python -m pytest /Volumes/develop/options-helper-fib-retracement/tests/portal/test_streamlit_scaffold.py` passed (`1 passed, 3 skipped`); `./.venv/bin/python -m py_compile /Volumes/develop/options-helper-fib-retracement/apps/streamlit/pages/11_Strategy_Modeling.py` passed.
 - Errors/gotchas: None.
 
 ### T5: CLI enable `fib_retracement` strategy + fib pct option (completed 2026-02-10)
