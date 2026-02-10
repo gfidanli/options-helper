@@ -43,8 +43,22 @@ def _resolve_paper_flag(paper: bool | None, api_base_url: str | None) -> bool | 
         return None
     if "paper" in base_url:
         return True
+    if "sandbox" in base_url:
+        return True
+    if "api.alpaca.markets" in base_url:
+        return False
     if "live" in base_url:
         return False
+    return None
+
+
+def _resolve_url_override(api_base_url: str | None) -> str | None:
+    base_url = _clean_env(api_base_url)
+    if not base_url:
+        return None
+    normalized = base_url.lower()
+    if normalized.startswith("wss://") or normalized.startswith("ws://"):
+        return base_url
     return None
 
 
@@ -96,6 +110,7 @@ class AlpacaTradingStreamer:
             api_key_id, api_secret_key, api_base_url
         )
         resolved_paper = _resolve_paper_flag(paper, base_url)
+        resolved_url_override = _resolve_url_override(base_url)
         stream_kwargs = {
             "api_key": api_key,
             "api_key_id": api_key,
@@ -104,9 +119,9 @@ class AlpacaTradingStreamer:
             "secret": api_secret,
             "api_secret_key": api_secret,
             "paper": resolved_paper,
-            "url_override": base_url,
-            "base_url": base_url,
-            "url": base_url,
+            "url_override": resolved_url_override,
+            "base_url": resolved_url_override,
+            "url": resolved_url_override,
         }
         self._stream = _construct_stream(stream_cls, **stream_kwargs)
 
