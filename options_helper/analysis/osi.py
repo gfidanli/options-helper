@@ -113,6 +113,24 @@ def format_osi(parsed: ParsedContract) -> str:
     return f"{root_part}{date_part}{option_part}{strike_int:08d}"
 
 
+def format_osi_compact(parsed: ParsedContract) -> str:
+    root = normalize_underlying(parsed.underlying_norm or parsed.underlying)
+    if not root:
+        raise ValueError("missing underlying")
+    if not isinstance(parsed.expiry, date):
+        raise ValueError("missing expiry")
+    if parsed.option_type not in {"call", "put"}:
+        raise ValueError("invalid option_type")
+    if parsed.strike is None:
+        raise ValueError("missing strike")
+    strike_int = int(round(float(parsed.strike) * 1000))
+    if strike_int < 0 or strike_int > 99999999:
+        raise ValueError("strike out of range for OSI encoding")
+    date_part = parsed.expiry.strftime("%y%m%d")
+    option_part = "C" if parsed.option_type == "call" else "P"
+    return f"{root}{date_part}{option_part}{strike_int:08d}"
+
+
 def infer_settlement_style(value: ParsedContract | str | None) -> str | None:
     """Best-effort inference for option settlement style.
 
@@ -143,6 +161,7 @@ def infer_settlement_style(value: ParsedContract | str | None) -> str | None:
 __all__ = [
     "ParsedContract",
     "format_osi",
+    "format_osi_compact",
     "infer_settlement_style",
     "normalize_underlying",
     "parse_contract_symbol",

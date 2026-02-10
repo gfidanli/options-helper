@@ -127,9 +127,15 @@ T10 (Docs) depends on T7–T8
   - Support dependency injection (`stream_cls` / `stream`) so tests do not require `alpaca-py`.
 - **validation**:
   - `pytest -k trade_update_normalizers` passes offline (no network).
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added lazy-import `AlpacaTradingStreamer` wrapper with dependency injection (`stream`/`stream_cls`), explicit `subscribe_trade_updates()`, and `run()`/`stop()` lifecycle handling.
+  - Added `normalize_trade_update(update)` with stable base keys and optional extras (`type`, `tif`, `limit_price`, `stop_price`) when present.
+  - Added deterministic offline tests covering dict/object payload normalization and wrapper behavior without requiring `alpaca-py` or network access.
 - **files edited/created**:
+  - `options_helper/data/streaming/alpaca_trading_stream.py`
+  - `options_helper/data/streaming/trading_normalizers.py`
+  - `tests/test_alpaca_trade_update_normalizers.py`
 
 ### T2: Add `format_osi_compact` for option contract symbols
 - **depends_on**: []
@@ -141,9 +147,13 @@ T10 (Docs) depends on T7–T8
   - Ensure `parse_contract_symbol(format_osi_compact(...))` works for roundtrip expectations.
 - **validation**:
   - `pytest -k osi_compact_format` passes.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added `format_osi_compact(parsed)` in `options_helper/analysis/osi.py` with shared OSI validation semantics and compact root formatting (no padded spaces).
+  - Added deterministic roundtrip tests validating `parse_contract_symbol(format_osi_compact(...))` for compact symbols.
 - **files edited/created**:
+  - `options_helper/analysis/osi.py`
+  - `tests/test_osi_compact_format.py`
 
 ### T3: Subscription planner (portfolio → stocks + contracts + warnings) with max-contracts enforcement
 - **depends_on**: [T2]
@@ -156,9 +166,15 @@ T10 (Docs) depends on T7–T8
   - Enforce `max_option_contracts` before any manager starts (prevents accidental huge websocket subscriptions).
 - **validation**:
   - Unit tests cover truncation + warning messaging + multileg leg enumeration.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added `SubscriptionPlan` and `build_subscription_plan(...)` in `options_helper/data/streaming/subscriptions.py`.
+  - Planned stocks from unique portfolio underlyings and planned option contracts from both single positions and every multi-leg leg.
+  - Mapped both stocks and contracts via `to_alpaca_symbol`, enforced `max_option_contracts` pre-subscribe, and emitted truncation warnings with dropped counts.
+  - Added deterministic tests for multileg leg enumeration and truncation warning behavior.
 - **files edited/created**:
+  - `options_helper/data/streaming/subscriptions.py`
+  - `tests/test_streaming_subscription_plan.py`
 
 ### T4: LiveStreamManager (in-memory caches + worker lifecycle + backpressure)
 - **depends_on**: [T1, T3]
@@ -173,9 +189,15 @@ T10 (Docs) depends on T7–T8
 - **validation**:
   - Tests inject stub stream classes that emit deterministic events and block until `stop()`.
   - No `streamlit` dependency; no network.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added `LiveStreamConfig`/`LiveSnapshot` and `LiveStreamManager` in a new Streamlit-agnostic module with explicit toggles, feed settings, reconnect controls, and queue sizing.
+  - Implemented 3 worker threads (`stocks`, `options`, `fills`) plus a consumer thread where callbacks only enqueue and all normalization/cache updates happen off callback threads.
+  - Added bounded-queue backpressure (`put_nowait`) with dropped-event counters, stream health tracking (alive/reconnect/last-event/error), and idempotent `start`/`stop` including automatic restart when config changes.
+  - Added deterministic offline tests with injected stub stream classes covering lifecycle/idempotency, reconnect behavior via `compute_backoff_seconds`, and queue overflow drop accounting.
 - **files edited/created**:
+  - `options_helper/data/streaming/live_manager.py`
+  - `tests/test_live_stream_manager.py`
 
 ### T5: Pure live portfolio metrics aggregation (tables + warnings)
 - **depends_on**: [T2]
@@ -188,9 +210,17 @@ T10 (Docs) depends on T7–T8
   - Keep logic deterministic and independent of Streamlit.
 - **validation**:
   - Unit tests with synthetic snapshots.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added `compute_live_position_rows(...)` and `compute_live_multileg_rows(...)` in a new pure analysis module with deterministic snapshot-time anchoring (no Streamlit/network dependencies).
+  - Implemented robust live cache parsing for option quote/trade rows, compact/alpaca contract symbol matching, mark/spread/age calculations, and warning synthesis (`missing_quote`, `missing_mark`, `quote_stale`, `wide_spread`, `missing_legs`, etc.).
+  - Implemented single-leg and multi-leg PnL conventions from plan:
+    - Single: `(mark - cost_basis) * 100 * contracts`
+    - Multi-leg: `net_mark = Σ(mark_leg * signed_contracts * 100)` and `net_pnl_abs = net_mark - net_debit`
+  - Added deterministic offline tests using synthetic snapshots for single-leg math, staleness/wide-spread warnings, multi-leg signed-net math, and missing-leg warning behavior.
 - **files edited/created**:
+  - `options_helper/analysis/live_portfolio_metrics.py`
+  - `tests/test_live_portfolio_metrics.py`
 
 ### T6: Streamlit component (UI controls + fragment refresh + no auto-start)
 - **depends_on**: [T4, T5]
@@ -216,9 +246,16 @@ T10 (Docs) depends on T7–T8
 - **validation**:
   - `pytest -k live_portfolio_page_smoke` (skips if `streamlit` not installed).
   - Manual run: `./.venv/bin/options-helper ui`, open Live page, press Start/Stop.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added `render_live_portfolio_page()` with sidebar controls for portfolio path/reload, stream toggles, feed selectors, refresh cadence, staleness threshold, and option-contract cap.
+  - Added portfolio reload behavior using both explicit Reload and file mtime change detection, with load/parse errors surfaced directly in the UI.
+  - Added session-scoped `LiveStreamManager` ownership (`st.session_state`) with Start/Stop/Restart controls that validate inputs, avoid duplicate manager construction on rerun, and surface start/stop errors.
+  - Added a fragment-based live region (`@st.fragment(run_every=...)`) that renders stream health, recent fill updates, and live single/multi-leg portfolio metrics from `manager.snapshot()`.
+  - Added deterministic smoke coverage for import + render in bare mode, asserting no auto-start and singleton manager lifecycle behavior across reruns.
 - **files edited/created**:
+  - `apps/streamlit/components/live_portfolio_page.py`
+  - `tests/portal/test_live_portfolio_page_smoke.py`
 
 ### T7: New Streamlit page + portal navigation wiring
 - **depends_on**: [T6]
@@ -232,9 +269,15 @@ T10 (Docs) depends on T7–T8
   - Add the new page to scaffold smoke list so `runpy.run_path(...)` verifies “no start on import”.
 - **validation**:
   - `pytest -k streamlit_scaffold` passes (or skips if Streamlit missing).
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added `apps/streamlit/pages/12_Live_Portfolio.py` as a thin page wrapper that sets page config, calls `render_live_portfolio_page()`, and includes explicit not-financial-advice disclaimer text.
+  - Added Live Portfolio quick-link wiring in `apps/streamlit/streamlit_app.py`.
+  - Extended scaffold smoke coverage in `tests/portal/test_streamlit_scaffold.py` by including the new page in `PAGE_FILES` for `runpy.run_path(...)` execution and importing the live page component module.
 - **files edited/created**:
+  - `apps/streamlit/pages/12_Live_Portfolio.py`
+  - `apps/streamlit/streamlit_app.py`
+  - `tests/portal/test_streamlit_scaffold.py`
 
 ### T8: Error handling hardening + UX polish (stale indicators, reconnect banners)
 - **depends_on**: [T6]
@@ -251,9 +294,16 @@ T10 (Docs) depends on T7–T8
 - **validation**:
   - Unit test for “queue full → dropped counter increments”.
   - Manual: simulate error by unsetting creds and pressing Start; verify clean message.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Extended `LiveSnapshot` health model with explicit runtime status fields (`status`, `status_by_stream`, `active_streams`) so UI can render not-started/running/reconnecting/error modes without Streamlit-specific logic in the manager.
+  - Hardened stream-state transitions in `LiveStreamManager` for reconnect and terminal error paths while preserving queue-full dropped-event accounting.
+  - Updated Streamlit Live Portfolio health UI to show clear mode banners (not started/running/reconnecting/error) including last error, last event time, reconnect attempts, and dropped event counters.
+  - Added a prominent stale-data banner driven by live quote age columns (`quote_age_seconds` / `quote_age_seconds_max`) whenever max age exceeds the configured stale threshold.
+  - Queue-full dropped counter coverage remains in `tests/test_live_stream_manager.py::test_live_stream_manager_drops_events_when_queue_is_full`.
 - **files edited/created**:
+  - `options_helper/data/streaming/live_manager.py`
+  - `apps/streamlit/components/live_portfolio_page.py`
 
 ### T9: Docs (one feature per doc) + MkDocs nav update
 - **depends_on**: [T7]
@@ -270,9 +320,15 @@ T10 (Docs) depends on T7–T8
     - troubleshooting for missing OPRA/IEX/SIP permissions.
 - **validation**:
   - `mkdocs build` (optional) and nav includes the new doc.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added new focused doc `docs/PORTAL_LIVE_STREAMING.md` covering setup, credentials, feed selection, entitlements, usage workflow, safety limits, and troubleshooting.
+  - Updated `docs/PORTAL_STREAMLIT.md` to list the Live Portfolio page, clarify read-only live-stream behavior, and link to the new feature doc.
+  - Updated `mkdocs.yml` nav under `Visibility & Portal` to include `Live Portfolio Streaming`.
 - **files edited/created**:
+  - `docs/PORTAL_LIVE_STREAMING.md`
+  - `docs/PORTAL_STREAMLIT.md`
+  - `mkdocs.yml`
 
 ---
 
