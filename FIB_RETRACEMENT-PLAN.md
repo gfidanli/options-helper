@@ -301,3 +301,12 @@ T2 ──┘                                   └── T8
 - Files modified: `options_helper/commands/technicals.py`, `tests/test_strategy_modeling_cli.py`, `FIB_RETRACEMENT-PLAN.md`.
 - Validation: `./.venv/bin/python -m pytest /Volumes/develop/options-helper-fib-retracement/tests/test_strategy_modeling_cli.py` passed.
 - Errors/gotchas: None.
+
+### T7: Documentation + mkdocs nav (completed 2026-02-10)
+- Work log:
+  - Added `docs/TECHNICAL_FIB_RETRACEMENT.md` with strategy semantics (`MSB -> next swing pivot -> fib touch`), CLI usage with `--fib-retracement-pct`, anti-lookahead entry anchoring, and explicit fill limitations.
+  - Updated `docs/TECHNICAL_STRATEGY_MODELING.md` to include `fib_retracement` in strategy docs, added fib option/example text, and linked to the dedicated fib strategy document.
+  - Added the fib doc to `mkdocs.yml` nav under `Research & Analysis`.
+- Files modified: `docs/TECHNICAL_FIB_RETRACEMENT.md`, `docs/TECHNICAL_STRATEGY_MODELING.md`, `mkdocs.yml`, `FIB_RETRACEMENT-PLAN.md`.
+- Validation: `./.venv/bin/mkdocs build` unavailable in this checkout (`no such file or directory: ./.venv/bin/mkdocs`); manually verified doc file presence and link/nav references.
+- Errors/gotchas: Local `.venv` does not include `mkdocs` binary.
