@@ -257,3 +257,12 @@ T2 ──┘                                   └── T8
 - Files modified: `options_helper/schemas/strategy_modeling_contracts.py`, `tests/test_strategy_modeling_contracts.py`.
 - Validation: `./.venv/bin/python -m pytest /Volumes/develop/options-helper-fib-retracement/tests/test_strategy_modeling_contracts.py` passed (`15 passed`).
 - Errors/gotchas: Initial validation failed because `.venv` and `pytest` were absent in this checkout; resolved by creating `.venv` and installing `-e .[dev]`.
+
+### T2: Implement fib retracement signal computation (completed 2026-02-10)
+- Work log:
+  - Added new pure analysis module `fib_retracement.py` with `normalize_fib_retracement_pct(...)` accepting ratio (`0.618`) and percent (`61.8`) forms and normalizing to percent.
+  - Implemented `compute_fib_retracement_signals(...)` on top of `compute_msb_signals(...)` defaults, with deterministic long/short setup state machines, pivot-confirmation guard (`scan_start_idx = pivot_idx + right + 1`), and first-touch signal emission.
+  - Added required fib signal metadata columns and end-of-series guard (drop touch on final bar where next-bar entry is unavailable).
+- Files modified: `options_helper/analysis/fib_retracement.py`.
+- Validation: `./.venv/bin/python -m py_compile /Volumes/develop/options-helper-fib-retracement/options_helper/analysis/fib_retracement.py` passed.
+- Errors/gotchas: None.
