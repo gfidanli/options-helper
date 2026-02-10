@@ -294,6 +294,22 @@ T2 ─┘       │
 - Gotchas / errors:
   - None.
 
+### T5 ✅ Complete (2026-02-10)
+
+- Work log:
+  - Updated `11_Strategy_Modeling.py` Trade Log UI to render Top 20 Best/Worst tables (Realized R) alongside the full log using shared `build_trade_review_tables(...)`.
+  - Enabled row selection on all three tables via `st.dataframe(..., on_select="rerun", selection_mode="single-row", key=...)` with deterministic precedence `best -> worst -> full log`, while tolerating `st.dataframe` returning `None`.
+  - Added Trade Drilldown controls and rendering: chart timeframe from `supported_chart_timeframes(base_tf)`, pre/post context bars, base-bar loading with `1Min` preference and fallback to run timeframe/`5Min`, Altair candlestick+markers when available, and line+text fallback when Altair is unavailable.
+  - Added warning-first guardrails for missing selection, missing timestamps/symbols, and missing/insufficient intraday bars so drilldown never crashes.
+  - Updated Export Reports help text to include `top_20_best_trades.csv` and `top_20_worst_trades.csv`.
+  - Extended portal page tests to cover selection precedence, base-timeframe fallback/options, missing-selection/timestamp/bar warnings, and export-help text parity.
+- Files changed:
+  - `apps/streamlit/pages/11_Strategy_Modeling.py`
+  - `tests/portal/test_strategy_modeling_page.py`
+  - `STRATEGY_MODELING_TRADE_REVIEW_IMPROVED-PLAN.md`
+- Gotchas / errors:
+  - None.
+
 ## Task Completion Log
 
 ### T1 (Completed 2026-02-10)

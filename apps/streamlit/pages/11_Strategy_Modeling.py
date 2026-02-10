@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,13 @@ from apps.streamlit.components.strategy_modeling_page import (
     list_strategy_modeling_symbols,
     load_strategy_modeling_data_payload,
 )
+from apps.streamlit.components.strategy_modeling_trade_drilldown import (
+    load_intraday_window,
+    resample_for_chart,
+    selected_trade_id_from_event,
+    supported_chart_timeframes,
+)
+from apps.streamlit.components.strategy_modeling_trade_review import build_trade_review_tables
 from options_helper.analysis.strategy_modeling import StrategyModelingRequest
 from options_helper.analysis.strategy_simulator import build_r_target_ladder
 from options_helper.data.strategy_modeling_artifacts import write_strategy_modeling_artifacts
@@ -27,6 +35,11 @@ from options_helper.data.strategy_modeling_profiles import (
 )
 from options_helper.schemas.strategy_modeling_filters import StrategyEntryFilterConfig
 from options_helper.schemas.strategy_modeling_profile import StrategyModelingProfile
+
+try:
+    import altair as alt
+except Exception:  # noqa: BLE001
+    alt = None
 
 DISCLAIMER_TEXT = "Informational and educational use only. Not financial advice."
 _SEGMENT_DIMENSIONS = [
@@ -52,6 +65,12 @@ _PROFILE_PATH_KEY = "strategy_modeling_profile_path"
 _PROFILE_SELECTED_KEY = "strategy_modeling_profile_selected"
 _PROFILE_SAVE_NAME_KEY = "strategy_modeling_profile_save_name"
 _PROFILE_OVERWRITE_KEY = "strategy_modeling_profile_overwrite"
+_TRADE_REVIEW_BEST_KEY = "strategy_modeling_trade_review_top_best"
+_TRADE_REVIEW_WORST_KEY = "strategy_modeling_trade_review_top_worst"
+_TRADE_REVIEW_LOG_KEY = "strategy_modeling_trade_review_full_log"
+_TRADE_DRILLDOWN_TIMEFRAME_KEY = "strategy_modeling_trade_drilldown_timeframe"
+_TRADE_DRILLDOWN_PRE_BARS_KEY = "strategy_modeling_trade_drilldown_pre_context_bars"
+_TRADE_DRILLDOWN_POST_BARS_KEY = "strategy_modeling_trade_drilldown_post_context_bars"
 
 _WIDGET_KEYS: dict[str, str] = {
     "strategy": "strategy_modeling_strategy",
@@ -180,6 +199,205 @@ def _coerce_float(value: object) -> float | None:
         return float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
+
+
+def _coerce_finite_float(value: object) -> float | None:
+    number = _coerce_float(value)
+    if number is None or not math.isfinite(number):
+        return None
+    return number
+
+
+def _coerce_utc_timestamp(value: object) -> pd.Timestamp | None:
+    if value is None:
+        return None
+    try:
+        timestamp = pd.to_datetime(value, errors="coerce", utc=True)
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(timestamp, pd.Timestamp) or pd.isna(timestamp):
+        return None
+    return timestamp
+
+
+def _timeframe_minutes(value: object) -> int | None:
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    normalized = text.replace("minutes", "min").replace("minute", "min").replace("mins", "min")
+    if normalized.endswith("m") and not normalized.endswith("min"):
+        normalized = normalized[:-1] + "min"
+    amount = normalized[:-3].strip() if normalized.endswith("min") else normalized
+    try:
+        minutes = int(amount)
+    except ValueError:
+        return None
+    if minutes <= 0:
+        return None
+    return minutes
+
+
+def _dedupe_timeframes(*raw_values: object) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        token = value.lower()
+        if token in seen:
+            continue
+        seen.add(token)
+        out.append(value)
+    return out
+
+
+def _accepted_trade_ids_for_review(run_result: object) -> Sequence[str] | None:
+    if run_result is None or not hasattr(run_result, "accepted_trade_ids"):
+        return None
+    raw = getattr(run_result, "accepted_trade_ids")
+    if raw is None:
+        return ()
+    if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+        return tuple(
+            token
+            for token in (str(item or "").strip() for item in raw)
+            if token
+        )
+    token = str(raw or "").strip()
+    return (token,) if token else ()
+
+
+def _resolve_intraday_root(request: object) -> Path:
+    raw = getattr(request, "intraday_dir", Path("data/intraday"))
+    if isinstance(raw, Path):
+        return raw
+    token = str(raw or "").strip()
+    if not token:
+        return Path("data/intraday")
+    return Path(token)
+
+
+def _trade_markers(trade_row: Mapping[str, Any]) -> pd.DataFrame:
+    entry_ts = _coerce_utc_timestamp(trade_row.get("entry_ts"))
+    exit_ts = _coerce_utc_timestamp(trade_row.get("exit_ts"))
+    entry_price = _coerce_finite_float(trade_row.get("entry_price"))
+    stop_price = _coerce_finite_float(trade_row.get("stop_price"))
+    target_price = _coerce_finite_float(trade_row.get("target_price"))
+    exit_price = _coerce_finite_float(trade_row.get("exit_price"))
+
+    rows: list[dict[str, Any]] = []
+    if entry_ts is not None and entry_price is not None:
+        rows.append({"label": "entry", "timestamp": entry_ts, "price": entry_price, "note": "Entry"})
+    if entry_ts is not None and stop_price is not None:
+        rows.append({"label": "stop", "timestamp": entry_ts, "price": stop_price, "note": "Stop"})
+    if entry_ts is not None and target_price is not None:
+        rows.append({"label": "target", "timestamp": entry_ts, "price": target_price, "note": "Target"})
+    if exit_ts is not None and exit_price is not None:
+        rows.append({"label": "exit", "timestamp": exit_ts, "price": exit_price, "note": "Exit"})
+    return pd.DataFrame(rows, columns=["label", "timestamp", "price", "note"])
+
+
+def _render_trade_drilldown_chart(
+    bars: pd.DataFrame,
+    markers: pd.DataFrame,
+    *,
+    timeframe: str,
+) -> None:
+    if bars.empty:
+        st.warning("No bars available for drilldown chart rendering.")
+        return
+
+    chart_bars = bars.copy()
+    chart_bars["timestamp"] = pd.to_datetime(chart_bars.get("timestamp"), errors="coerce", utc=True)
+    chart_bars = chart_bars.dropna(subset=["timestamp", "open", "high", "low", "close"])
+    if chart_bars.empty:
+        st.warning("No bars available for drilldown chart rendering.")
+        return
+
+    marker_view = markers.copy()
+    marker_view["timestamp"] = pd.to_datetime(marker_view.get("timestamp"), errors="coerce", utc=True)
+    marker_view = marker_view.dropna(subset=["timestamp", "price"])
+
+    if alt is None:
+        st.warning("Altair is unavailable in this environment; showing close-line fallback.")
+        st.line_chart(chart_bars.set_index("timestamp")["close"])
+        if not marker_view.empty:
+            marker_fallback = marker_view.copy()
+            marker_fallback["timestamp"] = marker_fallback["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+            st.caption("Markers")
+            st.dataframe(marker_fallback[["note", "timestamp", "price"]], hide_index=True, use_container_width=True)
+        else:
+            st.info("No marker data available for the selected trade.")
+        return
+
+    try:
+        render_bars = chart_bars.copy()
+        render_bars["timestamp"] = render_bars["timestamp"].dt.tz_convert("UTC").dt.tz_localize(None)
+
+        base = alt.Chart(render_bars).encode(
+            x=alt.X("timestamp:T", title=f"Timestamp ({timeframe})"),
+        )
+        wicks = base.mark_rule(color="#374151").encode(
+            y=alt.Y("low:Q", title="Price"),
+            y2="high:Q",
+            tooltip=[
+                alt.Tooltip("timestamp:T", title="Timestamp"),
+                alt.Tooltip("open:Q", format=".4f", title="Open"),
+                alt.Tooltip("high:Q", format=".4f", title="High"),
+                alt.Tooltip("low:Q", format=".4f", title="Low"),
+                alt.Tooltip("close:Q", format=".4f", title="Close"),
+                alt.Tooltip("volume:Q", format=".0f", title="Volume"),
+            ],
+        )
+        candles = base.mark_bar().encode(
+            y=alt.Y("open:Q", title="Price"),
+            y2="close:Q",
+            color=alt.condition(
+                "datum.close >= datum.open",
+                alt.value("#16a34a"),
+                alt.value("#dc2626"),
+            ),
+        )
+        chart = wicks + candles
+
+        if not marker_view.empty:
+            render_markers = marker_view.copy()
+            render_markers["timestamp"] = render_markers["timestamp"].dt.tz_convert("UTC").dt.tz_localize(None)
+            marker_points = alt.Chart(render_markers).mark_point(filled=True, size=90).encode(
+                x="timestamp:T",
+                y=alt.Y("price:Q", title="Price"),
+                color=alt.Color("note:N", title="Marker"),
+                tooltip=[
+                    alt.Tooltip("note:N", title="Marker"),
+                    alt.Tooltip("timestamp:T", title="Timestamp"),
+                    alt.Tooltip("price:Q", format=".4f", title="Price"),
+                ],
+            )
+            marker_labels = alt.Chart(render_markers).mark_text(
+                align="left",
+                dx=7,
+                dy=-7,
+                fontSize=11,
+                color="#111827",
+            ).encode(
+                x="timestamp:T",
+                y="price:Q",
+                text="note:N",
+            )
+            chart = chart + marker_points + marker_labels
+
+        st.altair_chart(chart.properties(height=420).interactive(), use_container_width=True)
+    except Exception:  # noqa: BLE001
+        st.warning("Altair chart rendering failed; showing close-line fallback.")
+        st.line_chart(chart_bars.set_index("timestamp")["close"])
+        if not marker_view.empty:
+            marker_fallback = marker_view.copy()
+            marker_fallback["timestamp"] = marker_fallback["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+            st.caption("Markers")
+            st.dataframe(marker_fallback[["note", "timestamp", "price"]], hide_index=True, use_container_width=True)
+        else:
+            st.info("No marker data available for the selected trade.")
 
 
 def _normalize_volatility_regimes(raw_values: Sequence[str]) -> tuple[str, ...]:
@@ -1162,7 +1380,10 @@ export_clicked = st.button(
     "Export Reports",
     use_container_width=True,
     disabled=result is None,
-    help="Write summary.json/summary.md/trades.csv/r_ladder.csv/segments.csv for the latest run.",
+    help=(
+        "Write summary.json/summary.md/trades.csv/r_ladder.csv/segments.csv/"
+        "top_20_best_trades.csv/top_20_worst_trades.csv for the latest run."
+    ),
 )
 if export_clicked:
     if result is None:
@@ -1339,7 +1560,190 @@ else:
         ]
         if col in trades.columns
     ]
-    st.dataframe(trades[display_cols], hide_index=True, use_container_width=True)
+    trade_log_df = trades[display_cols].reset_index(drop=True)
+
+    best_trades_df, worst_trades_df, review_scope_label = build_trade_review_tables(
+        trades,
+        accepted_trade_ids=_accepted_trade_ids_for_review(result),
+        top_n=20,
+    )
+
+    st.markdown("**Top 20 Best Trades (Realized R)**")
+    st.caption(f"Ranking scope: {review_scope_label}")
+    best_selection_event = st.dataframe(
+        best_trades_df,
+        hide_index=True,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key=_TRADE_REVIEW_BEST_KEY,
+    )
+
+    st.markdown("**Top 20 Worst Trades (Realized R)**")
+    worst_selection_event = st.dataframe(
+        worst_trades_df,
+        hide_index=True,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key=_TRADE_REVIEW_WORST_KEY,
+    )
+
+    st.markdown("**Full Trade Log**")
+    log_selection_event = st.dataframe(
+        trade_log_df,
+        hide_index=True,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key=_TRADE_REVIEW_LOG_KEY,
+    )
+
+    selected_trade_id = (
+        selected_trade_id_from_event(best_selection_event, best_trades_df)
+        or selected_trade_id_from_event(worst_selection_event, worst_trades_df)
+        or selected_trade_id_from_event(log_selection_event, trade_log_df)
+    )
+
+    st.subheader("Trade Drilldown")
+    if not selected_trade_id:
+        st.warning(
+            "Select a row from Top 20 Best Trades, Top 20 Worst Trades, or the Full Trade Log to load drilldown."
+        )
+    elif "trade_id" not in trades.columns:
+        st.warning("Trade log rows are missing `trade_id`; drilldown is unavailable.")
+    else:
+        matched = trades.loc[trades["trade_id"].astype(str) == str(selected_trade_id)]
+        if matched.empty:
+            st.warning(f"Selected trade `{selected_trade_id}` is not present in the current trade log.")
+        else:
+            selected_trade = _to_dict(matched.iloc[0])
+            symbol = str(selected_trade.get("symbol") or "").strip().upper()
+            entry_ts = _coerce_utc_timestamp(selected_trade.get("entry_ts"))
+            exit_ts = _coerce_utc_timestamp(selected_trade.get("exit_ts"))
+            anchor_ts = entry_ts if entry_ts is not None else exit_ts
+
+            if not symbol:
+                st.warning(f"Selected trade `{selected_trade_id}` is missing symbol; cannot load intraday bars.")
+            elif anchor_ts is None:
+                st.warning(
+                    f"Selected trade `{selected_trade_id}` is missing entry/exit timestamps; cannot load drilldown."
+                )
+            else:
+                request_intraday_tf = str(
+                    getattr(request_state, "intraday_timeframe", intraday_timeframe) or intraday_timeframe
+                )
+                intraday_root = _resolve_intraday_root(request_state)
+                base_candidates = _dedupe_timeframes("1Min", request_intraday_tf, "5Min")
+                if not base_candidates:
+                    base_candidates = ["1Min", "5Min"]
+
+                probe_base_timeframe = base_candidates[0]
+                for candidate in base_candidates:
+                    probe_minutes = _timeframe_minutes(candidate) or 1
+                    probe_start = anchor_ts - pd.Timedelta(minutes=probe_minutes * 20)
+                    probe_end = anchor_ts + pd.Timedelta(minutes=probe_minutes * 20)
+                    probe_bars = load_intraday_window(
+                        intraday_root,
+                        symbol,
+                        candidate,
+                        probe_start,
+                        probe_end,
+                    )
+                    if not probe_bars.empty:
+                        probe_base_timeframe = candidate
+                        break
+
+                chart_options = supported_chart_timeframes(probe_base_timeframe)
+                if not chart_options:
+                    st.warning("No supported chart timeframes for drilldown.")
+                else:
+                    default_chart_timeframe = chart_options[0]
+                    if request_intraday_tf in chart_options:
+                        default_chart_timeframe = request_intraday_tf
+                    if st.session_state.get(_TRADE_DRILLDOWN_TIMEFRAME_KEY) not in chart_options:
+                        st.session_state[_TRADE_DRILLDOWN_TIMEFRAME_KEY] = default_chart_timeframe
+                    chart_timeframe = st.selectbox(
+                        "Chart timeframe",
+                        options=chart_options,
+                        key=_TRADE_DRILLDOWN_TIMEFRAME_KEY,
+                    )
+                    pre_context_bars = int(
+                        st.number_input(
+                            "Pre-context bars",
+                            min_value=1,
+                            max_value=20_000,
+                            value=int(st.session_state.get(_TRADE_DRILLDOWN_PRE_BARS_KEY, 120)),
+                            step=10,
+                            key=_TRADE_DRILLDOWN_PRE_BARS_KEY,
+                        )
+                    )
+                    post_context_bars = int(
+                        st.number_input(
+                            "Post-context bars",
+                            min_value=1,
+                            max_value=20_000,
+                            value=int(st.session_state.get(_TRADE_DRILLDOWN_POST_BARS_KEY, 120)),
+                            step=10,
+                            key=_TRADE_DRILLDOWN_POST_BARS_KEY,
+                        )
+                    )
+
+                    chart_minutes = _timeframe_minutes(chart_timeframe) or (_timeframe_minutes(probe_base_timeframe) or 1)
+                    entry_anchor = entry_ts if entry_ts is not None else anchor_ts
+                    exit_anchor = exit_ts if exit_ts is not None else anchor_ts
+                    if exit_anchor < entry_anchor:
+                        exit_anchor = entry_anchor
+                    window_start = entry_anchor - pd.Timedelta(minutes=chart_minutes * pre_context_bars)
+                    window_end = exit_anchor + pd.Timedelta(minutes=chart_minutes * post_context_bars)
+
+                    load_candidates = [probe_base_timeframe, *[value for value in base_candidates if value != probe_base_timeframe]]
+                    base_timeframe_used: str | None = None
+                    base_bars = pd.DataFrame()
+                    for candidate in load_candidates:
+                        loaded = load_intraday_window(
+                            intraday_root,
+                            symbol,
+                            candidate,
+                            window_start,
+                            window_end,
+                        )
+                        if loaded.empty:
+                            continue
+                        base_timeframe_used = candidate
+                        base_bars = loaded
+                        break
+
+                    if base_bars.empty or base_timeframe_used is None:
+                        st.warning(
+                            "No intraday bars found for selected trade/context window. Try a wider context or different symbol."
+                        )
+                    else:
+                        if base_timeframe_used != "1Min":
+                            st.warning(
+                                f"Using `{base_timeframe_used}` base bars because `1Min` data was unavailable."
+                            )
+                        chart_result = resample_for_chart(
+                            base_bars,
+                            base_timeframe=base_timeframe_used,
+                            chart_timeframe=chart_timeframe,
+                            max_bars=5000,
+                        )
+                        if chart_result.warning:
+                            st.warning(chart_result.warning)
+                        if chart_result.skipped or chart_result.bars.empty:
+                            st.warning("No drilldown chart bars available after resampling for the selected context.")
+                        else:
+                            st.caption(
+                                "Selected trade: "
+                                f"`{selected_trade_id}` ({symbol}) using base `{base_timeframe_used}` and chart "
+                                f"`{chart_result.timeframe}` timeframe."
+                            )
+                            _render_trade_drilldown_chart(
+                                chart_result.bars,
+                                _trade_markers(selected_trade),
+                                timeframe=chart_result.timeframe,
+                            )
 
 st.caption(
     f"Intraday source: `{intraday_source}`. Page behavior is read-only and does not execute ingest/backfill writes."

@@ -1047,6 +1047,449 @@ def test_strategy_modeling_page_load_profile_populates_request_values(
     assert [target.label for target in stub.last_request.target_ladder] == ["1.1R", "1.2R", "1.3R"]
 
 
+def test_strategy_modeling_page_trade_review_selection_precedence_and_drilldown_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("streamlit")
+    pytest.importorskip("options_helper.analysis.strategy_modeling")
+    if not PAGE_PATH.exists():
+        pytest.skip("Strategy modeling page scaffold is not present in this workspace.")
+
+    from apps.streamlit.components import strategy_modeling_page as component
+    import options_helper.cli_deps as cli_deps
+    import streamlit as st
+
+    class _StubService:
+        def run(self, request):  # noqa: ANN001
+            del request
+            return SimpleNamespace(
+                portfolio_metrics=None,
+                target_hit_rates=(),
+                equity_curve=(),
+                segment_records=(),
+                filter_summary={},
+                directional_metrics={},
+                accepted_trade_ids=("best-1", "worst-1", "log-1"),
+                trade_simulations=(
+                    {
+                        "trade_id": "best-1",
+                        "symbol": "BEST",
+                        "direction": "long",
+                        "status": "closed",
+                        "entry_ts": "2026-01-31T15:30:00+00:00",
+                        "entry_price": 100.0,
+                        "stop_price": 99.0,
+                        "target_price": 101.5,
+                        "exit_ts": "2026-01-31T16:30:00+00:00",
+                        "exit_price": 101.0,
+                        "realized_r": 1.0,
+                    },
+                    {
+                        "trade_id": "worst-1",
+                        "symbol": "WORST",
+                        "direction": "short",
+                        "status": "closed",
+                        "entry_ts": "2026-01-30T15:30:00+00:00",
+                        "entry_price": 100.0,
+                        "stop_price": 101.0,
+                        "target_price": 98.5,
+                        "exit_ts": "2026-01-30T16:00:00+00:00",
+                        "exit_price": 101.0,
+                        "realized_r": -1.0,
+                    },
+                    {
+                        "trade_id": "log-1",
+                        "symbol": "LOG",
+                        "direction": "long",
+                        "status": "closed",
+                        "entry_ts": "2026-01-29T15:30:00+00:00",
+                        "entry_price": 50.0,
+                        "stop_price": 49.0,
+                        "target_price": 52.0,
+                        "exit_ts": "2026-01-29T16:30:00+00:00",
+                        "exit_price": 51.0,
+                        "realized_r": 1.0,
+                    },
+                ),
+            )
+
+    st.session_state.clear()
+    _clear_component_caches(component)
+    monkeypatch.setattr(component, "list_strategy_modeling_symbols", lambda **_: (["BEST", "WORST", "LOG"], []))
+    monkeypatch.setattr(component, "load_strategy_modeling_data_payload", lambda **_: _ready_payload())
+    monkeypatch.setattr(cli_deps, "build_strategy_modeling_service", lambda: _StubService())
+
+    def _stub_review_tables(
+        trade_df: pd.DataFrame,
+        accepted_trade_ids: object,
+        *,
+        top_n: int = 20,
+    ) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+        del trade_df, accepted_trade_ids, top_n
+        return (
+            pd.DataFrame(
+                [
+                    {
+                        "rank": 1,
+                        "trade_id": "best-1",
+                        "symbol": "BEST",
+                        "realized_r": 1.0,
+                        "entry_ts": "2026-01-31T15:30:00+00:00",
+                    },
+                ]
+            ),
+            pd.DataFrame(
+                [
+                    {
+                        "rank": 1,
+                        "trade_id": "worst-1",
+                        "symbol": "WORST",
+                        "realized_r": -1.0,
+                        "entry_ts": "2026-01-30T15:30:00+00:00",
+                    },
+                ]
+            ),
+            "Accepted closed trades",
+        )
+
+    load_calls: list[tuple[str, str]] = []
+
+    def _stub_load_intraday_window(
+        store_root: object,
+        symbol: str,
+        timeframe: str,
+        start_ts: object,
+        end_ts: object,
+    ) -> pd.DataFrame:
+        del store_root, start_ts, end_ts
+        load_calls.append((symbol, timeframe))
+        if timeframe != "5Min":
+            return pd.DataFrame()
+        ts = pd.date_range("2026-01-31 14:30:00+00:00", periods=80, freq="5min", tz="UTC")
+        base = pd.Series(range(len(ts)), dtype=float)
+        return pd.DataFrame(
+            {
+                "timestamp": ts,
+                "open": 100.0 + base,
+                "high": 100.5 + base,
+                "low": 99.5 + base,
+                "close": 100.2 + base,
+                "volume": 1_000.0,
+                "vwap": 100.1 + base,
+                "trade_count": 100.0,
+            }
+        )
+
+    monkeypatch.setattr(
+        "apps.streamlit.components.strategy_modeling_trade_review.build_trade_review_tables",
+        _stub_review_tables,
+    )
+    monkeypatch.setattr(
+        "apps.streamlit.components.strategy_modeling_trade_drilldown.load_intraday_window",
+        _stub_load_intraday_window,
+    )
+
+    chart_timeframe_options: list[str] = []
+    dataframe_kwargs_by_key: dict[str, dict[str, object]] = {}
+    warnings: list[str] = []
+
+    def _selectbox(label: str, *, options, index: int = 0, **kwargs):  # noqa: ANN001,ARG001
+        option_values = list(options)
+        if label == "Chart timeframe":
+            chart_timeframe_options[:] = option_values
+            if "15Min" in option_values:
+                return "15Min"
+        if option_values:
+            return option_values[index]
+        return None
+
+    def _button(label: str, *args: object, **kwargs: object) -> bool:  # noqa: ARG001
+        return label == "Run Strategy Modeling"
+
+    def _dataframe(data: object, *args: object, **kwargs: object) -> object:  # noqa: ARG001
+        del data
+        key = str(kwargs.get("key") or "")
+        if key:
+            dataframe_kwargs_by_key[key] = {
+                "on_select": kwargs.get("on_select"),
+                "selection_mode": kwargs.get("selection_mode"),
+            }
+        events = {
+            "strategy_modeling_trade_review_top_best": {"selection": {"rows": [0]}},
+            "strategy_modeling_trade_review_top_worst": {"selection": {"rows": [0]}},
+            "strategy_modeling_trade_review_full_log": {"selection": {"rows": [1]}},
+        }
+        return events.get(key)
+
+    def _warning(body: object, *args: object, **kwargs: object) -> None:  # noqa: ARG001
+        warnings.append(str(body))
+
+    monkeypatch.setattr(st, "selectbox", _selectbox)
+    monkeypatch.setattr(st, "button", _button)
+    monkeypatch.setattr(st, "dataframe", _dataframe)
+    monkeypatch.setattr(st, "warning", _warning)
+    monkeypatch.setattr(st, "altair_chart", lambda *args, **kwargs: None)  # noqa: ARG005
+    monkeypatch.setattr(st, "line_chart", lambda *args, **kwargs: None)  # noqa: ARG005
+
+    runpy.run_path(str(PAGE_PATH), run_name="__strategy_modeling_page_trade_precedence__")
+
+    for key in (
+        "strategy_modeling_trade_review_top_best",
+        "strategy_modeling_trade_review_top_worst",
+        "strategy_modeling_trade_review_full_log",
+    ):
+        assert dataframe_kwargs_by_key[key]["on_select"] == "rerun"
+        assert dataframe_kwargs_by_key[key]["selection_mode"] == "single-row"
+    assert load_calls
+    assert load_calls[0][0] == "BEST"
+    assert any(timeframe == "1Min" for _, timeframe in load_calls)
+    assert any(timeframe == "5Min" for _, timeframe in load_calls)
+    assert chart_timeframe_options == ["5Min", "15Min", "30Min", "60Min"]
+    assert any("Using `5Min` base bars" in item for item in warnings)
+
+
+def test_strategy_modeling_page_trade_drilldown_warns_when_no_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("streamlit")
+    pytest.importorskip("options_helper.analysis.strategy_modeling")
+    if not PAGE_PATH.exists():
+        pytest.skip("Strategy modeling page scaffold is not present in this workspace.")
+
+    from apps.streamlit.components import strategy_modeling_page as component
+    import options_helper.cli_deps as cli_deps
+    import streamlit as st
+
+    class _StubService:
+        def run(self, request):  # noqa: ANN001
+            del request
+            return SimpleNamespace(
+                portfolio_metrics=None,
+                target_hit_rates=(),
+                equity_curve=(),
+                segment_records=(),
+                filter_summary={},
+                directional_metrics={},
+                accepted_trade_ids=("trade-1",),
+                trade_simulations=(
+                    {
+                        "trade_id": "trade-1",
+                        "symbol": "SPY",
+                        "direction": "long",
+                        "status": "closed",
+                        "entry_ts": "2026-01-31T15:30:00+00:00",
+                        "entry_price": 100.0,
+                        "stop_price": 99.0,
+                        "target_price": 101.0,
+                        "exit_ts": "2026-01-31T16:00:00+00:00",
+                        "exit_price": 101.0,
+                        "realized_r": 1.0,
+                    },
+                ),
+            )
+
+    st.session_state.clear()
+    _clear_component_caches(component)
+    monkeypatch.setattr(component, "list_strategy_modeling_symbols", lambda **_: (["SPY"], []))
+    monkeypatch.setattr(component, "load_strategy_modeling_data_payload", lambda **_: _ready_payload())
+    monkeypatch.setattr(cli_deps, "build_strategy_modeling_service", lambda: _StubService())
+
+    monkeypatch.setattr(
+        "apps.streamlit.components.strategy_modeling_trade_review.build_trade_review_tables",
+        lambda *args, **kwargs: (  # noqa: ARG005
+            pd.DataFrame([{"rank": 1, "trade_id": "trade-1"}]),
+            pd.DataFrame([{"rank": 1, "trade_id": "trade-1"}]),
+            "Accepted closed trades",
+        ),
+    )
+
+    warnings: list[str] = []
+
+    def _button(label: str, *args: object, **kwargs: object) -> bool:  # noqa: ARG001
+        return label == "Run Strategy Modeling"
+
+    def _dataframe(data: object, *args: object, **kwargs: object) -> None:  # noqa: ARG001
+        del data
+        return None
+
+    def _warning(body: object, *args: object, **kwargs: object) -> None:  # noqa: ARG001
+        warnings.append(str(body))
+
+    monkeypatch.setattr(st, "button", _button)
+    monkeypatch.setattr(st, "dataframe", _dataframe)
+    monkeypatch.setattr(st, "warning", _warning)
+
+    runpy.run_path(str(PAGE_PATH), run_name="__strategy_modeling_page_trade_drilldown_no_selection__")
+
+    assert any("Select a row from Top 20 Best Trades" in item for item in warnings)
+
+
+def test_strategy_modeling_page_trade_drilldown_warns_for_missing_timestamps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("streamlit")
+    pytest.importorskip("options_helper.analysis.strategy_modeling")
+    if not PAGE_PATH.exists():
+        pytest.skip("Strategy modeling page scaffold is not present in this workspace.")
+
+    from apps.streamlit.components import strategy_modeling_page as component
+    import options_helper.cli_deps as cli_deps
+    import streamlit as st
+
+    class _StubService:
+        def run(self, request):  # noqa: ANN001
+            del request
+            return SimpleNamespace(
+                portfolio_metrics=None,
+                target_hit_rates=(),
+                equity_curve=(),
+                segment_records=(),
+                filter_summary={},
+                directional_metrics={},
+                accepted_trade_ids=("trade-missing-ts",),
+                trade_simulations=(
+                    {
+                        "trade_id": "trade-missing-ts",
+                        "symbol": "SPY",
+                        "direction": "long",
+                        "status": "closed",
+                        "entry_ts": None,
+                        "entry_price": 100.0,
+                        "stop_price": 99.0,
+                        "target_price": 101.0,
+                        "exit_ts": None,
+                        "exit_price": 101.0,
+                        "realized_r": 1.0,
+                    },
+                ),
+            )
+
+    st.session_state.clear()
+    _clear_component_caches(component)
+    monkeypatch.setattr(component, "list_strategy_modeling_symbols", lambda **_: (["SPY"], []))
+    monkeypatch.setattr(component, "load_strategy_modeling_data_payload", lambda **_: _ready_payload())
+    monkeypatch.setattr(cli_deps, "build_strategy_modeling_service", lambda: _StubService())
+
+    monkeypatch.setattr(
+        "apps.streamlit.components.strategy_modeling_trade_review.build_trade_review_tables",
+        lambda *args, **kwargs: (  # noqa: ARG005
+            pd.DataFrame([{"rank": 1, "trade_id": "trade-missing-ts"}]),
+            pd.DataFrame(),
+            "Accepted closed trades",
+        ),
+    )
+    monkeypatch.setattr(
+        "apps.streamlit.components.strategy_modeling_trade_drilldown.load_intraday_window",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("loader should not run without timestamps")),
+    )
+
+    warnings: list[str] = []
+
+    def _button(label: str, *args: object, **kwargs: object) -> bool:  # noqa: ARG001
+        return label == "Run Strategy Modeling"
+
+    def _dataframe(data: object, *args: object, **kwargs: object) -> object:  # noqa: ARG001
+        del data
+        events = {
+            "strategy_modeling_trade_review_top_best": {"selection": {"rows": [0]}},
+        }
+        return events.get(str(kwargs.get("key") or ""))
+
+    def _warning(body: object, *args: object, **kwargs: object) -> None:  # noqa: ARG001
+        warnings.append(str(body))
+
+    monkeypatch.setattr(st, "button", _button)
+    monkeypatch.setattr(st, "dataframe", _dataframe)
+    monkeypatch.setattr(st, "warning", _warning)
+
+    runpy.run_path(str(PAGE_PATH), run_name="__strategy_modeling_page_trade_drilldown_missing_ts__")
+
+    assert any("missing entry/exit timestamps" in item for item in warnings)
+
+
+def test_strategy_modeling_page_trade_drilldown_warns_for_missing_bars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("streamlit")
+    pytest.importorskip("options_helper.analysis.strategy_modeling")
+    if not PAGE_PATH.exists():
+        pytest.skip("Strategy modeling page scaffold is not present in this workspace.")
+
+    from apps.streamlit.components import strategy_modeling_page as component
+    import options_helper.cli_deps as cli_deps
+    import streamlit as st
+
+    class _StubService:
+        def run(self, request):  # noqa: ANN001
+            del request
+            return SimpleNamespace(
+                portfolio_metrics=None,
+                target_hit_rates=(),
+                equity_curve=(),
+                segment_records=(),
+                filter_summary={},
+                directional_metrics={},
+                accepted_trade_ids=("trade-1",),
+                trade_simulations=(
+                    {
+                        "trade_id": "trade-1",
+                        "symbol": "SPY",
+                        "direction": "long",
+                        "status": "closed",
+                        "entry_ts": "2026-01-31T15:30:00+00:00",
+                        "entry_price": 100.0,
+                        "stop_price": 99.0,
+                        "target_price": 101.0,
+                        "exit_ts": "2026-01-31T16:00:00+00:00",
+                        "exit_price": 101.0,
+                        "realized_r": 1.0,
+                    },
+                ),
+            )
+
+    st.session_state.clear()
+    _clear_component_caches(component)
+    monkeypatch.setattr(component, "list_strategy_modeling_symbols", lambda **_: (["SPY"], []))
+    monkeypatch.setattr(component, "load_strategy_modeling_data_payload", lambda **_: _ready_payload())
+    monkeypatch.setattr(cli_deps, "build_strategy_modeling_service", lambda: _StubService())
+
+    monkeypatch.setattr(
+        "apps.streamlit.components.strategy_modeling_trade_review.build_trade_review_tables",
+        lambda *args, **kwargs: (  # noqa: ARG005
+            pd.DataFrame([{"rank": 1, "trade_id": "trade-1"}]),
+            pd.DataFrame(),
+            "Accepted closed trades",
+        ),
+    )
+    monkeypatch.setattr(
+        "apps.streamlit.components.strategy_modeling_trade_drilldown.load_intraday_window",
+        lambda *args, **kwargs: pd.DataFrame(),  # noqa: ARG005
+    )
+
+    warnings: list[str] = []
+
+    def _button(label: str, *args: object, **kwargs: object) -> bool:  # noqa: ARG001
+        return label == "Run Strategy Modeling"
+
+    def _dataframe(data: object, *args: object, **kwargs: object) -> object:  # noqa: ARG001
+        del data
+        events = {
+            "strategy_modeling_trade_review_top_best": {"selection": {"rows": [0]}},
+        }
+        return events.get(str(kwargs.get("key") or ""))
+
+    def _warning(body: object, *args: object, **kwargs: object) -> None:  # noqa: ARG001
+        warnings.append(str(body))
+
+    monkeypatch.setattr(st, "button", _button)
+    monkeypatch.setattr(st, "dataframe", _dataframe)
+    monkeypatch.setattr(st, "warning", _warning)
+
+    runpy.run_path(str(PAGE_PATH), run_name="__strategy_modeling_page_trade_drilldown_missing_bars__")
+
+    assert any("No intraday bars found for selected trade/context window" in item for item in warnings)
+
+
 def test_strategy_modeling_page_can_export_reports_bundle(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1136,7 +1579,12 @@ def test_strategy_modeling_page_can_export_reports_bundle(
         }
         return selected_map.get(label, value)
 
+    button_help: dict[str, str] = {}
+
     def _button(label: str, *args: object, **kwargs: object) -> bool:  # noqa: ARG001
+        help_text = kwargs.get("help")
+        if isinstance(help_text, str):
+            button_help[label] = help_text
         return label in {"Run Strategy Modeling", "Export Reports"}
 
     monkeypatch.setattr(st, "text_input", _text_input)
@@ -1157,3 +1605,5 @@ def test_strategy_modeling_page_can_export_reports_bundle(
     assert summary_payload["strategy"] == "sfp"
     assert summary_payload["requested_symbols"] == ["SPY"]
     assert summary_payload["summary"]["trade_count"] == 1
+    assert "top_20_best_trades.csv" in button_help.get("Export Reports", "")
+    assert "top_20_worst_trades.csv" in button_help.get("Export Reports", "")
