@@ -6,6 +6,9 @@ import time
 import tracemalloc
 from types import SimpleNamespace
 
+import pandas as pd
+
+from options_helper.analysis.strategy_signals import build_strategy_signal_events
 from options_helper.data.strategy_modeling_artifacts import write_strategy_modeling_artifacts
 
 _SYMBOL_COUNT = 300
@@ -14,6 +17,9 @@ _EXPECTED_TRADE_COUNT = _SYMBOL_COUNT * _TRADES_PER_SYMBOL
 _RUNTIME_THRESHOLD_SECONDS = 1.5
 _PEAK_MEMORY_THRESHOLD_MIB = 32.0
 _GENERATED_AT = datetime(2026, 2, 8, 12, 30, tzinfo=timezone.utc)
+_SIGNAL_SYMBOL_COUNT = 80
+_SIGNAL_BAR_COUNT = 420
+_SIGNAL_RUNTIME_THRESHOLD_SECONDS = 4.0
 
 
 def _build_universe_scale_fixture() -> tuple[SimpleNamespace, SimpleNamespace]:
@@ -126,6 +132,18 @@ def _build_universe_scale_fixture() -> tuple[SimpleNamespace, SimpleNamespace]:
     return request, run_result
 
 
+def _build_signal_generation_ohlc() -> pd.DataFrame:
+    idx = pd.date_range("2024-01-02", periods=_SIGNAL_BAR_COUNT, freq="B")
+    close = [
+        100.0 + (((bar_idx % 60) - 30) * 0.25) + ((bar_idx // 60) * 0.05)
+        for bar_idx in range(_SIGNAL_BAR_COUNT)
+    ]
+    open_ = [value + (((bar_idx % 3) - 1) * 0.05) for bar_idx, value in enumerate(close)]
+    high = [max(o, c) + 0.25 for o, c in zip(open_, close, strict=True)]
+    low = [min(o, c) - 0.25 for o, c in zip(open_, close, strict=True)]
+    return pd.DataFrame({"Open": open_, "High": high, "Low": low, "Close": close}, index=idx)
+
+
 def test_strategy_modeling_universe_scale_smoke_runtime_and_memory(tmp_path) -> None:  # type: ignore[no-untyped-def]
     request, run_result = _build_universe_scale_fixture()
 
@@ -184,3 +202,76 @@ def test_strategy_modeling_universe_scale_smoke_runtime_and_memory(tmp_path) -> 
     assert payload["summary"]["trade_count"] == _EXPECTED_TRADE_COUNT
     assert payload["summary"]["accepted_trade_count"] == _EXPECTED_TRADE_COUNT
     assert payload["summary"]["losses_below_minus_one_r"] > 0
+
+
+def test_strategy_signal_generation_runtime_for_ma_and_trend_strategies() -> None:
+    ohlc = _build_signal_generation_ohlc()
+    symbols = [f"SYM{idx:03d}" for idx in range(_SIGNAL_SYMBOL_COUNT)]
+
+    # Warm-up once per strategy to reduce one-time interpreter overhead.
+    build_strategy_signal_events(
+        "ma_crossover",
+        ohlc,
+        symbol=symbols[0],
+        timeframe="1d",
+        fast_window=20,
+        slow_window=50,
+        fast_type="sma",
+        slow_type="sma",
+        atr_window=14,
+        atr_stop_multiple=2.0,
+    )
+    build_strategy_signal_events(
+        "trend_following",
+        ohlc,
+        symbol=symbols[0],
+        timeframe="1d",
+        trend_window=200,
+        trend_type="sma",
+        fast_window=20,
+        fast_type="sma",
+        slope_lookback_bars=3,
+        atr_window=14,
+        atr_stop_multiple=2.0,
+    )
+
+    start = time.perf_counter()
+    event_count = 0
+    for symbol in symbols:
+        event_count += len(
+            build_strategy_signal_events(
+                "ma_crossover",
+                ohlc,
+                symbol=symbol,
+                timeframe="1d",
+                fast_window=20,
+                slow_window=50,
+                fast_type="sma",
+                slow_type="sma",
+                atr_window=14,
+                atr_stop_multiple=2.0,
+            )
+        )
+    for symbol in symbols:
+        event_count += len(
+            build_strategy_signal_events(
+                "trend_following",
+                ohlc,
+                symbol=symbol,
+                timeframe="1d",
+                trend_window=200,
+                trend_type="sma",
+                fast_window=20,
+                fast_type="sma",
+                slope_lookback_bars=3,
+                atr_window=14,
+                atr_stop_multiple=2.0,
+            )
+        )
+    elapsed = time.perf_counter() - start
+
+    assert elapsed <= _SIGNAL_RUNTIME_THRESHOLD_SECONDS, (
+        "Signal-generation runtime exceeded budget for ma_crossover/trend_following: "
+        f"{elapsed:.3f}s > {_SIGNAL_RUNTIME_THRESHOLD_SECONDS:.2f}s"
+    )
+    assert event_count > 0

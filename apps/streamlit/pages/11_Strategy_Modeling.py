@@ -140,6 +140,67 @@ def _normalize_volatility_regimes(raw_values: Sequence[str]) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _normalize_ma_type(value: str, *, field_name: str) -> str:
+    token = str(value or "").strip().lower()
+    if token not in {"sma", "ema"}:
+        raise ValueError(f"{field_name} must be one of: sma, ema.")
+    return token
+
+
+def _build_signal_kwargs(
+    *,
+    strategy: str,
+    ma_fast_window: int,
+    ma_slow_window: int,
+    ma_trend_window: int,
+    ma_fast_type: str,
+    ma_slow_type: str,
+    ma_trend_type: str,
+    trend_slope_lookback_bars: int,
+    atr_window: int,
+    atr_stop_multiple: float,
+) -> dict[str, object]:
+    if ma_fast_window < 1:
+        raise ValueError("MA fast window must be >= 1.")
+    if ma_slow_window < 1:
+        raise ValueError("MA slow window must be >= 1.")
+    if ma_trend_window < 1:
+        raise ValueError("MA trend window must be >= 1.")
+    if trend_slope_lookback_bars < 1:
+        raise ValueError("Trend slope lookback bars must be >= 1.")
+    if atr_window < 1:
+        raise ValueError("ATR window must be >= 1.")
+    if atr_stop_multiple <= 0.0:
+        raise ValueError("ATR stop multiple must be > 0.")
+
+    fast_type = _normalize_ma_type(ma_fast_type, field_name="MA fast type")
+    slow_type = _normalize_ma_type(ma_slow_type, field_name="MA slow type")
+    trend_type = _normalize_ma_type(ma_trend_type, field_name="MA trend type")
+
+    if strategy == "ma_crossover":
+        if ma_fast_window >= ma_slow_window:
+            raise ValueError("For ma_crossover, MA fast window must be smaller than MA slow window.")
+        return {
+            "fast_window": int(ma_fast_window),
+            "slow_window": int(ma_slow_window),
+            "fast_type": fast_type,
+            "slow_type": slow_type,
+            "atr_window": int(atr_window),
+            "atr_stop_multiple": float(atr_stop_multiple),
+        }
+    if strategy == "trend_following":
+        return {
+            "trend_window": int(ma_trend_window),
+            "trend_type": trend_type,
+            "fast_window": int(ma_fast_window),
+            "fast_type": fast_type,
+            "slope_lookback_bars": int(trend_slope_lookback_bars),
+            "atr_window": int(atr_window),
+            "atr_stop_multiple": float(atr_stop_multiple),
+        }
+    return {}
+
+
 def _default_ticker_selection(symbols: Sequence[str]) -> list[str]:
     preferred = [ticker for ticker in _DEFAULT_TICKERS if ticker in symbols]
     if preferred:
@@ -247,7 +308,11 @@ default_start = default_end - timedelta(days=365)
 with st.sidebar:
     st.markdown("### Modeling Inputs")
 
-    strategy = st.selectbox("Strategy", options=["sfp", "msb", "orb"], index=0)
+    strategy = st.selectbox(
+        "Strategy",
+        options=["sfp", "msb", "orb", "ma_crossover", "trend_following"],
+        index=0,
+    )
     start_date = st.date_input("Start date", value=default_start)
     end_date = st.date_input("End date", value=default_end)
     intraday_timeframe = st.selectbox("Intraday timeframe", options=["1Min", "5Min", "15Min", "30Min", "60Min"])
@@ -278,6 +343,21 @@ with st.sidebar:
         default=["symbol", "direction"],
     )
     segment_values_raw = st.text_input("Segment values (comma-separated)", value="")
+
+    st.markdown("### Strategy Signal Parameters")
+    ma_fast_window = int(st.number_input("MA fast window", min_value=1, max_value=1000, value=20, step=1))
+    ma_slow_window = int(st.number_input("MA slow window", min_value=1, max_value=1000, value=50, step=1))
+    ma_trend_window = int(st.number_input("MA trend window", min_value=1, max_value=2000, value=200, step=1))
+    ma_fast_type = st.selectbox("MA fast type", options=["sma", "ema"], index=0)
+    ma_slow_type = st.selectbox("MA slow type", options=["sma", "ema"], index=0)
+    ma_trend_type = st.selectbox("MA trend type", options=["sma", "ema"], index=0)
+    trend_slope_lookback_bars = int(
+        st.number_input("Trend slope lookback (bars)", min_value=1, max_value=200, value=3, step=1)
+    )
+    atr_window = int(st.number_input("ATR window", min_value=1, max_value=500, value=14, step=1))
+    atr_stop_multiple = float(
+        st.number_input("ATR stop multiple", min_value=0.1, max_value=20.0, value=2.0, step=0.1)
+    )
 
     st.markdown("### Entry Filters")
     allow_shorts = st.checkbox("Allow short-direction entries", value=True)
@@ -358,13 +438,35 @@ except ValidationError as exc:
     detail = "; ".join(error.get("msg", "invalid value") for error in exc.errors())
     filter_config_error = f"Invalid entry filter configuration: {detail}"
 
+signal_kwargs: dict[str, object] = {}
+signal_kwargs_error: str | None = None
+try:
+    signal_kwargs = _build_signal_kwargs(
+        strategy=str(strategy),
+        ma_fast_window=int(ma_fast_window),
+        ma_slow_window=int(ma_slow_window),
+        ma_trend_window=int(ma_trend_window),
+        ma_fast_type=str(ma_fast_type),
+        ma_slow_type=str(ma_slow_type),
+        ma_trend_type=str(ma_trend_type),
+        trend_slope_lookback_bars=int(trend_slope_lookback_bars),
+        atr_window=int(atr_window),
+        atr_stop_multiple=float(atr_stop_multiple),
+    )
+except ValueError as exc:
+    signal_kwargs_error = f"Invalid strategy signal parameters: {exc}"
+
 if filter_config_error:
     st.error(filter_config_error)
+if signal_kwargs_error:
+    st.error(signal_kwargs_error)
 
-run_disabled = run_is_blocked or filter_config is None
+run_disabled = run_is_blocked or filter_config is None or signal_kwargs_error is not None
 run_help = "Runs local deterministic strategy modeling. Disabled when required intraday coverage is missing."
 if filter_config is None:
     run_help = f"{run_help} Fix invalid entry-filter settings first."
+if signal_kwargs_error is not None:
+    run_help = f"{run_help} Fix invalid strategy signal parameters first."
 
 run_clicked = st.button(
     "Run Strategy Modeling",
@@ -379,7 +481,7 @@ if clear_clicked:
     st.session_state.pop(_RESULT_STATE_KEY, None)
     st.session_state.pop(_REQUEST_STATE_KEY, None)
 
-if run_clicked and not run_is_blocked and filter_config is not None:
+if run_clicked and not run_is_blocked and filter_config is not None and signal_kwargs_error is None:
     service = cli_deps.build_strategy_modeling_service()
     request = StrategyModelingRequest(
         strategy=strategy,
@@ -388,6 +490,7 @@ if run_clicked and not run_is_blocked and filter_config is not None:
         end_date=end_date,
         intraday_dir=Path("data/intraday"),
         intraday_timeframe=intraday_timeframe,
+        signal_kwargs=signal_kwargs,
         starting_capital=float(starting_capital),
         max_hold_bars=int(max_hold_bars),
         filter_config=filter_config,

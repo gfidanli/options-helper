@@ -409,6 +409,8 @@ def test_strategy_modeling_page_orb_controls_build_request_and_render_filter_out
 
     assert "Strategy" in selectbox_options
     assert "orb" in selectbox_options["Strategy"]
+    assert "ma_crossover" in selectbox_options["Strategy"]
+    assert "trend_following" in selectbox_options["Strategy"]
     assert stub.last_request is not None
     assert stub.last_request.strategy == "orb"
     assert tuple(stub.last_request.symbols) == ("SPY",)
@@ -432,6 +434,132 @@ def test_strategy_modeling_page_orb_controls_build_request_and_render_filter_out
     directional_frame = next((frame for frame in frames if "directional_bucket" in frame.columns), None)
     assert directional_frame is not None
     assert set(directional_frame["directional_bucket"]) == {"combined", "long_only", "short_only"}
+
+
+def test_strategy_modeling_page_ma_crossover_controls_build_signal_kwargs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("streamlit")
+    pytest.importorskip("options_helper.analysis.strategy_modeling")
+    if not PAGE_PATH.exists():
+        pytest.skip("Strategy modeling page scaffold is not present in this workspace.")
+
+    from apps.streamlit.components import strategy_modeling_page as component
+    import options_helper.cli_deps as cli_deps
+    import streamlit as st
+
+    class _StubService:
+        def __init__(self) -> None:
+            self.last_request = None
+
+        def run(self, request):  # noqa: ANN001
+            self.last_request = request
+            return SimpleNamespace(
+                portfolio_metrics=None,
+                target_hit_rates=(),
+                equity_curve=(),
+                segment_records=(),
+                trade_simulations=(),
+                filter_summary=None,
+                directional_metrics=None,
+            )
+
+    stub = _StubService()
+    _clear_component_caches(component)
+    monkeypatch.setattr(component, "list_strategy_modeling_symbols", lambda **_: (["SPY"], []))
+    monkeypatch.setattr(component, "load_strategy_modeling_data_payload", lambda **_: _ready_payload())
+    monkeypatch.setattr(cli_deps, "build_strategy_modeling_service", lambda: stub)
+
+    def _selectbox(label: str, *, options, index: int = 0, **kwargs):  # noqa: ANN001,ARG001
+        option_values = list(options)
+        selected_map = {
+            "Strategy": "ma_crossover",
+            "Intraday timeframe": "5Min",
+            "Intraday source": "stocks_bars_local",
+            "Gap policy": "fill_at_open",
+            "ORB stop policy": "base",
+            "MA fast type": "ema",
+            "MA slow type": "sma",
+            "MA trend type": "sma",
+        }
+        selected = selected_map.get(label)
+        if selected in option_values:
+            return selected
+        if option_values:
+            return option_values[index]
+        return None
+
+    def _multiselect(label: str, *, options, default=None, **kwargs):  # noqa: ANN001,ARG001
+        option_values = list(options)
+        selected_map = {
+            "Tickers": ["SPY"],
+            "Segment dimensions": ["symbol", "direction"],
+            "Allowed volatility regimes": ["low", "normal", "high"],
+        }
+        selected = selected_map.get(label)
+        if selected is not None:
+            return [item for item in selected if item in option_values]
+        if default is None:
+            return []
+        return list(default)
+
+    def _number_input(label: str, value=0, **kwargs):  # noqa: ANN001,ARG001
+        selected_map = {
+            "Starting capital": 25000.0,
+            "Risk per trade (%)": 2.0,
+            "Max hold (bars)": 20,
+            "MA fast window": 21,
+            "MA slow window": 55,
+            "MA trend window": 200,
+            "Trend slope lookback (bars)": 3,
+            "ATR window": 10,
+            "ATR stop multiple": 1.7,
+            "ORB range (minutes)": 15,
+            "ATR stop floor multiple": 0.5,
+            "EMA9 slope lookback (bars)": 3,
+        }
+        return selected_map.get(label, value)
+
+    def _checkbox(label: str, value: bool = False, **kwargs):  # noqa: ANN001,ARG001
+        return value
+
+    def _text_input(label: str, value: str = "", **kwargs) -> str:  # noqa: ARG001
+        selected_map = {
+            "Segment values (comma-separated)": "",
+            "ORB confirmation cutoff ET (HH:MM)": "10:30",
+        }
+        return selected_map.get(label, value)
+
+    def _date_input(label: str, value=None, **kwargs):  # noqa: ANN001,ARG001
+        selected_map = {
+            "Start date": date(2026, 1, 1),
+            "End date": date(2026, 1, 31),
+        }
+        return selected_map.get(label, value)
+
+    def _button(label: str, *args: object, **kwargs: object) -> bool:  # noqa: ARG001
+        return label == "Run Strategy Modeling"
+
+    monkeypatch.setattr(st, "selectbox", _selectbox)
+    monkeypatch.setattr(st, "multiselect", _multiselect)
+    monkeypatch.setattr(st, "checkbox", _checkbox)
+    monkeypatch.setattr(st, "number_input", _number_input)
+    monkeypatch.setattr(st, "text_input", _text_input)
+    monkeypatch.setattr(st, "date_input", _date_input)
+    monkeypatch.setattr(st, "button", _button)
+
+    runpy.run_path(str(PAGE_PATH), run_name="__strategy_modeling_page_ma_crossover__")
+
+    assert stub.last_request is not None
+    assert stub.last_request.strategy == "ma_crossover"
+    assert stub.last_request.signal_kwargs == {
+        "fast_window": 21,
+        "slow_window": 55,
+        "fast_type": "ema",
+        "slow_type": "sma",
+        "atr_window": 10,
+        "atr_stop_multiple": 1.7,
+    }
 
 
 def test_strategy_modeling_page_segment_breakdowns_apply_column_color_styling(

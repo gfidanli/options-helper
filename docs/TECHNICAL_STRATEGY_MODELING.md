@@ -18,8 +18,19 @@ Command:
 ```
 
 Primary strategy options:
-- `--strategy sfp|msb|orb` (default `sfp`)
+- `--strategy sfp|msb|orb|ma_crossover|trend_following` (default `sfp`)
 - `--allow-shorts/--no-allow-shorts` (default `--allow-shorts`)
+
+MA/trend strategy signal options:
+- `--ma-fast-window` (default `20`, must be `>= 1`)
+- `--ma-slow-window` (default `50`, must be `>= 1`; required `ma_fast_window < ma_slow_window` for `ma_crossover`)
+- `--ma-trend-window` (default `200`, must be `>= 1`)
+- `--ma-fast-type sma|ema` (default `sma`)
+- `--ma-slow-type sma|ema` (default `sma`)
+- `--ma-trend-type sma|ema` (default `sma`)
+- `--trend-slope-lookback-bars` (default `3`, must be `>= 1`)
+- `--atr-window` (default `14`, must be `>= 1`)
+- `--atr-stop-multiple` (default `2.0`, must be `> 0`)
 
 ORB/filter options:
 - `--enable-orb-confirmation/--no-enable-orb-confirmation` (default off)
@@ -72,6 +83,35 @@ Example:
   --out data/reports/technicals/strategy_modeling
 ```
 
+MA crossover example:
+
+```bash
+./.venv/bin/options-helper technicals strategy-model \
+  --strategy ma_crossover \
+  --symbols SPY \
+  --ma-fast-window 20 \
+  --ma-slow-window 50 \
+  --ma-fast-type sma \
+  --ma-slow-type ema \
+  --atr-window 14 \
+  --atr-stop-multiple 2.0
+```
+
+Trend following example:
+
+```bash
+./.venv/bin/options-helper technicals strategy-model \
+  --strategy trend_following \
+  --symbols SPY \
+  --ma-trend-window 200 \
+  --ma-trend-type sma \
+  --ma-fast-window 20 \
+  --ma-fast-type sma \
+  --trend-slope-lookback-bars 3 \
+  --atr-window 14 \
+  --atr-stop-multiple 2.0
+```
+
 ## Anti-Lookahead Semantics
 
 Global rule:
@@ -82,6 +122,13 @@ Global rule:
 Daily close-confirmed paths (`sfp`/`msb`):
 - Events are normalized with `entry_ts = next bar timestamp` in the signal frame.
 - Simulation enforces next tradable regular-session open anchoring for daily workflows.
+
+Daily close-confirmed MA paths (`ma_crossover`/`trend_following`):
+- Signal detection is close-confirmed on bar `t`, then entry is anchored to `t+1` in the signal frame.
+- Adapter normalization enforces `entry_ts > signal_confirmed_ts` and drops final-bar signals with no next bar.
+- Stop values are signal-time ATR-based:
+  - Long: `signal_close - atr_stop_multiple * atr`
+  - Short: `signal_close + atr_stop_multiple * atr`
 
 ORB primary strategy (`--strategy orb`):
 - Uses regular-session intraday bars only (`09:30 <= time < 16:00` America/New_York).
@@ -135,7 +182,7 @@ Evaluation order (stable deterministic order):
 7. ATR stop floor
 
 Daily indicator anchoring:
-- `sfp`/`msb`: anchor on event `signal_ts` day.
+- `sfp`/`msb`/`ma_crossover`/`trend_following`: anchor on event `signal_ts` day.
 - `orb`: anchor on most recent completed daily bar strictly before ORB signal day.
 
 Filter formulas:

@@ -2334,6 +2334,14 @@ def _normalize_orb_stop_policy(value: str, *, option_name: str) -> str:
     return token
 
 
+def _normalize_ma_type(value: str, *, option_name: str) -> str:
+    token = str(value or "").strip().lower()
+    allowed = ("sma", "ema")
+    if token not in allowed:
+        raise typer.BadParameter(f"{option_name} must be one of: {', '.join(allowed)}")
+    return token
+
+
 def _parse_allowed_volatility_regimes(value: str, *, option_name: str) -> tuple[str, ...]:
     allowed = ("low", "normal", "high")
     parsed = tuple(item.strip().lower() for item in str(value or "").split(",") if item.strip())
@@ -2350,6 +2358,60 @@ def _parse_allowed_volatility_regimes(value: str, *, option_name: str) -> tuple[
             f"Allowed: {', '.join(allowed)}"
         )
     return parsed
+
+
+def _build_strategy_signal_kwargs(
+    *,
+    strategy: str,
+    ma_fast_window: int,
+    ma_slow_window: int,
+    ma_trend_window: int,
+    ma_fast_type: str,
+    ma_slow_type: str,
+    ma_trend_type: str,
+    trend_slope_lookback_bars: int,
+    atr_window: int,
+    atr_stop_multiple: float,
+) -> dict[str, object]:
+    if ma_fast_window < 1:
+        raise typer.BadParameter("--ma-fast-window must be >= 1")
+    if ma_slow_window < 1:
+        raise typer.BadParameter("--ma-slow-window must be >= 1")
+    if ma_trend_window < 1:
+        raise typer.BadParameter("--ma-trend-window must be >= 1")
+    if trend_slope_lookback_bars < 1:
+        raise typer.BadParameter("--trend-slope-lookback-bars must be >= 1")
+    if atr_window < 1:
+        raise typer.BadParameter("--atr-window must be >= 1")
+    if atr_stop_multiple <= 0.0:
+        raise typer.BadParameter("--atr-stop-multiple must be > 0")
+
+    normalized_fast_type = _normalize_ma_type(ma_fast_type, option_name="--ma-fast-type")
+    normalized_slow_type = _normalize_ma_type(ma_slow_type, option_name="--ma-slow-type")
+    normalized_trend_type = _normalize_ma_type(ma_trend_type, option_name="--ma-trend-type")
+
+    if strategy == "ma_crossover":
+        if ma_fast_window >= ma_slow_window:
+            raise typer.BadParameter("--ma-fast-window must be < --ma-slow-window for ma_crossover.")
+        return {
+            "fast_window": int(ma_fast_window),
+            "slow_window": int(ma_slow_window),
+            "fast_type": normalized_fast_type,
+            "slow_type": normalized_slow_type,
+            "atr_window": int(atr_window),
+            "atr_stop_multiple": float(atr_stop_multiple),
+        }
+    if strategy == "trend_following":
+        return {
+            "trend_window": int(ma_trend_window),
+            "trend_type": normalized_trend_type,
+            "fast_window": int(ma_fast_window),
+            "fast_type": normalized_fast_type,
+            "slope_lookback_bars": int(trend_slope_lookback_bars),
+            "atr_window": int(atr_window),
+            "atr_stop_multiple": float(atr_stop_multiple),
+        }
+    return {}
 
 
 def _build_strategy_filter_config(
@@ -2561,7 +2623,11 @@ def _intraday_coverage_block_message(preflight: object | None) -> str | None:
 
 @app.command("strategy-model")
 def technicals_strategy_model(
-    strategy: str = typer.Option("sfp", "--strategy", help="Strategy to model: sfp, msb, or orb."),
+    strategy: str = typer.Option(
+        "sfp",
+        "--strategy",
+        help="Strategy to model: sfp, msb, orb, ma_crossover, or trend_following.",
+    ),
     allow_shorts: bool = typer.Option(
         True,
         "--allow-shorts/--no-allow-shorts",
@@ -2621,6 +2687,51 @@ def technicals_strategy_model(
         "low,normal,high",
         "--allowed-volatility-regimes",
         help="Comma-separated volatility regimes to allow: low,normal,high.",
+    ),
+    ma_fast_window: int = typer.Option(
+        20,
+        "--ma-fast-window",
+        help="Fast MA window for ma_crossover/trend_following signal generation.",
+    ),
+    ma_slow_window: int = typer.Option(
+        50,
+        "--ma-slow-window",
+        help="Slow MA window for ma_crossover signal generation.",
+    ),
+    ma_trend_window: int = typer.Option(
+        200,
+        "--ma-trend-window",
+        help="Trend MA window for trend_following signal generation.",
+    ),
+    ma_fast_type: str = typer.Option(
+        "sma",
+        "--ma-fast-type",
+        help="Fast MA type for strategy signal generation: sma or ema.",
+    ),
+    ma_slow_type: str = typer.Option(
+        "sma",
+        "--ma-slow-type",
+        help="Slow MA type for strategy signal generation: sma or ema.",
+    ),
+    ma_trend_type: str = typer.Option(
+        "sma",
+        "--ma-trend-type",
+        help="Trend MA type for strategy signal generation: sma or ema.",
+    ),
+    trend_slope_lookback_bars: int = typer.Option(
+        3,
+        "--trend-slope-lookback-bars",
+        help="Lookback bars used for trend MA slope checks in trend_following.",
+    ),
+    atr_window: int = typer.Option(
+        14,
+        "--atr-window",
+        help="ATR window used by ma_crossover/trend_following signal stops.",
+    ),
+    atr_stop_multiple: float = typer.Option(
+        2.0,
+        "--atr-stop-multiple",
+        help="ATR stop multiple used by ma_crossover/trend_following signal stops.",
     ),
     symbols: str | None = typer.Option(
         None,
@@ -2738,8 +2849,10 @@ def technicals_strategy_model(
     console = Console(width=200)
 
     normalized_strategy = strategy.strip().lower()
-    if normalized_strategy not in {"sfp", "msb", "orb"}:
-        raise typer.BadParameter("--strategy must be one of: sfp, msb, orb")
+    if normalized_strategy not in {"sfp", "msb", "orb", "ma_crossover", "trend_following"}:
+        raise typer.BadParameter(
+            "--strategy must be one of: sfp, msb, orb, ma_crossover, trend_following"
+        )
     if starting_capital <= 0.0:
         raise typer.BadParameter("--starting-capital must be > 0")
     if risk_per_trade_pct <= 0.0 or risk_per_trade_pct > 100.0:
@@ -2758,6 +2871,18 @@ def technicals_strategy_model(
     parsed_end_date = _parse_iso_date(end_date, option_name="--end-date")
     if parsed_start_date and parsed_end_date and parsed_start_date > parsed_end_date:
         raise typer.BadParameter("--start-date must be <= --end-date")
+    signal_kwargs = _build_strategy_signal_kwargs(
+        strategy=normalized_strategy,
+        ma_fast_window=int(ma_fast_window),
+        ma_slow_window=int(ma_slow_window),
+        ma_trend_window=int(ma_trend_window),
+        ma_fast_type=ma_fast_type,
+        ma_slow_type=ma_slow_type,
+        ma_trend_type=ma_trend_type,
+        trend_slope_lookback_bars=int(trend_slope_lookback_bars),
+        atr_window=int(atr_window),
+        atr_stop_multiple=float(atr_stop_multiple),
+    )
     filter_config = _build_strategy_filter_config(
         allow_shorts=allow_shorts,
         enable_orb_confirmation=enable_orb_confirmation,
@@ -2911,6 +3036,7 @@ def technicals_strategy_model(
         target_ladder=target_ladder,
         starting_capital=float(starting_capital),
         filter_config=filter_config,
+        signal_kwargs=signal_kwargs,
         policy={
             "require_intraday_bars": True,
             "sizing_rule": "risk_pct_of_equity",

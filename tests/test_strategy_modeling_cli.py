@@ -225,6 +225,8 @@ def test_strategy_model_rejects_invalid_strategy_value() -> None:
     )
     assert res.exit_code != 0
     assert "--strategy must be one of:" in res.output
+    assert "ma_crossover" in res.output
+    assert "trend_following" in res.output
 
 
 def test_strategy_model_rejects_invalid_orb_confirmation_cutoff() -> None:
@@ -292,6 +294,170 @@ def test_strategy_model_accepts_orb_strategy(monkeypatch) -> None:  # type: igno
     assert res.exit_code == 0, res.output
     assert stub.last_request is not None
     assert stub.last_request.strategy == "orb"
+
+
+def test_strategy_model_accepts_ma_crossover_strategy_and_signal_kwargs(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    stub = _StubStrategyModelingService(blocked=False)
+    monkeypatch.setattr(
+        "options_helper.commands.technicals.cli_deps.build_strategy_modeling_service",
+        lambda: stub,
+    )
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--strategy",
+            "ma_crossover",
+            "--symbols",
+            "SPY",
+            "--ma-fast-window",
+            "21",
+            "--ma-slow-window",
+            "55",
+            "--ma-fast-type",
+            "ema",
+            "--ma-slow-type",
+            "sma",
+            "--atr-window",
+            "10",
+            "--atr-stop-multiple",
+            "1.7",
+        ],
+    )
+
+    assert res.exit_code == 0, res.output
+    assert stub.last_request is not None
+    assert stub.last_request.strategy == "ma_crossover"
+    assert stub.last_request.signal_kwargs == {
+        "fast_window": 21,
+        "slow_window": 55,
+        "fast_type": "ema",
+        "slow_type": "sma",
+        "atr_window": 10,
+        "atr_stop_multiple": 1.7,
+    }
+
+
+def test_strategy_model_accepts_trend_following_strategy_and_signal_kwargs(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    stub = _StubStrategyModelingService(blocked=False)
+    monkeypatch.setattr(
+        "options_helper.commands.technicals.cli_deps.build_strategy_modeling_service",
+        lambda: stub,
+    )
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--strategy",
+            "trend_following",
+            "--symbols",
+            "SPY",
+            "--ma-fast-window",
+            "18",
+            "--ma-fast-type",
+            "ema",
+            "--ma-trend-window",
+            "150",
+            "--ma-trend-type",
+            "sma",
+            "--trend-slope-lookback-bars",
+            "4",
+            "--atr-window",
+            "12",
+            "--atr-stop-multiple",
+            "2.5",
+        ],
+    )
+
+    assert res.exit_code == 0, res.output
+    assert stub.last_request is not None
+    assert stub.last_request.strategy == "trend_following"
+    assert stub.last_request.signal_kwargs == {
+        "trend_window": 150,
+        "trend_type": "sma",
+        "fast_window": 18,
+        "fast_type": "ema",
+        "slope_lookback_bars": 4,
+        "atr_window": 12,
+        "atr_stop_multiple": 2.5,
+    }
+
+
+def test_strategy_model_rejects_invalid_ma_window_relationship_for_ma_crossover() -> None:
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--strategy",
+            "ma_crossover",
+            "--symbols",
+            "SPY",
+            "--ma-fast-window",
+            "20",
+            "--ma-slow-window",
+            "20",
+        ],
+    )
+
+    assert res.exit_code != 0
+    assert "--ma-fast-window must be < --ma-slow-window for ma_crossover." in res.output
+
+
+def test_strategy_model_rejects_invalid_ma_type_and_atr_stop_multiple() -> None:
+    runner = CliRunner()
+    invalid_type = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--strategy",
+            "trend_following",
+            "--symbols",
+            "SPY",
+            "--ma-fast-type",
+            "wma",
+        ],
+    )
+    assert invalid_type.exit_code != 0
+    assert "--ma-fast-type must be one of: sma, ema" in invalid_type.output
+
+    invalid_atr = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--strategy",
+            "ma_crossover",
+            "--symbols",
+            "SPY",
+            "--atr-stop-multiple",
+            "0",
+        ],
+    )
+    assert invalid_atr.exit_code != 0
+    assert "--atr-stop-multiple must be > 0" in invalid_atr.output
 
 
 def test_strategy_model_success_parses_options_and_runs_service(monkeypatch) -> None:  # type: ignore[no-untyped-def]

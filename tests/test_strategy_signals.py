@@ -37,6 +37,24 @@ def _sample_msb_ohlc() -> pd.DataFrame:
     return pd.DataFrame({"Open": open_, "High": high, "Low": low, "Close": close}, index=idx)
 
 
+def _sample_ma_ohlc_long() -> pd.DataFrame:
+    idx = pd.date_range("2026-01-05", periods=7, freq="B")
+    close = [10.0, 9.0, 8.0, 7.0, 9.0, 11.0, 12.0]
+    open_ = [10.2, 9.2, 8.2, 7.2, 8.8, 10.8, 11.8]
+    high = [10.6, 9.5, 8.5, 7.4, 9.4, 11.4, 12.4]
+    low = [9.6, 8.6, 7.6, 6.6, 8.4, 10.4, 11.4]
+    return pd.DataFrame({"Open": open_, "High": high, "Low": low, "Close": close}, index=idx)
+
+
+def _sample_ma_ohlc_short() -> pd.DataFrame:
+    idx = pd.date_range("2026-01-05", periods=7, freq="B")
+    close = [8.0, 9.0, 10.0, 11.0, 9.0, 7.0, 6.0]
+    open_ = [8.2, 9.2, 10.2, 11.2, 9.2, 7.2, 6.2]
+    high = [8.6, 9.6, 10.6, 11.6, 9.6, 7.6, 6.6]
+    low = [7.6, 8.6, 9.6, 10.6, 8.6, 6.6, 5.6]
+    return pd.DataFrame({"Open": open_, "High": high, "Low": low, "Close": close}, index=idx)
+
+
 def _utc_ts(day: str, hhmm: str) -> pd.Timestamp:
     return pd.Timestamp(f"{day} {hhmm}", tz=_MARKET_TZ).tz_convert("UTC")
 
@@ -60,16 +78,22 @@ def _sample_orb_intraday_bars() -> pd.DataFrame:
     )
 
 
-def test_strategy_signal_registry_registers_sfp_msb_and_orb_adapters() -> None:
+def test_strategy_signal_registry_registers_supported_adapters() -> None:
     assert "sfp" in list_registered_strategy_signal_adapters()
     assert "msb" in list_registered_strategy_signal_adapters()
     assert "orb" in list_registered_strategy_signal_adapters()
+    assert "ma_crossover" in list_registered_strategy_signal_adapters()
+    assert "trend_following" in list_registered_strategy_signal_adapters()
     adapter = get_strategy_signal_adapter("sfp")
     assert callable(adapter)
     msb_adapter = get_strategy_signal_adapter("msb")
     assert callable(msb_adapter)
     orb_adapter = get_strategy_signal_adapter("orb")
     assert callable(orb_adapter)
+    ma_crossover_adapter = get_strategy_signal_adapter("ma_crossover")
+    assert callable(ma_crossover_adapter)
+    trend_following_adapter = get_strategy_signal_adapter("trend_following")
+    assert callable(trend_following_adapter)
 
 
 def test_strategy_signal_registry_rejects_unknown_strategy() -> None:
@@ -278,6 +302,189 @@ def test_orb_adapter_accepts_intraday_bars_by_symbol_mapping() -> None:
 
     assert len(events) == 1
     assert events[0].strategy == "orb"
+
+
+@pytest.mark.parametrize(
+    ("fast_type", "slow_type"),
+    [
+        ("sma", "sma"),
+        ("ema", "ema"),
+    ],
+)
+def test_ma_crossover_adapter_emits_events_with_next_bar_anchor_and_atr_stop(
+    fast_type: str,
+    slow_type: str,
+) -> None:
+    events = build_strategy_signal_events(
+        "ma_crossover",
+        _sample_ma_ohlc_long(),
+        symbol="spy",
+        timeframe="1d",
+        fast_window=2,
+        slow_window=3,
+        fast_type=fast_type,
+        slow_type=slow_type,
+        atr_window=2,
+        atr_stop_multiple=1.5,
+    )
+
+    assert events
+    event = events[0]
+    assert isinstance(event, StrategySignalEvent)
+    assert event.strategy == "ma_crossover"
+    assert event.symbol == "SPY"
+    assert event.direction == "long"
+    assert event.entry_ts > event.signal_confirmed_ts
+    assert event.stop_price is not None
+    assert event.signal_close is not None
+    assert float(event.stop_price) < float(event.signal_close)
+
+    notes = _notes_as_map(event.notes)
+    assert notes["entry_ts_policy"] == "next_bar_open_after_signal_confirmed_ts"
+    assert notes["fast_type"] == fast_type
+    assert notes["slow_type"] == slow_type
+
+    payload = serialize_strategy_signal_events([event])[0]
+    assert set(payload) == set(STRATEGY_SIGNAL_EVENT_FIELDS)
+
+
+def test_ma_crossover_adapter_emits_short_events() -> None:
+    events = build_strategy_signal_events(
+        "ma_crossover",
+        _sample_ma_ohlc_short(),
+        symbol="spy",
+        timeframe="1d",
+        fast_window=2,
+        slow_window=3,
+        atr_window=2,
+        atr_stop_multiple=1.5,
+    )
+
+    assert events
+    event = events[0]
+    assert event.strategy == "ma_crossover"
+    assert event.direction == "short"
+    assert event.entry_ts > event.signal_confirmed_ts
+    assert event.stop_price is not None
+    assert event.signal_close is not None
+    assert float(event.stop_price) > float(event.signal_close)
+
+
+def test_ma_crossover_adapter_skips_final_bar_signal_without_next_bar_entry_anchor() -> None:
+    idx = pd.date_range("2026-01-05", periods=6, freq="B")
+    ohlc = pd.DataFrame(
+        {
+            "Open": [10.2, 9.2, 8.2, 7.2, 8.8, 10.8],
+            "High": [10.6, 9.5, 8.5, 7.4, 9.4, 11.4],
+            "Low": [9.6, 8.6, 7.6, 6.6, 8.4, 10.4],
+            "Close": [10.0, 9.0, 8.0, 7.0, 9.0, 11.0],
+        },
+        index=idx,
+    )
+    events = build_strategy_signal_events(
+        "ma_crossover",
+        ohlc,
+        symbol="SPY",
+        fast_window=2,
+        slow_window=3,
+        atr_window=2,
+        atr_stop_multiple=1.5,
+    )
+    assert events == []
+
+
+@pytest.mark.parametrize(
+    ("trend_type", "fast_type"),
+    [
+        ("sma", "sma"),
+        ("ema", "ema"),
+    ],
+)
+def test_trend_following_adapter_emits_events_with_next_bar_anchor_and_atr_stop(
+    trend_type: str,
+    fast_type: str,
+) -> None:
+    events = build_strategy_signal_events(
+        "trend_following",
+        _sample_ma_ohlc_long(),
+        symbol="spy",
+        timeframe="1d",
+        trend_window=3,
+        trend_type=trend_type,
+        fast_window=2,
+        fast_type=fast_type,
+        slope_lookback_bars=1,
+        atr_window=2,
+        atr_stop_multiple=1.5,
+    )
+
+    assert events
+    event = events[0]
+    assert isinstance(event, StrategySignalEvent)
+    assert event.strategy == "trend_following"
+    assert event.symbol == "SPY"
+    assert event.direction == "long"
+    assert event.entry_ts > event.signal_confirmed_ts
+    assert event.stop_price is not None
+    assert event.signal_close is not None
+    assert float(event.stop_price) < float(event.signal_close)
+
+    notes = _notes_as_map(event.notes)
+    assert notes["entry_ts_policy"] == "next_bar_open_after_signal_confirmed_ts"
+    assert notes["trend_type"] == trend_type
+    assert notes["fast_type"] == fast_type
+
+    payload = serialize_strategy_signal_events([event])[0]
+    assert set(payload) == set(STRATEGY_SIGNAL_EVENT_FIELDS)
+
+
+def test_trend_following_adapter_emits_short_events() -> None:
+    events = build_strategy_signal_events(
+        "trend_following",
+        _sample_ma_ohlc_short(),
+        symbol="spy",
+        timeframe="1d",
+        trend_window=3,
+        trend_type="sma",
+        fast_window=2,
+        fast_type="sma",
+        slope_lookback_bars=1,
+        atr_window=2,
+        atr_stop_multiple=1.5,
+    )
+
+    assert events
+    event = events[0]
+    assert event.strategy == "trend_following"
+    assert event.direction == "short"
+    assert event.entry_ts > event.signal_confirmed_ts
+    assert event.stop_price is not None
+    assert event.signal_close is not None
+    assert float(event.stop_price) > float(event.signal_close)
+
+
+def test_trend_following_adapter_skips_final_bar_signal_without_next_bar_entry_anchor() -> None:
+    idx = pd.date_range("2026-01-05", periods=5, freq="B")
+    ohlc = pd.DataFrame(
+        {
+            "Open": [10.2, 9.2, 8.2, 7.2, 8.8],
+            "High": [10.6, 9.5, 8.5, 7.4, 9.4],
+            "Low": [9.6, 8.6, 7.6, 6.6, 8.4],
+            "Close": [10.0, 9.0, 8.0, 7.0, 9.0],
+        },
+        index=idx,
+    )
+    events = build_strategy_signal_events(
+        "trend_following",
+        ohlc,
+        symbol="SPY",
+        trend_window=3,
+        fast_window=2,
+        slope_lookback_bars=1,
+        atr_window=2,
+        atr_stop_multiple=1.5,
+    )
+    assert events == []
 
 
 def test_msb_adapter_skips_final_bar_signal_without_next_bar_entry_anchor() -> None:

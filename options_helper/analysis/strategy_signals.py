@@ -7,9 +7,17 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from options_helper.analysis.ma_crossover import (
+    compute_ma_crossover_signals,
+    extract_ma_crossover_signal_candidates,
+)
 from options_helper.analysis.msb import compute_msb_signals, extract_msb_signal_candidates
 from options_helper.analysis.orb import compute_orb_signals, extract_orb_signal_candidates
 from options_helper.analysis.sfp import compute_sfp_signals, extract_sfp_signal_candidates
+from options_helper.analysis.trend_following import (
+    compute_trend_following_signals,
+    extract_trend_following_signal_candidates,
+)
 from options_helper.schemas.strategy_modeling_contracts import EntryPriceSource, StrategySignalEvent
 
 
@@ -265,6 +273,170 @@ def normalize_msb_signal_events(
     return events
 
 
+def normalize_ma_crossover_signal_events(
+    signals: pd.DataFrame,
+    *,
+    symbol: str,
+    timeframe: str | None = "1d",
+    entry_price_source: EntryPriceSource = _DEFAULT_ENTRY_PRICE_SOURCE,
+) -> list[StrategySignalEvent]:
+    if signals is None or signals.empty:
+        return []
+
+    normalized_symbol = str(symbol).strip().upper()
+    if not normalized_symbol:
+        raise ValueError("symbol must be non-empty")
+
+    index_values = list(signals.index)
+    timeframe_label = _normalize_timeframe_label(timeframe)
+    events: list[StrategySignalEvent] = []
+
+    for row in extract_ma_crossover_signal_candidates(signals):
+        row_position = int(row["row_position"])
+        if row_position + 1 >= len(index_values):
+            continue
+
+        direction = str(row.get("direction") or "").strip().lower()
+        if direction not in {"long", "short"}:
+            continue
+
+        signal_ts = _to_datetime(index_values[row_position])
+        signal_confirmed_ts = signal_ts
+        entry_ts = _to_datetime(index_values[row_position + 1])
+        if entry_ts <= signal_confirmed_ts:
+            continue
+
+        signal_open = _float_or_none(row.get("candle_open"))
+        signal_high = _float_or_none(row.get("candle_high"))
+        signal_low = _float_or_none(row.get("candle_low"))
+        signal_close = _float_or_none(row.get("candle_close"))
+        stop_price = _float_or_none(row.get("stop_price"))
+        if stop_price is None:
+            continue
+
+        notes = [
+            f"fast_window={row.get('fast_window')}",
+            f"slow_window={row.get('slow_window')}",
+            f"fast_type={row.get('fast_type')}",
+            f"slow_type={row.get('slow_type')}",
+            f"fast_ma={row.get('fast_ma')}",
+            f"slow_ma={row.get('slow_ma')}",
+            f"atr_window={row.get('atr_window')}",
+            f"atr={row.get('atr')}",
+            f"atr_stop_multiple={row.get('atr_stop_multiple')}",
+            "entry_ts_policy=next_bar_open_after_signal_confirmed_ts",
+        ]
+
+        event_id = (
+            f"ma_crossover:{normalized_symbol}:{timeframe_label}:"
+            f"{pd.Timestamp(signal_ts).isoformat()}:{direction}"
+        )
+        events.append(
+            StrategySignalEvent(
+                event_id=event_id,
+                strategy="ma_crossover",
+                symbol=normalized_symbol,
+                timeframe=timeframe_label,
+                direction=direction,  # type: ignore[arg-type]
+                signal_ts=signal_ts,
+                signal_confirmed_ts=signal_confirmed_ts,
+                entry_ts=entry_ts,
+                entry_price_source=entry_price_source,
+                signal_open=signal_open,
+                signal_high=signal_high,
+                signal_low=signal_low,
+                signal_close=signal_close,
+                stop_price=stop_price,
+                notes=notes,
+            )
+        )
+
+    return events
+
+
+def normalize_trend_following_signal_events(
+    signals: pd.DataFrame,
+    *,
+    symbol: str,
+    timeframe: str | None = "1d",
+    entry_price_source: EntryPriceSource = _DEFAULT_ENTRY_PRICE_SOURCE,
+) -> list[StrategySignalEvent]:
+    if signals is None or signals.empty:
+        return []
+
+    normalized_symbol = str(symbol).strip().upper()
+    if not normalized_symbol:
+        raise ValueError("symbol must be non-empty")
+
+    index_values = list(signals.index)
+    timeframe_label = _normalize_timeframe_label(timeframe)
+    events: list[StrategySignalEvent] = []
+
+    for row in extract_trend_following_signal_candidates(signals):
+        row_position = int(row["row_position"])
+        if row_position + 1 >= len(index_values):
+            continue
+
+        direction = str(row.get("direction") or "").strip().lower()
+        if direction not in {"long", "short"}:
+            continue
+
+        signal_ts = _to_datetime(index_values[row_position])
+        signal_confirmed_ts = signal_ts
+        entry_ts = _to_datetime(index_values[row_position + 1])
+        if entry_ts <= signal_confirmed_ts:
+            continue
+
+        signal_open = _float_or_none(row.get("candle_open"))
+        signal_high = _float_or_none(row.get("candle_high"))
+        signal_low = _float_or_none(row.get("candle_low"))
+        signal_close = _float_or_none(row.get("candle_close"))
+        stop_price = _float_or_none(row.get("stop_price"))
+        if stop_price is None:
+            continue
+
+        notes = [
+            f"trend_window={row.get('trend_window')}",
+            f"trend_type={row.get('trend_type')}",
+            f"trend_ma={row.get('trend_ma')}",
+            f"trend_ma_slope={row.get('trend_ma_slope')}",
+            f"fast_window={row.get('fast_window')}",
+            f"fast_type={row.get('fast_type')}",
+            f"fast_ma={row.get('fast_ma')}",
+            f"slope_lookback_bars={row.get('slope_lookback_bars')}",
+            f"atr_window={row.get('atr_window')}",
+            f"atr={row.get('atr')}",
+            f"atr_stop_multiple={row.get('atr_stop_multiple')}",
+            "entry_ts_policy=next_bar_open_after_signal_confirmed_ts",
+        ]
+
+        event_id = (
+            f"trend_following:{normalized_symbol}:{timeframe_label}:"
+            f"{pd.Timestamp(signal_ts).isoformat()}:{direction}"
+        )
+        events.append(
+            StrategySignalEvent(
+                event_id=event_id,
+                strategy="trend_following",
+                symbol=normalized_symbol,
+                timeframe=timeframe_label,
+                direction=direction,  # type: ignore[arg-type]
+                signal_ts=signal_ts,
+                signal_confirmed_ts=signal_confirmed_ts,
+                entry_ts=entry_ts,
+                entry_price_source=entry_price_source,
+                signal_open=signal_open,
+                signal_high=signal_high,
+                signal_low=signal_low,
+                signal_close=signal_close,
+                stop_price=stop_price,
+                notes=notes,
+            )
+        )
+
+    return events
+
+
 def normalize_orb_signal_events(
     signals: pd.DataFrame,
     *,
@@ -391,6 +563,72 @@ def adapt_msb_signal_events(
     )
 
 
+def adapt_ma_crossover_signal_events(
+    ohlc: pd.DataFrame,
+    *,
+    symbol: str,
+    timeframe: str | None = None,
+    fast_window: int = 20,
+    slow_window: int = 50,
+    fast_type: str = "sma",
+    slow_type: str = "sma",
+    atr_window: int = 14,
+    atr_stop_multiple: float = 2.0,
+    entry_price_source: EntryPriceSource = _DEFAULT_ENTRY_PRICE_SOURCE,
+    **_: Any,
+) -> list[StrategySignalEvent]:
+    signals = compute_ma_crossover_signals(
+        ohlc,
+        fast_window=fast_window,
+        slow_window=slow_window,
+        fast_type=fast_type,
+        slow_type=slow_type,
+        atr_window=atr_window,
+        atr_stop_multiple=atr_stop_multiple,
+        timeframe=timeframe,
+    )
+    return normalize_ma_crossover_signal_events(
+        signals,
+        symbol=symbol,
+        timeframe=timeframe,
+        entry_price_source=entry_price_source,
+    )
+
+
+def adapt_trend_following_signal_events(
+    ohlc: pd.DataFrame,
+    *,
+    symbol: str,
+    timeframe: str | None = None,
+    trend_window: int = 200,
+    trend_type: str = "sma",
+    fast_window: int = 20,
+    fast_type: str = "sma",
+    slope_lookback_bars: int = 3,
+    atr_window: int = 14,
+    atr_stop_multiple: float = 2.0,
+    entry_price_source: EntryPriceSource = _DEFAULT_ENTRY_PRICE_SOURCE,
+    **_: Any,
+) -> list[StrategySignalEvent]:
+    signals = compute_trend_following_signals(
+        ohlc,
+        trend_window=trend_window,
+        trend_type=trend_type,
+        fast_window=fast_window,
+        fast_type=fast_type,
+        slope_lookback_bars=slope_lookback_bars,
+        atr_window=atr_window,
+        atr_stop_multiple=atr_stop_multiple,
+        timeframe=timeframe,
+    )
+    return normalize_trend_following_signal_events(
+        signals,
+        symbol=symbol,
+        timeframe=timeframe,
+        entry_price_source=entry_price_source,
+    )
+
+
 def _resolve_orb_intraday_bars(
     *,
     symbol: str,
@@ -454,18 +692,24 @@ def adapt_orb_signal_events(
 register_strategy_signal_adapter("sfp", adapt_sfp_signal_events, replace=True)
 register_strategy_signal_adapter("msb", adapt_msb_signal_events, replace=True)
 register_strategy_signal_adapter("orb", adapt_orb_signal_events, replace=True)
+register_strategy_signal_adapter("ma_crossover", adapt_ma_crossover_signal_events, replace=True)
+register_strategy_signal_adapter("trend_following", adapt_trend_following_signal_events, replace=True)
 
 
 __all__ = [
     "StrategySignalAdapter",
+    "adapt_ma_crossover_signal_events",
+    "adapt_trend_following_signal_events",
     "adapt_orb_signal_events",
     "adapt_msb_signal_events",
     "adapt_sfp_signal_events",
     "build_strategy_signal_events",
     "get_strategy_signal_adapter",
     "list_registered_strategy_signal_adapters",
+    "normalize_ma_crossover_signal_events",
     "normalize_orb_signal_events",
     "normalize_msb_signal_events",
     "normalize_sfp_signal_events",
+    "normalize_trend_following_signal_events",
     "register_strategy_signal_adapter",
 ]

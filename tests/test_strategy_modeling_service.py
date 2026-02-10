@@ -46,6 +46,26 @@ def _sample_intraday_bars() -> pd.DataFrame:
     return frame
 
 
+def _sample_ma_trend_daily_candles() -> pd.DataFrame:
+    ts = pd.date_range("2026-01-05", periods=8, freq="B", tz="UTC")
+    close = [10.0, 9.0, 8.0, 7.0, 9.0, 11.0, 12.0, 13.0]
+    open_ = [10.2, 9.2, 8.2, 7.2, 8.8, 10.8, 11.8, 12.8]
+    high = [value + 0.4 for value in close]
+    low = [value - 0.4 for value in close]
+    return pd.DataFrame(
+        {
+            "ts": ts,
+            "open": open_,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": [100] * len(ts),
+            "vwap": close,
+            "trade_count": [1] * len(ts),
+        }
+    )
+
+
 def _stub_list_universe(*, database_path: str | Path | None = None) -> StrategyModelingUniverseLoadResult:
     path = Path(database_path) if database_path is not None else Path("/tmp/strategy-modeling-test.duckdb")
     return StrategyModelingUniverseLoadResult(
@@ -104,6 +124,72 @@ def _stub_intraday_loader(
     )
 
 
+def _stub_daily_loader_ma_trend(
+    symbols: list[str],
+    *,
+    database_path: str | Path | None = None,
+    **_: object,
+) -> StrategyModelingDailyLoadResult:
+    normalized = [str(symbol).upper() for symbol in symbols]
+    candles_by_symbol = {"SPY": _sample_ma_trend_daily_candles()} if "SPY" in normalized else {}
+    source_by_symbol = {"SPY": "adjusted"} if "SPY" in normalized else {}
+    missing_symbols = [symbol for symbol in normalized if symbol != "SPY"]
+    return StrategyModelingDailyLoadResult(
+        candles_by_symbol=candles_by_symbol,
+        source_by_symbol=source_by_symbol,
+        skipped_symbols=[],
+        missing_symbols=missing_symbols,
+        notes=["stub:daily"],
+    )
+
+
+def _stub_intraday_loader_ma_trend(
+    required_sessions_by_symbol: dict[str, tuple],
+    *,
+    require_intraday_bars: bool = True,
+    **_: object,
+) -> StrategyModelingIntradayLoadResult:
+    coverage_by_symbol: dict[str, IntradayCoverageBySymbol] = {}
+    bars_by_symbol: dict[str, pd.DataFrame] = {}
+
+    for symbol, days in required_sessions_by_symbol.items():
+        required_days = tuple(sorted(set(days)))
+        coverage_by_symbol[symbol] = IntradayCoverageBySymbol(
+            symbol=symbol,
+            required_days=required_days,
+            covered_days=required_days,
+            missing_days=(),
+        )
+
+        rows: list[tuple[str, float, float, float, float, str]] = []
+        for session_day in required_days:
+            session_ts = pd.Timestamp(session_day)
+            first_ts = (session_ts + pd.Timedelta(hours=14, minutes=30)).tz_localize("UTC")
+            second_ts = first_ts + pd.Timedelta(minutes=1)
+            rows.append((first_ts.isoformat(), 11.0, 11.2, 10.8, 11.1, str(session_day)))
+            rows.append((second_ts.isoformat(), 11.1, 11.3, 10.9, 11.0, str(session_day)))
+
+        frame = pd.DataFrame(
+            rows,
+            columns=["timestamp", "open", "high", "low", "close", "session_date"],
+        )
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
+        frame["session_date"] = pd.to_datetime(frame["session_date"], errors="coerce")
+        bars_by_symbol[symbol] = frame
+
+    preflight = StrategyModelingIntradayPreflightResult(
+        require_intraday_bars=bool(require_intraday_bars),
+        coverage_by_symbol=coverage_by_symbol,
+        blocked_symbols=[],
+        notes=["stub:preflight"],
+    )
+    return StrategyModelingIntradayLoadResult(
+        bars_by_symbol=bars_by_symbol,
+        preflight=preflight,
+        notes=["stub:intraday"],
+    )
+
+
 def test_strategy_modeling_service_parity_cli_vs_streamlit_callers(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(strategy_modeling, "list_strategy_modeling_universe", _stub_list_universe)
     monkeypatch.setattr(strategy_modeling, "load_daily_ohlc_history", _stub_daily_loader)
@@ -136,6 +222,59 @@ def test_strategy_modeling_service_parity_cli_vs_streamlit_callers(monkeypatch, 
     assert cli_result.trade_simulations[0].status == "closed"
     assert cli_result.portfolio_metrics.trade_count == 1
     assert cli_result.is_intraday_blocked is False
+
+
+def test_strategy_modeling_service_runs_ma_crossover_and_trend_following_strategies(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(strategy_modeling, "list_strategy_modeling_universe", _stub_list_universe)
+    monkeypatch.setattr(strategy_modeling, "load_daily_ohlc_history", _stub_daily_loader_ma_trend)
+    monkeypatch.setattr(strategy_modeling, "load_required_intraday_bars", _stub_intraday_loader_ma_trend)
+
+    service = strategy_modeling.build_strategy_modeling_service()
+    strategy_cases = [
+        (
+            "ma_crossover",
+            {
+                "fast_window": 2,
+                "slow_window": 3,
+                "fast_type": "sma",
+                "slow_type": "sma",
+                "atr_window": 2,
+                "atr_stop_multiple": 1.5,
+            },
+        ),
+        (
+            "trend_following",
+            {
+                "trend_window": 3,
+                "trend_type": "sma",
+                "fast_window": 2,
+                "fast_type": "sma",
+                "slope_lookback_bars": 1,
+                "atr_window": 2,
+                "atr_stop_multiple": 1.5,
+            },
+        ),
+    ]
+
+    for strategy_name, signal_kwargs in strategy_cases:
+        request = StrategyModelingRequest(
+            strategy=strategy_name,
+            symbols=("SPY",),
+            signal_kwargs=signal_kwargs,
+            target_ladder=build_r_target_ladder(min_target_tenths=10, max_target_tenths=10),
+            starting_capital=10_000.0,
+            max_hold_bars=2,
+        )
+        result = service.run(request)
+
+        assert result.strategy == strategy_name
+        assert result.is_intraday_blocked is False
+        assert len(result.signal_events) >= 1
+        assert all(event.strategy == strategy_name for event in result.signal_events)
+        assert len(result.trade_simulations) >= 1
+        assert any(trade.status == "closed" for trade in result.trade_simulations)
 
 
 def test_strategy_modeling_service_enters_at_regular_open_after_daily_confirmation() -> None:

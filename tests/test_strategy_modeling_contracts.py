@@ -33,10 +33,11 @@ def _ts(day: int, hour: int) -> datetime:
     return datetime(2026, 1, day, hour, 0, tzinfo=timezone.utc)
 
 
-def test_strategy_contracts_accept_orb_strategy_id() -> None:
+@pytest.mark.parametrize("strategy_id", ("orb", "ma_crossover", "trend_following"))
+def test_strategy_contracts_accept_extended_strategy_ids(strategy_id: str) -> None:
     event = StrategySignalEvent(
-        event_id="orb-evt-1",
-        strategy="orb",
+        event_id=f"{strategy_id}-evt-1",
+        strategy=strategy_id,  # type: ignore[arg-type]
         symbol="SPY",
         direction="long",
         signal_ts=_ts(3, 16),
@@ -45,9 +46,9 @@ def test_strategy_contracts_accept_orb_strategy_id() -> None:
         entry_price_source="first_tradable_bar_open_after_signal_confirmed_ts",
     )
     trade = StrategyTradeSimulation(
-        trade_id="orb-tr-1",
-        event_id="orb-evt-1",
-        strategy="orb",
+        trade_id=f"{strategy_id}-tr-1",
+        event_id=event.event_id,
+        strategy=strategy_id,  # type: ignore[arg-type]
         symbol="SPY",
         direction="long",
         signal_ts=event.signal_ts,
@@ -58,8 +59,8 @@ def test_strategy_contracts_accept_orb_strategy_id() -> None:
         initial_risk=1.0,
         holding_bars=1,
     )
-    assert event.strategy == "orb"
-    assert trade.strategy == "orb"
+    assert event.strategy == strategy_id
+    assert trade.strategy == strategy_id
 
 
 @pytest.mark.parametrize(
