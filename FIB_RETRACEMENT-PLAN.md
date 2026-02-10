@@ -258,6 +258,12 @@ T2 ──┘                                   └── T8
 - Validation: `./.venv/bin/python -m pytest /Volumes/develop/options-helper-fib-retracement/tests/test_strategy_modeling_contracts.py` passed (`15 passed`).
 - Errors/gotchas: Initial validation failed because `.venv` and `pytest` were absent in this checkout; resolved by creating `.venv` and installing `-e .[dev]`.
 
+### T4: Add fib pct to profile schema (completed 2026-02-10)
+- Work log: Added `fib_retracement_pct` to `StrategyModelingProfile` and normalized input with a before-validator that accepts ratio (`0.618`) or percent (`61.8`) using the shared fib normalization helper.
+- Files modified: `options_helper/schemas/strategy_modeling_profile.py`.
+- Validation: `./.venv/bin/python -m py_compile /Volumes/develop/options-helper-fib-retracement/options_helper/schemas/strategy_modeling_profile.py` passed.
+- Errors/gotchas: None.
+
 ### T2: Implement fib retracement signal computation (completed 2026-02-10)
 - Work log:
   - Added new pure analysis module `fib_retracement.py` with `normalize_fib_retracement_pct(...)` accepting ratio (`0.618`) and percent (`61.8`) forms and normalizing to percent.
