@@ -269,9 +269,15 @@ T10 (Docs) depends on T7–T8
   - Add the new page to scaffold smoke list so `runpy.run_path(...)` verifies “no start on import”.
 - **validation**:
   - `pytest -k streamlit_scaffold` passes (or skips if Streamlit missing).
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added `apps/streamlit/pages/12_Live_Portfolio.py` as a thin page wrapper that sets page config, calls `render_live_portfolio_page()`, and includes explicit not-financial-advice disclaimer text.
+  - Added Live Portfolio quick-link wiring in `apps/streamlit/streamlit_app.py`.
+  - Extended scaffold smoke coverage in `tests/portal/test_streamlit_scaffold.py` by including the new page in `PAGE_FILES` for `runpy.run_path(...)` execution and importing the live page component module.
 - **files edited/created**:
+  - `apps/streamlit/pages/12_Live_Portfolio.py`
+  - `apps/streamlit/streamlit_app.py`
+  - `tests/portal/test_streamlit_scaffold.py`
 
 ### T8: Error handling hardening + UX polish (stale indicators, reconnect banners)
 - **depends_on**: [T6]

@@ -32,6 +32,7 @@ st.page_link("pages/09_SFP.py", label="09 SFP Research")
 st.page_link("pages/10_MSB.py", label="10 Market Structure Breaks")
 st.page_link("pages/11_Strategy_Modeling.py", label="11 Strategy Modeling")
 st.page_link("pages/11_0DTE_Put_Study.py", label="12 0DTE Put Study")
+st.page_link("pages/12_Live_Portfolio.py", label="13 Live Portfolio")
 
 with st.sidebar:
     st.markdown("### Portal")

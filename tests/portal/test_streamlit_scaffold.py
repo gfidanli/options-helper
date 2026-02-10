@@ -22,6 +22,7 @@ PAGE_FILES = [
     STREAMLIT_DIR / "pages" / "10_MSB.py",
     STREAMLIT_DIR / "pages" / "11_Strategy_Modeling.py",
     STREAMLIT_DIR / "pages" / "11_0DTE_Put_Study.py",
+    STREAMLIT_DIR / "pages" / "12_Live_Portfolio.py",
 ]
 
 
@@ -36,8 +37,16 @@ def test_streamlit_scaffold_files_exist() -> None:
         assert path.exists(), f"Missing scaffold file: {path}"
 
 
-def test_streamlit_module_import_smoke() -> None:
+def test_streamlit_module_import_smoke(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     pytest.importorskip("streamlit")
+    (tmp_path / "portfolio.json").write_text(
+        '{"positions":[],"multileg_positions":[]}',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
 
     importlib.import_module("apps.streamlit.streamlit_app")
     importlib.import_module("apps.streamlit.components.db")
@@ -48,6 +57,7 @@ def test_streamlit_module_import_smoke() -> None:
     importlib.import_module("apps.streamlit.components.msb_page")
     importlib.import_module("apps.streamlit.components.strategy_modeling_page")
     importlib.import_module("apps.streamlit.components.zero_dte_put_page")
+    importlib.import_module("apps.streamlit.components.live_portfolio_page")
 
     for page_file in PAGE_FILES:
         runpy.run_path(str(page_file), run_name=f"__streamlit_page_{page_file.stem}__")
