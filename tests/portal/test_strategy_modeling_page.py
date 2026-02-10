@@ -44,6 +44,39 @@ def _clear_component_caches(component: Any) -> None:
             clear()
 
 
+def _install_widget_key_write_guard(
+    monkeypatch: pytest.MonkeyPatch,
+    st: Any,
+):
+    locked_widget_keys: set[str] = set()
+    active_widget_key: str | None = None
+    session_state_type = type(st.session_state)
+    original_setitem = session_state_type.__setitem__
+
+    def _guarded_setitem(self, key: str, value: object) -> None:
+        if key in locked_widget_keys and key != active_widget_key:
+            raise AssertionError(f"Attempted to write locked widget key '{key}' after widget instantiation.")
+        original_setitem(self, key, value)
+
+    monkeypatch.setattr(session_state_type, "__setitem__", _guarded_setitem)
+
+    def _set_widget_value(key: str | None, value: object) -> None:
+        nonlocal active_widget_key
+        if key is None:
+            return
+        active_widget_key = key
+        try:
+            st.session_state[key] = value
+        finally:
+            active_widget_key = None
+        locked_widget_keys.add(key)
+
+    def _reset_widget_locks() -> None:
+        locked_widget_keys.clear()
+
+    return _set_widget_value, _reset_widget_locks
+
+
 def _seed_candles(db_path: Path) -> None:
     warehouse = DuckDBWarehouse(db_path)
     ensure_schema(warehouse)
@@ -735,6 +768,7 @@ def test_strategy_modeling_page_can_save_profile_and_cli_can_load_it(
     import streamlit as st
 
     st.session_state.clear()
+    set_widget_value, _ = _install_widget_key_write_guard(monkeypatch, st)
     profile_path = tmp_path / "strategy_profiles.json"
 
     _clear_component_caches(component)
@@ -757,12 +791,15 @@ def test_strategy_modeling_page_can_save_profile_and_cli_can_load_it(
         }
         selected = selected_map.get(label)
         if selected in option_values:
-            return selected
-        if key and key in st.session_state and st.session_state[key] in option_values:
-            return st.session_state[key]
-        if option_values:
-            return option_values[index]
-        return None
+            chosen = selected
+        elif key and key in st.session_state and st.session_state[key] in option_values:
+            chosen = st.session_state[key]
+        elif option_values:
+            chosen = option_values[index]
+        else:
+            chosen = None
+        set_widget_value(key, chosen)
+        return chosen
 
     def _multiselect(label: str, *, options, default=None, key: str | None = None, **kwargs):  # noqa: ANN001,ARG001
         option_values = list(options)
@@ -773,12 +810,15 @@ def test_strategy_modeling_page_can_save_profile_and_cli_can_load_it(
         }
         selected = selected_map.get(label)
         if selected is not None:
-            return [item for item in selected if item in option_values]
-        if key and key in st.session_state:
-            return list(st.session_state[key] or [])
-        return list(default or [])
+            chosen = [item for item in selected if item in option_values]
+        elif key and key in st.session_state:
+            chosen = list(st.session_state[key] or [])
+        else:
+            chosen = list(default or [])
+        set_widget_value(key, chosen)
+        return chosen
 
-    def _checkbox(label: str, value: bool = False, **kwargs):  # noqa: ANN001,ARG001
+    def _checkbox(label: str, value: bool = False, key: str | None = None, **kwargs):  # noqa: ANN001,ARG001
         selected_map = {
             "Overwrite existing profile": False,
             "One open trade per symbol": True,
@@ -789,7 +829,9 @@ def test_strategy_modeling_page_can_save_profile_and_cli_can_load_it(
             "Enable EMA9 regime gate": True,
             "Enable volatility regime gate": True,
         }
-        return selected_map.get(label, value)
+        chosen = selected_map.get(label, value)
+        set_widget_value(key, chosen)
+        return chosen
 
     def _number_input(label: str, value=0, key: str | None = None, **kwargs):  # noqa: ANN001,ARG001
         selected_map = {
@@ -810,10 +852,13 @@ def test_strategy_modeling_page_can_save_profile_and_cli_can_load_it(
             "EMA9 slope lookback (bars)": 5,
         }
         if label in selected_map:
-            return selected_map[label]
-        if key and key in st.session_state:
-            return st.session_state[key]
-        return value
+            chosen = selected_map[label]
+        elif key and key in st.session_state:
+            chosen = st.session_state[key]
+        else:
+            chosen = value
+        set_widget_value(key, chosen)
+        return chosen
 
     def _text_input(label: str, value: str = "", key: str | None = None, **kwargs) -> str:  # noqa: ARG001
         selected_map = {
@@ -825,16 +870,17 @@ def test_strategy_modeling_page_can_save_profile_and_cli_can_load_it(
             "Export output timezone": "America/Chicago",
         }
         selected = selected_map.get(label, value)
-        if key is not None:
-            st.session_state[key] = selected
+        set_widget_value(key, selected)
         return selected
 
-    def _date_input(label: str, value=None, **kwargs):  # noqa: ANN001,ARG001
+    def _date_input(label: str, value=None, key: str | None = None, **kwargs):  # noqa: ANN001,ARG001
         selected_map = {
             "Start date": date(2026, 1, 1),
             "End date": date(2026, 1, 31),
         }
-        return selected_map.get(label, value)
+        chosen = selected_map.get(label, value)
+        set_widget_value(key, chosen)
+        return chosen
 
     def _button(label: str, *args: object, **kwargs: object) -> bool:  # noqa: ARG001
         return label == "Save Profile"
@@ -850,6 +896,8 @@ def test_strategy_modeling_page_can_save_profile_and_cli_can_load_it(
 
     runpy.run_path(str(PAGE_PATH), run_name="__strategy_modeling_page_save_profile__")
 
+    assert st.session_state.get("strategy_modeling_profile_pending_selected") == "portal_orb"
+    assert st.session_state.get("strategy_modeling_profile_pending_save_name") == "portal_orb"
     saved_profile = load_strategy_modeling_profile(profile_path, "portal_orb")
     assert saved_profile.strategy == "orb"
     assert saved_profile.symbols == ("SPY",)
@@ -946,6 +994,7 @@ def test_strategy_modeling_page_load_profile_populates_request_values(
             )
 
     st.session_state.clear()
+    set_widget_value, reset_widget_locks = _install_widget_key_write_guard(monkeypatch, st)
     profile_path = tmp_path / "strategy_profiles.json"
     st.session_state["strategy_modeling_profile_path"] = str(profile_path)
     loaded = _profile_fixture(
@@ -972,32 +1021,48 @@ def test_strategy_modeling_page_load_profile_populates_request_values(
     def _selectbox(label: str, *, options, index: int = 0, key: str | None = None, **kwargs):  # noqa: ANN001,ARG001
         option_values = list(options)
         if key and key in st.session_state and st.session_state[key] in option_values:
-            return st.session_state[key]
+            chosen = st.session_state[key]
+            set_widget_value(key, chosen)
+            return chosen
         selected_map = {"Saved profiles": "cli_saved"}
         selected = selected_map.get(label)
         if selected in option_values:
-            return selected
-        if option_values:
-            return option_values[index]
-        return None
+            chosen = selected
+        elif option_values:
+            chosen = option_values[index]
+        else:
+            chosen = None
+        set_widget_value(key, chosen)
+        return chosen
 
     def _multiselect(label: str, *, options, default=None, key: str | None = None, **kwargs):  # noqa: ANN001,ARG001
         option_values = list(options)
         if key and key in st.session_state:
-            return [item for item in list(st.session_state[key] or []) if item in option_values]
+            chosen = [item for item in list(st.session_state[key] or []) if item in option_values]
+            set_widget_value(key, chosen)
+            return chosen
         if default is None:
-            return []
-        return [item for item in list(default) if item in option_values]
+            chosen = []
+        else:
+            chosen = [item for item in list(default) if item in option_values]
+        set_widget_value(key, chosen)
+        return chosen
 
     def _checkbox(label: str, value: bool = False, key: str | None = None, **kwargs):  # noqa: ANN001,ARG001
         if key and key in st.session_state:
-            return bool(st.session_state[key])
-        return value
+            chosen = bool(st.session_state[key])
+        else:
+            chosen = value
+        set_widget_value(key, chosen)
+        return chosen
 
     def _number_input(label: str, value=0, key: str | None = None, **kwargs):  # noqa: ANN001,ARG001
         if key and key in st.session_state:
-            return st.session_state[key]
-        return value
+            chosen = st.session_state[key]
+        else:
+            chosen = value
+        set_widget_value(key, chosen)
+        return chosen
 
     def _text_input(label: str, value: str = "", key: str | None = None, **kwargs) -> str:  # noqa: ARG001
         selected_map = {
@@ -1009,15 +1074,18 @@ def test_strategy_modeling_page_load_profile_populates_request_values(
             "Export output timezone": "America/Chicago",
         }
         selected = selected_map.get(label, value)
-        if key is not None:
-            st.session_state[key] = selected
+        set_widget_value(key, selected)
         return selected
 
     def _date_input(label: str, value=None, key: str | None = None, **kwargs):  # noqa: ANN001,ARG001
         if key and key in st.session_state:
-            return st.session_state[key]
+            chosen = st.session_state[key]
+            set_widget_value(key, chosen)
+            return chosen
         selected_map = {"Start date": date(2026, 1, 1), "End date": date(2026, 1, 31)}
-        return selected_map.get(label, value)
+        chosen = selected_map.get(label, value)
+        set_widget_value(key, chosen)
+        return chosen
 
     def _button(label: str, *args: object, **kwargs: object) -> bool:  # noqa: ARG001
         return label in active_buttons
@@ -1033,8 +1101,13 @@ def test_strategy_modeling_page_load_profile_populates_request_values(
 
     runpy.run_path(str(PAGE_PATH), run_name="__strategy_modeling_page_load_profile_step1__")
 
+    assert st.session_state.get("strategy_modeling_profile_pending_selected") == "cli_saved"
+    assert st.session_state.get("strategy_modeling_profile_pending_save_name") == "cli_saved"
+    assert isinstance(st.session_state.get("strategy_modeling_profile_pending_load"), dict)
+
     active_buttons.clear()
     active_buttons.add("Run Strategy Modeling")
+    reset_widget_locks()
     runpy.run_path(str(PAGE_PATH), run_name="__strategy_modeling_page_load_profile_step2__")
 
     assert stub.last_request is not None
@@ -1191,6 +1264,7 @@ def test_strategy_modeling_page_trade_review_selection_precedence_and_drilldown_
 
     chart_timeframe_options: list[str] = []
     dataframe_kwargs_by_key: dict[str, dict[str, object]] = {}
+    slider_kwargs_by_label: dict[str, dict[str, object]] = {}
     warnings: list[str] = []
 
     def _selectbox(label: str, *, options, index: int = 0, **kwargs):  # noqa: ANN001,ARG001
@@ -1224,10 +1298,15 @@ def test_strategy_modeling_page_trade_review_selection_precedence_and_drilldown_
     def _warning(body: object, *args: object, **kwargs: object) -> None:  # noqa: ARG001
         warnings.append(str(body))
 
+    def _slider(label: str, *args: object, **kwargs: object) -> object:  # noqa: ARG001
+        slider_kwargs_by_label[label] = dict(kwargs)
+        return kwargs.get("value")
+
     monkeypatch.setattr(st, "selectbox", _selectbox)
     monkeypatch.setattr(st, "button", _button)
     monkeypatch.setattr(st, "dataframe", _dataframe)
     monkeypatch.setattr(st, "warning", _warning)
+    monkeypatch.setattr(st, "slider", _slider)
     monkeypatch.setattr(st, "altair_chart", lambda *args, **kwargs: None)  # noqa: ARG005
     monkeypatch.setattr(st, "line_chart", lambda *args, **kwargs: None)  # noqa: ARG005
 
@@ -1245,6 +1324,10 @@ def test_strategy_modeling_page_trade_review_selection_precedence_and_drilldown_
     assert any(timeframe == "1Min" for _, timeframe in load_calls)
     assert any(timeframe == "5Min" for _, timeframe in load_calls)
     assert chart_timeframe_options == ["5Min", "15Min", "30Min", "60Min"]
+    assert "X-axis range (UTC)" in slider_kwargs_by_label
+    assert "Y-axis price range" in slider_kwargs_by_label
+    assert slider_kwargs_by_label["X-axis range (UTC)"]["key"] == "strategy_modeling_trade_drilldown_x_range"
+    assert slider_kwargs_by_label["Y-axis price range"]["key"] == "strategy_modeling_trade_drilldown_y_range"
     assert any("Using `5Min` base bars" in item for item in warnings)
 
 

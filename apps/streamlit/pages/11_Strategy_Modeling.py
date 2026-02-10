@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
@@ -35,6 +35,7 @@ from options_helper.data.strategy_modeling_profiles import (
 )
 from options_helper.schemas.strategy_modeling_filters import StrategyEntryFilterConfig
 from options_helper.schemas.strategy_modeling_profile import StrategyModelingProfile
+from options_helper.schemas.strategy_modeling_policy import normalize_max_hold_timeframe
 
 try:
     import altair as alt
@@ -65,12 +66,18 @@ _PROFILE_PATH_KEY = "strategy_modeling_profile_path"
 _PROFILE_SELECTED_KEY = "strategy_modeling_profile_selected"
 _PROFILE_SAVE_NAME_KEY = "strategy_modeling_profile_save_name"
 _PROFILE_OVERWRITE_KEY = "strategy_modeling_profile_overwrite"
+_PROFILE_PENDING_SELECTED_KEY = "strategy_modeling_profile_pending_selected"
+_PROFILE_PENDING_SAVE_NAME_KEY = "strategy_modeling_profile_pending_save_name"
+_PROFILE_PENDING_LOAD_KEY = "strategy_modeling_profile_pending_load"
+_PROFILE_FEEDBACK_KEY = "strategy_modeling_profile_feedback"
 _TRADE_REVIEW_BEST_KEY = "strategy_modeling_trade_review_top_best"
 _TRADE_REVIEW_WORST_KEY = "strategy_modeling_trade_review_top_worst"
 _TRADE_REVIEW_LOG_KEY = "strategy_modeling_trade_review_full_log"
 _TRADE_DRILLDOWN_TIMEFRAME_KEY = "strategy_modeling_trade_drilldown_timeframe"
 _TRADE_DRILLDOWN_PRE_BARS_KEY = "strategy_modeling_trade_drilldown_pre_context_bars"
 _TRADE_DRILLDOWN_POST_BARS_KEY = "strategy_modeling_trade_drilldown_post_context_bars"
+_TRADE_DRILLDOWN_X_RANGE_KEY = "strategy_modeling_trade_drilldown_x_range"
+_TRADE_DRILLDOWN_Y_RANGE_KEY = "strategy_modeling_trade_drilldown_y_range"
 
 _WIDGET_KEYS: dict[str, str] = {
     "strategy": "strategy_modeling_strategy",
@@ -81,7 +88,9 @@ _WIDGET_KEYS: dict[str, str] = {
     "starting_capital": "strategy_modeling_starting_capital",
     "risk_per_trade_pct": "strategy_modeling_risk_per_trade_pct",
     "gap_fill_policy": "strategy_modeling_gap_fill_policy",
+    "max_hold_enabled": "strategy_modeling_max_hold_enabled",
     "max_hold_bars": "strategy_modeling_max_hold_bars",
+    "max_hold_timeframe": "strategy_modeling_max_hold_timeframe",
     "one_open_per_symbol": "strategy_modeling_one_open_per_symbol",
     "symbols": "strategy_modeling_symbols",
     "symbols_text": "strategy_modeling_symbols_text",
@@ -298,11 +307,79 @@ def _trade_markers(trade_row: Mapping[str, Any]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["label", "timestamp", "price", "note"])
 
 
+def _normalize_datetime_axis_range(
+    raw_value: object,
+    *,
+    min_value: datetime,
+    max_value: datetime,
+) -> tuple[datetime, datetime]:
+    default_range = (min_value, max_value)
+    if (
+        not isinstance(raw_value, Sequence)
+        or isinstance(raw_value, (str, bytes))
+        or len(raw_value) != 2
+    ):
+        return default_range
+
+    start_raw = pd.to_datetime(raw_value[0], errors="coerce")
+    end_raw = pd.to_datetime(raw_value[1], errors="coerce")
+    if pd.isna(start_raw) or pd.isna(end_raw):
+        return default_range
+
+    start = pd.Timestamp(start_raw)
+    end = pd.Timestamp(end_raw)
+    if start.tzinfo is not None:
+        start = start.tz_convert("UTC").tz_localize(None)
+    if end.tzinfo is not None:
+        end = end.tz_convert("UTC").tz_localize(None)
+
+    start_py = start.to_pydatetime()
+    end_py = end.to_pydatetime()
+    if end_py < start_py:
+        return default_range
+
+    start_clamped = max(min_value, min(start_py, max_value))
+    end_clamped = min(max_value, max(end_py, min_value))
+    if end_clamped < start_clamped:
+        return default_range
+    return (start_clamped, end_clamped)
+
+
+def _normalize_numeric_axis_range(
+    raw_value: object,
+    *,
+    min_value: float,
+    max_value: float,
+) -> tuple[float, float]:
+    default_range = (min_value, max_value)
+    if (
+        not isinstance(raw_value, Sequence)
+        or isinstance(raw_value, (str, bytes))
+        or len(raw_value) != 2
+    ):
+        return default_range
+
+    start_raw = _coerce_finite_float(raw_value[0])
+    end_raw = _coerce_finite_float(raw_value[1])
+    if start_raw is None or end_raw is None:
+        return default_range
+    if end_raw < start_raw:
+        return default_range
+
+    start_clamped = max(min_value, min(start_raw, max_value))
+    end_clamped = min(max_value, max(end_raw, min_value))
+    if end_clamped < start_clamped:
+        return default_range
+    return (start_clamped, end_clamped)
+
+
 def _render_trade_drilldown_chart(
     bars: pd.DataFrame,
     markers: pd.DataFrame,
     *,
     timeframe: str,
+    x_axis_domain: tuple[datetime, datetime] | None = None,
+    y_axis_domain: tuple[float, float] | None = None,
 ) -> None:
     if bars.empty:
         st.warning("No bars available for drilldown chart rendering.")
@@ -335,11 +412,39 @@ def _render_trade_drilldown_chart(
         render_bars = chart_bars.copy()
         render_bars["timestamp"] = render_bars["timestamp"].dt.tz_convert("UTC").dt.tz_localize(None)
 
+        x_scale = None
+        if x_axis_domain is not None:
+            x_start, x_end = x_axis_domain
+            if x_end > x_start:
+                x_scale = alt.Scale(domain=[x_start, x_end])
+
+        y_scale = None
+        if y_axis_domain is not None:
+            y_min, y_max = y_axis_domain
+            if math.isfinite(y_min) and math.isfinite(y_max) and y_max > y_min:
+                y_scale = alt.Scale(domain=[float(y_min), float(y_max)])
+
+        x_encoding_kwargs: dict[str, Any] = {"title": f"Timestamp ({timeframe})"}
+        if x_scale is not None:
+            x_encoding_kwargs["scale"] = x_scale
+
+        price_encoding_kwargs: dict[str, Any] = {"title": "Price"}
+        if y_scale is not None:
+            price_encoding_kwargs["scale"] = y_scale
+
+        marker_price_kwargs: dict[str, Any] = {"title": "Price"}
+        if y_scale is not None:
+            marker_price_kwargs["scale"] = y_scale
+
+        marker_label_y = alt.Y("price:Q")
+        if y_scale is not None:
+            marker_label_y = alt.Y("price:Q", scale=y_scale)
+
         base = alt.Chart(render_bars).encode(
-            x=alt.X("timestamp:T", title=f"Timestamp ({timeframe})"),
+            x=alt.X("timestamp:T", **x_encoding_kwargs),
         )
         wicks = base.mark_rule(color="#374151").encode(
-            y=alt.Y("low:Q", title="Price"),
+            y=alt.Y("low:Q", **price_encoding_kwargs),
             y2="high:Q",
             tooltip=[
                 alt.Tooltip("timestamp:T", title="Timestamp"),
@@ -351,7 +456,7 @@ def _render_trade_drilldown_chart(
             ],
         )
         candles = base.mark_bar().encode(
-            y=alt.Y("open:Q", title="Price"),
+            y=alt.Y("open:Q", **price_encoding_kwargs),
             y2="close:Q",
             color=alt.condition(
                 "datum.close >= datum.open",
@@ -366,7 +471,7 @@ def _render_trade_drilldown_chart(
             render_markers["timestamp"] = render_markers["timestamp"].dt.tz_convert("UTC").dt.tz_localize(None)
             marker_points = alt.Chart(render_markers).mark_point(filled=True, size=90).encode(
                 x="timestamp:T",
-                y=alt.Y("price:Q", title="Price"),
+                y=alt.Y("price:Q", **marker_price_kwargs),
                 color=alt.Color("note:N", title="Marker"),
                 tooltip=[
                     alt.Tooltip("note:N", title="Marker"),
@@ -382,7 +487,7 @@ def _render_trade_drilldown_chart(
                 color="#111827",
             ).encode(
                 x="timestamp:T",
-                y="price:Q",
+                y=marker_label_y,
                 text="note:N",
             )
             chart = chart + marker_points + marker_labels
@@ -506,6 +611,10 @@ def _ensure_sidebar_state_defaults(
         _PROFILE_SELECTED_KEY: "",
         _PROFILE_SAVE_NAME_KEY: "",
         _PROFILE_OVERWRITE_KEY: False,
+        _PROFILE_PENDING_SELECTED_KEY: "",
+        _PROFILE_PENDING_SAVE_NAME_KEY: "",
+        _PROFILE_PENDING_LOAD_KEY: None,
+        _PROFILE_FEEDBACK_KEY: "",
         _WIDGET_KEYS["strategy"]: "sfp",
         _WIDGET_KEYS["start_date"]: default_start,
         _WIDGET_KEYS["end_date"]: default_end,
@@ -514,7 +623,9 @@ def _ensure_sidebar_state_defaults(
         _WIDGET_KEYS["starting_capital"]: 10_000.0,
         _WIDGET_KEYS["risk_per_trade_pct"]: 1.0,
         _WIDGET_KEYS["gap_fill_policy"]: "fill_at_open",
+        _WIDGET_KEYS["max_hold_enabled"]: True,
         _WIDGET_KEYS["max_hold_bars"]: 20,
+        _WIDGET_KEYS["max_hold_timeframe"]: "entry",
         _WIDGET_KEYS["one_open_per_symbol"]: True,
         _WIDGET_KEYS["symbols_text"]: "SPY",
         _WIDGET_KEYS["segment_dimensions"]: ["symbol", "direction"],
@@ -560,6 +671,38 @@ def _ensure_sidebar_state_defaults(
         st.session_state.setdefault(_WIDGET_KEYS["symbols"], [])
 
 
+def _apply_pending_profile_updates(
+    *,
+    profile_options: Sequence[str],
+    available_symbols: Sequence[str],
+    available_intraday_sources: Sequence[str],
+    available_timeframes: Sequence[str],
+) -> None:
+    pending_profile = st.session_state.pop(_PROFILE_PENDING_LOAD_KEY, None)
+    if pending_profile is not None:
+        try:
+            loaded_profile = StrategyModelingProfile.model_validate(pending_profile)
+        except ValidationError:
+            st.error("Failed to apply loaded profile state.")
+        else:
+            _apply_loaded_profile_to_state(
+                profile=loaded_profile,
+                available_symbols=available_symbols,
+                available_intraday_sources=available_intraday_sources,
+                available_timeframes=available_timeframes,
+            )
+
+    pending_selected_name = str(st.session_state.pop(_PROFILE_PENDING_SELECTED_KEY, "") or "").strip()
+    if pending_selected_name:
+        st.session_state[_PROFILE_SELECTED_KEY] = pending_selected_name
+    pending_save_name = str(st.session_state.pop(_PROFILE_PENDING_SAVE_NAME_KEY, "") or "").strip()
+    if pending_save_name:
+        st.session_state[_PROFILE_SAVE_NAME_KEY] = pending_save_name
+
+    if st.session_state.get(_PROFILE_SELECTED_KEY) not in profile_options:
+        st.session_state[_PROFILE_SELECTED_KEY] = profile_options[0]
+
+
 def _sanitize_symbol_selection(raw_values: object, *, options: Sequence[str]) -> list[str]:
     available = {str(item).upper() for item in options}
     if isinstance(raw_values, str):
@@ -592,6 +735,7 @@ def _build_profile_from_inputs(
     risk_per_trade_pct: float,
     gap_fill_policy: str,
     max_hold_bars: int | None,
+    max_hold_timeframe: str,
     one_open_per_symbol: bool,
     r_ladder_min_tenths: int,
     r_ladder_max_tenths: int,
@@ -629,6 +773,7 @@ def _build_profile_from_inputs(
         "risk_per_trade_pct": float(risk_per_trade_pct),
         "gap_fill_policy": gap_fill_policy,
         "max_hold_bars": int(max_hold_bars) if max_hold_bars is not None else None,
+        "max_hold_timeframe": str(max_hold_timeframe),
         "one_open_per_symbol": bool(one_open_per_symbol),
         "r_ladder_min_tenths": int(r_ladder_min_tenths),
         "r_ladder_max_tenths": int(r_ladder_max_tenths),
@@ -683,9 +828,15 @@ def _apply_loaded_profile_to_state(
     st.session_state[_WIDGET_KEYS["starting_capital"]] = float(profile.starting_capital)
     st.session_state[_WIDGET_KEYS["risk_per_trade_pct"]] = float(profile.risk_per_trade_pct)
     st.session_state[_WIDGET_KEYS["gap_fill_policy"]] = profile.gap_fill_policy
+    st.session_state[_WIDGET_KEYS["max_hold_enabled"]] = profile.max_hold_bars is not None
     st.session_state[_WIDGET_KEYS["max_hold_bars"]] = (
         int(profile.max_hold_bars) if profile.max_hold_bars is not None else 20
     )
+    try:
+        normalized_max_hold_timeframe = normalize_max_hold_timeframe(profile.max_hold_timeframe)
+    except ValueError:
+        normalized_max_hold_timeframe = "entry"
+    st.session_state[_WIDGET_KEYS["max_hold_timeframe"]] = normalized_max_hold_timeframe
     st.session_state[_WIDGET_KEYS["one_open_per_symbol"]] = bool(profile.one_open_per_symbol)
     st.session_state[_WIDGET_KEYS["segment_values_text"]] = st.session_state.get(
         _WIDGET_KEYS["segment_values_text"],
@@ -811,6 +962,7 @@ default_start = default_end - timedelta(days=365)
 _STRATEGY_OPTIONS = ["sfp", "msb", "orb", "ma_crossover", "trend_following"]
 _INTRADAY_TIMEFRAMES = ["1Min", "5Min", "15Min", "30Min", "60Min"]
 _INTRADAY_SOURCES = ["stocks_bars_local", "alpaca"]
+_MAX_HOLD_TIMEFRAME_OPTIONS = ["entry", "1Min", "5Min", "10Min", "15Min", "30Min", "60Min", "1H", "1D", "1W"]
 
 _ensure_sidebar_state_defaults(default_start=default_start, default_end=default_end, symbols=symbols)
 
@@ -823,8 +975,12 @@ except ValueError as exc:
     profile_list_error = str(exc)
     available_profile_names = []
 profile_options = available_profile_names if available_profile_names else [""]
-if st.session_state.get(_PROFILE_SELECTED_KEY) not in profile_options:
-    st.session_state[_PROFILE_SELECTED_KEY] = profile_options[0]
+_apply_pending_profile_updates(
+    profile_options=profile_options,
+    available_symbols=symbols,
+    available_intraday_sources=_INTRADAY_SOURCES,
+    available_timeframes=_INTRADAY_TIMEFRAMES,
+)
 
 with st.sidebar:
     st.markdown("### Profiles")
@@ -880,6 +1036,15 @@ with st.sidebar:
         key=_WIDGET_KEYS["intraday_source"],
         help="Current modeling service consumes persisted stock bars partitions.",
     )
+    try:
+        normalized_max_hold_timeframe = normalize_max_hold_timeframe(
+            st.session_state.get(_WIDGET_KEYS["max_hold_timeframe"], "entry")
+        )
+    except ValueError:
+        normalized_max_hold_timeframe = "entry"
+    if normalized_max_hold_timeframe not in set(_MAX_HOLD_TIMEFRAME_OPTIONS):
+        normalized_max_hold_timeframe = "entry"
+    st.session_state[_WIDGET_KEYS["max_hold_timeframe"]] = normalized_max_hold_timeframe
 
     st.markdown("### Portfolio Policy")
     starting_capital = st.number_input(
@@ -902,16 +1067,31 @@ with st.sidebar:
         options=["fill_at_open", "strict_touch"],
         key=_WIDGET_KEYS["gap_fill_policy"],
     )
-    max_hold_bars = int(
+    max_hold_enabled = st.checkbox(
+        "Enable max hold time stop",
+        value=bool(st.session_state.get(_WIDGET_KEYS["max_hold_enabled"], True)),
+        key=_WIDGET_KEYS["max_hold_enabled"],
+        help="When disabled, trades hold through the entry session close unless stop/target exits earlier.",
+    )
+    max_hold_timeframe = st.selectbox(
+        "Max hold timeframe",
+        options=_MAX_HOLD_TIMEFRAME_OPTIONS,
+        key=_WIDGET_KEYS["max_hold_timeframe"],
+        format_func=lambda value: "Entry timeframe" if str(value) == "entry" else str(value),
+        help="Bar unit used by Max hold (bars). Example: 6 bars at 10Min = 60 minutes.",
+    )
+    max_hold_bars_value = int(
         st.number_input(
             "Max hold (bars)",
             min_value=1,
-            max_value=100,
+            max_value=500,
             value=int(st.session_state.get(_WIDGET_KEYS["max_hold_bars"], 20)),
             step=1,
             key=_WIDGET_KEYS["max_hold_bars"],
+            disabled=not bool(max_hold_enabled),
         )
     )
+    max_hold_bars: int | None = int(max_hold_bars_value) if max_hold_enabled else None
     one_open_per_symbol = st.checkbox(
         "One open trade per symbol",
         value=bool(st.session_state.get(_WIDGET_KEYS["one_open_per_symbol"], True)),
@@ -1133,6 +1313,9 @@ with st.sidebar:
 
 if profile_list_error:
     st.error(f"Profiles: {profile_list_error}")
+profile_feedback = str(st.session_state.pop(_PROFILE_FEEDBACK_KEY, "") or "").strip()
+if profile_feedback:
+    st.success(profile_feedback)
 
 if profile_load_clicked:
     if not selected_profile_name:
@@ -1143,14 +1326,10 @@ if profile_load_clicked:
         except ValueError as exc:
             st.error(f"Failed to load profile: {exc}")
         else:
-            _apply_loaded_profile_to_state(
-                profile=loaded_profile,
-                available_symbols=symbols,
-                available_intraday_sources=_INTRADAY_SOURCES,
-                available_timeframes=_INTRADAY_TIMEFRAMES,
-            )
-            st.session_state[_PROFILE_SELECTED_KEY] = selected_profile_name
-            st.session_state[_PROFILE_SAVE_NAME_KEY] = selected_profile_name
+            st.session_state[_PROFILE_PENDING_LOAD_KEY] = loaded_profile.model_dump(mode="python")
+            st.session_state[_PROFILE_PENDING_SELECTED_KEY] = selected_profile_name
+            st.session_state[_PROFILE_PENDING_SAVE_NAME_KEY] = selected_profile_name
+            st.session_state[_PROFILE_FEEDBACK_KEY] = f"Loaded profile '{selected_profile_name}'"
             st.rerun()
 
 for note in symbol_notes:
@@ -1249,7 +1428,8 @@ try:
         starting_capital=float(starting_capital),
         risk_per_trade_pct=float(risk_pct),
         gap_fill_policy=str(gap_policy),
-        max_hold_bars=int(max_hold_bars),
+        max_hold_bars=max_hold_bars,
+        max_hold_timeframe=str(max_hold_timeframe),
         one_open_per_symbol=bool(one_open_per_symbol),
         r_ladder_min_tenths=int(r_ladder_min_tenths),
         r_ladder_max_tenths=int(r_ladder_max_tenths),
@@ -1297,9 +1477,9 @@ if profile_save_clicked:
         except ValueError as exc:
             st.error(f"Failed to save profile: {exc}")
         else:
-            st.session_state[_PROFILE_SELECTED_KEY] = save_name
-            st.session_state[_PROFILE_SAVE_NAME_KEY] = save_name
-            st.success(f"Saved profile '{save_name}'")
+            st.session_state[_PROFILE_PENDING_SELECTED_KEY] = save_name
+            st.session_state[_PROFILE_PENDING_SAVE_NAME_KEY] = save_name
+            st.session_state[_PROFILE_FEEDBACK_KEY] = f"Saved profile '{save_name}'"
             st.rerun()
 
 if filter_config_error:
@@ -1360,12 +1540,14 @@ if (
         target_ladder=target_ladder,
         signal_kwargs=signal_kwargs,
         starting_capital=float(starting_capital),
-        max_hold_bars=int(max_hold_bars),
+        max_hold_bars=max_hold_bars,
         filter_config=filter_config,
         policy={
             "require_intraday_bars": True,
             "risk_per_trade_pct": float(risk_pct),
             "gap_fill_policy": gap_policy,
+            "max_hold_bars": max_hold_bars,
+            "max_hold_timeframe": str(max_hold_timeframe),
             "one_open_per_symbol": bool(one_open_per_symbol),
         },
         block_on_missing_intraday_coverage=True,
@@ -1734,6 +1916,87 @@ else:
                         if chart_result.skipped or chart_result.bars.empty:
                             st.warning("No drilldown chart bars available after resampling for the selected context.")
                         else:
+                            trade_markers = _trade_markers(selected_trade)
+                            x_axis_domain: tuple[datetime, datetime] | None = None
+                            y_axis_domain: tuple[float, float] | None = None
+
+                            if "timestamp" in chart_result.bars.columns:
+                                axis_timestamps = pd.to_datetime(
+                                    chart_result.bars["timestamp"],
+                                    errors="coerce",
+                                    utc=True,
+                                ).dropna()
+                            else:
+                                axis_timestamps = pd.Series([], dtype="datetime64[ns, UTC]")
+                            if not axis_timestamps.empty:
+                                x_axis_min = axis_timestamps.dt.tz_convert("UTC").dt.tz_localize(None).min().to_pydatetime()
+                                x_axis_max = axis_timestamps.dt.tz_convert("UTC").dt.tz_localize(None).max().to_pydatetime()
+                                if x_axis_max <= x_axis_min:
+                                    x_axis_max = x_axis_min + timedelta(minutes=1)
+                                x_range_default = _normalize_datetime_axis_range(
+                                    st.session_state.get(_TRADE_DRILLDOWN_X_RANGE_KEY),
+                                    min_value=x_axis_min,
+                                    max_value=x_axis_max,
+                                )
+                                if st.session_state.get(_TRADE_DRILLDOWN_X_RANGE_KEY) != x_range_default:
+                                    st.session_state[_TRADE_DRILLDOWN_X_RANGE_KEY] = x_range_default
+                                x_axis_domain = tuple(
+                                    st.slider(
+                                        "X-axis range (UTC)",
+                                        min_value=x_axis_min,
+                                        max_value=x_axis_max,
+                                        value=x_range_default,
+                                        format="YYYY-MM-DD HH:mm",
+                                        key=_TRADE_DRILLDOWN_X_RANGE_KEY,
+                                        help="Adjust the visible time window on the drilldown chart.",
+                                    )
+                                )
+
+                            low_series = (
+                                pd.to_numeric(chart_result.bars["low"], errors="coerce")
+                                if "low" in chart_result.bars.columns
+                                else pd.Series([], dtype=float)
+                            )
+                            high_series = (
+                                pd.to_numeric(chart_result.bars["high"], errors="coerce")
+                                if "high" in chart_result.bars.columns
+                                else pd.Series([], dtype=float)
+                            )
+                            marker_prices = (
+                                pd.to_numeric(trade_markers["price"], errors="coerce")
+                                if "price" in trade_markers.columns
+                                else pd.Series([], dtype=float)
+                            )
+                            y_floor_candidates = pd.concat([low_series, marker_prices], ignore_index=True).dropna()
+                            y_ceiling_candidates = pd.concat([high_series, marker_prices], ignore_index=True).dropna()
+                            if not y_floor_candidates.empty and not y_ceiling_candidates.empty:
+                                y_axis_min = float(y_floor_candidates.min())
+                                y_axis_max = float(y_ceiling_candidates.max())
+                                if math.isfinite(y_axis_min) and math.isfinite(y_axis_max):
+                                    if y_axis_max <= y_axis_min:
+                                        y_axis_padding = max(abs(y_axis_min) * 0.005, 0.01)
+                                        y_axis_min -= y_axis_padding
+                                        y_axis_max += y_axis_padding
+                                    y_range_default = _normalize_numeric_axis_range(
+                                        st.session_state.get(_TRADE_DRILLDOWN_Y_RANGE_KEY),
+                                        min_value=y_axis_min,
+                                        max_value=y_axis_max,
+                                    )
+                                    if st.session_state.get(_TRADE_DRILLDOWN_Y_RANGE_KEY) != y_range_default:
+                                        st.session_state[_TRADE_DRILLDOWN_Y_RANGE_KEY] = y_range_default
+                                    y_step = max((y_axis_max - y_axis_min) / 500.0, 0.0001)
+                                    y_axis_domain = tuple(
+                                        st.slider(
+                                            "Y-axis price range",
+                                            min_value=float(y_axis_min),
+                                            max_value=float(y_axis_max),
+                                            value=(float(y_range_default[0]), float(y_range_default[1])),
+                                            step=float(y_step),
+                                            key=_TRADE_DRILLDOWN_Y_RANGE_KEY,
+                                            help="Adjust the visible price range on the drilldown chart.",
+                                        )
+                                    )
+
                             st.caption(
                                 "Selected trade: "
                                 f"`{selected_trade_id}` ({symbol}) using base `{base_timeframe_used}` and chart "
@@ -1741,8 +2004,10 @@ else:
                             )
                             _render_trade_drilldown_chart(
                                 chart_result.bars,
-                                _trade_markers(selected_trade),
+                                trade_markers,
                                 timeframe=chart_result.timeframe,
+                                x_axis_domain=x_axis_domain,
+                                y_axis_domain=y_axis_domain,
                             )
 
 st.caption(
