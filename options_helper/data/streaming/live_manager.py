@@ -30,6 +30,11 @@ _EVENT_OPTION_QUOTE = "option_quote"
 _EVENT_OPTION_TRADE = "option_trade"
 _EVENT_FILL_UPDATE = "fill_update"
 
+LIVE_STREAM_STATUS_NOT_STARTED = "not_started"
+LIVE_STREAM_STATUS_RUNNING = "running"
+LIVE_STREAM_STATUS_RECONNECTING = "reconnecting"
+LIVE_STREAM_STATUS_ERROR = "error"
+
 
 def _clean_token(value: str | None) -> str | None:
     token = (value or "").strip()
@@ -82,6 +87,10 @@ def _stream_error_map() -> dict[str, str | None]:
 
 def _stream_ts_map() -> dict[str, datetime | None]:
     return {key: None for key in _STREAM_KEYS}
+
+
+def _stream_status_map(default: str) -> dict[str, str]:
+    return {key: default for key in _STREAM_KEYS}
 
 
 @dataclass(frozen=True)
@@ -153,6 +162,11 @@ class LiveSnapshot:
     dropped_events_by_stream: dict[str, int] = field(default_factory=_stream_count_map)
     last_error: str | None = None
     errors_by_stream: dict[str, str | None] = field(default_factory=_stream_error_map)
+    active_streams: dict[str, bool] = field(default_factory=lambda: _stream_bool_map(False))
+    status: str = LIVE_STREAM_STATUS_NOT_STARTED
+    status_by_stream: dict[str, str] = field(
+        default_factory=lambda: _stream_status_map(LIVE_STREAM_STATUS_NOT_STARTED)
+    )
     running: bool = False
 
 
@@ -317,11 +331,13 @@ class LiveStreamManager:
         self._fills: deque[dict[str, Any]] = deque(maxlen=200)
 
         self._alive: dict[str, bool] = _stream_bool_map(False)
+        self._active_streams: dict[str, bool] = _stream_bool_map(False)
         self._reconnect_attempts: dict[str, int] = _stream_count_map()
         self._last_event_ts_by_stream: dict[str, datetime | None] = _stream_ts_map()
         self._dropped_events = 0
         self._dropped_events_by_stream: dict[str, int] = _stream_count_map()
         self._errors_by_stream: dict[str, str | None] = _stream_error_map()
+        self._status_by_stream: dict[str, str] = _stream_status_map(LIVE_STREAM_STATUS_NOT_STARTED)
         self._last_error: str | None = None
 
     def start(self, config: LiveStreamConfig) -> None:
@@ -359,6 +375,9 @@ class LiveStreamManager:
                 dropped_events_by_stream=dict(self._dropped_events_by_stream),
                 last_error=self._last_error,
                 errors_by_stream=dict(self._errors_by_stream),
+                active_streams=dict(self._active_streams),
+                status=self._overall_status_locked(),
+                status_by_stream=dict(self._status_by_stream),
                 running=self._running,
             )
 
@@ -401,11 +420,17 @@ class LiveStreamManager:
             self._fills = deque(maxlen=config.fills_cache_size)
 
             self._alive = _stream_bool_map(False)
+            self._active_streams = _stream_bool_map(False)
+            for key in workers:
+                self._active_streams[key] = True
             self._reconnect_attempts = _stream_count_map()
             self._last_event_ts_by_stream = _stream_ts_map()
             self._dropped_events = 0
             self._dropped_events_by_stream = _stream_count_map()
             self._errors_by_stream = _stream_error_map()
+            self._status_by_stream = _stream_status_map(LIVE_STREAM_STATUS_NOT_STARTED)
+            for key in workers:
+                self._status_by_stream[key] = LIVE_STREAM_STATUS_RUNNING
             self._last_error = None
 
         consumer_thread.start()
@@ -429,6 +454,8 @@ class LiveStreamManager:
             self._run_id += 1
             for key in _STREAM_KEYS:
                 self._alive[key] = False
+                self._active_streams[key] = False
+                self._status_by_stream[key] = LIVE_STREAM_STATUS_NOT_STARTED
 
         if stop_event is not None:
             stop_event.set()
@@ -614,6 +641,7 @@ class LiveStreamManager:
                     return
                 self._last_error = str(exc)
                 self._errors_by_stream[stream_key] = str(exc)
+                self._status_by_stream[stream_key] = LIVE_STREAM_STATUS_ERROR
 
     def _consumer_loop(
         self,
@@ -732,6 +760,7 @@ class LiveStreamManager:
             if run_id != self._run_id:
                 return
             self._errors_by_stream[stream_key] = None
+            self._status_by_stream[stream_key] = LIVE_STREAM_STATUS_RUNNING
 
     def _set_stream_alive(self, *, run_id: int, stream_key: str, alive: bool) -> None:
         with self._state_lock:
@@ -746,6 +775,7 @@ class LiveStreamManager:
                 return
             self._reconnect_attempts[stream_key] += 1
             self._errors_by_stream[stream_key] = message
+            self._status_by_stream[stream_key] = LIVE_STREAM_STATUS_RECONNECTING
             self._last_error = message
 
     def _record_stream_error(self, *, run_id: int, stream_key: str, exc: Exception) -> None:
@@ -754,7 +784,32 @@ class LiveStreamManager:
             if run_id != self._run_id:
                 return
             self._errors_by_stream[stream_key] = message
+            self._status_by_stream[stream_key] = LIVE_STREAM_STATUS_ERROR
             self._last_error = message
 
+    def _overall_status_locked(self) -> str:
+        if not self._running:
+            return LIVE_STREAM_STATUS_NOT_STARTED
 
-__all__ = ["LiveSnapshot", "LiveStreamConfig", "LiveStreamManager"]
+        active_keys = [key for key, active in self._active_streams.items() if active]
+        if any(
+            self._status_by_stream.get(key) == LIVE_STREAM_STATUS_ERROR for key in active_keys
+        ):
+            return LIVE_STREAM_STATUS_ERROR
+        if any(
+            self._status_by_stream.get(key) == LIVE_STREAM_STATUS_RECONNECTING
+            for key in active_keys
+        ):
+            return LIVE_STREAM_STATUS_RECONNECTING
+        return LIVE_STREAM_STATUS_RUNNING
+
+
+__all__ = [
+    "LIVE_STREAM_STATUS_ERROR",
+    "LIVE_STREAM_STATUS_NOT_STARTED",
+    "LIVE_STREAM_STATUS_RECONNECTING",
+    "LIVE_STREAM_STATUS_RUNNING",
+    "LiveSnapshot",
+    "LiveStreamConfig",
+    "LiveStreamManager",
+]

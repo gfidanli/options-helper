@@ -13,7 +13,15 @@ from options_helper.analysis.live_portfolio_metrics import (
     compute_live_position_rows,
 )
 from options_helper.data.market_types import DataFetchError
-from options_helper.data.streaming.live_manager import LiveSnapshot, LiveStreamConfig, LiveStreamManager
+from options_helper.data.streaming.live_manager import (
+    LIVE_STREAM_STATUS_ERROR,
+    LIVE_STREAM_STATUS_NOT_STARTED,
+    LIVE_STREAM_STATUS_RECONNECTING,
+    LIVE_STREAM_STATUS_RUNNING,
+    LiveSnapshot,
+    LiveStreamConfig,
+    LiveStreamManager,
+)
 from options_helper.data.streaming.subscriptions import SubscriptionPlan, build_subscription_plan
 from options_helper.models import Portfolio
 from options_helper.storage import load_portfolio
@@ -54,6 +62,12 @@ _OPTIONS_FEED_OPTIONS: list[tuple[str, str | None]] = [
     ("OPRA", "opra"),
     ("Indicative", "indicative"),
 ]
+_STATUS_LABELS = {
+    LIVE_STREAM_STATUS_NOT_STARTED: "not started",
+    LIVE_STREAM_STATUS_RUNNING: "running",
+    LIVE_STREAM_STATUS_RECONNECTING: "reconnecting",
+    LIVE_STREAM_STATUS_ERROR: "error",
+}
 
 
 @dataclass(frozen=True)
@@ -418,19 +432,23 @@ def _handle_manager_actions(
 def _render_health(snapshot: LiveSnapshot) -> None:
     st.markdown("#### Stream Health")
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Running", value="yes" if snapshot.running else "no")
+    col1.metric("Status", value=_status_label(snapshot.status))
     col2.metric("Queue depth", value=str(snapshot.queue_depth))
     col3.metric("Dropped events", value=str(snapshot.dropped_events))
-    col4.metric("As of", value=_fmt_ts(snapshot.as_of))
+    col4.metric("Last event", value=_fmt_ts(_latest_event_ts(snapshot)))
 
-    if snapshot.last_error:
-        st.error(snapshot.last_error)
+    _render_status_banner(snapshot)
+
+    if snapshot.last_error and snapshot.status == LIVE_STREAM_STATUS_RUNNING:
+        st.warning(f"Recovered from prior stream error: {snapshot.last_error}")
 
     rows: list[dict[str, Any]] = []
     for stream_key in _STREAM_KEYS:
         rows.append(
             {
                 "stream": stream_key,
+                "enabled": bool(snapshot.active_streams.get(stream_key, False)),
+                "status": _status_label(snapshot.status_by_stream.get(stream_key)),
                 "alive": bool(snapshot.alive.get(stream_key, False)),
                 "reconnect_attempts": int(snapshot.reconnect_attempts.get(stream_key, 0)),
                 "last_event_ts": _fmt_ts(snapshot.last_event_ts_by_stream.get(stream_key)),
@@ -475,6 +493,12 @@ def _render_live_portfolio_tables(
         snapshot,
         stale_after_seconds=stale_threshold_seconds,
     )
+    _render_stale_data_banner(
+        single_df=single_df,
+        structure_df=structure_df,
+        legs_df=legs_df,
+        stale_threshold_seconds=stale_threshold_seconds,
+    )
 
     st.markdown("**Single-Leg Positions**")
     if single_df.empty:
@@ -501,6 +525,120 @@ def _prepare_display_df(df: pd.DataFrame) -> pd.DataFrame:
         if column in display.columns:
             display[column] = display[column].map(_fmt_warning_list)
     return display
+
+
+def _render_status_banner(snapshot: LiveSnapshot) -> None:
+    status = snapshot.status
+    last_error = snapshot.last_error or "n/a"
+    last_event = _fmt_ts(_latest_event_ts(snapshot))
+    dropped = int(snapshot.dropped_events)
+    reconnect_attempts = int(sum(snapshot.reconnect_attempts.values()))
+
+    if status == LIVE_STREAM_STATUS_NOT_STARTED:
+        st.info("Stream status: not started. Press Start to launch live streams.")
+        return
+    if status == LIVE_STREAM_STATUS_RUNNING:
+        st.success(
+            "Stream status: running. "
+            f"Active streams: {sum(1 for active in snapshot.active_streams.values() if active)}."
+        )
+        return
+    if status == LIVE_STREAM_STATUS_RECONNECTING:
+        st.warning(
+            "Stream status: reconnecting. "
+            f"Last error: {last_error}. Last event: {last_event}. "
+            f"Reconnect attempts: {reconnect_attempts}. Dropped events: {dropped}."
+        )
+        return
+    if status == LIVE_STREAM_STATUS_ERROR:
+        st.error(
+            "Stream status: error. "
+            f"Last error: {last_error}. Last event: {last_event}. "
+            f"Dropped events: {dropped}."
+        )
+        return
+    st.warning(f"Stream status: {status}.")
+
+
+def _render_stale_data_banner(
+    *,
+    single_df: pd.DataFrame,
+    structure_df: pd.DataFrame,
+    legs_df: pd.DataFrame,
+    stale_threshold_seconds: float,
+) -> None:
+    stale_limit = max(0.0, float(stale_threshold_seconds))
+    single_stale = _count_stale_rows(single_df, "quote_age_seconds", stale_limit)
+    structure_stale = _count_stale_rows(structure_df, "quote_age_seconds_max", stale_limit)
+    legs_stale = _count_stale_rows(legs_df, "quote_age_seconds", stale_limit)
+    stale_total = single_stale + structure_stale + legs_stale
+    if stale_total <= 0:
+        return
+
+    max_age = _max_quote_age_seconds(single_df, structure_df, legs_df)
+    max_age_text = "-" if max_age is None else f"{max_age:.1f}s"
+    st.error(
+        "Stale data detected. "
+        f"Max quote age: {max_age_text} (threshold: {stale_limit:.1f}s). "
+        f"Stale rows -> single: {single_stale}, structures: {structure_stale}, legs: {legs_stale}."
+    )
+
+
+def _count_stale_rows(df: pd.DataFrame, column: str, threshold_seconds: float) -> int:
+    if df.empty or column not in df.columns:
+        return 0
+    values = pd.to_numeric(df[column], errors="coerce")
+    return int((values > threshold_seconds).sum())
+
+
+def _max_quote_age_seconds(single_df: pd.DataFrame, structure_df: pd.DataFrame, legs_df: pd.DataFrame) -> float | None:
+    candidates = [
+        _max_numeric_column(single_df, "quote_age_seconds"),
+        _max_numeric_column(structure_df, "quote_age_seconds_max"),
+        _max_numeric_column(legs_df, "quote_age_seconds"),
+    ]
+    numeric = [value for value in candidates if value is not None]
+    if not numeric:
+        return None
+    return max(numeric)
+
+
+def _max_numeric_column(df: pd.DataFrame, column: str) -> float | None:
+    if df.empty or column not in df.columns:
+        return None
+    values = pd.to_numeric(df[column], errors="coerce").dropna()
+    if values.empty:
+        return None
+    return float(values.max())
+
+
+def _status_label(status: str | None) -> str:
+    key = str(status or "").strip().lower()
+    return _STATUS_LABELS.get(key, key or LIVE_STREAM_STATUS_NOT_STARTED)
+
+
+def _latest_event_ts(snapshot: LiveSnapshot) -> datetime | None:
+    latest = snapshot.as_of
+    for value in snapshot.last_event_ts_by_stream.values():
+        dt = _coerce_datetime(value)
+        if dt is None:
+            continue
+        if latest is None or dt > latest:
+            latest = dt
+    return latest
+
+
+def _coerce_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    parsed = pd.to_datetime(value, errors="coerce", utc=True)
+    if not isinstance(parsed, pd.Timestamp) or pd.isna(parsed):
+        return None
+    return parsed.to_pydatetime()
 
 
 def _fmt_warning_list(value: Any) -> str:

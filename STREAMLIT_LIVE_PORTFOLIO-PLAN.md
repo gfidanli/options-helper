@@ -294,9 +294,16 @@ T10 (Docs) depends on T7–T8
 - **validation**:
   - Unit test for “queue full → dropped counter increments”.
   - Manual: simulate error by unsetting creds and pressing Start; verify clean message.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Extended `LiveSnapshot` health model with explicit runtime status fields (`status`, `status_by_stream`, `active_streams`) so UI can render not-started/running/reconnecting/error modes without Streamlit-specific logic in the manager.
+  - Hardened stream-state transitions in `LiveStreamManager` for reconnect and terminal error paths while preserving queue-full dropped-event accounting.
+  - Updated Streamlit Live Portfolio health UI to show clear mode banners (not started/running/reconnecting/error) including last error, last event time, reconnect attempts, and dropped event counters.
+  - Added a prominent stale-data banner driven by live quote age columns (`quote_age_seconds` / `quote_age_seconds_max`) whenever max age exceeds the configured stale threshold.
+  - Queue-full dropped counter coverage remains in `tests/test_live_stream_manager.py::test_live_stream_manager_drops_events_when_queue_is_full`.
 - **files edited/created**:
+  - `options_helper/data/streaming/live_manager.py`
+  - `apps/streamlit/components/live_portfolio_page.py`
 
 ### T9: Docs (one feature per doc) + MkDocs nav update
 - **depends_on**: [T7]
