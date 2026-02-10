@@ -204,9 +204,17 @@ T10 (Docs) depends on T7–T8
   - Keep logic deterministic and independent of Streamlit.
 - **validation**:
   - Unit tests with synthetic snapshots.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added `compute_live_position_rows(...)` and `compute_live_multileg_rows(...)` in a new pure analysis module with deterministic snapshot-time anchoring (no Streamlit/network dependencies).
+  - Implemented robust live cache parsing for option quote/trade rows, compact/alpaca contract symbol matching, mark/spread/age calculations, and warning synthesis (`missing_quote`, `missing_mark`, `quote_stale`, `wide_spread`, `missing_legs`, etc.).
+  - Implemented single-leg and multi-leg PnL conventions from plan:
+    - Single: `(mark - cost_basis) * 100 * contracts`
+    - Multi-leg: `net_mark = Σ(mark_leg * signed_contracts * 100)` and `net_pnl_abs = net_mark - net_debit`
+  - Added deterministic offline tests using synthetic snapshots for single-leg math, staleness/wide-spread warnings, multi-leg signed-net math, and missing-leg warning behavior.
 - **files edited/created**:
+  - `options_helper/analysis/live_portfolio_metrics.py`
+  - `tests/test_live_portfolio_metrics.py`
 
 ### T6: Streamlit component (UI controls + fragment refresh + no auto-start)
 - **depends_on**: [T4, T5]
