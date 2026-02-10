@@ -2363,6 +2363,7 @@ def _parse_allowed_volatility_regimes(value: str, *, option_name: str) -> tuple[
 def _build_strategy_signal_kwargs(
     *,
     strategy: str,
+    fib_retracement_pct: float,
     ma_fast_window: int,
     ma_slow_window: int,
     ma_trend_window: int,
@@ -2411,6 +2412,14 @@ def _build_strategy_signal_kwargs(
             "atr_window": int(atr_window),
             "atr_stop_multiple": float(atr_stop_multiple),
         }
+    if strategy == "fib_retracement":
+        from options_helper.analysis.fib_retracement import normalize_fib_retracement_pct
+
+        try:
+            normalized_fib_retracement_pct = normalize_fib_retracement_pct(fib_retracement_pct)
+        except ValueError as exc:
+            raise typer.BadParameter(f"--fib-retracement-pct {exc}") from exc
+        return {"fib_retracement_pct": float(normalized_fib_retracement_pct)}
     return {}
 
 
@@ -2651,7 +2660,7 @@ def technicals_strategy_model(
     strategy: str = typer.Option(
         "sfp",
         "--strategy",
-        help="Strategy to model: sfp, msb, orb, ma_crossover, or trend_following.",
+        help="Strategy to model: sfp, msb, orb, ma_crossover, trend_following, or fib_retracement.",
     ),
     profile: str | None = typer.Option(
         None,
@@ -2777,6 +2786,11 @@ def technicals_strategy_model(
         2.0,
         "--atr-stop-multiple",
         help="ATR stop multiple used by ma_crossover/trend_following signal stops.",
+    ),
+    fib_retracement_pct: float = typer.Option(
+        61.8,
+        "--fib-retracement-pct",
+        help="Fib retracement percent (e.g., 61.8; accepts 0.618 as ratio).",
     ),
     symbols: str | None = typer.Option(
         None,
@@ -2936,9 +2950,16 @@ def technicals_strategy_model(
     console = Console(width=200)
 
     normalized_cli_strategy = strategy.strip().lower()
-    if normalized_cli_strategy not in {"sfp", "msb", "orb", "ma_crossover", "trend_following"}:
+    if normalized_cli_strategy not in {
+        "sfp",
+        "msb",
+        "orb",
+        "ma_crossover",
+        "trend_following",
+        "fib_retracement",
+    }:
         raise typer.BadParameter(
-            "--strategy must be one of: sfp, msb, orb, ma_crossover, trend_following"
+            "--strategy must be one of: sfp, msb, orb, ma_crossover, trend_following, fib_retracement"
         )
     if starting_capital <= 0.0:
         raise typer.BadParameter("--starting-capital must be > 0")
@@ -2969,6 +2990,7 @@ def technicals_strategy_model(
     # Preserve option-specific error messages for explicit CLI validation before profile merging.
     _build_strategy_signal_kwargs(
         strategy=normalized_cli_strategy,
+        fib_retracement_pct=float(fib_retracement_pct),
         ma_fast_window=int(ma_fast_window),
         ma_slow_window=int(ma_slow_window),
         ma_trend_window=int(ma_trend_window),
@@ -3014,6 +3036,7 @@ def technicals_strategy_model(
         "intraday_source": str(intraday_source),
         "starting_capital": float(starting_capital),
         "risk_per_trade_pct": float(risk_per_trade_pct),
+        "fib_retracement_pct": float(fib_retracement_pct),
         "gap_fill_policy": str(gap_fill_policy),
         "max_hold_bars": int(max_hold_bars) if max_hold_bars is not None else None,
         "max_hold_timeframe": normalized_max_hold_timeframe,
@@ -3061,6 +3084,7 @@ def technicals_strategy_model(
     normalized_strategy = effective_profile.strategy
     signal_kwargs = _build_strategy_signal_kwargs(
         strategy=normalized_strategy,
+        fib_retracement_pct=float(effective_profile.fib_retracement_pct),
         ma_fast_window=int(effective_profile.ma_fast_window),
         ma_slow_window=int(effective_profile.ma_slow_window),
         ma_trend_window=int(effective_profile.ma_trend_window),

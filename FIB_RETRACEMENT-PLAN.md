@@ -281,3 +281,23 @@ T2 ──┘                                   └── T8
 - Files modified: `options_helper/analysis/strategy_signals.py`.
 - Validation: `./.venv/bin/python -m py_compile /Volumes/develop/options-helper-fib-retracement/options_helper/analysis/strategy_signals.py` passed.
 - Errors/gotchas: None.
+
+### T6: Streamlit add strategy option + fib pct widget + profile integration (completed 2026-02-10)
+- Work log:
+  - Added `fib_retracement` to Streamlit strategy options and added `_WIDGET_KEYS["fib_retracement_pct"]` with sidebar default state `61.8`.
+  - Added a conditional sidebar `number_input` for fib percent shown only when strategy is `fib_retracement`.
+  - Extended `_build_signal_kwargs(...)` to accept `fib_retracement_pct`, normalize it via `normalize_fib_retracement_pct(...)`, and return fib signal kwargs for the fib strategy.
+  - Extended profile save/load wiring to persist and hydrate `fib_retracement_pct` via `_build_profile_from_inputs(...)` and `_apply_loaded_profile_to_state(...)`.
+- Files modified: `apps/streamlit/pages/11_Strategy_Modeling.py`.
+- Validation: `./.venv/bin/python -m pytest /Volumes/develop/options-helper-fib-retracement/tests/portal/test_streamlit_scaffold.py` passed (`1 passed, 3 skipped`).
+- Errors/gotchas: None.
+
+### T5: CLI enable `fib_retracement` strategy + fib pct option (completed 2026-02-10)
+- Work log:
+  - Enabled `fib_retracement` in `technicals strategy-model` strategy help/allowlist and invalid-value error messaging.
+  - Added `--fib-retracement-pct` option (default `61.8`) and wired it through CLI pre-validation, profile-merge payload, and final strategy signal kwargs construction.
+  - Extended `_build_strategy_signal_kwargs(...)` to normalize/validate fib percent and emit `{"fib_retracement_pct": normalized_percent}` for fib strategy.
+  - Added CLI regression tests for updated allowlist messaging, fib kwargs normalization from ratio input, and invalid fib pct rejection.
+- Files modified: `options_helper/commands/technicals.py`, `tests/test_strategy_modeling_cli.py`, `FIB_RETRACEMENT-PLAN.md`.
+- Validation: `./.venv/bin/python -m pytest /Volumes/develop/options-helper-fib-retracement/tests/test_strategy_modeling_cli.py` passed.
+- Errors/gotchas: None.
