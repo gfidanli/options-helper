@@ -272,3 +272,12 @@ T2 ──┘                                   └── T8
 - Files modified: `options_helper/analysis/fib_retracement.py`.
 - Validation: `./.venv/bin/python -m py_compile /Volumes/develop/options-helper-fib-retracement/options_helper/analysis/fib_retracement.py` passed.
 - Errors/gotchas: None.
+
+### T3: Wire `fib_retracement` into strategy signal registry (completed 2026-02-10)
+- Work log:
+  - Added `normalize_fib_retracement_signal_events(...)` to convert fib signal rows into `StrategySignalEvent` objects with close-confirmed signal timestamps and next-bar-open entry anchors.
+  - Added `adapt_fib_retracement_signal_events(...)` to call `compute_fib_retracement_signals(...)` and normalize the results for `build_strategy_signal_events(...)`.
+  - Registered the strategy adapter for `fib_retracement` and exported the new adapter/normalizer in module `__all__`.
+- Files modified: `options_helper/analysis/strategy_signals.py`.
+- Validation: `./.venv/bin/python -m py_compile /Volumes/develop/options-helper-fib-retracement/options_helper/analysis/strategy_signals.py` passed.
+- Errors/gotchas: None.
