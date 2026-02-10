@@ -2838,6 +2838,20 @@ def technicals_strategy_model(
         "--risk-per-trade-pct",
         help="Per-trade risk percent used with risk_pct_of_equity sizing.",
     ),
+    stop_move_rules: list[str] = typer.Option(
+        [],
+        "--stop-move",
+        help=(
+            "Repeatable stop adjustment rule expressed as 'trigger_r:stop_r' in R multiples "
+            "(evaluated on bar close, applied starting next bar). Example: --stop-move 1.0:0.0 "
+            "to move to breakeven after a +1.0R close."
+        ),
+    ),
+    disable_stop_moves: bool = typer.Option(
+        False,
+        "--disable-stop-moves",
+        help="Disable stop-move rules even if a loaded profile includes them.",
+    ),
     gap_fill_policy: str = typer.Option(
         "fill_at_open",
         "--gap-fill-policy",
@@ -3004,6 +3018,7 @@ def technicals_strategy_model(
         "max_hold_bars": int(max_hold_bars) if max_hold_bars is not None else None,
         "max_hold_timeframe": normalized_max_hold_timeframe,
         "one_open_per_symbol": bool(one_open_per_symbol),
+        "stop_move_rules": tuple(stop_move_rules),
         "r_ladder_min_tenths": int(r_ladder_min_tenths),
         "r_ladder_max_tenths": int(r_ladder_max_tenths),
         "r_ladder_step_tenths": int(r_ladder_step_tenths),
@@ -3040,6 +3055,8 @@ def technicals_strategy_model(
         raise typer.BadParameter(f"Invalid strategy-modeling profile values: {detail}") from exc
     if disable_max_hold:
         effective_profile = effective_profile.model_copy(update={"max_hold_bars": None})
+    if disable_stop_moves:
+        effective_profile = effective_profile.model_copy(update={"stop_move_rules": ()})
 
     normalized_strategy = effective_profile.strategy
     signal_kwargs = _build_strategy_signal_kwargs(
@@ -3229,6 +3246,7 @@ def technicals_strategy_model(
             "max_hold_bars": effective_profile.max_hold_bars,
             "max_hold_timeframe": effective_profile.max_hold_timeframe,
             "one_open_per_symbol": bool(effective_profile.one_open_per_symbol),
+            "stop_move_rules": effective_profile.stop_move_rules,
             "entry_ts_anchor_policy": "first_tradable_bar_open_after_signal_confirmed_ts",
         },
     )

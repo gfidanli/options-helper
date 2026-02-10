@@ -19,6 +19,7 @@ from options_helper.schemas.strategy_modeling_contracts import (
 from options_helper.schemas.strategy_modeling_policy import (
     GapFillPolicy,
     MaxHoldUnit,
+    StopMoveRule,
     StrategyModelingPolicyConfig,
     parse_max_hold_timeframe,
 )
@@ -142,6 +143,7 @@ def simulate_strategy_trade_paths(
                     max_hold_bars=max_hold,
                     max_hold_timeframe=parsed_hold_timeframe,
                     gap_fill_policy=cfg.gap_fill_policy,
+                    stop_move_rules=cfg.stop_move_rules,
                 )
             )
     return trades
@@ -156,6 +158,7 @@ def _simulate_one_target(
     max_hold_bars: int | None,
     max_hold_timeframe: tuple[MaxHoldUnit, int],
     gap_fill_policy: GapFillPolicy,
+    stop_move_rules: tuple[StopMoveRule, ...],
 ) -> StrategyTradeSimulation:
     if entry_decision.reject_code is not None:
         return _rejected_trade(
@@ -169,14 +172,14 @@ def _simulate_one_target(
         )
 
     direction = entry_decision.direction
-    stop_price = entry_decision.stop_price
+    initial_stop_price = entry_decision.stop_price
     entry_row_index = entry_decision.entry_row_index
     entry_ts = entry_decision.entry_ts
     entry_price = entry_decision.entry_price
     initial_risk = entry_decision.initial_risk
     if (
         direction is None
-        or stop_price is None
+        or initial_stop_price is None
         or entry_row_index is None
         or entry_ts is None
         or entry_price is None
@@ -189,7 +192,12 @@ def _simulate_one_target(
             reject_code="invalid_signal",
         )
 
-    target_price = _target_price(direction=direction, entry_price=entry_price, risk=initial_risk, target_r=target.target_r)
+    target_price = _target_price(
+        direction=direction,
+        entry_price=entry_price,
+        risk=initial_risk,
+        target_r=target.target_r,
+    )
 
     eval_start = int(entry_row_index)
     eval_end, has_full_hold_coverage = _evaluation_end_index(
@@ -207,10 +215,13 @@ def _simulate_one_target(
             reject_code="insufficient_future_bars",
             entry_ts=entry_ts,
             entry_price=entry_price,
-            stop_price=stop_price,
+            stop_price=initial_stop_price,
             target_price=target_price,
             initial_risk=initial_risk,
         )
+
+    stop_price = float(initial_stop_price)
+    stop_move_index = 0
 
     mae_r = 0.0
     mfe_r = 0.0
@@ -310,6 +321,17 @@ def _simulate_one_target(
             current_mfe_r=mfe_r,
         )
 
+        if stop_move_rules and row_index + 1 < eval_end and stop_move_index < len(stop_move_rules):
+            stop_price, stop_move_index = _apply_stop_move_rules(
+                stop_move_rules=stop_move_rules,
+                stop_move_index=stop_move_index,
+                direction=direction,
+                entry_price=entry_price,
+                initial_risk=initial_risk,
+                close_price=close_price,
+                stop_price=stop_price,
+            )
+
     if exit_reason is None or exit_price is None or exit_ts is None:
         if max_hold_bars is not None and not has_full_hold_coverage:
             return _rejected_trade(
@@ -318,7 +340,7 @@ def _simulate_one_target(
                 reject_code="insufficient_future_bars",
                 entry_ts=entry_ts,
                 entry_price=entry_price,
-                stop_price=stop_price,
+                stop_price=initial_stop_price,
                 target_price=target_price,
                 initial_risk=initial_risk,
                 mae_r=mae_r,
@@ -351,7 +373,8 @@ def _simulate_one_target(
         entry_ts=_timestamp_to_datetime(entry_ts),
         entry_price_source=event.entry_price_source,
         entry_price=entry_price,
-        stop_price=stop_price,
+        stop_price=float(initial_stop_price),
+        stop_price_final=float(stop_price),
         target_price=target_price,
         exit_ts=_timestamp_to_datetime(exit_ts),
         exit_price=exit_price,
@@ -562,6 +585,7 @@ def _rejected_trade(
         entry_price_source=event.entry_price_source,
         entry_price=safe_entry_price,
         stop_price=stop_price,
+        stop_price_final=stop_price,
         target_price=target_price,
         exit_ts=None,
         exit_price=None,
@@ -575,6 +599,51 @@ def _rejected_trade(
         holding_bars=0,
         gap_fill_applied=False,
     )
+
+
+def _stop_price_from_r(*, direction: str, entry_price: float, initial_risk: float, stop_r: float) -> float:
+    if direction == "long":
+        return entry_price + (initial_risk * stop_r)
+    return entry_price - (initial_risk * stop_r)
+
+
+def _apply_stop_move_rules(
+    *,
+    stop_move_rules: tuple[StopMoveRule, ...],
+    stop_move_index: int,
+    direction: str,
+    entry_price: float,
+    initial_risk: float,
+    close_price: float,
+    stop_price: float,
+) -> tuple[float, int]:
+    close_r = _price_to_r(
+        direction=direction,
+        entry_price=entry_price,
+        initial_risk=initial_risk,
+        price=close_price,
+    )
+
+    updated_stop = float(stop_price)
+    idx = int(stop_move_index)
+    while idx < len(stop_move_rules) and close_r + _EPSILON >= float(stop_move_rules[idx].trigger_r):
+        candidate_stop = _stop_price_from_r(
+            direction=direction,
+            entry_price=entry_price,
+            initial_risk=initial_risk,
+            stop_r=float(stop_move_rules[idx].stop_r),
+        )
+        if direction == "long":
+            candidate_stop = min(candidate_stop, close_price)
+            if candidate_stop > updated_stop + _EPSILON:
+                updated_stop = candidate_stop
+        else:
+            candidate_stop = max(candidate_stop, close_price)
+            if candidate_stop < updated_stop - _EPSILON:
+                updated_stop = candidate_stop
+        idx += 1
+
+    return updated_stop, idx
 
 
 def _to_utc_timestamp(value: object) -> pd.Timestamp | None:

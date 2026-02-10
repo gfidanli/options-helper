@@ -8,7 +8,11 @@ from pydantic import ConfigDict, Field, field_validator, model_validator
 from options_helper.schemas.common import ArtifactBase, utc_now
 from options_helper.schemas.strategy_modeling_contracts import StrategyId
 from options_helper.schemas.strategy_modeling_filters import OrbStopPolicy, VolatilityRegime
-from options_helper.schemas.strategy_modeling_policy import GapFillPolicy, normalize_max_hold_timeframe
+from options_helper.schemas.strategy_modeling_policy import (
+    GapFillPolicy,
+    StopMoveRule,
+    normalize_max_hold_timeframe,
+)
 
 
 STRATEGY_MODELING_PROFILE_SCHEMA_VERSION = 1
@@ -33,6 +37,7 @@ class StrategyModelingProfile(ArtifactBase):
     max_hold_bars: int | None = Field(default=None, ge=1)
     max_hold_timeframe: str = "entry"
     one_open_per_symbol: bool = True
+    stop_move_rules: tuple[StopMoveRule, ...] = Field(default_factory=tuple)
 
     r_ladder_min_tenths: int = Field(default=10, ge=1)
     r_ladder_max_tenths: int = Field(default=20, ge=1)
@@ -100,6 +105,62 @@ class StrategyModelingProfile(ArtifactBase):
     @classmethod
     def _normalize_max_hold_timeframe(cls, value: object) -> str:
         return normalize_max_hold_timeframe(value)
+
+    @field_validator("stop_move_rules", mode="before")
+    @classmethod
+    def _normalize_stop_move_rules(cls, value: object) -> tuple[StopMoveRule, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, StopMoveRule):
+            raw_items: list[object] = [value]
+        elif isinstance(value, str):
+            token = value.strip()
+            raw_items = [] if not token else [item for item in token.split(",")]
+        elif isinstance(value, tuple | list):
+            raw_items = list(value)
+        else:
+            raise TypeError("stop_move_rules must be a sequence or comma-separated string")
+
+        parsed: list[StopMoveRule] = []
+        for raw in raw_items:
+            if raw is None:
+                continue
+            if isinstance(raw, StopMoveRule):
+                parsed.append(raw)
+                continue
+            if isinstance(raw, str):
+                text = raw.strip()
+                if not text:
+                    continue
+                if ":" not in text:
+                    raise ValueError("stop_move_rules items must be 'trigger_r:stop_r'")
+                trigger_text, stop_text = text.split(":", 1)
+                parsed.append(
+                    StopMoveRule(
+                        trigger_r=float(trigger_text.strip()),
+                        stop_r=float(stop_text.strip()),
+                    )
+                )
+                continue
+            parsed.append(StopMoveRule.model_validate(raw))
+
+        if not parsed:
+            return ()
+
+        sorted_rules = tuple(sorted(parsed, key=lambda rule: (float(rule.trigger_r), float(rule.stop_r))))
+        last_stop_r = -1.0
+        seen_triggers: set[float] = set()
+        for rule in sorted_rules:
+            trigger_r = float(rule.trigger_r)
+            if trigger_r in seen_triggers:
+                raise ValueError("stop_move_rules must not contain duplicate trigger_r values")
+            seen_triggers.add(trigger_r)
+            stop_r = float(rule.stop_r)
+            if stop_r + 1e-12 < last_stop_r:
+                raise ValueError("stop_move_rules must tighten stops (non-decreasing stop_r)")
+            last_stop_r = stop_r
+
+        return sorted_rules
 
     @field_validator("orb_confirmation_cutoff_et", mode="before")
     @classmethod

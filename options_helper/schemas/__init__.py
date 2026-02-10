@@ -66,6 +66,8 @@ from options_helper.schemas.strategy_modeling_policy import (
     GapFillPolicy,
     PriceAdjustmentPolicy,
     SizingRule,
+    StopMoveRule,
+    StopMoveTrigger,
     StrategyModelingPolicyConfig,
 )
 from options_helper.schemas.strategy_modeling_profile import (
@@ -166,6 +168,8 @@ __all__ = [
     "SegmentDimension",
     "SignalDirection",
     "SizingRule",
+    "StopMoveRule",
+    "StopMoveTrigger",
     "StrategyEquityPoint",
     "StrategyId",
     "StrategyModelingContractBase",

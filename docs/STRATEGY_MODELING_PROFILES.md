@@ -27,6 +27,7 @@ Each profile stores validated strategy-modeling inputs including:
 - strategy + symbols + date range
 - intraday timeframe/source
 - portfolio policy and target-ladder settings
+- close-confirmed stop management rules (optional stop moves)
 - max-hold policy (`max_hold_bars` optional toggle + `max_hold_timeframe`)
 - filter gates (ORB/ATR/RSI/EMA9/volatility regimes)
 - MA/trend signal parameters

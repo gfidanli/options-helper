@@ -35,6 +35,7 @@ _TRADE_LOG_FIELDS: tuple[str, ...] = (
     "entry_price_source",
     "entry_price",
     "stop_price",
+    "stop_price_final",
     "target_price",
     "exit_ts",
     "exit_price",
@@ -302,6 +303,7 @@ def _build_policy_metadata(
         or _as_str_or_none(getattr(request, "max_hold_timeframe", None))
         or "entry"
     )
+    stop_move_rules = _normalize_records(policy_payload.get("stop_move_rules") or ())
 
     return clean_nan(
         {
@@ -320,6 +322,7 @@ def _build_policy_metadata(
             "sizing_rule": _as_str_or_none(policy_payload.get("sizing_rule")),
             "one_open_per_symbol": _as_bool_or_none(policy_payload.get("one_open_per_symbol")),
             "price_adjustment_policy": _as_str_or_none(policy_payload.get("price_adjustment_policy")),
+            "stop_move_rules": stop_move_rules,
             "anti_lookahead_note": (
                 "Signals confirmed at bar close are modeled from the next tradable bar open."
             ),
@@ -690,7 +693,24 @@ def _build_trade_log_row(
 
     stop_slippage_r = _as_float_or_none(src.get("stop_slippage_r"))
     if stop_slippage_r is None and realized_r is not None and _is_stop_reason(exit_reason):
-        slippage = realized_r + 1.0
+        entry_price = _as_float_or_none(src.get("entry_price"))
+        initial_risk = _as_float_or_none(src.get("initial_risk"))
+        direction = (_as_str_or_none(src.get("direction")) or "").strip().lower()
+        stop_price = _as_float_or_none(src.get("stop_price_final"))
+        if stop_price is None:
+            stop_price = _as_float_or_none(src.get("stop_price"))
+
+        slippage: float | None = None
+        if entry_price is not None and initial_risk is not None and initial_risk > 0.0 and stop_price is not None:
+            if direction == "short":
+                stop_r = (entry_price - stop_price) / initial_risk
+            else:
+                stop_r = (stop_price - entry_price) / initial_risk
+            slippage = realized_r - float(stop_r)
+
+        if slippage is None:
+            slippage = realized_r + 1.0
+
         if slippage < 0.0:
             stop_slippage_r = round(slippage, 6)
 
@@ -712,6 +732,7 @@ def _build_trade_log_row(
             "entry_price_source": _as_str_or_none(src.get("entry_price_source")),
             "entry_price": _as_float_or_none(src.get("entry_price")),
             "stop_price": _as_float_or_none(src.get("stop_price")),
+            "stop_price_final": _as_float_or_none(src.get("stop_price_final")),
             "target_price": _as_float_or_none(src.get("target_price")),
             "exit_ts": _to_output_timezone_iso(
                 src.get("exit_ts"),

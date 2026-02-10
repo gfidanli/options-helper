@@ -10,7 +10,7 @@ from options_helper.analysis.strategy_simulator import (
     simulate_strategy_trade_paths,
 )
 from options_helper.schemas.strategy_modeling_contracts import StrategySignalEvent
-from options_helper.schemas.strategy_modeling_policy import StrategyModelingPolicyConfig
+from options_helper.schemas.strategy_modeling_policy import StopMoveRule, StrategyModelingPolicyConfig
 
 
 def _ts(value: str) -> datetime:
@@ -63,6 +63,10 @@ def _event(
 
 def _single_target_ladder() -> tuple:
     return build_r_target_ladder(min_target_tenths=10, max_target_tenths=10)
+
+
+def _target_ladder(tenths: int) -> tuple:
+    return build_r_target_ladder(min_target_tenths=tenths, max_target_tenths=tenths)
 
 
 def test_build_r_target_ladder_is_stable_in_integer_tenths() -> None:
@@ -162,6 +166,90 @@ def test_simulator_applies_gap_fills_and_can_realize_less_than_negative_one_r() 
     assert trade.realized_r is not None and trade.realized_r < -1.0
     assert trade.realized_r == pytest.approx(-1.6)
 
+
+def test_simulator_stop_move_to_breakeven_applies_starting_next_bar() -> None:
+    event = _event(event_id="evt-stop-move-be", stop_price=99.0)
+    bars = _bars(
+        [
+            ("2026-01-05 14:30:00+00:00", 100.0, 101.2, 99.2, 101.0),
+            ("2026-01-05 14:31:00+00:00", 101.0, 101.1, 99.9, 100.4),
+        ]
+    )
+    policy = StrategyModelingPolicyConfig(
+        stop_move_rules=(StopMoveRule(trigger_r=1.0, stop_r=0.0),),
+    )
+
+    trade = simulate_strategy_trade_paths(
+        [event],
+        {"SPY": bars},
+        policy=policy,
+        max_hold_bars=3,
+        target_ladder=_target_ladder(30),
+    )[0]
+
+    assert trade.status == "closed"
+    assert trade.exit_reason == "stop_hit"
+    assert trade.exit_price == pytest.approx(100.0)
+    assert trade.realized_r == pytest.approx(0.0)
+    assert trade.stop_price == pytest.approx(99.0)
+    assert trade.stop_price_final == pytest.approx(100.0)
+
+
+def test_simulator_stop_move_rules_can_step_up_in_multiple_stages() -> None:
+    event = _event(event_id="evt-stop-move-step", stop_price=99.0)
+    bars = _bars(
+        [
+            ("2026-01-05 14:30:00+00:00", 100.0, 101.3, 99.4, 101.0),
+            ("2026-01-05 14:31:00+00:00", 101.0, 102.2, 100.8, 102.0),
+            ("2026-01-05 14:32:00+00:00", 102.0, 102.1, 100.9, 101.4),
+        ]
+    )
+    policy = StrategyModelingPolicyConfig(
+        stop_move_rules=(
+            StopMoveRule(trigger_r=1.0, stop_r=0.0),
+            StopMoveRule(trigger_r=2.0, stop_r=1.0),
+        ),
+    )
+
+    trade = simulate_strategy_trade_paths(
+        [event],
+        {"SPY": bars},
+        policy=policy,
+        max_hold_bars=4,
+        target_ladder=_target_ladder(40),
+    )[0]
+
+    assert trade.status == "closed"
+    assert trade.exit_reason == "stop_hit"
+    assert trade.exit_price == pytest.approx(101.0)
+    assert trade.realized_r == pytest.approx(1.0)
+    assert trade.stop_price_final == pytest.approx(101.0)
+
+
+def test_simulator_stop_move_rules_support_short_direction_paths() -> None:
+    event = _event(event_id="evt-stop-move-short", direction="short", stop_price=101.0)
+    bars = _bars(
+        [
+            ("2026-01-05 14:30:00+00:00", 100.0, 100.4, 98.7, 99.0),
+            ("2026-01-05 14:31:00+00:00", 99.0, 100.2, 98.9, 99.8),
+        ]
+    )
+    policy = StrategyModelingPolicyConfig(
+        stop_move_rules=(StopMoveRule(trigger_r=1.0, stop_r=0.0),),
+    )
+
+    trade = simulate_strategy_trade_paths(
+        [event],
+        {"SPY": bars},
+        policy=policy,
+        max_hold_bars=3,
+        target_ladder=_target_ladder(30),
+    )[0]
+
+    assert trade.status == "closed"
+    assert trade.exit_reason == "stop_hit"
+    assert trade.exit_price == pytest.approx(100.0)
+    assert trade.realized_r == pytest.approx(0.0)
 
 def test_simulator_exits_at_time_stop_when_no_stop_or_target() -> None:
     event = _event(event_id="evt-time-stop", stop_price=99.0)

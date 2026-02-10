@@ -52,6 +52,8 @@ General modeling options:
 - `--save-profile` (save effective run inputs as named profile)
 - `--overwrite-profile/--no-overwrite-profile` (default no-overwrite)
 - `--profile-path` (default `config/strategy_modeling_profiles.json`)
+- `--stop-move` (repeatable stop move rule `trigger_r:stop_r`; close-confirmed, active next bar)
+- `--disable-stop-moves` (ignore stop move rules even if profile includes them)
 - `--symbols`, `--exclude-symbols`, `--universe-limit`
 - `--start-date`, `--end-date` (ISO `YYYY-MM-DD`; start must be `<=` end)
 - `--intraday-timeframe` (default `5Min`)
@@ -142,6 +144,10 @@ Daily close-confirmed MA paths (`ma_crossover`/`trend_following`):
 - Stop values are signal-time ATR-based:
   - Long: `signal_close - atr_stop_multiple * atr`
   - Short: `signal_close + atr_stop_multiple * atr`
+
+Stop management (optional):
+- Close-confirmed stop moves can tighten stops after entry (applied starting on the next bar).
+- See [Strategy Modeling Stop Management](STRATEGY_MODELING_STOP_MANAGEMENT.md).
 
 ORB primary strategy (`--strategy orb`):
 - Uses regular-session intraday bars only (`09:30 <= time < 16:00` America/New_York).

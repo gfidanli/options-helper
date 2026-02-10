@@ -68,6 +68,7 @@ STRATEGY_TRADE_SIMULATION_FIELDS: Final[tuple[str, ...]] = (
     "entry_price_source",
     "entry_price",
     "stop_price",
+    "stop_price_final",
     "target_price",
     "exit_ts",
     "exit_price",
@@ -168,6 +169,7 @@ class StrategyTradeSimulation(StrategyModelingContractBase):
     entry_price_source: EntryPriceSource
     entry_price: float
     stop_price: float | None = None
+    stop_price_final: float | None = None
     target_price: float | None = None
     exit_ts: datetime | None = None
     exit_price: float | None = None
