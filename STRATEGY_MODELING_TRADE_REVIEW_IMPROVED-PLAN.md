@@ -251,6 +251,21 @@ T2 ─┘       │
 - All outputs are informational decision support only; not financial advice.
 - No ingestion/backfill writes are triggered by portal rendering or selection.
 
+## Task Status Updates
+
+### T2 ✅ Complete (2026-02-10)
+
+- Work log:
+  - Added new component helper module for drilldown selection parsing, intraday-window loading, OHLC resampling, timeframe support derivation, and chart-bar guardrails.
+  - Added deterministic portal tests for selection parsing, trade-id extraction bounds, UTC intraday normalization/windowing, resample semantics, supported timeframe filtering, and guardrail auto-upsample/skip behavior.
+  - Validated with the required pytest target.
+- Files changed:
+  - `apps/streamlit/components/strategy_modeling_trade_drilldown.py` (new)
+  - `tests/portal/test_strategy_modeling_component.py`
+  - `STRATEGY_MODELING_TRADE_REVIEW_IMPROVED-PLAN.md`
+- Gotchas / errors:
+  - During test validation, resample VWAP fallback initially mutated the close column through a shared numpy view. Fixed by copying the close array before VWAP assignment.
+
 ## Task Completion Log
 
 ### T1 (Completed 2026-02-10)

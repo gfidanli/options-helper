@@ -2,11 +2,20 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import duckdb
 import pandas as pd
 import pytest
 
+from apps.streamlit.components.strategy_modeling_trade_drilldown import (
+    extract_selected_rows,
+    load_intraday_window,
+    resample_for_chart,
+    resample_ohlc,
+    selected_trade_id_from_event,
+    supported_chart_timeframes,
+)
 from options_helper.data.intraday_store import IntradayStore
 from options_helper.data.strategy_modeling_io import (
     IntradayCoverageBySymbol,
@@ -330,3 +339,162 @@ def test_strategy_modeling_component_uses_streamlit_cache(monkeypatch: pytest.Mo
     symbols_2, _ = page.list_strategy_modeling_symbols(database_path=tmp_path / "cache.duckdb")
     assert symbols_1 == symbols_2 == ["SPY"]
     assert calls["universe"] == 2
+
+
+def test_strategy_modeling_trade_drilldown_selection_helpers() -> None:
+    assert extract_selected_rows(None) == []
+    assert extract_selected_rows({"selection": {"rows": [2, "1", -1, "bad", 2, True]}}) == [2, 1]
+    assert extract_selected_rows(SimpleNamespace(selection=SimpleNamespace(rows=["0"]))) == [0]
+
+    displayed = pd.DataFrame({"trade_id": ["T-001", "T-002"]})
+    assert selected_trade_id_from_event({"selection": {"rows": [1]}}, displayed) == "T-002"
+    assert selected_trade_id_from_event({"selection": {"rows": [3]}}, displayed) is None
+    assert selected_trade_id_from_event({"selection": {"rows": [0]}}, pd.DataFrame({"id": ["T-001"]})) is None
+    assert (
+        selected_trade_id_from_event(
+            {"selection": {"rows": [0]}},
+            pd.DataFrame({"trade_id": [""]}),
+        )
+        is None
+    )
+
+
+def test_strategy_modeling_trade_drilldown_load_intraday_window(tmp_path: Path) -> None:
+    intraday_dir = tmp_path / "intraday"
+    store = IntradayStore(intraday_dir)
+
+    store.save_partition(
+        "stocks",
+        "bars",
+        "1Min",
+        "AAPL",
+        date(2026, 1, 2),
+        pd.DataFrame(
+            {
+                "ts": [
+                    "2026-01-02T14:31:00+00:00",
+                    "2026-01-02T14:30:00+00:00",
+                    "invalid",
+                ],
+                "open": ["101.0", "100.0", "x"],
+                "high": ["101.5", "100.5", "y"],
+                "low": ["100.5", "99.5", "z"],
+                "close": ["101.2", "100.1", "w"],
+                "volume": ["10", "8", "1"],
+                "vwap": ["101.1", "100.0", "bad"],
+                "trade_count": ["2", "1", "1"],
+            }
+        ),
+    )
+    store.save_partition("stocks", "bars", "1Min", "AAPL", date(2026, 1, 3), pd.DataFrame())
+    store.save_partition(
+        "stocks",
+        "bars",
+        "1Min",
+        "AAPL",
+        date(2026, 1, 4),
+        pd.DataFrame(
+            {
+                "timestamp": ["2026-01-04T14:29:00+00:00", "2026-01-04T14:30:00+00:00"],
+                "open": [200.0, 201.0],
+                "high": [200.6, 201.6],
+                "low": [199.6, 200.6],
+                "close": [200.2, 201.2],
+                "volume": [4, 5],
+                "vwap": [200.1, 201.1],
+                "trade_count": [1, 1],
+            }
+        ),
+    )
+
+    loaded = load_intraday_window(
+        intraday_dir,
+        "AAPL",
+        "1Min",
+        pd.Timestamp("2026-01-02T14:30:30+00:00"),
+        pd.Timestamp("2026-01-04T14:29:30+00:00"),
+    )
+    assert list(loaded.columns) == ["timestamp", "open", "high", "low", "close", "volume", "vwap", "trade_count"]
+    assert len(loaded.index) == 2
+    assert loaded["timestamp"].tolist() == [
+        pd.Timestamp("2026-01-02T14:31:00+00:00"),
+        pd.Timestamp("2026-01-04T14:29:00+00:00"),
+    ]
+    assert loaded["timestamp"].dt.tz is not None
+    assert loaded["open"].tolist() == [101.0, 200.0]
+
+
+def test_strategy_modeling_trade_drilldown_resample_semantics() -> None:
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(
+                [
+                    "2026-01-02T14:30:00+00:00",
+                    "2026-01-02T14:31:00+00:00",
+                    "2026-01-02T14:35:00+00:00",
+                ],
+                utc=True,
+            ),
+            "open": [10.0, 20.0, 30.0],
+            "high": [11.0, 21.0, 31.0],
+            "low": [9.0, 19.0, 29.0],
+            "close": [10.5, 20.5, 30.5],
+            "volume": [100.0, 0.0, 0.0],
+            "vwap": [10.0, 999.0, None],
+            "trade_count": [2.0, 3.0, 4.0],
+        }
+    )
+
+    resampled = resample_ohlc(frame, "5Min")
+    assert resampled["timestamp"].tolist() == [
+        pd.Timestamp("2026-01-02T14:30:00+00:00"),
+        pd.Timestamp("2026-01-02T14:35:00+00:00"),
+    ]
+
+    first = resampled.iloc[0]
+    assert float(first["open"]) == pytest.approx(10.0)
+    assert float(first["high"]) == pytest.approx(21.0)
+    assert float(first["low"]) == pytest.approx(9.0)
+    assert float(first["close"]) == pytest.approx(20.5)
+    assert float(first["volume"]) == pytest.approx(100.0)
+    assert float(first["trade_count"]) == pytest.approx(5.0)
+    assert float(first["vwap"]) == pytest.approx(10.0)
+
+    second = resampled.iloc[1]
+    assert float(second["volume"]) == pytest.approx(0.0)
+    assert float(second["trade_count"]) == pytest.approx(4.0)
+    assert float(second["vwap"]) == pytest.approx(float(second["close"]))
+
+
+def test_strategy_modeling_trade_drilldown_supported_timeframes() -> None:
+    assert supported_chart_timeframes("1Min") == ["1Min", "5Min", "15Min", "30Min", "60Min"]
+    assert supported_chart_timeframes("5Min") == ["5Min", "15Min", "30Min", "60Min"]
+    assert supported_chart_timeframes("30Min") == ["30Min", "60Min"]
+    assert supported_chart_timeframes("invalid") == ["1Min", "5Min", "15Min", "30Min", "60Min"]
+
+
+def test_strategy_modeling_trade_drilldown_chart_guardrail_behavior() -> None:
+    dense = _intraday_df("2026-01-02 14:30:00+00:00", rows=6001)
+    auto = resample_for_chart(
+        dense,
+        base_timeframe="1Min",
+        chart_timeframe="1Min",
+        max_bars=5000,
+    )
+    assert auto.skipped is False
+    assert auto.timeframe == "5Min"
+    assert len(auto.bars.index) <= 5000
+    assert auto.warning is not None
+    assert "Auto-adjusted chart timeframe" in auto.warning
+
+    sparse = _intraday_df("2026-01-02 14:30:00+00:00", rows=181)
+    skipped = resample_for_chart(
+        sparse,
+        base_timeframe="60Min",
+        chart_timeframe="60Min",
+        max_bars=2,
+    )
+    assert skipped.skipped is True
+    assert skipped.bars.empty
+    assert skipped.warning is not None
+    assert "Skipping chart" in skipped.warning
