@@ -141,9 +141,13 @@ T10 (Docs) depends on T7–T8
   - Ensure `parse_contract_symbol(format_osi_compact(...))` works for roundtrip expectations.
 - **validation**:
   - `pytest -k osi_compact_format` passes.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added `format_osi_compact(parsed)` in `options_helper/analysis/osi.py` with shared OSI validation semantics and compact root formatting (no padded spaces).
+  - Added deterministic roundtrip tests validating `parse_contract_symbol(format_osi_compact(...))` for compact symbols.
 - **files edited/created**:
+  - `options_helper/analysis/osi.py`
+  - `tests/test_osi_compact_format.py`
 
 ### T3: Subscription planner (portfolio → stocks + contracts + warnings) with max-contracts enforcement
 - **depends_on**: [T2]
