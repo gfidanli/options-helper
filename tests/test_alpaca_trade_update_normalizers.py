@@ -138,6 +138,39 @@ def test_trading_stream_wrapper_uses_injected_stream_cls(monkeypatch: pytest.Mon
     assert streamer.stream.kwargs.get("paper") is True
     assert streamer.stream.kwargs.get("api_key") == "key"
     assert streamer.stream.kwargs.get("secret_key") == "secret"
+    assert streamer.stream.kwargs.get("url_override") is None
+
+
+def test_trading_stream_wrapper_uses_ws_url_override_when_explicit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OH_ALPACA_ENV_FILE", "/tmp/does-not-exist")
+    monkeypatch.setenv("APCA_API_KEY_ID", "key")
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "secret")
+    monkeypatch.setenv("APCA_API_BASE_URL", "wss://paper-api.alpaca.markets/stream")
+
+    streamer = AlpacaTradingStreamer(
+        stream_cls=FakeTradingStream,
+        on_trade_updates=lambda _: None,
+    )
+    assert streamer.stream.kwargs.get("paper") is True
+    assert streamer.stream.kwargs.get("url_override") == "wss://paper-api.alpaca.markets/stream"
+
+
+def test_trading_stream_wrapper_infers_live_from_api_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OH_ALPACA_ENV_FILE", "/tmp/does-not-exist")
+    monkeypatch.setenv("APCA_API_KEY_ID", "key")
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "secret")
+    monkeypatch.setenv("APCA_API_BASE_URL", "https://api.alpaca.markets")
+
+    streamer = AlpacaTradingStreamer(
+        stream_cls=FakeTradingStream,
+        on_trade_updates=lambda _: None,
+    )
+    assert streamer.stream.kwargs.get("paper") is False
+    assert streamer.stream.kwargs.get("url_override") is None
 
 
 def test_trading_stream_wrapper_requires_handler_for_subscription() -> None:
