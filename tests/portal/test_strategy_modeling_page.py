@@ -1690,3 +1690,138 @@ def test_strategy_modeling_page_can_export_reports_bundle(
     assert summary_payload["summary"]["trade_count"] == 1
     assert "top_20_best_trades.csv" in button_help.get("Export Reports", "")
     assert "top_20_worst_trades.csv" in button_help.get("Export Reports", "")
+
+
+def test_strategy_modeling_page_imports_summary_results(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("streamlit")
+    pytest.importorskip("options_helper.analysis.strategy_modeling")
+    if not PAGE_PATH.exists():
+        pytest.skip("Strategy modeling page scaffold is not present in this workspace.")
+
+    from apps.streamlit.components import strategy_modeling_page as component
+    import options_helper.cli_deps as cli_deps
+    import streamlit as st
+
+    st.session_state.clear()
+    _clear_component_caches(component)
+    monkeypatch.setattr(component, "list_strategy_modeling_symbols", lambda **_: (["SPY"], []))
+    monkeypatch.setattr(component, "load_strategy_modeling_data_payload", lambda **_: _ready_payload())
+
+    def _forbid_service_build() -> object:
+        raise AssertionError("Modeling service should not be built when importing existing results.")
+
+    monkeypatch.setattr(cli_deps, "build_strategy_modeling_service", _forbid_service_build)
+
+    run_dir = tmp_path / "strategy_modeling_reports" / "ma_crossover" / "2026-01-31"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generated_at": "2026-01-31T18:00:00-06:00",
+                "strategy": "ma_crossover",
+                "requested_symbols": ["SPY"],
+                "modeled_symbols": ["SPY"],
+                "summary": {
+                    "signal_event_count": 1,
+                    "trade_count": 1,
+                    "accepted_trade_count": 1,
+                    "skipped_trade_count": 0,
+                },
+                "policy_metadata": {
+                    "intraday_timeframe": "5Min",
+                    "intraday_source": "stocks_bars_local",
+                    "gap_fill_policy": "fill_at_open",
+                    "max_hold_bars": 8,
+                    "max_hold_timeframe": "entry",
+                    "risk_per_trade_pct": 1.5,
+                    "one_open_per_symbol": True,
+                    "output_timezone": "America/Chicago",
+                },
+                "metrics": {
+                    "starting_capital": 25000.0,
+                    "ending_capital": 25200.0,
+                    "total_return_pct": 0.8,
+                    "trade_count": 1,
+                    "win_rate": 100.0,
+                    "expectancy_r": 1.0,
+                },
+                "r_ladder": [
+                    {
+                        "target_label": "1.0R",
+                        "target_r": 1.0,
+                        "trade_count": 1,
+                        "hit_count": 1,
+                        "hit_rate": 1.0,
+                    }
+                ],
+                "segments": [
+                    {
+                        "segment_dimension": "symbol",
+                        "segment_value": "SPY",
+                        "trade_count": 1,
+                        "win_rate": 1.0,
+                        "avg_realized_r": 1.0,
+                    }
+                ],
+                "trade_log": [
+                    {
+                        "trade_id": "imported-trade-1",
+                        "event_id": "imported-event-1",
+                        "symbol": "SPY",
+                        "direction": "long",
+                        "status": "closed",
+                        "entry_ts": "2026-01-31T15:30:00+00:00",
+                        "entry_price": 100.0,
+                        "stop_price": 99.0,
+                        "target_price": 101.0,
+                        "exit_ts": "2026-01-31T16:00:00+00:00",
+                        "exit_price": 101.0,
+                        "exit_reason": "target_hit",
+                        "initial_risk": 1.0,
+                        "realized_r": 1.0,
+                    }
+                ],
+                "filter_summary": {},
+                "directional_metrics": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def _text_input(label: str, value: str = "", **kwargs) -> str:  # noqa: ARG001
+        selected_map = {
+            "Import summary path": str(run_dir),
+            "Segment values (comma-separated)": "",
+            "ORB confirmation cutoff ET (HH:MM)": "10:30",
+            "Export reports dir": str(tmp_path / "exports"),
+            "Export output timezone": "America/Chicago",
+        }
+        return selected_map.get(label, value)
+
+    def _button(label: str, *args: object, **kwargs: object) -> bool:  # noqa: ARG001
+        return label == "Import Results"
+
+    monkeypatch.setattr(st, "text_input", _text_input)
+    monkeypatch.setattr(st, "button", _button)
+    monkeypatch.setattr(st, "rerun", lambda: None)
+
+    runpy.run_path(str(PAGE_PATH), run_name="__strategy_modeling_page_import_summary__")
+
+    imported_result = st.session_state.get("strategy_modeling_last_result")
+    assert imported_result is not None
+    assert getattr(imported_result, "strategy") == "ma_crossover"
+    assert tuple(getattr(imported_result, "requested_symbols")) == ("SPY",)
+    assert tuple(getattr(imported_result, "modeled_symbols")) == ("SPY",)
+    assert tuple(getattr(imported_result, "accepted_trade_ids")) == ("imported-trade-1",)
+    assert len(tuple(getattr(imported_result, "trade_simulations"))) == 1
+
+    imported_request = st.session_state.get("strategy_modeling_last_request")
+    assert imported_request is not None
+    assert getattr(imported_request, "strategy") == "ma_crossover"
+    assert tuple(getattr(imported_request, "symbols")) == ("SPY",)
+    assert getattr(imported_request, "intraday_timeframe") == "5Min"
+    assert getattr(imported_request, "end_date") == date(2026, 1, 31)

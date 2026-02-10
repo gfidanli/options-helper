@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -70,6 +71,8 @@ _PROFILE_PENDING_SELECTED_KEY = "strategy_modeling_profile_pending_selected"
 _PROFILE_PENDING_SAVE_NAME_KEY = "strategy_modeling_profile_pending_save_name"
 _PROFILE_PENDING_LOAD_KEY = "strategy_modeling_profile_pending_load"
 _PROFILE_FEEDBACK_KEY = "strategy_modeling_profile_feedback"
+_IMPORT_SUMMARY_PATH_KEY = "strategy_modeling_import_summary_path"
+_IMPORT_FEEDBACK_KEY = "strategy_modeling_import_feedback"
 _TRADE_REVIEW_BEST_KEY = "strategy_modeling_trade_review_top_best"
 _TRADE_REVIEW_WORST_KEY = "strategy_modeling_trade_review_top_worst"
 _TRADE_REVIEW_LOG_KEY = "strategy_modeling_trade_review_full_log"
@@ -600,6 +603,176 @@ def _build_export_request(
     return SimpleNamespace(**payload)
 
 
+def _normalize_string_list(value: object, *, uppercase: bool = False) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_items = [item.strip() for item in value.split(",") if item.strip()]
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        raw_items = [str(item or "").strip() for item in value if str(item or "").strip()]
+    else:
+        token = str(value or "").strip()
+        raw_items = [token] if token else []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        token = item.upper() if uppercase else item
+        dedupe_key = token.upper() if uppercase else token.lower()
+        if not token or dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append(token)
+    return normalized
+
+
+def _resolve_import_summary_path(raw_path: str) -> Path:
+    token = str(raw_path or "").strip()
+    if not token:
+        raise ValueError("Enter a summary path to import.")
+
+    resolved = Path(token).expanduser()
+    if resolved.is_dir():
+        resolved = resolved / "summary.json"
+
+    if not resolved.exists():
+        raise ValueError(f"Import path not found: {resolved}")
+    if not resolved.is_file():
+        raise ValueError(f"Import path must point to a file: {resolved}")
+    return resolved
+
+
+def _load_imported_strategy_modeling_summary(raw_path: str) -> tuple[SimpleNamespace, SimpleNamespace, Path]:
+    summary_path = _resolve_import_summary_path(raw_path)
+    try:
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Import file is not valid JSON: {summary_path}") from exc
+    except OSError as exc:
+        raise ValueError(f"Failed reading import file: {summary_path} ({exc})") from exc
+
+    if not isinstance(payload, Mapping):
+        raise ValueError("Import file must contain a JSON object.")
+
+    strategy = str(payload.get("strategy") or "").strip().lower()
+    if not strategy:
+        raise ValueError("Import file is missing required `strategy` value.")
+
+    requested_symbols = _normalize_string_list(payload.get("requested_symbols"), uppercase=True)
+    modeled_symbols = _normalize_string_list(payload.get("modeled_symbols"), uppercase=True)
+    if not modeled_symbols:
+        modeled_symbols = requested_symbols
+    if not requested_symbols:
+        requested_symbols = modeled_symbols
+
+    trade_rows = _rows_to_df(payload.get("trade_log")).to_dict(orient="records")
+    r_ladder_rows = _rows_to_df(payload.get("r_ladder")).to_dict(orient="records")
+    segment_rows = _rows_to_df(payload.get("segments")).to_dict(orient="records")
+    equity_rows = _rows_to_df(payload.get("equity_curve") or payload.get("equity")).to_dict(orient="records")
+    metrics_payload = _to_dict(payload.get("metrics"))
+    filter_metadata = _to_dict(payload.get("filter_metadata"))
+    filter_summary = _to_dict(payload.get("filter_summary"))
+    directional_metrics = _to_dict(payload.get("directional_metrics"))
+    summary_payload = _to_dict(payload.get("summary"))
+    policy_metadata = _to_dict(payload.get("policy_metadata"))
+
+    accepted_trade_ids = [
+        str(row.get("trade_id") or "").strip()
+        for row in trade_rows
+        if str(row.get("trade_id") or "").strip() and not str(row.get("reject_code") or "").strip()
+    ]
+    skipped_trade_ids = [
+        str(row.get("trade_id") or "").strip()
+        for row in trade_rows
+        if str(row.get("trade_id") or "").strip() and str(row.get("reject_code") or "").strip()
+    ]
+
+    accepted_count = _coerce_int(summary_payload.get("accepted_trade_count"))
+    if accepted_count is not None and accepted_count > len(accepted_trade_ids):
+        for index in range(len(accepted_trade_ids) + 1, accepted_count + 1):
+            accepted_trade_ids.append(f"imported-accepted-{index}")
+
+    skipped_count = _coerce_int(summary_payload.get("skipped_trade_count"))
+    if skipped_count is not None and skipped_count > len(skipped_trade_ids):
+        for index in range(len(skipped_trade_ids) + 1, skipped_count + 1):
+            skipped_trade_ids.append(f"imported-skipped-{index}")
+
+    signal_event_count = _coerce_int(summary_payload.get("signal_event_count")) or 0
+    signal_events = tuple(range(signal_event_count)) if signal_event_count > 0 else ()
+
+    max_hold_bars = _coerce_int(policy_metadata.get("max_hold_bars"))
+    if max_hold_bars is not None and max_hold_bars < 1:
+        max_hold_bars = None
+
+    raw_max_hold_timeframe = str(policy_metadata.get("max_hold_timeframe") or "entry")
+    try:
+        normalized_max_hold_timeframe = normalize_max_hold_timeframe(raw_max_hold_timeframe)
+    except ValueError:
+        normalized_max_hold_timeframe = "entry"
+
+    risk_per_trade_pct = _coerce_float(policy_metadata.get("risk_per_trade_pct"))
+    if risk_per_trade_pct is None:
+        risk_per_trade_pct = 1.0
+
+    output_timezone = str(policy_metadata.get("output_timezone") or _DEFAULT_EXPORT_TIMEZONE).strip()
+    if not output_timezone:
+        output_timezone = _DEFAULT_EXPORT_TIMEZONE
+
+    end_date: date | None = None
+    try:
+        end_date = date.fromisoformat(summary_path.parent.name)
+    except ValueError:
+        generated_ts = pd.to_datetime(payload.get("generated_at"), errors="coerce")
+        if isinstance(generated_ts, pd.Timestamp) and not pd.isna(generated_ts):
+            end_date = generated_ts.date()
+
+    request_symbols = tuple(requested_symbols or modeled_symbols)
+    intraday_timeframe = str(policy_metadata.get("intraday_timeframe") or "1Min").strip() or "1Min"
+    intraday_source = str(policy_metadata.get("intraday_source") or "imported_summary").strip()
+    if not intraday_source:
+        intraday_source = "imported_summary"
+
+    request_state = SimpleNamespace(
+        strategy=strategy,
+        symbols=request_symbols,
+        start_date=None,
+        end_date=end_date,
+        intraday_dir=Path("data/intraday"),
+        intraday_timeframe=intraday_timeframe,
+        intraday_source=intraday_source,
+        gap_fill_policy=str(policy_metadata.get("gap_fill_policy") or "fill_at_open"),
+        max_hold_bars=max_hold_bars,
+        max_hold_timeframe=normalized_max_hold_timeframe,
+        output_timezone=output_timezone,
+        policy={
+            "require_intraday_bars": bool(policy_metadata.get("require_intraday_bars", True)),
+            "risk_per_trade_pct": float(risk_per_trade_pct),
+            "gap_fill_policy": str(policy_metadata.get("gap_fill_policy") or "fill_at_open"),
+            "max_hold_bars": max_hold_bars,
+            "max_hold_timeframe": normalized_max_hold_timeframe,
+            "one_open_per_symbol": bool(policy_metadata.get("one_open_per_symbol", True)),
+        },
+    )
+
+    run_result = SimpleNamespace(
+        strategy=strategy,
+        requested_symbols=tuple(requested_symbols),
+        modeled_symbols=tuple(modeled_symbols),
+        signal_events=signal_events,
+        accepted_trade_ids=tuple(accepted_trade_ids),
+        skipped_trade_ids=tuple(skipped_trade_ids),
+        portfolio_metrics=metrics_payload,
+        target_hit_rates=tuple(r_ladder_rows),
+        equity_curve=tuple(equity_rows),
+        segment_records=tuple(segment_rows),
+        trade_simulations=tuple(trade_rows),
+        filter_metadata=filter_metadata,
+        filter_summary=filter_summary,
+        directional_metrics=directional_metrics,
+    )
+    return run_result, request_state, summary_path
+
+
 def _ensure_sidebar_state_defaults(
     *,
     default_start: date,
@@ -615,6 +788,8 @@ def _ensure_sidebar_state_defaults(
         _PROFILE_PENDING_SAVE_NAME_KEY: "",
         _PROFILE_PENDING_LOAD_KEY: None,
         _PROFILE_FEEDBACK_KEY: "",
+        _IMPORT_SUMMARY_PATH_KEY: "",
+        _IMPORT_FEEDBACK_KEY: "",
         _WIDGET_KEYS["strategy"]: "sfp",
         _WIDGET_KEYS["start_date"]: default_start,
         _WIDGET_KEYS["end_date"]: default_end,
@@ -1013,6 +1188,15 @@ with st.sidebar:
     )
     profile_save_clicked = st.button("Save Profile", use_container_width=True)
 
+    st.markdown("### Import Results")
+    import_summary_path = st.text_input(
+        "Import summary path",
+        value=str(st.session_state.get(_IMPORT_SUMMARY_PATH_KEY, "")),
+        key=_IMPORT_SUMMARY_PATH_KEY,
+        help="Path to strategy-modeling summary.json or a run directory containing summary.json.",
+    )
+    import_clicked = st.button("Import Results", use_container_width=True)
+
     st.markdown("### Modeling Inputs")
     strategy = st.selectbox("Strategy", options=_STRATEGY_OPTIONS, key=_WIDGET_KEYS["strategy"])
     start_date = st.date_input(
@@ -1316,6 +1500,9 @@ if profile_list_error:
 profile_feedback = str(st.session_state.pop(_PROFILE_FEEDBACK_KEY, "") or "").strip()
 if profile_feedback:
     st.success(profile_feedback)
+import_feedback = str(st.session_state.pop(_IMPORT_FEEDBACK_KEY, "") or "").strip()
+if import_feedback:
+    st.success(import_feedback)
 
 if profile_load_clicked:
     if not selected_profile_name:
@@ -1331,6 +1518,19 @@ if profile_load_clicked:
             st.session_state[_PROFILE_PENDING_SAVE_NAME_KEY] = selected_profile_name
             st.session_state[_PROFILE_FEEDBACK_KEY] = f"Loaded profile '{selected_profile_name}'"
             st.rerun()
+
+if import_clicked:
+    try:
+        imported_result, imported_request, imported_path = _load_imported_strategy_modeling_summary(
+            import_summary_path
+        )
+    except ValueError as exc:
+        st.error(f"Import failed: {exc}")
+    else:
+        st.session_state[_RESULT_STATE_KEY] = imported_result
+        st.session_state[_REQUEST_STATE_KEY] = imported_request
+        st.session_state[_IMPORT_FEEDBACK_KEY] = f"Imported results from {imported_path}"
+        st.rerun()
 
 for note in symbol_notes:
     st.warning(note)

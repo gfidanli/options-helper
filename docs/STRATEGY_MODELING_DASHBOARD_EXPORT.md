@@ -33,6 +33,16 @@ After a successful dashboard run, click **Export Reports**. The page writes:
 - `top_20_best_trades.csv`
 - `top_20_worst_trades.csv`
 
+## Importing Existing Results
+
+Use **Import summary path** in the sidebar to load previously exported Strategy Modeling results back into the dashboard without rerunning simulations.
+
+- Accepted inputs:
+  - direct path to `summary.json`
+  - path to a run directory that contains `summary.json`
+- Click **Import Results** to hydrate dashboard tables/metrics from the imported payload.
+- Import is read-only and does not run ingest/modeling jobs.
+
 ## `summary.json.trade_review` (Additive Contract)
 
 `summary.json` now includes additive key `trade_review`:
