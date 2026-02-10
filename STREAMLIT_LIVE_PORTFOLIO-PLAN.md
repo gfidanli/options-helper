@@ -246,9 +246,16 @@ T10 (Docs) depends on T7–T8
 - **validation**:
   - `pytest -k live_portfolio_page_smoke` (skips if `streamlit` not installed).
   - Manual run: `./.venv/bin/options-helper ui`, open Live page, press Start/Stop.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added `render_live_portfolio_page()` with sidebar controls for portfolio path/reload, stream toggles, feed selectors, refresh cadence, staleness threshold, and option-contract cap.
+  - Added portfolio reload behavior using both explicit Reload and file mtime change detection, with load/parse errors surfaced directly in the UI.
+  - Added session-scoped `LiveStreamManager` ownership (`st.session_state`) with Start/Stop/Restart controls that validate inputs, avoid duplicate manager construction on rerun, and surface start/stop errors.
+  - Added a fragment-based live region (`@st.fragment(run_every=...)`) that renders stream health, recent fill updates, and live single/multi-leg portfolio metrics from `manager.snapshot()`.
+  - Added deterministic smoke coverage for import + render in bare mode, asserting no auto-start and singleton manager lifecycle behavior across reruns.
 - **files edited/created**:
+  - `apps/streamlit/components/live_portfolio_page.py`
+  - `tests/portal/test_live_portfolio_page_smoke.py`
 
 ### T7: New Streamlit page + portal navigation wiring
 - **depends_on**: [T6]
