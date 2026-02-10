@@ -266,6 +266,19 @@ T2 ─┘       │
 - Gotchas / errors:
   - During test validation, resample VWAP fallback initially mutated the close column through a shared numpy view. Fixed by copying the close array before VWAP assignment.
 
+### T4 ✅ Complete (2026-02-10)
+
+- Work log:
+  - Added a thin Streamlit component wrapper that delegates trade-review ranking to `rank_trades_for_review(...)` and returns `best_df`, `worst_df`, and a user-facing scope label.
+  - Ensured returned DataFrames are display-ready by enforcing deterministic column order (`rank` first, source trade columns next, ranked extras last) and `reset_index(drop=True)` for Streamlit selection/`iloc` row mapping.
+  - Extended portal component tests to validate delegation inputs, scope label mapping, deterministic trade ordering, and index reset behavior for both populated and empty accepted-scope outputs.
+- Files changed:
+  - `apps/streamlit/components/strategy_modeling_trade_review.py` (new)
+  - `tests/portal/test_strategy_modeling_component.py`
+  - `STRATEGY_MODELING_TRADE_REVIEW_IMPROVED-PLAN.md`
+- Gotchas / errors:
+  - None.
+
 ## Task Completion Log
 
 ### T1 (Completed 2026-02-10)

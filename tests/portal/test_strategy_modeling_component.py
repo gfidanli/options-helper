@@ -8,6 +8,7 @@ import duckdb
 import pandas as pd
 import pytest
 
+from apps.streamlit.components import strategy_modeling_trade_review as trade_review_component
 from apps.streamlit.components.strategy_modeling_trade_drilldown import (
     extract_selected_rows,
     load_intraday_window,
@@ -16,6 +17,7 @@ from apps.streamlit.components.strategy_modeling_trade_drilldown import (
     selected_trade_id_from_event,
     supported_chart_timeframes,
 )
+from apps.streamlit.components.strategy_modeling_trade_review import build_trade_review_tables
 from options_helper.data.intraday_store import IntradayStore
 from options_helper.data.strategy_modeling_io import (
     IntradayCoverageBySymbol,
@@ -498,3 +500,138 @@ def test_strategy_modeling_trade_drilldown_chart_guardrail_behavior() -> None:
     assert skipped.bars.empty
     assert skipped.warning is not None
     assert "Skipping chart" in skipped.warning
+
+
+def test_strategy_modeling_trade_review_wrapper_delegates_to_shared_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trade_df = pd.DataFrame(
+        {
+            "trade_id": ["trade-1", "trade-2"],
+            "symbol": ["SPY", "QQQ"],
+            "status": ["closed", "closed"],
+            "realized_r": [0.5, 1.5],
+            "entry_ts": ["2026-01-02T14:30:00+00:00", "2026-01-03T14:30:00+00:00"],
+            "reject_code": [None, None],
+        },
+        index=[11, 99],
+    )
+
+    calls: dict[str, object] = {}
+
+    def _stub_rank(
+        trade_rows: object,
+        *,
+        accepted_trade_ids: object,
+        top_n: int = 20,
+        metric: str = "realized_r",
+    ) -> SimpleNamespace:
+        calls["trade_rows"] = list(trade_rows)  # type: ignore[arg-type]
+        calls["accepted_trade_ids"] = accepted_trade_ids
+        calls["top_n"] = top_n
+        calls["metric"] = metric
+        return SimpleNamespace(
+            scope="accepted_closed_trades",
+            top_best_rows=(
+                {
+                    "realized_r": 1.5,
+                    "rank": 1,
+                    "trade_id": "trade-2",
+                    "symbol": "QQQ",
+                    "status": "closed",
+                    "entry_ts": "2026-01-03T14:30:00+00:00",
+                    "reject_code": None,
+                    "note": "best",
+                },
+            ),
+            top_worst_rows=(
+                {
+                    "rank": 1,
+                    "trade_id": "trade-1",
+                    "symbol": "SPY",
+                    "status": "closed",
+                    "realized_r": 0.5,
+                    "entry_ts": "2026-01-02T14:30:00+00:00",
+                    "reject_code": None,
+                    "note": "worst",
+                },
+            ),
+        )
+
+    monkeypatch.setattr(trade_review_component, "rank_trades_for_review", _stub_rank)
+
+    best_df, worst_df, scope_label = build_trade_review_tables(
+        trade_df,
+        accepted_trade_ids=("trade-2",),
+        top_n=5,
+    )
+
+    assert calls == {
+        "trade_rows": trade_df.to_dict(orient="records"),
+        "accepted_trade_ids": ("trade-2",),
+        "top_n": 5,
+        "metric": "realized_r",
+    }
+    assert scope_label == "Accepted closed trades"
+
+    expected_columns = [
+        "rank",
+        "trade_id",
+        "symbol",
+        "status",
+        "realized_r",
+        "entry_ts",
+        "reject_code",
+        "note",
+    ]
+    assert best_df.columns.tolist() == expected_columns
+    assert worst_df.columns.tolist() == expected_columns
+    assert best_df.index.tolist() == [0]
+    assert worst_df.index.tolist() == [0]
+
+
+def test_strategy_modeling_trade_review_wrapper_scope_labels_and_display_index() -> None:
+    trade_df = pd.DataFrame(
+        {
+            "trade_id": ["trade-a", "trade-b", "trade-c", "trade-d", "trade-e"],
+            "symbol": ["SPY", "SPY", "QQQ", "QQQ", "IWM"],
+            "status": ["closed", "closed", "closed", "open", "closed"],
+            "realized_r": [1.0, -1.5, 0.5, 5.0, 2.0],
+            "entry_ts": [
+                "2026-01-02T14:30:00+00:00",
+                "2026-01-02T14:31:00+00:00",
+                "2026-01-02T14:29:00+00:00",
+                "2026-01-02T14:35:00+00:00",
+                "2026-01-02T14:32:00+00:00",
+            ],
+            "reject_code": [None, None, None, None, "symbol_not_allowed"],
+            "pnl": [100.0, -150.0, 50.0, 500.0, 200.0],
+        },
+        index=[10, 20, 30, 40, 50],
+    )
+
+    best_df, worst_df, fallback_scope = build_trade_review_tables(trade_df, accepted_trade_ids=None)
+
+    source_columns = [str(column) for column in trade_df.columns if str(column) != "rank"]
+    expected_columns = ["rank", *source_columns]
+    assert best_df.columns.tolist() == expected_columns
+    assert worst_df.columns.tolist() == expected_columns
+    assert best_df["trade_id"].tolist() == ["trade-a", "trade-c", "trade-b"]
+    assert worst_df["trade_id"].tolist() == ["trade-b", "trade-c", "trade-a"]
+    assert best_df["rank"].tolist() == [1, 2, 3]
+    assert worst_df["rank"].tolist() == [1, 2, 3]
+    assert fallback_scope == "Closed non-rejected trades"
+    assert best_df.index.tolist() == [0, 1, 2]
+    assert worst_df.index.tolist() == [0, 1, 2]
+
+    accepted_best_df, accepted_worst_df, accepted_scope = build_trade_review_tables(
+        trade_df,
+        accepted_trade_ids=(),
+    )
+    assert accepted_scope == "Accepted closed trades"
+    assert accepted_best_df.empty
+    assert accepted_worst_df.empty
+    assert accepted_best_df.columns.tolist() == expected_columns
+    assert accepted_worst_df.columns.tolist() == expected_columns
+    assert accepted_best_df.index.equals(pd.RangeIndex(start=0, stop=0, step=1))
+    assert accepted_worst_df.index.equals(pd.RangeIndex(start=0, stop=0, step=1))
