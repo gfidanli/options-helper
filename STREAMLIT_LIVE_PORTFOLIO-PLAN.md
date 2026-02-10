@@ -127,9 +127,15 @@ T10 (Docs) depends on T7–T8
   - Support dependency injection (`stream_cls` / `stream`) so tests do not require `alpaca-py`.
 - **validation**:
   - `pytest -k trade_update_normalizers` passes offline (no network).
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added lazy-import `AlpacaTradingStreamer` wrapper with dependency injection (`stream`/`stream_cls`), explicit `subscribe_trade_updates()`, and `run()`/`stop()` lifecycle handling.
+  - Added `normalize_trade_update(update)` with stable base keys and optional extras (`type`, `tif`, `limit_price`, `stop_price`) when present.
+  - Added deterministic offline tests covering dict/object payload normalization and wrapper behavior without requiring `alpaca-py` or network access.
 - **files edited/created**:
+  - `options_helper/data/streaming/alpaca_trading_stream.py`
+  - `options_helper/data/streaming/trading_normalizers.py`
+  - `tests/test_alpaca_trade_update_normalizers.py`
 
 ### T2: Add `format_osi_compact` for option contract symbols
 - **depends_on**: []
