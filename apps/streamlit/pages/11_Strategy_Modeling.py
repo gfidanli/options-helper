@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 
 import pandas as pd
+from pandas.io.formats.style import Styler
 from pydantic import ValidationError
 import streamlit as st
 
@@ -16,6 +18,7 @@ from apps.streamlit.components.strategy_modeling_page import (
     load_strategy_modeling_data_payload,
 )
 from options_helper.analysis.strategy_modeling import StrategyModelingRequest
+from options_helper.data.strategy_modeling_artifacts import write_strategy_modeling_artifacts
 from options_helper.schemas.strategy_modeling_filters import StrategyEntryFilterConfig
 
 DISCLAIMER_TEXT = "Informational and educational use only. Not financial advice."
@@ -30,6 +33,14 @@ _SEGMENT_DIMENSIONS = [
 ]
 _VOLATILITY_REGIMES = ["low", "normal", "high"]
 _RESULT_STATE_KEY = "strategy_modeling_last_result"
+_DEFAULT_TICKERS = ("SPY", "AAPL", "AMZN", "NVDA")
+_SEGMENT_LOW_COLOR = (254, 215, 206)
+_SEGMENT_NEUTRAL_COLOR = (255, 251, 235)
+_SEGMENT_HIGH_COLOR = (187, 247, 208)
+_SEGMENT_TEXT_COLOR = "#111827"
+_DEFAULT_EXPORT_REPORTS_DIR = "data/reports/technicals/strategy_modeling"
+_DEFAULT_EXPORT_TIMEZONE = "America/Chicago"
+_REQUEST_STATE_KEY = "strategy_modeling_last_request"
 
 
 def _to_dict(value: object) -> dict[str, Any]:
@@ -129,6 +140,99 @@ def _normalize_volatility_regimes(raw_values: Sequence[str]) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _default_ticker_selection(symbols: Sequence[str]) -> list[str]:
+    preferred = [ticker for ticker in _DEFAULT_TICKERS if ticker in symbols]
+    if preferred:
+        return preferred
+    return list(symbols[: min(8, len(symbols))])
+
+
+def _build_export_request(
+    request: object,
+    *,
+    intraday_source: str,
+    gap_fill_policy: str,
+    output_timezone: str,
+) -> SimpleNamespace:
+    payload = _to_dict(request)
+    payload["intraday_source"] = str(intraday_source)
+    payload["gap_fill_policy"] = str(gap_fill_policy)
+    payload["intra_bar_tie_break_rule"] = "stop_first"
+    payload["output_timezone"] = str(output_timezone).strip() or _DEFAULT_EXPORT_TIMEZONE
+    return SimpleNamespace(**payload)
+
+
+def _interpolate_rgb(start: tuple[int, int, int], end: tuple[int, int, int], ratio: float) -> tuple[int, int, int]:
+    clamped = max(0.0, min(1.0, float(ratio)))
+    return tuple(
+        int(round(base + ((target - base) * clamped)))
+        for base, target in zip(start, end, strict=True)
+    )
+
+
+def _score_to_rgb(score: float) -> tuple[int, int, int]:
+    clamped = max(0.0, min(1.0, float(score)))
+    if clamped <= 0.5:
+        return _interpolate_rgb(_SEGMENT_LOW_COLOR, _SEGMENT_NEUTRAL_COLOR, clamped / 0.5)
+    return _interpolate_rgb(_SEGMENT_NEUTRAL_COLOR, _SEGMENT_HIGH_COLOR, (clamped - 0.5) / 0.5)
+
+
+def _column_heat_styles(column: pd.Series) -> list[str]:
+    numeric = pd.to_numeric(column, errors="coerce")
+    finite = numeric[numeric.notna()]
+    if finite.empty:
+        return [""] * len(column)
+
+    lo = float(finite.min())
+    hi = float(finite.max())
+    span = hi - lo
+    scores = pd.Series(0.5, index=numeric.index, dtype=float) if span == 0.0 else (numeric - lo) / span
+
+    styles: list[str] = []
+    for idx, score in scores.items():
+        if pd.isna(score):
+            styles.append("")
+            continue
+        red, green, blue = _score_to_rgb(float(score))
+        declarations = [
+            f"background-color: rgb({red}, {green}, {blue})",
+            f"color: {_SEGMENT_TEXT_COLOR}",
+            "border: 1px solid rgba(17, 24, 39, 0.25)",
+        ]
+        value = numeric.loc[idx]
+        if pd.notna(value) and value == hi:
+            declarations.append("font-weight: 700")
+            declarations.append("border: 2px solid #14532d")
+            declarations.append("outline: 2px solid #14532d")
+        elif pd.notna(value) and value == lo:
+            declarations.append("font-weight: 700")
+            declarations.append("border: 2px solid #7f1d1d")
+            declarations.append("outline: 2px solid #7f1d1d")
+        styles.append("; ".join(declarations))
+    return styles
+
+
+def _styled_segment_breakdown(segment_df: pd.DataFrame) -> pd.DataFrame | Styler:
+    if segment_df.empty:
+        return segment_df
+
+    styled = segment_df.copy()
+    numeric_columns: list[str] = []
+    for column in styled.columns:
+        numeric = pd.to_numeric(styled[column], errors="coerce")
+        if numeric.notna().any():
+            styled[column] = numeric
+            numeric_columns.append(column)
+
+    if not numeric_columns:
+        return styled
+
+    styler = styled.style
+    for column in numeric_columns:
+        styler = styler.apply(_column_heat_styles, subset=[column], axis=0)
+    return styler
+
+
 st.title("Strategy Modeling")
 st.caption(DISCLAIMER_TEXT)
 st.info(
@@ -162,7 +266,7 @@ with st.sidebar:
 
     st.markdown("### Filters")
     if symbols:
-        selected_symbols = st.multiselect("Tickers", options=symbols, default=symbols[: min(8, len(symbols))])
+        selected_symbols = st.multiselect("Tickers", options=symbols, default=_default_ticker_selection(symbols))
         symbol_filter_text = ""
     else:
         symbol_filter_text = st.text_input("Tickers (comma-separated)", value="SPY")
@@ -196,6 +300,9 @@ with st.sidebar:
         options=_VOLATILITY_REGIMES,
         default=_VOLATILITY_REGIMES,
     )
+    st.markdown("### Export")
+    export_reports_dir = st.text_input("Export reports dir", value=_DEFAULT_EXPORT_REPORTS_DIR)
+    export_output_timezone = st.text_input("Export output timezone", value=_DEFAULT_EXPORT_TIMEZONE)
 
 for note in symbol_notes:
     st.warning(note)
@@ -270,6 +377,7 @@ clear_clicked = st.button("Clear Results", use_container_width=True)
 
 if clear_clicked:
     st.session_state.pop(_RESULT_STATE_KEY, None)
+    st.session_state.pop(_REQUEST_STATE_KEY, None)
 
 if run_clicked and not run_is_blocked and filter_config is not None:
     service = cli_deps.build_strategy_modeling_service()
@@ -292,8 +400,43 @@ if run_clicked and not run_is_blocked and filter_config is not None:
         block_on_missing_intraday_coverage=True,
     )
     st.session_state[_RESULT_STATE_KEY] = service.run(request)
+    st.session_state[_REQUEST_STATE_KEY] = request
 
 result = st.session_state.get(_RESULT_STATE_KEY)
+request_state = st.session_state.get(_REQUEST_STATE_KEY)
+
+export_clicked = st.button(
+    "Export Reports",
+    use_container_width=True,
+    disabled=result is None,
+    help="Write summary.json/summary.md/trades.csv/r_ladder.csv/segments.csv for the latest run.",
+)
+if export_clicked:
+    if result is None:
+        st.error("Run modeling first, then export reports.")
+    elif request_state is None:
+        st.error("Request context is missing. Run modeling again before exporting.")
+    else:
+        strategy_label = str(getattr(request_state, "strategy", "")).strip().lower()
+        if not strategy_label:
+            st.error("Strategy value is missing from request context; rerun modeling before exporting.")
+        else:
+            export_request = _build_export_request(
+                request_state,
+                intraday_source=intraday_source,
+                gap_fill_policy=gap_policy,
+                output_timezone=export_output_timezone,
+            )
+            paths = write_strategy_modeling_artifacts(
+                out_dir=Path(export_reports_dir),
+                strategy=strategy_label,
+                request=export_request,
+                run_result=result,
+                write_json=True,
+                write_csv=True,
+                write_md=True,
+            )
+            st.success(f"Exported reports: {paths.run_dir}")
 
 metrics_payload = _to_dict(getattr(result, "portfolio_metrics", None))
 r_ladder_df = _rows_to_df(getattr(result, "target_hit_rates", None))
@@ -400,7 +543,7 @@ st.subheader("Segmented Breakdowns")
 if segment_df.empty:
     st.info("No segment records available for the selected filters.")
 else:
-    st.dataframe(segment_df, hide_index=True, use_container_width=True)
+    st.dataframe(_styled_segment_breakdown(segment_df), hide_index=True, use_container_width=True)
 
 st.subheader("Trade Log")
 st.caption(

@@ -20,6 +20,7 @@ _OUTPUT_TIMEZONE_ALIASES: dict[str, str] = {
     "CST": "America/Chicago",
     "CDT": "America/Chicago",
 }
+_LLM_PROMPT_FILENAME = "llm_analysis_prompt.md"
 
 _TRADE_LOG_FIELDS: tuple[str, ...] = (
     "trade_id",
@@ -77,6 +78,7 @@ class StrategyModelingArtifactPaths:
     r_ladder_csv: Path
     segments_csv: Path
     summary_md: Path
+    llm_analysis_prompt_md: Path
 
 
 def build_strategy_modeling_artifact_paths(
@@ -93,6 +95,7 @@ def build_strategy_modeling_artifact_paths(
         r_ladder_csv=run_dir / "r_ladder.csv",
         segments_csv=run_dir / "segments.csv",
         summary_md=run_dir / "summary.md",
+        llm_analysis_prompt_md=run_dir / _LLM_PROMPT_FILENAME,
     )
 
 
@@ -191,6 +194,8 @@ def write_strategy_modeling_artifacts(
     if write_md:
         markdown = _render_summary_markdown(payload)
         paths.summary_md.write_text(markdown, encoding="utf-8")
+        llm_prompt = _render_llm_analysis_prompt(payload)
+        paths.llm_analysis_prompt_md.write_text(llm_prompt, encoding="utf-8")
 
     return paths
 
@@ -440,6 +445,103 @@ def _render_directional_bucket_lines(directional_metrics: Mapping[str, Any]) -> 
             )
         )
     return lines
+
+
+def _render_llm_analysis_prompt(payload: Mapping[str, Any]) -> str:
+    strategy = str(payload.get("strategy", "")).upper() or "UNKNOWN"
+    generated_at = str(payload.get("generated_at", ""))
+    requested_symbols = _to_string_list(payload.get("requested_symbols"))
+    modeled_symbols = _to_string_list(payload.get("modeled_symbols"))
+    summary = _to_mapping(payload.get("summary"))
+    policy = _to_mapping(payload.get("policy_metadata"))
+    filters = _to_mapping(payload.get("filter_summary"))
+    directional = _to_mapping(payload.get("directional_metrics"))
+
+    reject_counts = _to_mapping(filters.get("reject_counts"))
+    nonzero_rejects = [
+        f"{reason}={count}"
+        for reason, count in reject_counts.items()
+        if (_as_int_or_none(count) or 0) > 0
+    ]
+
+    lines: list[str] = [
+        "# Strategy Modeling LLM Analysis Prompt",
+        "",
+        DISCLAIMER_TEXT,
+        "",
+        "Use the companion report files in this same folder to evaluate strategy quality and propose improvements.",
+        "",
+        "## Context Snapshot",
+        "",
+        f"- Strategy: `{strategy}`",
+        f"- Generated: `{generated_at}`",
+        f"- Requested symbols: `{', '.join(requested_symbols) if requested_symbols else '-'}`",
+        f"- Modeled symbols: `{', '.join(modeled_symbols) if modeled_symbols else '-'}`",
+        f"- Signal events: `{summary.get('signal_event_count', 0)}`",
+        f"- Simulated trades: `{summary.get('trade_count', 0)}`",
+        f"- Accepted / skipped trades: `{summary.get('accepted_trade_count', 0)}` / `{summary.get('skipped_trade_count', 0)}`",
+        f"- Losses below -1.0R: `{summary.get('losses_below_minus_one_r', 0)}`",
+        f"- Entry anchor: `{policy.get('entry_anchor', 'next_bar_open')}`",
+        f"- Gap policy: `{policy.get('gap_fill_policy', '-')}`",
+        f"- Intraday timeframe: `{policy.get('intraday_timeframe', '-')}`",
+        (
+            f"- Filter rejects (non-zero): "
+            f"`{', '.join(nonzero_rejects) if nonzero_rejects else 'none'}`"
+        ),
+        "",
+        "## Files To Read",
+        "",
+        "- `summary.json`: full machine-readable run payload and metrics.",
+        "- `summary.md`: human summary and caveats.",
+        "- `trades.csv`: per-trade outcomes (`realized_r`, stop slippage, gap exits).",
+        "- `segments.csv`: grouped performance by dimension/value.",
+        "- `r_ladder.csv`: target hit rates and expectancy by R target.",
+        "",
+        "## Analysis Task",
+        "",
+        "Identify concrete, testable changes that could improve risk-adjusted performance while preserving anti-lookahead rules.",
+        "",
+        "## Required Output",
+        "",
+        "1. Baseline diagnosis",
+        "- Describe main weaknesses and strengths using explicit evidence from files/columns.",
+        "",
+        "2. Ranked improvement ideas",
+        "- Provide 5-10 changes, ranked by expected impact and confidence.",
+        "- For each change include: rationale, likely affected metrics, and failure modes.",
+        "",
+        "3. Experiment plan",
+        "- Define backtest experiments for the top 3 ideas with precise config deltas.",
+        "- Include acceptance criteria and guardrails against overfitting/lookahead bias.",
+        "",
+        "4. Risk controls",
+        "- Explain downside risks (for example regime concentration, tail-loss behavior, sparse segments).",
+        "- Recommend monitoring metrics and trigger thresholds.",
+        "",
+        "5. Portfolio/action summary",
+        "- Summarize whether the current strategy should be: keep, modify, or pause for further testing.",
+        "",
+        "## Non-negotiable Constraints",
+        "",
+        "- Treat this as informational research only, not financial advice.",
+        "- Do not use same-bar-close entry assumptions for close-confirmed signals.",
+        "- Explicitly call out data-quality limitations and sample-size caveats.",
+        "- Prefer robust changes that generalize across symbols/regimes over single-slice optimizations.",
+        "",
+        "Not financial advice.",
+    ]
+
+    if directional:
+        lines.extend(
+            [
+                "",
+                "## Directional Context",
+                "",
+                "- Use directional metrics in `summary.json -> directional_metrics` to compare long-only vs short-only behavior before recommending directional constraints.",
+            ]
+        )
+
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _build_trade_log_row(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import runpy
 from datetime import date
 from pathlib import Path
@@ -8,6 +9,7 @@ from typing import Any
 
 import duckdb
 import pandas as pd
+from pandas.io.formats.style import Styler
 import pytest
 
 from options_helper.data.intraday_store import IntradayStore
@@ -430,3 +432,223 @@ def test_strategy_modeling_page_orb_controls_build_request_and_render_filter_out
     directional_frame = next((frame for frame in frames if "directional_bucket" in frame.columns), None)
     assert directional_frame is not None
     assert set(directional_frame["directional_bucket"]) == {"combined", "long_only", "short_only"}
+
+
+def test_strategy_modeling_page_segment_breakdowns_apply_column_color_styling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("streamlit")
+    pytest.importorskip("options_helper.analysis.strategy_modeling")
+    if not PAGE_PATH.exists():
+        pytest.skip("Strategy modeling page scaffold is not present in this workspace.")
+
+    from apps.streamlit.components import strategy_modeling_page as component
+    import options_helper.cli_deps as cli_deps
+    import streamlit as st
+
+    class _StubService:
+        def run(self, request):  # noqa: ANN001
+            del request
+            return SimpleNamespace(
+                portfolio_metrics=None,
+                target_hit_rates=(),
+                equity_curve=(),
+                segment_records=(
+                    {
+                        "segment_dimension": "symbol",
+                        "segment_value": "AAPL",
+                        "trade_count": 15,
+                        "win_rate": 0.67,
+                        "avg_realized_r": 0.12,
+                    },
+                    {
+                        "segment_dimension": "symbol",
+                        "segment_value": "MSFT",
+                        "trade_count": 12,
+                        "win_rate": 0.33,
+                        "avg_realized_r": -0.08,
+                    },
+                ),
+                trade_simulations=(),
+                filter_summary=None,
+                directional_metrics=None,
+            )
+
+    _clear_component_caches(component)
+    monkeypatch.setattr(component, "list_strategy_modeling_symbols", lambda **_: (["AAPL", "MSFT"], []))
+    monkeypatch.setattr(component, "load_strategy_modeling_data_payload", lambda **_: _ready_payload())
+    monkeypatch.setattr(cli_deps, "build_strategy_modeling_service", lambda: _StubService())
+
+    segment_stylers: list[Styler] = []
+
+    def _button(label: str, *args: object, **kwargs: object) -> bool:  # noqa: ARG001
+        return label == "Run Strategy Modeling"
+
+    def _dataframe(data: object, *args: object, **kwargs: object) -> None:  # noqa: ARG001
+        if not isinstance(data, Styler):
+            return
+        if {"segment_dimension", "segment_value"}.issubset(set(data.data.columns)):
+            segment_stylers.append(data)
+
+    monkeypatch.setattr(st, "button", _button)
+    monkeypatch.setattr(st, "dataframe", _dataframe)
+
+    runpy.run_path(str(PAGE_PATH), run_name="__strategy_modeling_page_segment_styling__")
+
+    assert len(segment_stylers) == 1
+    html = segment_stylers[0].to_html()
+    assert "background-color: rgb(" in html
+    assert "color: #111827" in html
+    assert "outline: 2px solid" in html
+
+
+def test_strategy_modeling_page_defaults_tickers_to_core_symbols(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("streamlit")
+    pytest.importorskip("options_helper.analysis.strategy_modeling")
+    if not PAGE_PATH.exists():
+        pytest.skip("Strategy modeling page scaffold is not present in this workspace.")
+
+    from apps.streamlit.components import strategy_modeling_page as component
+    import options_helper.cli_deps as cli_deps
+    import streamlit as st
+
+    _clear_component_caches(component)
+    monkeypatch.setattr(
+        component,
+        "list_strategy_modeling_symbols",
+        lambda **_: (["AAPL", "AMZN", "MSFT", "NVDA", "SPY"], []),
+    )
+    monkeypatch.setattr(component, "load_strategy_modeling_data_payload", lambda **_: _ready_payload())
+    monkeypatch.setattr(cli_deps, "build_strategy_modeling_service", lambda: None)
+
+    captured_defaults: dict[str, list[str]] = {}
+
+    def _multiselect(label: str, *, options, default=None, **kwargs):  # noqa: ANN001,ARG001
+        values = list(default or [])
+        if label == "Tickers":
+            captured_defaults[label] = values
+        return values
+
+    def _button(label: str, *args: object, **kwargs: object) -> bool:  # noqa: ARG001
+        return False
+
+    monkeypatch.setattr(st, "multiselect", _multiselect)
+    monkeypatch.setattr(st, "button", _button)
+
+    runpy.run_path(str(PAGE_PATH), run_name="__strategy_modeling_page_default_tickers__")
+
+    assert captured_defaults.get("Tickers") == ["SPY", "AAPL", "AMZN", "NVDA"]
+
+
+def test_strategy_modeling_page_can_export_reports_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("streamlit")
+    pytest.importorskip("options_helper.analysis.strategy_modeling")
+    if not PAGE_PATH.exists():
+        pytest.skip("Strategy modeling page scaffold is not present in this workspace.")
+
+    from apps.streamlit.components import strategy_modeling_page as component
+    import options_helper.cli_deps as cli_deps
+    import streamlit as st
+
+    class _StubService:
+        def run(self, request):  # noqa: ANN001
+            del request
+            return SimpleNamespace(
+                strategy="sfp",
+                requested_symbols=("SPY",),
+                modeled_symbols=("SPY",),
+                signal_events=("evt-1",),
+                accepted_trade_ids=("trade-1",),
+                skipped_trade_ids=(),
+                portfolio_metrics={
+                    "starting_capital": 25000.0,
+                    "ending_capital": 25250.0,
+                    "total_return_pct": 1.0,
+                    "trade_count": 1,
+                    "win_rate": 100.0,
+                    "expectancy_r": 1.0,
+                },
+                target_hit_rates=(
+                    {"target_label": "1.0R", "target_r": 1.0, "trade_count": 1, "hit_count": 1, "hit_rate": 1.0},
+                ),
+                equity_curve=(),
+                segment_records=(
+                    {
+                        "segment_dimension": "symbol",
+                        "segment_value": "SPY",
+                        "trade_count": 1,
+                        "win_rate": 1.0,
+                        "avg_realized_r": 1.0,
+                    },
+                ),
+                trade_simulations=(
+                    {
+                        "trade_id": "trade-1",
+                        "event_id": "evt-1",
+                        "symbol": "SPY",
+                        "direction": "long",
+                        "status": "closed",
+                        "entry_ts": "2026-01-31T15:30:00+00:00",
+                        "entry_price": 100.0,
+                        "stop_price": 99.0,
+                        "target_price": 101.0,
+                        "exit_ts": "2026-01-31T16:00:00+00:00",
+                        "exit_price": 101.0,
+                        "exit_reason": "target_hit",
+                        "initial_risk": 1.0,
+                        "realized_r": 1.0,
+                    },
+                ),
+                filter_summary={},
+                directional_metrics={},
+            )
+
+    export_root = tmp_path / "strategy_modeling_reports"
+
+    _clear_component_caches(component)
+    monkeypatch.setattr(component, "list_strategy_modeling_symbols", lambda **_: (["SPY"], []))
+    monkeypatch.setattr(component, "load_strategy_modeling_data_payload", lambda **_: _ready_payload())
+    monkeypatch.setattr(cli_deps, "build_strategy_modeling_service", lambda: _StubService())
+
+    def _text_input(label: str, value: str = "", **kwargs) -> str:  # noqa: ARG001
+        selected_map = {
+            "Segment values (comma-separated)": "",
+            "ORB confirmation cutoff ET (HH:MM)": "10:30",
+            "Export reports dir": str(export_root),
+            "Export output timezone": "America/Chicago",
+        }
+        return selected_map.get(label, value)
+
+    def _date_input(label: str, value=None, **kwargs):  # noqa: ANN001,ARG001
+        selected_map = {
+            "Start date": date(2026, 1, 1),
+            "End date": date(2026, 1, 31),
+        }
+        return selected_map.get(label, value)
+
+    def _button(label: str, *args: object, **kwargs: object) -> bool:  # noqa: ARG001
+        return label in {"Run Strategy Modeling", "Export Reports"}
+
+    monkeypatch.setattr(st, "text_input", _text_input)
+    monkeypatch.setattr(st, "date_input", _date_input)
+    monkeypatch.setattr(st, "button", _button)
+
+    runpy.run_path(str(PAGE_PATH), run_name="__strategy_modeling_page_export_reports__")
+
+    run_dir = export_root / "sfp" / "2026-01-31"
+    assert (run_dir / "summary.json").exists()
+    assert (run_dir / "summary.md").exists()
+    assert (run_dir / "llm_analysis_prompt.md").exists()
+    assert (run_dir / "trades.csv").exists()
+    assert (run_dir / "r_ladder.csv").exists()
+    assert (run_dir / "segments.csv").exists()
+
+    summary_payload = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary_payload["strategy"] == "sfp"
+    assert summary_payload["requested_symbols"] == ["SPY"]
+    assert summary_payload["summary"]["trade_count"] == 1

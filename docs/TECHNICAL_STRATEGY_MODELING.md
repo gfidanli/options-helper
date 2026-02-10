@@ -6,7 +6,7 @@ This project is **not financial advice**. Strategy-modeling outputs are informat
 
 This page documents the implemented behavior of:
 - `options-helper technicals strategy-model`
-- Strategy-modeling artifacts (`summary.json`, `trades.csv`, `r_ladder.csv`, `segments.csv`, `summary.md`)
+- Strategy-modeling artifacts (`summary.json`, `trades.csv`, `r_ladder.csv`, `segments.csv`, `summary.md`, `llm_analysis_prompt.md`)
 - Streamlit strategy-modeling page parity (`apps/streamlit/pages/11_Strategy_Modeling.py`)
 
 ## CLI Contract

@@ -509,6 +509,7 @@ def test_strategy_model_writes_artifacts_and_summary_contract(
     assert "Wrote R ladder CSV:" in res.output
     assert "Wrote segments CSV:" in res.output
     assert "Wrote summary Markdown:" in res.output
+    assert "Wrote LLM analysis prompt:" in res.output
 
     run_dir = tmp_path / "msb" / "2026-01-31"
     summary_path = run_dir / "summary.json"
@@ -516,12 +517,14 @@ def test_strategy_model_writes_artifacts_and_summary_contract(
     r_ladder_path = run_dir / "r_ladder.csv"
     segments_path = run_dir / "segments.csv"
     summary_md_path = run_dir / "summary.md"
+    llm_prompt_path = run_dir / "llm_analysis_prompt.md"
 
     assert summary_path.exists()
     assert trades_path.exists()
     assert r_ladder_path.exists()
     assert segments_path.exists()
     assert summary_md_path.exists()
+    assert llm_prompt_path.exists()
 
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
     required_top_level_keys = {
@@ -586,6 +589,8 @@ def test_strategy_model_writes_artifacts_and_summary_contract(
     summary_md = summary_md_path.read_text(encoding="utf-8")
     assert DISCLAIMER_TEXT in summary_md
     assert "Not financial advice." in summary_md
+    llm_prompt = llm_prompt_path.read_text(encoding="utf-8")
+    assert "Strategy Modeling LLM Analysis Prompt" in llm_prompt
 
 
 def test_strategy_model_artifact_write_flags_are_respected(
@@ -625,6 +630,7 @@ def test_strategy_model_artifact_write_flags_are_respected(
     assert "Wrote summary JSON:" in res.output
     assert "Wrote trades CSV:" not in res.output
     assert "Wrote summary Markdown:" not in res.output
+    assert "Wrote LLM analysis prompt:" not in res.output
 
     run_dir = tmp_path / "sfp" / "2026-01-31"
     assert (run_dir / "summary.json").exists()
@@ -632,6 +638,7 @@ def test_strategy_model_artifact_write_flags_are_respected(
     assert not (run_dir / "r_ladder.csv").exists()
     assert not (run_dir / "segments.csv").exists()
     assert not (run_dir / "summary.md").exists()
+    assert not (run_dir / "llm_analysis_prompt.md").exists()
 
 
 def test_strategy_model_fails_fast_when_intraday_coverage_is_missing(monkeypatch) -> None:  # type: ignore[no-untyped-def]

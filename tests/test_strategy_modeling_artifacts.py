@@ -252,6 +252,12 @@ def test_strategy_modeling_artifacts_include_required_metadata_and_disclaimer(tm
     assert "Not financial advice." in markdown
     assert "Gap-through stop fills can produce realized losses below `-1.0R`" in markdown
 
+    llm_prompt = paths.llm_analysis_prompt_md.read_text(encoding="utf-8")
+    assert "Strategy Modeling LLM Analysis Prompt" in llm_prompt
+    assert "Files To Read" in llm_prompt
+    assert "`summary.json`" in llm_prompt
+    assert "Not financial advice." in llm_prompt
+
 
 def test_strategy_modeling_trade_csv_surfaces_gap_and_stop_slippage(tmp_path) -> None:  # type: ignore[no-untyped-def]
     paths = write_strategy_modeling_artifacts(
@@ -315,7 +321,9 @@ def test_strategy_model_cli_writes_strategy_modeling_artifacts(monkeypatch, tmp_
     assert "strategy=sfp" in result.output
 
     summary_path = tmp_path / "sfp" / "2026-01-31" / "summary.json"
+    llm_prompt_path = tmp_path / "sfp" / "2026-01-31" / "llm_analysis_prompt.md"
     assert summary_path.exists()
+    assert llm_prompt_path.exists()
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
     _assert_required_summary_keys(payload)
     assert payload["disclaimer"] == DISCLAIMER_TEXT

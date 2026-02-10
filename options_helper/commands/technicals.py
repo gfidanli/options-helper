@@ -3014,6 +3014,7 @@ def technicals_strategy_model(
         console.print(f"Wrote segments CSV: {paths.segments_csv}")
     if write_md:
         console.print(f"Wrote summary Markdown: {paths.summary_md}")
+        console.print(f"Wrote LLM analysis prompt: {paths.llm_analysis_prompt_md}")
     if show_progress and stage_timings:
         console.print("Stage timings:")
         for name in sorted(stage_timings, key=stage_timings.get, reverse=True):
