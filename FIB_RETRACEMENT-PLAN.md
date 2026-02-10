@@ -310,3 +310,16 @@ T2 ──┘                                   └── T8
 - Files modified: `docs/TECHNICAL_FIB_RETRACEMENT.md`, `docs/TECHNICAL_STRATEGY_MODELING.md`, `mkdocs.yml`, `FIB_RETRACEMENT-PLAN.md`.
 - Validation: `./.venv/bin/mkdocs build` unavailable in this checkout (`no such file or directory: ./.venv/bin/mkdocs`); manually verified doc file presence and link/nav references.
 - Errors/gotchas: Local `.venv` does not include `mkdocs` binary.
+
+### T8: Add deterministic unit tests for fib retracement strategy (completed 2026-02-10)
+- Work log:
+  - Added deterministic compute coverage for `compute_fib_retracement_signals(...)` with synthetic OHLC fixtures that explicitly assert bullish MSB formation, next swing-high selection, right-bars confirmation lag behavior, fib-touch triggering, expected entry level tolerance, and long stop-anchor metadata (`fib_range_low_level`).
+  - Added an explicit i+1 anti-lookahead guard regression where a valid fib touch on the final bar emits no signal due to missing next-bar entry anchor.
+  - Added adapter coverage through `build_strategy_signal_events("fib_retracement", ...)` asserting normalized `strategy`, `direction`, `stop_price`, and `entry_ts == next index`, plus final-bar touch suppression.
+  - Kept CLI regression coverage in `tests/test_strategy_modeling_cli.py` that already asserts invalid strategy output includes `fib_retracement`.
+- Files modified: `tests/test_fib_retracement.py`, `tests/test_strategy_signals_fib_retracement.py`, `FIB_RETRACEMENT-PLAN.md`.
+- Validation:
+  - `./.venv/bin/python -m pytest /Volumes/develop/options-helper-fib-retracement/tests/test_fib_retracement.py` passed (`2 passed`).
+  - `./.venv/bin/python -m pytest /Volumes/develop/options-helper-fib-retracement/tests/test_strategy_signals_fib_retracement.py` passed (`2 passed`).
+  - `./.venv/bin/python -m pytest /Volumes/develop/options-helper-fib-retracement/tests/test_strategy_modeling_cli.py` passed (`24 passed`).
+- Errors/gotchas: No implementation fixes were required in analysis/adapter/CLI code for T8; adapter test run emits an existing pandas resample deprecation warning from `options_helper/analysis/sfp.py`.
