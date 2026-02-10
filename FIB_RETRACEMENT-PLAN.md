@@ -250,3 +250,10 @@ T2 ──┘                                   └── T8
 - **Lookahead bias** (range pivot uses right-side confirmation): mitigate by enforcing `scan_start_idx = pivot_idx + right + 1` and emitting entry only on subsequent bars.
 - **Percent vs ratio confusion**: mitigate by normalization accepting `0.618` or `61.8` and storing **percent** in profiles.
 - **Duplicate/overlapping setups**: mitigate with explicit long/short state machines and “latest MSB wins while waiting for next pivot” rule.
+
+## Task Completion Log
+### T1: Extend strategy id contract (completed 2026-02-10)
+- Work log: Added `fib_retracement` to `StrategyId` and extended the strategy-id acceptance contract test to include it.
+- Files modified: `options_helper/schemas/strategy_modeling_contracts.py`, `tests/test_strategy_modeling_contracts.py`.
+- Validation: `./.venv/bin/python -m pytest /Volumes/develop/options-helper-fib-retracement/tests/test_strategy_modeling_contracts.py` passed (`15 passed`).
+- Errors/gotchas: Initial validation failed because `.venv` and `pytest` were absent in this checkout; resolved by creating `.venv` and installing `-e .[dev]`.

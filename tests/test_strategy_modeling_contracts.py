@@ -33,7 +33,7 @@ def _ts(day: int, hour: int) -> datetime:
     return datetime(2026, 1, day, hour, 0, tzinfo=timezone.utc)
 
 
-@pytest.mark.parametrize("strategy_id", ("orb", "ma_crossover", "trend_following"))
+@pytest.mark.parametrize("strategy_id", ("orb", "ma_crossover", "trend_following", "fib_retracement"))
 def test_strategy_contracts_accept_extended_strategy_ids(strategy_id: str) -> None:
     event = StrategySignalEvent(
         event_id=f"{strategy_id}-evt-1",
