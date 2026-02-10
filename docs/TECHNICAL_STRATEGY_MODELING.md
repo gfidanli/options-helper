@@ -327,6 +327,7 @@ Files:
 - `intra_bar_tie_break_rule`
 - `output_timezone`
 - `max_hold_bars`
+- `max_hold_timeframe` (`entry`, `10Min`, `1H`, `1D`, `1W`, etc.)
 - `risk_per_trade_pct`
 - `sizing_rule`
 - `one_open_per_symbol`

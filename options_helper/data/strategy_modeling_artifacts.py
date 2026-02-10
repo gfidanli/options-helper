@@ -294,6 +294,14 @@ def _build_policy_metadata(
         or "fill_at_open"
     )
     entry_anchor_policy = _as_str_or_none(policy_payload.get("entry_ts_anchor_policy"))
+    max_hold_bars = _as_int_or_none(policy_payload.get("max_hold_bars"))
+    if max_hold_bars is None:
+        max_hold_bars = _as_int_or_none(getattr(request, "max_hold_bars", None))
+    max_hold_timeframe = (
+        _as_str_or_none(policy_payload.get("max_hold_timeframe"))
+        or _as_str_or_none(getattr(request, "max_hold_timeframe", None))
+        or "entry"
+    )
 
     return clean_nan(
         {
@@ -306,7 +314,8 @@ def _build_policy_metadata(
             "gap_fill_policy": gap_policy,
             "intra_bar_tie_break_rule": tie_break_rule,
             "output_timezone": output_timezone_name,
-            "max_hold_bars": _as_int_or_none(policy_payload.get("max_hold_bars")),
+            "max_hold_bars": max_hold_bars,
+            "max_hold_timeframe": max_hold_timeframe,
             "risk_per_trade_pct": _as_float_or_none(policy_payload.get("risk_per_trade_pct")),
             "sizing_rule": _as_str_or_none(policy_payload.get("sizing_rule")),
             "one_open_per_symbol": _as_bool_or_none(policy_payload.get("one_open_per_symbol")),

@@ -2848,6 +2848,16 @@ def technicals_strategy_model(
         "--max-hold-bars",
         help="Optional max hold duration in bars for simulated trades.",
     ),
+    max_hold_timeframe: str = typer.Option(
+        "entry",
+        "--max-hold-timeframe",
+        help="Timeframe unit for max hold bars (entry, 10Min, 1H, 1D, 1W).",
+    ),
+    disable_max_hold: bool = typer.Option(
+        False,
+        "--disable-max-hold",
+        help="Disable max-hold time stop even if profile values set one.",
+    ),
     one_open_per_symbol: bool = typer.Option(
         True,
         "--one-open-per-symbol/--no-one-open-per-symbol",
@@ -2907,6 +2917,7 @@ def technicals_strategy_model(
         load_strategy_modeling_profile,
         save_strategy_modeling_profile,
     )
+    from options_helper.schemas.strategy_modeling_policy import normalize_max_hold_timeframe
 
     console = Console(width=200)
 
@@ -2923,6 +2934,12 @@ def technicals_strategy_model(
         raise typer.BadParameter("--gap-fill-policy currently supports only fill_at_open")
     if max_hold_bars is not None and int(max_hold_bars) < 1:
         raise typer.BadParameter("--max-hold-bars must be >= 1")
+    try:
+        normalized_max_hold_timeframe = normalize_max_hold_timeframe(max_hold_timeframe)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if disable_max_hold and _option_was_set_on_command_line(ctx, "max_hold_bars"):
+        raise typer.BadParameter("--disable-max-hold cannot be combined with --max-hold-bars")
     if segment_min_trades < 1:
         raise typer.BadParameter("--segment-min-trades must be >= 1")
     if segment_limit < 1:
@@ -2985,6 +3002,7 @@ def technicals_strategy_model(
         "risk_per_trade_pct": float(risk_per_trade_pct),
         "gap_fill_policy": str(gap_fill_policy),
         "max_hold_bars": int(max_hold_bars) if max_hold_bars is not None else None,
+        "max_hold_timeframe": normalized_max_hold_timeframe,
         "one_open_per_symbol": bool(one_open_per_symbol),
         "r_ladder_min_tenths": int(r_ladder_min_tenths),
         "r_ladder_max_tenths": int(r_ladder_max_tenths),
@@ -3020,6 +3038,8 @@ def technicals_strategy_model(
     except ValidationError as exc:
         detail = "; ".join(error.get("msg", "invalid value") for error in exc.errors())
         raise typer.BadParameter(f"Invalid strategy-modeling profile values: {detail}") from exc
+    if disable_max_hold:
+        effective_profile = effective_profile.model_copy(update={"max_hold_bars": None})
 
     normalized_strategy = effective_profile.strategy
     signal_kwargs = _build_strategy_signal_kwargs(
@@ -3207,6 +3227,7 @@ def technicals_strategy_model(
             "risk_per_trade_pct": float(effective_profile.risk_per_trade_pct),
             "gap_fill_policy": effective_profile.gap_fill_policy,
             "max_hold_bars": effective_profile.max_hold_bars,
+            "max_hold_timeframe": effective_profile.max_hold_timeframe,
             "one_open_per_symbol": bool(effective_profile.one_open_per_symbol),
             "entry_ts_anchor_policy": "first_tradable_bar_open_after_signal_confirmed_ts",
         },
@@ -3216,6 +3237,7 @@ def technicals_strategy_model(
         **vars(base_request),
         intraday_source=effective_profile.intraday_source,
         gap_fill_policy=effective_profile.gap_fill_policy,
+        max_hold_timeframe=effective_profile.max_hold_timeframe,
         intra_bar_tie_break_rule="stop_first",
         signal_confirmation_lag_bars=signal_confirmation_lag_bars,
         output_timezone=normalized_output_timezone,

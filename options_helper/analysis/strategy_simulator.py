@@ -16,7 +16,12 @@ from options_helper.schemas.strategy_modeling_contracts import (
     TradeExitReason,
     TradeRejectCode,
 )
-from options_helper.schemas.strategy_modeling_policy import GapFillPolicy, StrategyModelingPolicyConfig
+from options_helper.schemas.strategy_modeling_policy import (
+    GapFillPolicy,
+    MaxHoldUnit,
+    StrategyModelingPolicyConfig,
+    parse_max_hold_timeframe,
+)
 
 
 _INTRADAY_COLUMNS: tuple[str, ...] = ("timestamp", "open", "high", "low", "close", "session_date")
@@ -93,6 +98,7 @@ def simulate_strategy_trade_paths(
     *,
     policy: StrategyModelingPolicyConfig | None = None,
     max_hold_bars: int | None = None,
+    max_hold_timeframe: str | None = None,
     target_ladder: Sequence[StrategyRTarget] | None = None,
 ) -> list[StrategyTradeSimulation]:
     """Simulate one path per (event, target) with deterministic reject/exit semantics."""
@@ -103,6 +109,8 @@ def simulate_strategy_trade_paths(
         max_hold = int(max_hold)
         if max_hold < 1:
             raise ValueError("max_hold_bars must be >= 1")
+    hold_timeframe = max_hold_timeframe if max_hold_timeframe is not None else cfg.max_hold_timeframe
+    parsed_hold_timeframe = parse_max_hold_timeframe(hold_timeframe)
     if cfg.gap_fill_policy != "fill_at_open":
         raise ValueError(f"Unsupported gap_fill_policy: {cfg.gap_fill_policy}")
 
@@ -132,6 +140,7 @@ def simulate_strategy_trade_paths(
                     entry_decision=decision,
                     target=target,
                     max_hold_bars=max_hold,
+                    max_hold_timeframe=parsed_hold_timeframe,
                     gap_fill_policy=cfg.gap_fill_policy,
                 )
             )
@@ -145,6 +154,7 @@ def _simulate_one_target(
     entry_decision: _EntryDecision,
     target: StrategyRTarget,
     max_hold_bars: int | None,
+    max_hold_timeframe: tuple[MaxHoldUnit, int],
     gap_fill_policy: GapFillPolicy,
 ) -> StrategyTradeSimulation:
     if entry_decision.reject_code is not None:
@@ -182,11 +192,12 @@ def _simulate_one_target(
     target_price = _target_price(direction=direction, entry_price=entry_price, risk=initial_risk, target_r=target.target_r)
 
     eval_start = int(entry_row_index)
-    eval_end = _evaluation_end_index(
+    eval_end, has_full_hold_coverage = _evaluation_end_index(
         prepared=prepared,
         entry_row_index=entry_row_index,
         entry_ts=entry_ts,
         max_hold_bars=max_hold_bars,
+        max_hold_timeframe=max_hold_timeframe,
     )
     eval_len = int(eval_end - eval_start)
     if eval_len <= 0:
@@ -300,7 +311,7 @@ def _simulate_one_target(
         )
 
     if exit_reason is None or exit_price is None or exit_ts is None:
-        if max_hold_bars is not None and eval_len < max_hold_bars:
+        if max_hold_bars is not None and not has_full_hold_coverage:
             return _rejected_trade(
                 event=event,
                 target=target,
@@ -320,7 +331,7 @@ def _simulate_one_target(
         exit_reason = "time_stop"
         exit_ts = final_ts
         exit_price = final_close
-        holding_bars = eval_len if max_hold_bars is None else max_hold_bars
+        holding_bars = eval_len
 
     realized_r = _price_to_r(
         direction=direction,
@@ -686,9 +697,49 @@ def _evaluation_end_index(
     entry_row_index: int,
     entry_ts: pd.Timestamp,
     max_hold_bars: int | None,
-) -> int:
+    max_hold_timeframe: tuple[MaxHoldUnit, int],
+) -> tuple[int, bool]:
     if max_hold_bars is not None:
-        return min(prepared.row_count, int(entry_row_index + max_hold_bars))
+        unit, unit_size = max_hold_timeframe
+        if unit == "entry":
+            end = min(prepared.row_count, int(entry_row_index + max_hold_bars))
+            return end, int(end - entry_row_index) >= int(max_hold_bars)
+
+        if unit in {"min", "h"}:
+            horizon_minutes = int(max_hold_bars * unit_size)
+            if unit == "h":
+                horizon_minutes *= 60
+            cutoff = entry_ts + pd.Timedelta(minutes=horizon_minutes)
+            cutoff_ns = int(cutoff.value)
+            end = int(np.searchsorted(prepared.timestamp_ns, cutoff_ns, side="left"))
+            end = min(prepared.row_count, end)
+            has_boundary = (
+                end < prepared.row_count
+                or (
+                    prepared.row_count > 0
+                    and int(prepared.timestamp_ns[prepared.row_count - 1]) >= cutoff_ns
+                )
+            )
+            return end, has_boundary
+
+        required_sessions = int(max_hold_bars * unit_size)
+        if unit == "w":
+            required_sessions *= 5
+        entry_session_day = _session_day_value(
+            prepared.session_days[entry_row_index],
+            fallback=entry_ts.tz_convert(_MARKET_TZ).date(),
+        )
+        sessions_seen = 1
+        end = int(entry_row_index + 1)
+        while end < prepared.row_count:
+            session_day = _session_day_value(prepared.session_days[end], fallback=entry_session_day)
+            if session_day != entry_session_day:
+                entry_session_day = session_day
+                sessions_seen += 1
+                if sessions_seen > required_sessions:
+                    break
+            end += 1
+        return end, sessions_seen >= required_sessions
 
     entry_session_date = prepared.session_days[entry_row_index]
     if entry_session_date is None or pd.isna(entry_session_date):
@@ -700,7 +751,19 @@ def _evaluation_end_index(
         if session_day != entry_session_date:
             break
         end += 1
-    return end
+    return end, True
+
+
+def _session_day_value(value: object, *, fallback: object) -> object:
+    if value is None or pd.isna(value):
+        return fallback
+    if isinstance(value, pd.Timestamp):
+        if pd.isna(value):
+            return fallback
+        return value.date()
+    if isinstance(value, datetime):
+        return value.date()
+    return value
 
 
 def _timestamp_from_ns(value: int) -> pd.Timestamp:

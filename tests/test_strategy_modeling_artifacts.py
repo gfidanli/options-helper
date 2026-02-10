@@ -244,6 +244,7 @@ def test_strategy_modeling_artifacts_include_required_metadata_and_disclaimer(tm
     assert payload["policy_metadata"]["gap_fill_policy"] == "fill_at_open"
     assert payload["policy_metadata"]["intra_bar_tie_break_rule"] == "stop_first"
     assert payload["policy_metadata"]["output_timezone"] == "America/Chicago"
+    assert payload["policy_metadata"]["max_hold_timeframe"] == "entry"
     assert payload["generated_at"] == "2026-02-08T06:30:00-06:00"
     assert payload["summary"]["losses_below_minus_one_r"] == 1
     assert payload["filter_metadata"]["active_filters"] == ["rsi_extremes"]

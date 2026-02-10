@@ -72,6 +72,7 @@ def test_strategy_modeling_profiles_save_and_load_round_trip(tmp_path: Path) -> 
 
     assert names == ["swing_orb"]
     assert loaded == profile
+    assert loaded.max_hold_timeframe == "entry"
 
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["schema_version"] == 1

@@ -8,7 +8,7 @@ from pydantic import ConfigDict, Field, field_validator, model_validator
 from options_helper.schemas.common import ArtifactBase, utc_now
 from options_helper.schemas.strategy_modeling_contracts import StrategyId
 from options_helper.schemas.strategy_modeling_filters import OrbStopPolicy, VolatilityRegime
-from options_helper.schemas.strategy_modeling_policy import GapFillPolicy
+from options_helper.schemas.strategy_modeling_policy import GapFillPolicy, normalize_max_hold_timeframe
 
 
 STRATEGY_MODELING_PROFILE_SCHEMA_VERSION = 1
@@ -31,6 +31,7 @@ class StrategyModelingProfile(ArtifactBase):
     risk_per_trade_pct: float = Field(default=1.0, gt=0.0, le=100.0)
     gap_fill_policy: GapFillPolicy = "fill_at_open"
     max_hold_bars: int | None = Field(default=None, ge=1)
+    max_hold_timeframe: str = "entry"
     one_open_per_symbol: bool = True
 
     r_ladder_min_tenths: int = Field(default=10, ge=1)
@@ -94,6 +95,11 @@ class StrategyModelingProfile(ArtifactBase):
         if not token:
             raise ValueError("value must be non-empty")
         return token
+
+    @field_validator("max_hold_timeframe", mode="before")
+    @classmethod
+    def _normalize_max_hold_timeframe(cls, value: object) -> str:
+        return normalize_max_hold_timeframe(value)
 
     @field_validator("orb_confirmation_cutoff_et", mode="before")
     @classmethod

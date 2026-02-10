@@ -316,6 +316,45 @@ def test_strategy_model_rejects_invalid_allowed_volatility_regimes() -> None:
     assert "extreme" in res.output
 
 
+def test_strategy_model_rejects_invalid_max_hold_timeframe() -> None:
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--symbols",
+            "SPY",
+            "--max-hold-timeframe",
+            "quarter",
+        ],
+    )
+    assert res.exit_code != 0
+    assert "max_hold_timeframe must be 'entry' or use units like" in res.output
+
+
+def test_strategy_model_rejects_conflicting_max_hold_flags() -> None:
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--symbols",
+            "SPY",
+            "--max-hold-bars",
+            "10",
+            "--disable-max-hold",
+        ],
+    )
+    assert res.exit_code != 0
+    assert "--disable-max-hold cannot be combined with --max-hold-bars" in res.output
+
+
 def test_strategy_model_accepts_orb_strategy(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     stub = _StubStrategyModelingService(blocked=False)
     monkeypatch.setattr(
@@ -588,6 +627,7 @@ def test_strategy_model_success_parses_options_and_runs_service(monkeypatch) -> 
     assert req.starting_capital == 25000.0
     assert req.policy["risk_per_trade_pct"] == 2.5
     assert req.policy["gap_fill_policy"] == "fill_at_open"
+    assert req.policy["max_hold_timeframe"] == "entry"
     assert req.policy["sizing_rule"] == "risk_pct_of_equity"
     assert req.policy["entry_ts_anchor_policy"] == "first_tradable_bar_open_after_signal_confirmed_ts"
     assert req.signal_confirmation_lag_bars == 2
@@ -650,6 +690,41 @@ def test_strategy_model_success_resolves_universe_filters(monkeypatch) -> None: 
     assert stub.last_request.filter_config.enable_volatility_regime is False
 
 
+def test_strategy_model_disable_max_hold_overrides_profile_value(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    stub = _StubStrategyModelingService(blocked=False)
+    monkeypatch.setattr(
+        "options_helper.commands.technicals.cli_deps.build_strategy_modeling_service",
+        lambda: stub,
+    )
+    profile_path = tmp_path / "strategy_profiles.json"
+    save_strategy_modeling_profile(profile_path, "swing_core", _profile_fixture(max_hold_bars=20), overwrite=False)
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--profile-path",
+            str(profile_path),
+            "--profile",
+            "swing_core",
+            "--disable-max-hold",
+        ],
+    )
+
+    assert res.exit_code == 0, res.output
+    req = stub.last_request
+    assert req is not None
+    assert req.max_hold_bars is None
+    assert req.policy["max_hold_bars"] is None
+
+
 def test_strategy_model_profile_load_applies_stored_values(
     monkeypatch,
     tmp_path: Path,
@@ -688,7 +763,9 @@ def test_strategy_model_profile_load_applies_stored_values(
     assert req.intraday_source == "alpaca"
     assert req.starting_capital == 25_000.0
     assert req.max_hold_bars == 20
+    assert req.max_hold_timeframe == "entry"
     assert req.policy["risk_per_trade_pct"] == 2.5
+    assert req.policy["max_hold_timeframe"] == "entry"
     assert req.policy["one_open_per_symbol"] is True
     assert [target.label for target in req.target_ladder] == ["1.2R", "1.4R", "1.6R"]
     assert req.filter_config.allow_shorts is False
@@ -796,6 +873,7 @@ def test_strategy_model_save_profile_writes_normalized_values(
     assert saved.intraday_source == "stocks_bars_local"
     assert saved.risk_per_trade_pct == 3.0
     assert saved.max_hold_bars == 15
+    assert saved.max_hold_timeframe == "entry"
     assert saved.allow_shorts is False
     assert saved.r_ladder_min_tenths == 11
     assert saved.r_ladder_max_tenths == 13

@@ -10,6 +10,7 @@ from options_helper.analysis.strategy_simulator import (
     simulate_strategy_trade_paths,
 )
 from options_helper.schemas.strategy_modeling_contracts import StrategySignalEvent
+from options_helper.schemas.strategy_modeling_policy import StrategyModelingPolicyConfig
 
 
 def _ts(value: str) -> datetime:
@@ -185,6 +186,59 @@ def test_simulator_exits_at_time_stop_when_no_stop_or_target() -> None:
     assert trade.holding_bars == 2
 
 
+def test_simulator_max_hold_timeframe_can_use_non_entry_bars() -> None:
+    event = _event(event_id="evt-max-hold-10min-bars", stop_price=99.0)
+    timestamps = pd.date_range("2026-01-05 14:30:00+00:00", periods=80, freq="1min", tz="UTC")
+    bars = pd.DataFrame(
+        {
+            "timestamp": timestamps,
+            "open": 100.0,
+            "high": 100.6,
+            "low": 99.6,
+            "close": 100.2,
+        }
+    )
+
+    trade = simulate_strategy_trade_paths(
+        [event],
+        {"SPY": bars},
+        max_hold_bars=6,
+        max_hold_timeframe="10Min",
+        target_ladder=_single_target_ladder(),
+    )[0]
+
+    assert trade.status == "closed"
+    assert trade.exit_reason == "time_stop"
+    assert trade.exit_ts == datetime(2026, 1, 5, 15, 29, tzinfo=timezone.utc)
+    assert trade.holding_bars == 60
+
+
+def test_simulator_max_hold_timeframe_daily_uses_sessions() -> None:
+    event = _event(event_id="evt-max-hold-daily-bars", stop_price=99.0)
+    bars = _bars_with_session(
+        [
+            ("2026-01-05 14:30:00+00:00", "2026-01-05", 100.0, 100.6, 99.5, 100.2),
+            ("2026-01-05 14:31:00+00:00", "2026-01-05", 100.2, 100.6, 99.7, 100.3),
+            ("2026-01-06 14:30:00+00:00", "2026-01-06", 100.3, 100.7, 99.8, 100.4),
+            ("2026-01-06 14:31:00+00:00", "2026-01-06", 100.4, 100.8, 99.9, 100.5),
+            ("2026-01-07 14:30:00+00:00", "2026-01-07", 100.5, 101.6, 100.0, 101.5),
+        ]
+    )
+
+    trade = simulate_strategy_trade_paths(
+        [event],
+        {"SPY": bars},
+        max_hold_bars=2,
+        max_hold_timeframe="1D",
+        target_ladder=_single_target_ladder(),
+    )[0]
+
+    assert trade.status == "closed"
+    assert trade.exit_reason == "time_stop"
+    assert trade.exit_ts == datetime(2026, 1, 6, 14, 31, tzinfo=timezone.utc)
+    assert trade.holding_bars == 4
+
+
 def test_simulator_rejects_invalid_signal() -> None:
     event = _event(event_id="evt-invalid", stop_price=None)
     bars = _bars([("2026-01-05 14:30:00+00:00", 100.0, 100.2, 99.8, 100.1)])
@@ -291,6 +345,27 @@ def test_simulator_rejects_when_future_bars_are_insufficient() -> None:
         [event],
         {"SPY": bars},
         max_hold_bars=3,
+        target_ladder=_single_target_ladder(),
+    )[0]
+
+    assert trade.status == "rejected"
+    assert trade.reject_code == "insufficient_future_bars"
+
+
+def test_simulator_rejects_when_daily_session_horizon_is_incomplete() -> None:
+    event = _event(event_id="evt-incomplete-session-horizon", stop_price=99.0)
+    bars = _bars_with_session(
+        [
+            ("2026-01-05 14:30:00+00:00", "2026-01-05", 100.0, 100.2, 99.7, 100.0),
+            ("2026-01-05 14:31:00+00:00", "2026-01-05", 100.0, 100.3, 99.8, 100.1),
+        ]
+    )
+
+    trade = simulate_strategy_trade_paths(
+        [event],
+        {"SPY": bars},
+        policy=StrategyModelingPolicyConfig(max_hold_timeframe="1D"),
+        max_hold_bars=2,
         target_ladder=_single_target_ladder(),
     )[0]
 
