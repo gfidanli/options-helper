@@ -166,9 +166,15 @@ T10 (Docs) depends on T7–T8
   - Enforce `max_option_contracts` before any manager starts (prevents accidental huge websocket subscriptions).
 - **validation**:
   - Unit tests cover truncation + warning messaging + multileg leg enumeration.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added `SubscriptionPlan` and `build_subscription_plan(...)` in `options_helper/data/streaming/subscriptions.py`.
+  - Planned stocks from unique portfolio underlyings and planned option contracts from both single positions and every multi-leg leg.
+  - Mapped both stocks and contracts via `to_alpaca_symbol`, enforced `max_option_contracts` pre-subscribe, and emitted truncation warnings with dropped counts.
+  - Added deterministic tests for multileg leg enumeration and truncation warning behavior.
 - **files edited/created**:
+  - `options_helper/data/streaming/subscriptions.py`
+  - `tests/test_streaming_subscription_plan.py`
 
 ### T4: LiveStreamManager (in-memory caches + worker lifecycle + backpressure)
 - **depends_on**: [T1, T3]
