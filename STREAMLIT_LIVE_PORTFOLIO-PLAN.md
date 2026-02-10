@@ -320,9 +320,15 @@ T10 (Docs) depends on T7–T8
     - troubleshooting for missing OPRA/IEX/SIP permissions.
 - **validation**:
   - `mkdocs build` (optional) and nav includes the new doc.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added new focused doc `docs/PORTAL_LIVE_STREAMING.md` covering setup, credentials, feed selection, entitlements, usage workflow, safety limits, and troubleshooting.
+  - Updated `docs/PORTAL_STREAMLIT.md` to list the Live Portfolio page, clarify read-only live-stream behavior, and link to the new feature doc.
+  - Updated `mkdocs.yml` nav under `Visibility & Portal` to include `Live Portfolio Streaming`.
 - **files edited/created**:
+  - `docs/PORTAL_LIVE_STREAMING.md`
+  - `docs/PORTAL_STREAMLIT.md`
+  - `mkdocs.yml`
 
 ---
 

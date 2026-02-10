@@ -61,6 +61,7 @@ nav:
       - Next Stage Overview: NEXT_STAGE_VISIBILITY_PORTAL.md
       - Observability + Health: OBSERVABILITY.md
       - Streamlit Portal: PORTAL_STREAMLIT.md
+      - Live Portfolio Streaming: PORTAL_LIVE_STREAMING.md
       - Dagster (Optional): DAGSTER_OPTIONAL.md
   - Planning:
       - Backlog: BACKLOG.md

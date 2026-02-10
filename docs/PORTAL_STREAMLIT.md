@@ -72,6 +72,10 @@ Implemented pages under `apps/streamlit/pages/`:
 - `10_MSB.py`
   - daily/weekly market structure break (MSB) research summaries and event tables
   - close-through break events against prior swings with extension/RSI context
+- `12_Live_Portfolio.py`
+  - live read-only streaming monitor for portfolio symbols/contracts and fills/order updates
+  - start/stop controls, stream health (running/reconnecting/error), and stale-data warnings
+  - no order submission; informational only
 
 ## Read-only behavior
 
@@ -80,6 +84,9 @@ Most pages are read-only and do not run ingestion.
 
 Exception:
 - `03_Symbol_Explorer.py` is DuckDB-first and can run a best-effort on-demand Alpaca sync for the selected symbol when `options_snapshot_headers` or `derived_daily` rows are missing in DuckDB.
+
+Live page note:
+- `12_Live_Portfolio.py` opens Alpaca websocket streams only after explicit user `Start`. It remains read-only (no orders submitted, no portfolio file writes) and data is best-effort.
 
 ## DuckDB path behavior
 
@@ -105,3 +112,4 @@ The Health page reports run status, failures, stale data signals, and quality-ch
 
 - Observability runtime and `db health`: `docs/OBSERVABILITY.md`
 - Optional Dagster asset graph/checks: `docs/DAGSTER_OPTIONAL.md`
+- Live streaming page setup/troubleshooting: `docs/PORTAL_LIVE_STREAMING.md`
