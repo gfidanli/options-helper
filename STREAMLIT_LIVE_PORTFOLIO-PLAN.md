@@ -189,9 +189,15 @@ T10 (Docs) depends on T7–T8
 - **validation**:
   - Tests inject stub stream classes that emit deterministic events and block until `stop()`.
   - No `streamlit` dependency; no network.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - Added `LiveStreamConfig`/`LiveSnapshot` and `LiveStreamManager` in a new Streamlit-agnostic module with explicit toggles, feed settings, reconnect controls, and queue sizing.
+  - Implemented 3 worker threads (`stocks`, `options`, `fills`) plus a consumer thread where callbacks only enqueue and all normalization/cache updates happen off callback threads.
+  - Added bounded-queue backpressure (`put_nowait`) with dropped-event counters, stream health tracking (alive/reconnect/last-event/error), and idempotent `start`/`stop` including automatic restart when config changes.
+  - Added deterministic offline tests with injected stub stream classes covering lifecycle/idempotency, reconnect behavior via `compute_backoff_seconds`, and queue overflow drop accounting.
 - **files edited/created**:
+  - `options_helper/data/streaming/live_manager.py`
+  - `tests/test_live_stream_manager.py`
 
 ### T5: Pure live portfolio metrics aggregation (tables + warnings)
 - **depends_on**: [T2]
