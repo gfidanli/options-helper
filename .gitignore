@@ -39,6 +39,7 @@ venv/
 .python-version
 config/alpaca.env
 config/ingest_tuning.json
+config/strategy_modeling_profiles.json
 
 # Logs and misc
 *.log

@@ -18,8 +18,15 @@ from apps.streamlit.components.strategy_modeling_page import (
     load_strategy_modeling_data_payload,
 )
 from options_helper.analysis.strategy_modeling import StrategyModelingRequest
+from options_helper.analysis.strategy_simulator import build_r_target_ladder
 from options_helper.data.strategy_modeling_artifacts import write_strategy_modeling_artifacts
+from options_helper.data.strategy_modeling_profiles import (
+    list_strategy_modeling_profiles,
+    load_strategy_modeling_profile,
+    save_strategy_modeling_profile,
+)
 from options_helper.schemas.strategy_modeling_filters import StrategyEntryFilterConfig
+from options_helper.schemas.strategy_modeling_profile import StrategyModelingProfile
 
 DISCLAIMER_TEXT = "Informational and educational use only. Not financial advice."
 _SEGMENT_DIMENSIONS = [
@@ -41,6 +48,53 @@ _SEGMENT_TEXT_COLOR = "#111827"
 _DEFAULT_EXPORT_REPORTS_DIR = "data/reports/technicals/strategy_modeling"
 _DEFAULT_EXPORT_TIMEZONE = "America/Chicago"
 _REQUEST_STATE_KEY = "strategy_modeling_last_request"
+_PROFILE_PATH_KEY = "strategy_modeling_profile_path"
+_PROFILE_SELECTED_KEY = "strategy_modeling_profile_selected"
+_PROFILE_SAVE_NAME_KEY = "strategy_modeling_profile_save_name"
+_PROFILE_OVERWRITE_KEY = "strategy_modeling_profile_overwrite"
+
+_WIDGET_KEYS: dict[str, str] = {
+    "strategy": "strategy_modeling_strategy",
+    "start_date": "strategy_modeling_start_date",
+    "end_date": "strategy_modeling_end_date",
+    "intraday_timeframe": "strategy_modeling_intraday_timeframe",
+    "intraday_source": "strategy_modeling_intraday_source",
+    "starting_capital": "strategy_modeling_starting_capital",
+    "risk_per_trade_pct": "strategy_modeling_risk_per_trade_pct",
+    "gap_fill_policy": "strategy_modeling_gap_fill_policy",
+    "max_hold_bars": "strategy_modeling_max_hold_bars",
+    "one_open_per_symbol": "strategy_modeling_one_open_per_symbol",
+    "symbols": "strategy_modeling_symbols",
+    "symbols_text": "strategy_modeling_symbols_text",
+    "segment_dimensions": "strategy_modeling_segment_dimensions",
+    "segment_values_text": "strategy_modeling_segment_values_text",
+    "ma_fast_window": "strategy_modeling_ma_fast_window",
+    "ma_slow_window": "strategy_modeling_ma_slow_window",
+    "ma_trend_window": "strategy_modeling_ma_trend_window",
+    "ma_fast_type": "strategy_modeling_ma_fast_type",
+    "ma_slow_type": "strategy_modeling_ma_slow_type",
+    "ma_trend_type": "strategy_modeling_ma_trend_type",
+    "trend_slope_lookback_bars": "strategy_modeling_trend_slope_lookback_bars",
+    "atr_window": "strategy_modeling_atr_window",
+    "atr_stop_multiple": "strategy_modeling_atr_stop_multiple",
+    "allow_shorts": "strategy_modeling_allow_shorts",
+    "enable_orb_confirmation": "strategy_modeling_enable_orb_confirmation",
+    "orb_range_minutes": "strategy_modeling_orb_range_minutes",
+    "orb_confirmation_cutoff_et": "strategy_modeling_orb_confirmation_cutoff_et",
+    "orb_stop_policy": "strategy_modeling_orb_stop_policy",
+    "enable_atr_stop_floor": "strategy_modeling_enable_atr_stop_floor",
+    "atr_stop_floor_multiple": "strategy_modeling_atr_stop_floor_multiple",
+    "enable_rsi_extremes": "strategy_modeling_enable_rsi_extremes",
+    "enable_ema9_regime": "strategy_modeling_enable_ema9_regime",
+    "ema9_slope_lookback_bars": "strategy_modeling_ema9_slope_lookback_bars",
+    "enable_volatility_regime": "strategy_modeling_enable_volatility_regime",
+    "allowed_volatility_regimes": "strategy_modeling_allowed_volatility_regimes",
+    "r_ladder_min_tenths": "strategy_modeling_r_ladder_min_tenths",
+    "r_ladder_max_tenths": "strategy_modeling_r_ladder_max_tenths",
+    "r_ladder_step_tenths": "strategy_modeling_r_ladder_step_tenths",
+    "export_reports_dir": "strategy_modeling_export_reports_dir",
+    "export_output_timezone": "strategy_modeling_export_output_timezone",
+}
 
 
 def _to_dict(value: object) -> dict[str, Any]:
@@ -223,6 +277,238 @@ def _build_export_request(
     return SimpleNamespace(**payload)
 
 
+def _ensure_sidebar_state_defaults(
+    *,
+    default_start: date,
+    default_end: date,
+    symbols: Sequence[str],
+) -> None:
+    defaults: dict[str, object] = {
+        _PROFILE_PATH_KEY: "config/strategy_modeling_profiles.json",
+        _PROFILE_SELECTED_KEY: "",
+        _PROFILE_SAVE_NAME_KEY: "",
+        _PROFILE_OVERWRITE_KEY: False,
+        _WIDGET_KEYS["strategy"]: "sfp",
+        _WIDGET_KEYS["start_date"]: default_start,
+        _WIDGET_KEYS["end_date"]: default_end,
+        _WIDGET_KEYS["intraday_timeframe"]: "1Min",
+        _WIDGET_KEYS["intraday_source"]: "stocks_bars_local",
+        _WIDGET_KEYS["starting_capital"]: 10_000.0,
+        _WIDGET_KEYS["risk_per_trade_pct"]: 1.0,
+        _WIDGET_KEYS["gap_fill_policy"]: "fill_at_open",
+        _WIDGET_KEYS["max_hold_bars"]: 20,
+        _WIDGET_KEYS["one_open_per_symbol"]: True,
+        _WIDGET_KEYS["symbols_text"]: "SPY",
+        _WIDGET_KEYS["segment_dimensions"]: ["symbol", "direction"],
+        _WIDGET_KEYS["segment_values_text"]: "",
+        _WIDGET_KEYS["ma_fast_window"]: 20,
+        _WIDGET_KEYS["ma_slow_window"]: 50,
+        _WIDGET_KEYS["ma_trend_window"]: 200,
+        _WIDGET_KEYS["ma_fast_type"]: "sma",
+        _WIDGET_KEYS["ma_slow_type"]: "sma",
+        _WIDGET_KEYS["ma_trend_type"]: "sma",
+        _WIDGET_KEYS["trend_slope_lookback_bars"]: 3,
+        _WIDGET_KEYS["atr_window"]: 14,
+        _WIDGET_KEYS["atr_stop_multiple"]: 2.0,
+        _WIDGET_KEYS["allow_shorts"]: True,
+        _WIDGET_KEYS["enable_orb_confirmation"]: False,
+        _WIDGET_KEYS["orb_range_minutes"]: 15,
+        _WIDGET_KEYS["orb_confirmation_cutoff_et"]: "10:30",
+        _WIDGET_KEYS["orb_stop_policy"]: "base",
+        _WIDGET_KEYS["enable_atr_stop_floor"]: False,
+        _WIDGET_KEYS["atr_stop_floor_multiple"]: 0.5,
+        _WIDGET_KEYS["enable_rsi_extremes"]: False,
+        _WIDGET_KEYS["enable_ema9_regime"]: False,
+        _WIDGET_KEYS["ema9_slope_lookback_bars"]: 3,
+        _WIDGET_KEYS["enable_volatility_regime"]: False,
+        _WIDGET_KEYS["allowed_volatility_regimes"]: list(_VOLATILITY_REGIMES),
+        _WIDGET_KEYS["r_ladder_min_tenths"]: 10,
+        _WIDGET_KEYS["r_ladder_max_tenths"]: 20,
+        _WIDGET_KEYS["r_ladder_step_tenths"]: 1,
+        _WIDGET_KEYS["export_reports_dir"]: _DEFAULT_EXPORT_REPORTS_DIR,
+        _WIDGET_KEYS["export_output_timezone"]: _DEFAULT_EXPORT_TIMEZONE,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+    if symbols:
+        selected = st.session_state.get(_WIDGET_KEYS["symbols"])
+        selected_values = _sanitize_symbol_selection(selected, options=symbols)
+        if not selected_values:
+            selected_values = _default_ticker_selection(symbols)
+        st.session_state[_WIDGET_KEYS["symbols"]] = selected_values
+    else:
+        st.session_state.setdefault(_WIDGET_KEYS["symbols"], [])
+
+
+def _sanitize_symbol_selection(raw_values: object, *, options: Sequence[str]) -> list[str]:
+    available = {str(item).upper() for item in options}
+    if isinstance(raw_values, str):
+        values = [raw_values]
+    elif isinstance(raw_values, Sequence) and not isinstance(raw_values, (str, bytes)):
+        values = list(raw_values)
+    else:
+        return []
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        token = str(raw or "").strip().upper()
+        if not token or token in seen or token not in available:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
+
+
+def _build_profile_from_inputs(
+    *,
+    strategy: str,
+    symbols: Sequence[str],
+    start_date: date | None,
+    end_date: date | None,
+    intraday_timeframe: str,
+    intraday_source: str,
+    starting_capital: float,
+    risk_per_trade_pct: float,
+    gap_fill_policy: str,
+    max_hold_bars: int | None,
+    one_open_per_symbol: bool,
+    r_ladder_min_tenths: int,
+    r_ladder_max_tenths: int,
+    r_ladder_step_tenths: int,
+    allow_shorts: bool,
+    enable_orb_confirmation: bool,
+    orb_range_minutes: int,
+    orb_confirmation_cutoff_et: str,
+    orb_stop_policy: str,
+    enable_atr_stop_floor: bool,
+    atr_stop_floor_multiple: float,
+    enable_rsi_extremes: bool,
+    enable_ema9_regime: bool,
+    ema9_slope_lookback_bars: int,
+    enable_volatility_regime: bool,
+    allowed_volatility_regimes: Sequence[str],
+    ma_fast_window: int,
+    ma_slow_window: int,
+    ma_trend_window: int,
+    ma_fast_type: str,
+    ma_slow_type: str,
+    ma_trend_type: str,
+    trend_slope_lookback_bars: int,
+    atr_window: int,
+    atr_stop_multiple: float,
+) -> StrategyModelingProfile:
+    payload = {
+        "strategy": strategy,
+        "symbols": tuple(symbols),
+        "start_date": start_date,
+        "end_date": end_date,
+        "intraday_timeframe": intraday_timeframe,
+        "intraday_source": intraday_source,
+        "starting_capital": float(starting_capital),
+        "risk_per_trade_pct": float(risk_per_trade_pct),
+        "gap_fill_policy": gap_fill_policy,
+        "max_hold_bars": int(max_hold_bars) if max_hold_bars is not None else None,
+        "one_open_per_symbol": bool(one_open_per_symbol),
+        "r_ladder_min_tenths": int(r_ladder_min_tenths),
+        "r_ladder_max_tenths": int(r_ladder_max_tenths),
+        "r_ladder_step_tenths": int(r_ladder_step_tenths),
+        "allow_shorts": bool(allow_shorts),
+        "enable_orb_confirmation": bool(enable_orb_confirmation),
+        "orb_range_minutes": int(orb_range_minutes),
+        "orb_confirmation_cutoff_et": str(orb_confirmation_cutoff_et),
+        "orb_stop_policy": str(orb_stop_policy),
+        "enable_atr_stop_floor": bool(enable_atr_stop_floor),
+        "atr_stop_floor_multiple": float(atr_stop_floor_multiple),
+        "enable_rsi_extremes": bool(enable_rsi_extremes),
+        "enable_ema9_regime": bool(enable_ema9_regime),
+        "ema9_slope_lookback_bars": int(ema9_slope_lookback_bars),
+        "enable_volatility_regime": bool(enable_volatility_regime),
+        "allowed_volatility_regimes": tuple(_normalize_volatility_regimes(allowed_volatility_regimes)),
+        "ma_fast_window": int(ma_fast_window),
+        "ma_slow_window": int(ma_slow_window),
+        "ma_trend_window": int(ma_trend_window),
+        "ma_fast_type": str(ma_fast_type),
+        "ma_slow_type": str(ma_slow_type),
+        "ma_trend_type": str(ma_trend_type),
+        "trend_slope_lookback_bars": int(trend_slope_lookback_bars),
+        "atr_window": int(atr_window),
+        "atr_stop_multiple": float(atr_stop_multiple),
+    }
+    return StrategyModelingProfile.model_validate(payload)
+
+
+def _apply_loaded_profile_to_state(
+    *,
+    profile: StrategyModelingProfile,
+    available_symbols: Sequence[str],
+    available_intraday_sources: Sequence[str],
+    available_timeframes: Sequence[str],
+) -> None:
+    st.session_state[_WIDGET_KEYS["strategy"]] = profile.strategy
+    if profile.start_date is not None:
+        st.session_state[_WIDGET_KEYS["start_date"]] = profile.start_date
+    if profile.end_date is not None:
+        st.session_state[_WIDGET_KEYS["end_date"]] = profile.end_date
+    st.session_state[_WIDGET_KEYS["intraday_timeframe"]] = (
+        profile.intraday_timeframe
+        if profile.intraday_timeframe in set(available_timeframes)
+        else available_timeframes[0]
+    )
+    st.session_state[_WIDGET_KEYS["intraday_source"]] = (
+        profile.intraday_source
+        if profile.intraday_source in set(available_intraday_sources)
+        else available_intraday_sources[0]
+    )
+    st.session_state[_WIDGET_KEYS["starting_capital"]] = float(profile.starting_capital)
+    st.session_state[_WIDGET_KEYS["risk_per_trade_pct"]] = float(profile.risk_per_trade_pct)
+    st.session_state[_WIDGET_KEYS["gap_fill_policy"]] = profile.gap_fill_policy
+    st.session_state[_WIDGET_KEYS["max_hold_bars"]] = (
+        int(profile.max_hold_bars) if profile.max_hold_bars is not None else 20
+    )
+    st.session_state[_WIDGET_KEYS["one_open_per_symbol"]] = bool(profile.one_open_per_symbol)
+    st.session_state[_WIDGET_KEYS["segment_values_text"]] = st.session_state.get(
+        _WIDGET_KEYS["segment_values_text"],
+        "",
+    )
+    st.session_state[_WIDGET_KEYS["ma_fast_window"]] = int(profile.ma_fast_window)
+    st.session_state[_WIDGET_KEYS["ma_slow_window"]] = int(profile.ma_slow_window)
+    st.session_state[_WIDGET_KEYS["ma_trend_window"]] = int(profile.ma_trend_window)
+    st.session_state[_WIDGET_KEYS["ma_fast_type"]] = profile.ma_fast_type
+    st.session_state[_WIDGET_KEYS["ma_slow_type"]] = profile.ma_slow_type
+    st.session_state[_WIDGET_KEYS["ma_trend_type"]] = profile.ma_trend_type
+    st.session_state[_WIDGET_KEYS["trend_slope_lookback_bars"]] = int(profile.trend_slope_lookback_bars)
+    st.session_state[_WIDGET_KEYS["atr_window"]] = int(profile.atr_window)
+    st.session_state[_WIDGET_KEYS["atr_stop_multiple"]] = float(profile.atr_stop_multiple)
+    st.session_state[_WIDGET_KEYS["allow_shorts"]] = bool(profile.allow_shorts)
+    st.session_state[_WIDGET_KEYS["enable_orb_confirmation"]] = bool(profile.enable_orb_confirmation)
+    st.session_state[_WIDGET_KEYS["orb_range_minutes"]] = int(profile.orb_range_minutes)
+    st.session_state[_WIDGET_KEYS["orb_confirmation_cutoff_et"]] = profile.orb_confirmation_cutoff_et
+    st.session_state[_WIDGET_KEYS["orb_stop_policy"]] = profile.orb_stop_policy
+    st.session_state[_WIDGET_KEYS["enable_atr_stop_floor"]] = bool(profile.enable_atr_stop_floor)
+    st.session_state[_WIDGET_KEYS["atr_stop_floor_multiple"]] = float(profile.atr_stop_floor_multiple)
+    st.session_state[_WIDGET_KEYS["enable_rsi_extremes"]] = bool(profile.enable_rsi_extremes)
+    st.session_state[_WIDGET_KEYS["enable_ema9_regime"]] = bool(profile.enable_ema9_regime)
+    st.session_state[_WIDGET_KEYS["ema9_slope_lookback_bars"]] = int(profile.ema9_slope_lookback_bars)
+    st.session_state[_WIDGET_KEYS["enable_volatility_regime"]] = bool(profile.enable_volatility_regime)
+    st.session_state[_WIDGET_KEYS["allowed_volatility_regimes"]] = list(profile.allowed_volatility_regimes)
+    st.session_state[_WIDGET_KEYS["r_ladder_min_tenths"]] = int(profile.r_ladder_min_tenths)
+    st.session_state[_WIDGET_KEYS["r_ladder_max_tenths"]] = int(profile.r_ladder_max_tenths)
+    st.session_state[_WIDGET_KEYS["r_ladder_step_tenths"]] = int(profile.r_ladder_step_tenths)
+
+    profile_symbols = list(profile.symbols)
+    st.session_state[_WIDGET_KEYS["symbols_text"]] = ",".join(profile_symbols)
+    if available_symbols:
+        st.session_state[_WIDGET_KEYS["symbols"]] = _sanitize_symbol_selection(
+            profile_symbols,
+            options=available_symbols,
+        )
+    else:
+        st.session_state[_WIDGET_KEYS["symbols"]] = profile_symbols
+
+
 def _interpolate_rgb(start: tuple[int, int, int], end: tuple[int, int, int], ratio: float) -> tuple[int, int, int]:
     clamped = max(0.0, min(1.0, float(ratio)))
     return tuple(
@@ -304,85 +590,350 @@ st.info(
 symbols, symbol_notes = list_strategy_modeling_symbols(database_path=None)
 default_end = date.today()
 default_start = default_end - timedelta(days=365)
+_STRATEGY_OPTIONS = ["sfp", "msb", "orb", "ma_crossover", "trend_following"]
+_INTRADAY_TIMEFRAMES = ["1Min", "5Min", "15Min", "30Min", "60Min"]
+_INTRADAY_SOURCES = ["stocks_bars_local", "alpaca"]
+
+_ensure_sidebar_state_defaults(default_start=default_start, default_end=default_end, symbols=symbols)
+
+profile_store_path = Path(str(st.session_state.get(_PROFILE_PATH_KEY) or "").strip() or "config/strategy_modeling_profiles.json")
+profile_list_error: str | None = None
+available_profile_names: list[str] = []
+try:
+    available_profile_names = list_strategy_modeling_profiles(profile_store_path)
+except ValueError as exc:
+    profile_list_error = str(exc)
+    available_profile_names = []
+profile_options = available_profile_names if available_profile_names else [""]
+if st.session_state.get(_PROFILE_SELECTED_KEY) not in profile_options:
+    st.session_state[_PROFILE_SELECTED_KEY] = profile_options[0]
 
 with st.sidebar:
-    st.markdown("### Modeling Inputs")
-
-    strategy = st.selectbox(
-        "Strategy",
-        options=["sfp", "msb", "orb", "ma_crossover", "trend_following"],
-        index=0,
+    st.markdown("### Profiles")
+    profile_path_input = st.text_input(
+        "Profile store path",
+        value=str(st.session_state.get(_PROFILE_PATH_KEY, "config/strategy_modeling_profiles.json")),
+        key=_PROFILE_PATH_KEY,
     )
-    start_date = st.date_input("Start date", value=default_start)
-    end_date = st.date_input("End date", value=default_end)
-    intraday_timeframe = st.selectbox("Intraday timeframe", options=["1Min", "5Min", "15Min", "30Min", "60Min"])
+    profile_store_path = Path(str(profile_path_input or "").strip() or "config/strategy_modeling_profiles.json")
+    selected_profile_name = st.selectbox(
+        "Saved profiles",
+        options=profile_options,
+        key=_PROFILE_SELECTED_KEY,
+        format_func=lambda value: value if value else "(none)",
+    )
+    profile_save_name = st.text_input(
+        "Profile name",
+        value=str(st.session_state.get(_PROFILE_SAVE_NAME_KEY, "")),
+        key=_PROFILE_SAVE_NAME_KEY,
+    )
+    overwrite_profile = st.checkbox(
+        "Overwrite existing profile",
+        value=bool(st.session_state.get(_PROFILE_OVERWRITE_KEY, False)),
+        key=_PROFILE_OVERWRITE_KEY,
+    )
+    profile_load_clicked = st.button(
+        "Load Profile",
+        use_container_width=True,
+        disabled=not bool(available_profile_names),
+    )
+    profile_save_clicked = st.button("Save Profile", use_container_width=True)
+
+    st.markdown("### Modeling Inputs")
+    strategy = st.selectbox("Strategy", options=_STRATEGY_OPTIONS, key=_WIDGET_KEYS["strategy"])
+    start_date = st.date_input(
+        "Start date",
+        value=st.session_state.get(_WIDGET_KEYS["start_date"], default_start),
+        key=_WIDGET_KEYS["start_date"],
+    )
+    end_date = st.date_input(
+        "End date",
+        value=st.session_state.get(_WIDGET_KEYS["end_date"], default_end),
+        key=_WIDGET_KEYS["end_date"],
+    )
+    intraday_timeframe = st.selectbox(
+        "Intraday timeframe",
+        options=_INTRADAY_TIMEFRAMES,
+        key=_WIDGET_KEYS["intraday_timeframe"],
+    )
     intraday_source = st.selectbox(
         "Intraday source",
-        options=["stocks_bars_local"],
+        options=_INTRADAY_SOURCES,
+        key=_WIDGET_KEYS["intraday_source"],
         help="Current modeling service consumes persisted stock bars partitions.",
     )
 
     st.markdown("### Portfolio Policy")
-    starting_capital = st.number_input("Starting capital", min_value=1_000.0, value=10_000.0, step=500.0)
-    risk_pct = st.number_input("Risk per trade (%)", min_value=0.1, max_value=10.0, value=1.0, step=0.1)
-    gap_policy = st.selectbox("Gap policy", options=["fill_at_open", "strict_touch"], index=0)
-    max_hold_bars = st.number_input("Max hold (bars)", min_value=1, max_value=100, value=20, step=1)
-    one_open_per_symbol = st.checkbox("One open trade per symbol", value=True)
+    starting_capital = st.number_input(
+        "Starting capital",
+        min_value=1_000.0,
+        value=float(st.session_state.get(_WIDGET_KEYS["starting_capital"], 10_000.0)),
+        step=500.0,
+        key=_WIDGET_KEYS["starting_capital"],
+    )
+    risk_pct = st.number_input(
+        "Risk per trade (%)",
+        min_value=0.1,
+        max_value=10.0,
+        value=float(st.session_state.get(_WIDGET_KEYS["risk_per_trade_pct"], 1.0)),
+        step=0.1,
+        key=_WIDGET_KEYS["risk_per_trade_pct"],
+    )
+    gap_policy = st.selectbox(
+        "Gap policy",
+        options=["fill_at_open", "strict_touch"],
+        key=_WIDGET_KEYS["gap_fill_policy"],
+    )
+    max_hold_bars = int(
+        st.number_input(
+            "Max hold (bars)",
+            min_value=1,
+            max_value=100,
+            value=int(st.session_state.get(_WIDGET_KEYS["max_hold_bars"], 20)),
+            step=1,
+            key=_WIDGET_KEYS["max_hold_bars"],
+        )
+    )
+    one_open_per_symbol = st.checkbox(
+        "One open trade per symbol",
+        value=bool(st.session_state.get(_WIDGET_KEYS["one_open_per_symbol"], True)),
+        key=_WIDGET_KEYS["one_open_per_symbol"],
+    )
+    r_ladder_min_tenths = int(
+        st.number_input(
+            "R ladder min (tenths)",
+            min_value=1,
+            max_value=200,
+            value=int(st.session_state.get(_WIDGET_KEYS["r_ladder_min_tenths"], 10)),
+            step=1,
+            key=_WIDGET_KEYS["r_ladder_min_tenths"],
+        )
+    )
+    r_ladder_max_tenths = int(
+        st.number_input(
+            "R ladder max (tenths)",
+            min_value=1,
+            max_value=400,
+            value=int(st.session_state.get(_WIDGET_KEYS["r_ladder_max_tenths"], 20)),
+            step=1,
+            key=_WIDGET_KEYS["r_ladder_max_tenths"],
+        )
+    )
+    r_ladder_step_tenths = int(
+        st.number_input(
+            "R ladder step (tenths)",
+            min_value=1,
+            max_value=50,
+            value=int(st.session_state.get(_WIDGET_KEYS["r_ladder_step_tenths"], 1)),
+            step=1,
+            key=_WIDGET_KEYS["r_ladder_step_tenths"],
+        )
+    )
 
     st.markdown("### Filters")
     if symbols:
-        selected_symbols = st.multiselect("Tickers", options=symbols, default=_default_ticker_selection(symbols))
+        selected_symbols = st.multiselect(
+            "Tickers",
+            options=symbols,
+            default=list(st.session_state.get(_WIDGET_KEYS["symbols"]) or []),
+            key=_WIDGET_KEYS["symbols"],
+        )
         symbol_filter_text = ""
     else:
-        symbol_filter_text = st.text_input("Tickers (comma-separated)", value="SPY")
+        symbol_filter_text = st.text_input(
+            "Tickers (comma-separated)",
+            value=str(st.session_state.get(_WIDGET_KEYS["symbols_text"], "SPY")),
+            key=_WIDGET_KEYS["symbols_text"],
+        )
         selected_symbols = _as_symbol_filter(symbol_filter_text)
 
     segment_dimensions = st.multiselect(
         "Segment dimensions",
         options=_SEGMENT_DIMENSIONS,
-        default=["symbol", "direction"],
+        default=list(st.session_state.get(_WIDGET_KEYS["segment_dimensions"]) or []),
+        key=_WIDGET_KEYS["segment_dimensions"],
     )
-    segment_values_raw = st.text_input("Segment values (comma-separated)", value="")
+    segment_values_raw = st.text_input(
+        "Segment values (comma-separated)",
+        value=str(st.session_state.get(_WIDGET_KEYS["segment_values_text"], "")),
+        key=_WIDGET_KEYS["segment_values_text"],
+    )
 
     st.markdown("### Strategy Signal Parameters")
-    ma_fast_window = int(st.number_input("MA fast window", min_value=1, max_value=1000, value=20, step=1))
-    ma_slow_window = int(st.number_input("MA slow window", min_value=1, max_value=1000, value=50, step=1))
-    ma_trend_window = int(st.number_input("MA trend window", min_value=1, max_value=2000, value=200, step=1))
-    ma_fast_type = st.selectbox("MA fast type", options=["sma", "ema"], index=0)
-    ma_slow_type = st.selectbox("MA slow type", options=["sma", "ema"], index=0)
-    ma_trend_type = st.selectbox("MA trend type", options=["sma", "ema"], index=0)
-    trend_slope_lookback_bars = int(
-        st.number_input("Trend slope lookback (bars)", min_value=1, max_value=200, value=3, step=1)
+    ma_fast_window = int(
+        st.number_input(
+            "MA fast window",
+            min_value=1,
+            max_value=1000,
+            value=int(st.session_state.get(_WIDGET_KEYS["ma_fast_window"], 20)),
+            step=1,
+            key=_WIDGET_KEYS["ma_fast_window"],
+        )
     )
-    atr_window = int(st.number_input("ATR window", min_value=1, max_value=500, value=14, step=1))
+    ma_slow_window = int(
+        st.number_input(
+            "MA slow window",
+            min_value=1,
+            max_value=1000,
+            value=int(st.session_state.get(_WIDGET_KEYS["ma_slow_window"], 50)),
+            step=1,
+            key=_WIDGET_KEYS["ma_slow_window"],
+        )
+    )
+    ma_trend_window = int(
+        st.number_input(
+            "MA trend window",
+            min_value=1,
+            max_value=2000,
+            value=int(st.session_state.get(_WIDGET_KEYS["ma_trend_window"], 200)),
+            step=1,
+            key=_WIDGET_KEYS["ma_trend_window"],
+        )
+    )
+    ma_fast_type = st.selectbox("MA fast type", options=["sma", "ema"], key=_WIDGET_KEYS["ma_fast_type"])
+    ma_slow_type = st.selectbox("MA slow type", options=["sma", "ema"], key=_WIDGET_KEYS["ma_slow_type"])
+    ma_trend_type = st.selectbox("MA trend type", options=["sma", "ema"], key=_WIDGET_KEYS["ma_trend_type"])
+    trend_slope_lookback_bars = int(
+        st.number_input(
+            "Trend slope lookback (bars)",
+            min_value=1,
+            max_value=200,
+            value=int(st.session_state.get(_WIDGET_KEYS["trend_slope_lookback_bars"], 3)),
+            step=1,
+            key=_WIDGET_KEYS["trend_slope_lookback_bars"],
+        )
+    )
+    atr_window = int(
+        st.number_input(
+            "ATR window",
+            min_value=1,
+            max_value=500,
+            value=int(st.session_state.get(_WIDGET_KEYS["atr_window"], 14)),
+            step=1,
+            key=_WIDGET_KEYS["atr_window"],
+        )
+    )
     atr_stop_multiple = float(
-        st.number_input("ATR stop multiple", min_value=0.1, max_value=20.0, value=2.0, step=0.1)
+        st.number_input(
+            "ATR stop multiple",
+            min_value=0.1,
+            max_value=20.0,
+            value=float(st.session_state.get(_WIDGET_KEYS["atr_stop_multiple"], 2.0)),
+            step=0.1,
+            key=_WIDGET_KEYS["atr_stop_multiple"],
+        )
     )
 
     st.markdown("### Entry Filters")
-    allow_shorts = st.checkbox("Allow short-direction entries", value=True)
-    enable_orb_confirmation = st.checkbox("Enable ORB confirmation gate", value=False)
-    orb_range_minutes = int(st.number_input("ORB range (minutes)", min_value=1, max_value=120, value=15, step=1))
-    orb_confirmation_cutoff_et = st.text_input("ORB confirmation cutoff ET (HH:MM)", value="10:30")
-    orb_stop_policy = st.selectbox("ORB stop policy", options=["base", "orb_range", "tighten"], index=0)
-    enable_atr_stop_floor = st.checkbox("Enable ATR stop floor", value=False)
+    allow_shorts = st.checkbox(
+        "Allow short-direction entries",
+        value=bool(st.session_state.get(_WIDGET_KEYS["allow_shorts"], True)),
+        key=_WIDGET_KEYS["allow_shorts"],
+    )
+    enable_orb_confirmation = st.checkbox(
+        "Enable ORB confirmation gate",
+        value=bool(st.session_state.get(_WIDGET_KEYS["enable_orb_confirmation"], False)),
+        key=_WIDGET_KEYS["enable_orb_confirmation"],
+    )
+    orb_range_minutes = int(
+        st.number_input(
+            "ORB range (minutes)",
+            min_value=1,
+            max_value=120,
+            value=int(st.session_state.get(_WIDGET_KEYS["orb_range_minutes"], 15)),
+            step=1,
+            key=_WIDGET_KEYS["orb_range_minutes"],
+        )
+    )
+    orb_confirmation_cutoff_et = st.text_input(
+        "ORB confirmation cutoff ET (HH:MM)",
+        value=str(st.session_state.get(_WIDGET_KEYS["orb_confirmation_cutoff_et"], "10:30")),
+        key=_WIDGET_KEYS["orb_confirmation_cutoff_et"],
+    )
+    orb_stop_policy = st.selectbox(
+        "ORB stop policy",
+        options=["base", "orb_range", "tighten"],
+        key=_WIDGET_KEYS["orb_stop_policy"],
+    )
+    enable_atr_stop_floor = st.checkbox(
+        "Enable ATR stop floor",
+        value=bool(st.session_state.get(_WIDGET_KEYS["enable_atr_stop_floor"], False)),
+        key=_WIDGET_KEYS["enable_atr_stop_floor"],
+    )
     atr_stop_floor_multiple = float(
-        st.number_input("ATR stop floor multiple", min_value=0.1, max_value=10.0, value=0.5, step=0.1)
+        st.number_input(
+            "ATR stop floor multiple",
+            min_value=0.1,
+            max_value=10.0,
+            value=float(st.session_state.get(_WIDGET_KEYS["atr_stop_floor_multiple"], 0.5)),
+            step=0.1,
+            key=_WIDGET_KEYS["atr_stop_floor_multiple"],
+        )
     )
-    enable_rsi_extremes = st.checkbox("Enable RSI extremes gate", value=False)
-    enable_ema9_regime = st.checkbox("Enable EMA9 regime gate", value=False)
+    enable_rsi_extremes = st.checkbox(
+        "Enable RSI extremes gate",
+        value=bool(st.session_state.get(_WIDGET_KEYS["enable_rsi_extremes"], False)),
+        key=_WIDGET_KEYS["enable_rsi_extremes"],
+    )
+    enable_ema9_regime = st.checkbox(
+        "Enable EMA9 regime gate",
+        value=bool(st.session_state.get(_WIDGET_KEYS["enable_ema9_regime"], False)),
+        key=_WIDGET_KEYS["enable_ema9_regime"],
+    )
     ema9_slope_lookback_bars = int(
-        st.number_input("EMA9 slope lookback (bars)", min_value=1, max_value=50, value=3, step=1)
+        st.number_input(
+            "EMA9 slope lookback (bars)",
+            min_value=1,
+            max_value=50,
+            value=int(st.session_state.get(_WIDGET_KEYS["ema9_slope_lookback_bars"], 3)),
+            step=1,
+            key=_WIDGET_KEYS["ema9_slope_lookback_bars"],
+        )
     )
-    enable_volatility_regime = st.checkbox("Enable volatility regime gate", value=False)
+    enable_volatility_regime = st.checkbox(
+        "Enable volatility regime gate",
+        value=bool(st.session_state.get(_WIDGET_KEYS["enable_volatility_regime"], False)),
+        key=_WIDGET_KEYS["enable_volatility_regime"],
+    )
     allowed_volatility_regimes = st.multiselect(
         "Allowed volatility regimes",
         options=_VOLATILITY_REGIMES,
-        default=_VOLATILITY_REGIMES,
+        default=list(st.session_state.get(_WIDGET_KEYS["allowed_volatility_regimes"]) or []),
+        key=_WIDGET_KEYS["allowed_volatility_regimes"],
     )
     st.markdown("### Export")
-    export_reports_dir = st.text_input("Export reports dir", value=_DEFAULT_EXPORT_REPORTS_DIR)
-    export_output_timezone = st.text_input("Export output timezone", value=_DEFAULT_EXPORT_TIMEZONE)
+    export_reports_dir = st.text_input(
+        "Export reports dir",
+        value=str(st.session_state.get(_WIDGET_KEYS["export_reports_dir"], _DEFAULT_EXPORT_REPORTS_DIR)),
+        key=_WIDGET_KEYS["export_reports_dir"],
+    )
+    export_output_timezone = st.text_input(
+        "Export output timezone",
+        value=str(st.session_state.get(_WIDGET_KEYS["export_output_timezone"], _DEFAULT_EXPORT_TIMEZONE)),
+        key=_WIDGET_KEYS["export_output_timezone"],
+    )
+
+if profile_list_error:
+    st.error(f"Profiles: {profile_list_error}")
+
+if profile_load_clicked:
+    if not selected_profile_name:
+        st.error("Choose a saved profile to load.")
+    else:
+        try:
+            loaded_profile = load_strategy_modeling_profile(profile_store_path, selected_profile_name)
+        except ValueError as exc:
+            st.error(f"Failed to load profile: {exc}")
+        else:
+            _apply_loaded_profile_to_state(
+                profile=loaded_profile,
+                available_symbols=symbols,
+                available_intraday_sources=_INTRADAY_SOURCES,
+                available_timeframes=_INTRADAY_TIMEFRAMES,
+            )
+            st.session_state[_PROFILE_SELECTED_KEY] = selected_profile_name
+            st.session_state[_PROFILE_SAVE_NAME_KEY] = selected_profile_name
+            st.rerun()
 
 for note in symbol_notes:
     st.warning(note)
@@ -456,17 +1007,108 @@ try:
 except ValueError as exc:
     signal_kwargs_error = f"Invalid strategy signal parameters: {exc}"
 
+target_ladder = ()
+target_ladder_error: str | None = None
+try:
+    target_ladder = build_r_target_ladder(
+        min_target_tenths=int(r_ladder_min_tenths),
+        max_target_tenths=int(r_ladder_max_tenths),
+        step_tenths=int(r_ladder_step_tenths),
+    )
+except ValueError as exc:
+    target_ladder_error = f"Invalid R-ladder configuration: {exc}"
+
+profile_model: StrategyModelingProfile | None = None
+profile_validation_error: str | None = None
+try:
+    profile_model = _build_profile_from_inputs(
+        strategy=str(strategy),
+        symbols=tuple(selected_symbols),
+        start_date=start_date,
+        end_date=end_date,
+        intraday_timeframe=str(intraday_timeframe),
+        intraday_source=str(intraday_source),
+        starting_capital=float(starting_capital),
+        risk_per_trade_pct=float(risk_pct),
+        gap_fill_policy=str(gap_policy),
+        max_hold_bars=int(max_hold_bars),
+        one_open_per_symbol=bool(one_open_per_symbol),
+        r_ladder_min_tenths=int(r_ladder_min_tenths),
+        r_ladder_max_tenths=int(r_ladder_max_tenths),
+        r_ladder_step_tenths=int(r_ladder_step_tenths),
+        allow_shorts=bool(allow_shorts),
+        enable_orb_confirmation=bool(enable_orb_confirmation),
+        orb_range_minutes=int(orb_range_minutes),
+        orb_confirmation_cutoff_et=str(orb_confirmation_cutoff_et),
+        orb_stop_policy=str(orb_stop_policy),
+        enable_atr_stop_floor=bool(enable_atr_stop_floor),
+        atr_stop_floor_multiple=float(atr_stop_floor_multiple),
+        enable_rsi_extremes=bool(enable_rsi_extremes),
+        enable_ema9_regime=bool(enable_ema9_regime),
+        ema9_slope_lookback_bars=int(ema9_slope_lookback_bars),
+        enable_volatility_regime=bool(enable_volatility_regime),
+        allowed_volatility_regimes=tuple(allowed_volatility_regimes),
+        ma_fast_window=int(ma_fast_window),
+        ma_slow_window=int(ma_slow_window),
+        ma_trend_window=int(ma_trend_window),
+        ma_fast_type=str(ma_fast_type),
+        ma_slow_type=str(ma_slow_type),
+        ma_trend_type=str(ma_trend_type),
+        trend_slope_lookback_bars=int(trend_slope_lookback_bars),
+        atr_window=int(atr_window),
+        atr_stop_multiple=float(atr_stop_multiple),
+    )
+except ValidationError as exc:
+    detail = "; ".join(error.get("msg", "invalid value") for error in exc.errors())
+    profile_validation_error = f"Invalid profile values: {detail}"
+
+if profile_save_clicked:
+    save_name = str(profile_save_name or "").strip()
+    if not save_name:
+        st.error("Enter a profile name before saving.")
+    elif profile_model is None:
+        st.error(profile_validation_error or "Current inputs are invalid and cannot be saved as a profile.")
+    else:
+        try:
+            save_strategy_modeling_profile(
+                profile_store_path,
+                save_name,
+                profile_model,
+                overwrite=bool(overwrite_profile),
+            )
+        except ValueError as exc:
+            st.error(f"Failed to save profile: {exc}")
+        else:
+            st.session_state[_PROFILE_SELECTED_KEY] = save_name
+            st.session_state[_PROFILE_SAVE_NAME_KEY] = save_name
+            st.success(f"Saved profile '{save_name}'")
+            st.rerun()
+
 if filter_config_error:
     st.error(filter_config_error)
 if signal_kwargs_error:
     st.error(signal_kwargs_error)
+if target_ladder_error:
+    st.error(target_ladder_error)
+if profile_validation_error:
+    st.error(profile_validation_error)
 
-run_disabled = run_is_blocked or filter_config is None or signal_kwargs_error is not None
+run_disabled = (
+    run_is_blocked
+    or filter_config is None
+    or signal_kwargs_error is not None
+    or target_ladder_error is not None
+    or profile_validation_error is not None
+)
 run_help = "Runs local deterministic strategy modeling. Disabled when required intraday coverage is missing."
 if filter_config is None:
     run_help = f"{run_help} Fix invalid entry-filter settings first."
 if signal_kwargs_error is not None:
     run_help = f"{run_help} Fix invalid strategy signal parameters first."
+if target_ladder_error is not None:
+    run_help = f"{run_help} Fix invalid R-ladder settings first."
+if profile_validation_error is not None:
+    run_help = f"{run_help} Fix invalid profile/run input values first."
 
 run_clicked = st.button(
     "Run Strategy Modeling",
@@ -481,7 +1123,14 @@ if clear_clicked:
     st.session_state.pop(_RESULT_STATE_KEY, None)
     st.session_state.pop(_REQUEST_STATE_KEY, None)
 
-if run_clicked and not run_is_blocked and filter_config is not None and signal_kwargs_error is None:
+if (
+    run_clicked
+    and not run_is_blocked
+    and filter_config is not None
+    and signal_kwargs_error is None
+    and target_ladder_error is None
+    and profile_validation_error is None
+):
     service = cli_deps.build_strategy_modeling_service()
     request = StrategyModelingRequest(
         strategy=strategy,
@@ -490,6 +1139,7 @@ if run_clicked and not run_is_blocked and filter_config is not None and signal_k
         end_date=end_date,
         intraday_dir=Path("data/intraday"),
         intraday_timeframe=intraday_timeframe,
+        target_ladder=target_ladder,
         signal_kwargs=signal_kwargs,
         starting_capital=float(starting_capital),
         max_hold_bars=int(max_hold_bars),

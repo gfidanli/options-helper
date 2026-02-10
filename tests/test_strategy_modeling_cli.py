@@ -10,6 +10,11 @@ from typer.testing import CliRunner
 
 from options_helper.cli import app
 from options_helper.data.strategy_modeling_artifacts import DISCLAIMER_TEXT
+from options_helper.data.strategy_modeling_profiles import (
+    load_strategy_modeling_profile,
+    save_strategy_modeling_profile,
+)
+from options_helper.schemas.strategy_modeling_profile import StrategyModelingProfile
 
 
 class _StubStrategyModelingService:
@@ -199,6 +204,48 @@ def _build_run_result(*, request, preflight):  # noqa: ANN001
             },
         },
     )
+
+
+def _profile_fixture(**updates: object) -> StrategyModelingProfile:
+    payload = {
+        "strategy": "msb",
+        "symbols": ["SPY", "QQQ"],
+        "start_date": date(2026, 1, 1),
+        "end_date": date(2026, 1, 31),
+        "intraday_timeframe": "5Min",
+        "intraday_source": "alpaca",
+        "starting_capital": 25_000.0,
+        "risk_per_trade_pct": 2.5,
+        "gap_fill_policy": "fill_at_open",
+        "max_hold_bars": 20,
+        "one_open_per_symbol": True,
+        "r_ladder_min_tenths": 12,
+        "r_ladder_max_tenths": 16,
+        "r_ladder_step_tenths": 2,
+        "allow_shorts": False,
+        "enable_orb_confirmation": True,
+        "orb_range_minutes": 20,
+        "orb_confirmation_cutoff_et": "10:15",
+        "orb_stop_policy": "tighten",
+        "enable_atr_stop_floor": True,
+        "atr_stop_floor_multiple": 0.8,
+        "enable_rsi_extremes": True,
+        "enable_ema9_regime": True,
+        "ema9_slope_lookback_bars": 5,
+        "enable_volatility_regime": True,
+        "allowed_volatility_regimes": ["low", "normal"],
+        "ma_fast_window": 21,
+        "ma_slow_window": 55,
+        "ma_trend_window": 200,
+        "ma_fast_type": "ema",
+        "ma_slow_type": "sma",
+        "ma_trend_type": "sma",
+        "trend_slope_lookback_bars": 4,
+        "atr_window": 10,
+        "atr_stop_multiple": 1.7,
+    }
+    payload.update(updates)
+    return StrategyModelingProfile.model_validate(payload)
 
 
 def test_strategy_model_command_is_registered_under_technicals() -> None:
@@ -601,6 +648,208 @@ def test_strategy_model_success_resolves_universe_filters(monkeypatch) -> None: 
     assert stub.last_request.filter_config.enable_rsi_extremes is False
     assert stub.last_request.filter_config.enable_ema9_regime is False
     assert stub.last_request.filter_config.enable_volatility_regime is False
+
+
+def test_strategy_model_profile_load_applies_stored_values(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    stub = _StubStrategyModelingService(blocked=False)
+    monkeypatch.setattr(
+        "options_helper.commands.technicals.cli_deps.build_strategy_modeling_service",
+        lambda: stub,
+    )
+    profile_path = tmp_path / "strategy_profiles.json"
+    save_strategy_modeling_profile(profile_path, "swing_core", _profile_fixture(), overwrite=False)
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--profile-path",
+            str(profile_path),
+            "--profile",
+            "swing_core",
+        ],
+    )
+
+    assert res.exit_code == 0, res.output
+    req = stub.last_request
+    assert req is not None
+    assert req.strategy == "msb"
+    assert tuple(req.symbols) == ("SPY", "QQQ")
+    assert req.start_date.isoformat() == "2026-01-01"
+    assert req.end_date.isoformat() == "2026-01-31"
+    assert req.intraday_timeframe == "5Min"
+    assert req.intraday_source == "alpaca"
+    assert req.starting_capital == 25_000.0
+    assert req.max_hold_bars == 20
+    assert req.policy["risk_per_trade_pct"] == 2.5
+    assert req.policy["one_open_per_symbol"] is True
+    assert [target.label for target in req.target_ladder] == ["1.2R", "1.4R", "1.6R"]
+    assert req.filter_config.allow_shorts is False
+    assert stub.universe_calls == []
+
+
+def test_strategy_model_profile_load_honors_explicit_cli_overrides(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    stub = _StubStrategyModelingService(blocked=False)
+    monkeypatch.setattr(
+        "options_helper.commands.technicals.cli_deps.build_strategy_modeling_service",
+        lambda: stub,
+    )
+    profile_path = tmp_path / "strategy_profiles.json"
+    save_strategy_modeling_profile(profile_path, "base_profile", _profile_fixture(), overwrite=False)
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--profile-path",
+            str(profile_path),
+            "--profile",
+            "base_profile",
+            "--strategy",
+            "orb",
+            "--symbols",
+            "IWM",
+            "--allow-shorts",
+            "--starting-capital",
+            "50000",
+            "--risk-per-trade-pct",
+            "3.0",
+        ],
+    )
+
+    assert res.exit_code == 0, res.output
+    req = stub.last_request
+    assert req is not None
+    assert req.strategy == "orb"
+    assert tuple(req.symbols) == ("IWM",)
+    assert req.starting_capital == 50_000.0
+    assert req.policy["risk_per_trade_pct"] == 3.0
+    assert req.filter_config.allow_shorts is True
+    assert req.filter_config.enable_orb_confirmation is True
+    assert req.intraday_timeframe == "5Min"
+
+
+def test_strategy_model_save_profile_writes_normalized_values(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    stub = _StubStrategyModelingService(blocked=False)
+    monkeypatch.setattr(
+        "options_helper.commands.technicals.cli_deps.build_strategy_modeling_service",
+        lambda: stub,
+    )
+    profile_path = tmp_path / "strategy_profiles.json"
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--strategy",
+            "orb",
+            "--symbols",
+            "spy",
+            "--intraday-timeframe",
+            "1Min",
+            "--intraday-source",
+            "stocks_bars_local",
+            "--risk-per-trade-pct",
+            "3.0",
+            "--max-hold-bars",
+            "15",
+            "--no-allow-shorts",
+            "--r-ladder-min-tenths",
+            "11",
+            "--r-ladder-max-tenths",
+            "13",
+            "--r-ladder-step-tenths",
+            "1",
+            "--profile-path",
+            str(profile_path),
+            "--save-profile",
+            "orb_fast",
+        ],
+    )
+
+    assert res.exit_code == 0, res.output
+    saved = load_strategy_modeling_profile(profile_path, "orb_fast")
+    assert saved.strategy == "orb"
+    assert saved.symbols == ("SPY",)
+    assert saved.intraday_timeframe == "1Min"
+    assert saved.intraday_source == "stocks_bars_local"
+    assert saved.risk_per_trade_pct == 3.0
+    assert saved.max_hold_bars == 15
+    assert saved.allow_shorts is False
+    assert saved.r_ladder_min_tenths == 11
+    assert saved.r_ladder_max_tenths == 13
+    assert saved.r_ladder_step_tenths == 1
+
+
+def test_strategy_model_save_profile_requires_overwrite_for_existing_name(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    stub = _StubStrategyModelingService(blocked=False)
+    monkeypatch.setattr(
+        "options_helper.commands.technicals.cli_deps.build_strategy_modeling_service",
+        lambda: stub,
+    )
+    profile_path = tmp_path / "strategy_profiles.json"
+    save_strategy_modeling_profile(profile_path, "existing_profile", _profile_fixture(), overwrite=False)
+
+    runner = CliRunner()
+    conflict = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--symbols",
+            "SPY",
+            "--profile-path",
+            str(profile_path),
+            "--save-profile",
+            "existing_profile",
+        ],
+    )
+    assert conflict.exit_code != 0
+    assert "already exists" in conflict.output
+
+    overwrite = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--symbols",
+            "SPY",
+            "--profile-path",
+            str(profile_path),
+            "--save-profile",
+            "existing_profile",
+            "--overwrite-profile",
+        ],
+    )
+    assert overwrite.exit_code == 0, overwrite.output
 
 
 def test_strategy_model_filters_fail_when_no_symbols_remain(monkeypatch) -> None:  # type: ignore[no-untyped-def]

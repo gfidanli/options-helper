@@ -2621,12 +2621,57 @@ def _intraday_coverage_block_message(preflight: object | None) -> str | None:
     return message
 
 
+def _option_was_set_on_command_line(ctx: typer.Context, option_name: str) -> bool:
+    from click.core import ParameterSource
+
+    source = ctx.get_parameter_source(option_name)
+    return source == ParameterSource.COMMANDLINE
+
+
+def _merge_strategy_modeling_profile_values(
+    *,
+    ctx: typer.Context,
+    loaded_profile,
+    cli_values: dict[str, object],
+):
+    from options_helper.schemas.strategy_modeling_profile import StrategyModelingProfile
+
+    payload = loaded_profile.model_dump() if loaded_profile is not None else {}
+    for field_name, field_value in cli_values.items():
+        if loaded_profile is None or _option_was_set_on_command_line(ctx, field_name):
+            payload[field_name] = field_value
+        else:
+            payload.setdefault(field_name, field_value)
+    return StrategyModelingProfile.model_validate(payload)
+
+
 @app.command("strategy-model")
 def technicals_strategy_model(
+    ctx: typer.Context,
     strategy: str = typer.Option(
         "sfp",
         "--strategy",
         help="Strategy to model: sfp, msb, orb, ma_crossover, or trend_following.",
+    ),
+    profile: str | None = typer.Option(
+        None,
+        "--profile",
+        help="Load a named strategy-modeling profile from --profile-path.",
+    ),
+    save_profile: str | None = typer.Option(
+        None,
+        "--save-profile",
+        help="Save effective strategy-modeling inputs under this profile name.",
+    ),
+    overwrite_profile: bool = typer.Option(
+        False,
+        "--overwrite-profile/--no-overwrite-profile",
+        help="Allow --save-profile to overwrite an existing profile name.",
+    ),
+    profile_path: Path = typer.Option(
+        Path("config/strategy_modeling_profiles.json"),
+        "--profile-path",
+        help="Strategy-modeling profile store path (JSON).",
     ),
     allow_shorts: bool = typer.Option(
         True,
@@ -2798,6 +2843,16 @@ def technicals_strategy_model(
         "--gap-fill-policy",
         help="Gap fill policy for stop/target-through-open fills.",
     ),
+    max_hold_bars: int | None = typer.Option(
+        None,
+        "--max-hold-bars",
+        help="Optional max hold duration in bars for simulated trades.",
+    ),
+    one_open_per_symbol: bool = typer.Option(
+        True,
+        "--one-open-per-symbol/--no-one-open-per-symbol",
+        help="Allow at most one open trade per symbol at a time.",
+    ),
     signal_confirmation_lag_bars: int | None = typer.Option(
         None,
         "--signal-confirmation-lag-bars",
@@ -2843,13 +2898,20 @@ def technicals_strategy_model(
     ),
 ) -> None:
     """Run strategy-modeling service and write JSON/CSV/Markdown artifacts."""
+    from pydantic import ValidationError
+
     from options_helper.analysis.strategy_modeling import StrategyModelingRequest
     from options_helper.data.strategy_modeling_artifacts import write_strategy_modeling_artifacts
+    from options_helper.data.strategy_modeling_profiles import (
+        StrategyModelingProfileStoreError,
+        load_strategy_modeling_profile,
+        save_strategy_modeling_profile,
+    )
 
     console = Console(width=200)
 
-    normalized_strategy = strategy.strip().lower()
-    if normalized_strategy not in {"sfp", "msb", "orb", "ma_crossover", "trend_following"}:
+    normalized_cli_strategy = strategy.strip().lower()
+    if normalized_cli_strategy not in {"sfp", "msb", "orb", "ma_crossover", "trend_following"}:
         raise typer.BadParameter(
             "--strategy must be one of: sfp, msb, orb, ma_crossover, trend_following"
         )
@@ -2859,6 +2921,8 @@ def technicals_strategy_model(
         raise typer.BadParameter("--risk-per-trade-pct must be > 0 and <= 100")
     if gap_fill_policy != "fill_at_open":
         raise typer.BadParameter("--gap-fill-policy currently supports only fill_at_open")
+    if max_hold_bars is not None and int(max_hold_bars) < 1:
+        raise typer.BadParameter("--max-hold-bars must be >= 1")
     if segment_min_trades < 1:
         raise typer.BadParameter("--segment-min-trades must be >= 1")
     if segment_limit < 1:
@@ -2867,12 +2931,13 @@ def technicals_strategy_model(
         raise typer.BadParameter("--universe-limit must be >= 1")
     normalized_output_timezone = _normalize_output_timezone(output_timezone)
 
-    parsed_start_date = _parse_iso_date(start_date, option_name="--start-date")
-    parsed_end_date = _parse_iso_date(end_date, option_name="--end-date")
-    if parsed_start_date and parsed_end_date and parsed_start_date > parsed_end_date:
+    parsed_cli_start_date = _parse_iso_date(start_date, option_name="--start-date")
+    parsed_cli_end_date = _parse_iso_date(end_date, option_name="--end-date")
+    if parsed_cli_start_date and parsed_cli_end_date and parsed_cli_start_date > parsed_cli_end_date:
         raise typer.BadParameter("--start-date must be <= --end-date")
-    signal_kwargs = _build_strategy_signal_kwargs(
-        strategy=normalized_strategy,
+    # Preserve option-specific error messages for explicit CLI validation before profile merging.
+    _build_strategy_signal_kwargs(
+        strategy=normalized_cli_strategy,
         ma_fast_window=int(ma_fast_window),
         ma_slow_window=int(ma_slow_window),
         ma_trend_window=int(ma_trend_window),
@@ -2883,7 +2948,7 @@ def technicals_strategy_model(
         atr_window=int(atr_window),
         atr_stop_multiple=float(atr_stop_multiple),
     )
-    filter_config = _build_strategy_filter_config(
+    _build_strategy_filter_config(
         allow_shorts=allow_shorts,
         enable_orb_confirmation=enable_orb_confirmation,
         orb_range_minutes=int(orb_range_minutes),
@@ -2897,12 +2962,110 @@ def technicals_strategy_model(
         enable_volatility_regime=enable_volatility_regime,
         allowed_volatility_regimes=allowed_volatility_regimes,
     )
+    parsed_cli_allowed_volatility_regimes = _parse_allowed_volatility_regimes(
+        allowed_volatility_regimes,
+        option_name="--allowed-volatility-regimes",
+    )
+
+    loaded_profile = None
+    if profile is not None:
+        try:
+            loaded_profile = load_strategy_modeling_profile(profile_path, profile)
+        except StrategyModelingProfileStoreError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+
+    cli_profile_values: dict[str, object] = {
+        "strategy": normalized_cli_strategy,
+        "symbols": tuple(_split_csv_option(symbols)),
+        "start_date": parsed_cli_start_date,
+        "end_date": parsed_cli_end_date,
+        "intraday_timeframe": str(intraday_timeframe),
+        "intraday_source": str(intraday_source),
+        "starting_capital": float(starting_capital),
+        "risk_per_trade_pct": float(risk_per_trade_pct),
+        "gap_fill_policy": str(gap_fill_policy),
+        "max_hold_bars": int(max_hold_bars) if max_hold_bars is not None else None,
+        "one_open_per_symbol": bool(one_open_per_symbol),
+        "r_ladder_min_tenths": int(r_ladder_min_tenths),
+        "r_ladder_max_tenths": int(r_ladder_max_tenths),
+        "r_ladder_step_tenths": int(r_ladder_step_tenths),
+        "allow_shorts": bool(allow_shorts),
+        "enable_orb_confirmation": bool(enable_orb_confirmation),
+        "orb_range_minutes": int(orb_range_minutes),
+        "orb_confirmation_cutoff_et": str(orb_confirmation_cutoff_et),
+        "orb_stop_policy": str(orb_stop_policy),
+        "enable_atr_stop_floor": bool(enable_atr_stop_floor),
+        "atr_stop_floor_multiple": float(atr_stop_floor_multiple),
+        "enable_rsi_extremes": bool(enable_rsi_extremes),
+        "enable_ema9_regime": bool(enable_ema9_regime),
+        "ema9_slope_lookback_bars": int(ema9_slope_lookback_bars),
+        "enable_volatility_regime": bool(enable_volatility_regime),
+        "allowed_volatility_regimes": parsed_cli_allowed_volatility_regimes,
+        "ma_fast_window": int(ma_fast_window),
+        "ma_slow_window": int(ma_slow_window),
+        "ma_trend_window": int(ma_trend_window),
+        "ma_fast_type": str(ma_fast_type),
+        "ma_slow_type": str(ma_slow_type),
+        "ma_trend_type": str(ma_trend_type),
+        "trend_slope_lookback_bars": int(trend_slope_lookback_bars),
+        "atr_window": int(atr_window),
+        "atr_stop_multiple": float(atr_stop_multiple),
+    }
+    try:
+        effective_profile = _merge_strategy_modeling_profile_values(
+            ctx=ctx,
+            loaded_profile=loaded_profile,
+            cli_values=cli_profile_values,
+        )
+    except ValidationError as exc:
+        detail = "; ".join(error.get("msg", "invalid value") for error in exc.errors())
+        raise typer.BadParameter(f"Invalid strategy-modeling profile values: {detail}") from exc
+
+    normalized_strategy = effective_profile.strategy
+    signal_kwargs = _build_strategy_signal_kwargs(
+        strategy=normalized_strategy,
+        ma_fast_window=int(effective_profile.ma_fast_window),
+        ma_slow_window=int(effective_profile.ma_slow_window),
+        ma_trend_window=int(effective_profile.ma_trend_window),
+        ma_fast_type=effective_profile.ma_fast_type,
+        ma_slow_type=effective_profile.ma_slow_type,
+        ma_trend_type=effective_profile.ma_trend_type,
+        trend_slope_lookback_bars=int(effective_profile.trend_slope_lookback_bars),
+        atr_window=int(effective_profile.atr_window),
+        atr_stop_multiple=float(effective_profile.atr_stop_multiple),
+    )
+    filter_config = _build_strategy_filter_config(
+        allow_shorts=effective_profile.allow_shorts,
+        enable_orb_confirmation=effective_profile.enable_orb_confirmation,
+        orb_range_minutes=int(effective_profile.orb_range_minutes),
+        orb_confirmation_cutoff_et=effective_profile.orb_confirmation_cutoff_et,
+        orb_stop_policy=effective_profile.orb_stop_policy,
+        enable_atr_stop_floor=effective_profile.enable_atr_stop_floor,
+        atr_stop_floor_multiple=float(effective_profile.atr_stop_floor_multiple),
+        enable_rsi_extremes=effective_profile.enable_rsi_extremes,
+        enable_ema9_regime=effective_profile.enable_ema9_regime,
+        ema9_slope_lookback_bars=int(effective_profile.ema9_slope_lookback_bars),
+        enable_volatility_regime=effective_profile.enable_volatility_regime,
+        allowed_volatility_regimes=",".join(effective_profile.allowed_volatility_regimes),
+    )
 
     target_ladder = _build_target_ladder(
-        min_tenths=int(r_ladder_min_tenths),
-        max_tenths=int(r_ladder_max_tenths),
-        step_tenths=int(r_ladder_step_tenths),
+        min_tenths=int(effective_profile.r_ladder_min_tenths),
+        max_tenths=int(effective_profile.r_ladder_max_tenths),
+        step_tenths=int(effective_profile.r_ladder_step_tenths),
     )
+
+    if save_profile is not None:
+        try:
+            save_strategy_modeling_profile(
+                profile_path,
+                save_profile,
+                effective_profile,
+                overwrite=overwrite_profile,
+            )
+        except StrategyModelingProfileStoreError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        console.print(f"Saved strategy-modeling profile '{save_profile}' -> {profile_path}")
 
     service = cli_deps.build_strategy_modeling_service()
     stage_timings: dict[str, float] = {}
@@ -3020,7 +3183,7 @@ def technicals_strategy_model(
 
     resolved_symbols = _resolve_strategy_symbols(
         service=service,
-        requested_symbols=_split_csv_option(symbols),
+        requested_symbols=list(effective_profile.symbols),
         excluded_symbols=set(_split_csv_option(exclude_symbols)),
         universe_limit=universe_limit,
     )
@@ -3030,26 +3193,29 @@ def technicals_strategy_model(
     base_request = StrategyModelingRequest(
         strategy=normalized_strategy,
         symbols=resolved_symbols,
-        start_date=parsed_start_date,
-        end_date=parsed_end_date,
-        intraday_timeframe=intraday_timeframe,
+        start_date=effective_profile.start_date,
+        end_date=effective_profile.end_date,
+        intraday_timeframe=effective_profile.intraday_timeframe,
         target_ladder=target_ladder,
-        starting_capital=float(starting_capital),
+        starting_capital=float(effective_profile.starting_capital),
+        max_hold_bars=effective_profile.max_hold_bars,
         filter_config=filter_config,
         signal_kwargs=signal_kwargs,
         policy={
             "require_intraday_bars": True,
             "sizing_rule": "risk_pct_of_equity",
-            "risk_per_trade_pct": float(risk_per_trade_pct),
-            "gap_fill_policy": gap_fill_policy,
+            "risk_per_trade_pct": float(effective_profile.risk_per_trade_pct),
+            "gap_fill_policy": effective_profile.gap_fill_policy,
+            "max_hold_bars": effective_profile.max_hold_bars,
+            "one_open_per_symbol": bool(effective_profile.one_open_per_symbol),
             "entry_ts_anchor_policy": "first_tradable_bar_open_after_signal_confirmed_ts",
         },
     )
 
     request = SimpleNamespace(
         **vars(base_request),
-        intraday_source=intraday_source,
-        gap_fill_policy=gap_fill_policy,
+        intraday_source=effective_profile.intraday_source,
+        gap_fill_policy=effective_profile.gap_fill_policy,
         intra_bar_tie_break_rule="stop_first",
         signal_confirmation_lag_bars=signal_confirmation_lag_bars,
         output_timezone=normalized_output_timezone,
@@ -3063,7 +3229,7 @@ def technicals_strategy_model(
         console.print(
             (
                 f"[cyan]Starting strategy-model run: strategy={normalized_strategy} "
-                f"symbols={len(resolved_symbols)} timeframe={intraday_timeframe}[/cyan]"
+                f"symbols={len(resolved_symbols)} timeframe={effective_profile.intraday_timeframe}[/cyan]"
             )
         )
     run_started = time.perf_counter()

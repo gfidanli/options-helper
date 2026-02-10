@@ -11,10 +11,16 @@ import duckdb
 import pandas as pd
 from pandas.io.formats.style import Styler
 import pytest
+from typer.testing import CliRunner
 
 from options_helper.data.intraday_store import IntradayStore
+from options_helper.data.strategy_modeling_profiles import (
+    load_strategy_modeling_profile,
+    save_strategy_modeling_profile,
+)
 from options_helper.db.migrations import ensure_schema
 from options_helper.db.warehouse import DuckDBWarehouse
+from options_helper.schemas.strategy_modeling_profile import StrategyModelingProfile
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -107,6 +113,48 @@ def _ready_payload() -> dict[str, object]:
             "coverage_rows": [],
         },
     }
+
+
+def _profile_fixture(**updates: object) -> StrategyModelingProfile:
+    payload = {
+        "strategy": "orb",
+        "symbols": ["SPY"],
+        "start_date": date(2026, 1, 1),
+        "end_date": date(2026, 1, 31),
+        "intraday_timeframe": "5Min",
+        "intraday_source": "stocks_bars_local",
+        "starting_capital": 25_000.0,
+        "risk_per_trade_pct": 2.5,
+        "gap_fill_policy": "fill_at_open",
+        "max_hold_bars": 20,
+        "one_open_per_symbol": True,
+        "r_ladder_min_tenths": 12,
+        "r_ladder_max_tenths": 16,
+        "r_ladder_step_tenths": 2,
+        "allow_shorts": False,
+        "enable_orb_confirmation": True,
+        "orb_range_minutes": 20,
+        "orb_confirmation_cutoff_et": "10:15",
+        "orb_stop_policy": "tighten",
+        "enable_atr_stop_floor": True,
+        "atr_stop_floor_multiple": 0.8,
+        "enable_rsi_extremes": True,
+        "enable_ema9_regime": True,
+        "ema9_slope_lookback_bars": 5,
+        "enable_volatility_regime": True,
+        "allowed_volatility_regimes": ["low", "normal"],
+        "ma_fast_window": 21,
+        "ma_slow_window": 55,
+        "ma_trend_window": 200,
+        "ma_fast_type": "ema",
+        "ma_slow_type": "sma",
+        "ma_trend_type": "sma",
+        "trend_slope_lookback_bars": 4,
+        "atr_window": 10,
+        "atr_stop_multiple": 1.7,
+    }
+    payload.update(updates)
+    return StrategyModelingProfile.model_validate(payload)
 
 
 def test_strategy_modeling_component_seeded_db_success_path(tmp_path: Path) -> None:
@@ -231,6 +279,7 @@ def test_strategy_modeling_page_disables_run_when_intraday_coverage_missing(
     import options_helper.cli_deps as cli_deps
     import streamlit as st
 
+    st.session_state.clear()
     _clear_component_caches(component)
     monkeypatch.setattr(component, "list_strategy_modeling_symbols", lambda **_: (["SPY"], []))
     monkeypatch.setattr(component, "load_strategy_modeling_data_payload", lambda **_: _blocked_payload())
@@ -642,6 +691,7 @@ def test_strategy_modeling_page_defaults_tickers_to_core_symbols(
     import options_helper.cli_deps as cli_deps
     import streamlit as st
 
+    st.session_state.clear()
     _clear_component_caches(component)
     monkeypatch.setattr(
         component,
@@ -668,6 +718,333 @@ def test_strategy_modeling_page_defaults_tickers_to_core_symbols(
     runpy.run_path(str(PAGE_PATH), run_name="__strategy_modeling_page_default_tickers__")
 
     assert captured_defaults.get("Tickers") == ["SPY", "AAPL", "AMZN", "NVDA"]
+
+
+def test_strategy_modeling_page_can_save_profile_and_cli_can_load_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("streamlit")
+    pytest.importorskip("options_helper.analysis.strategy_modeling")
+    if not PAGE_PATH.exists():
+        pytest.skip("Strategy modeling page scaffold is not present in this workspace.")
+
+    from apps.streamlit.components import strategy_modeling_page as component
+    from options_helper.cli import app
+    import options_helper.cli_deps as cli_deps
+    import streamlit as st
+
+    st.session_state.clear()
+    profile_path = tmp_path / "strategy_profiles.json"
+
+    _clear_component_caches(component)
+    monkeypatch.setattr(component, "list_strategy_modeling_symbols", lambda **_: (["SPY"], []))
+    monkeypatch.setattr(component, "load_strategy_modeling_data_payload", lambda **_: _ready_payload())
+    monkeypatch.setattr(cli_deps, "build_strategy_modeling_service", lambda: None)
+
+    def _selectbox(label: str, *, options, index: int = 0, key: str | None = None, **kwargs):  # noqa: ANN001,ARG001
+        option_values = list(options)
+        selected_map = {
+            "Saved profiles": "",
+            "Strategy": "orb",
+            "Intraday timeframe": "5Min",
+            "Intraday source": "stocks_bars_local",
+            "Gap policy": "fill_at_open",
+            "MA fast type": "ema",
+            "MA slow type": "sma",
+            "MA trend type": "sma",
+            "ORB stop policy": "tighten",
+        }
+        selected = selected_map.get(label)
+        if selected in option_values:
+            return selected
+        if key and key in st.session_state and st.session_state[key] in option_values:
+            return st.session_state[key]
+        if option_values:
+            return option_values[index]
+        return None
+
+    def _multiselect(label: str, *, options, default=None, key: str | None = None, **kwargs):  # noqa: ANN001,ARG001
+        option_values = list(options)
+        selected_map = {
+            "Tickers": ["SPY"],
+            "Segment dimensions": ["symbol", "direction"],
+            "Allowed volatility regimes": ["low", "normal"],
+        }
+        selected = selected_map.get(label)
+        if selected is not None:
+            return [item for item in selected if item in option_values]
+        if key and key in st.session_state:
+            return list(st.session_state[key] or [])
+        return list(default or [])
+
+    def _checkbox(label: str, value: bool = False, **kwargs):  # noqa: ANN001,ARG001
+        selected_map = {
+            "Overwrite existing profile": False,
+            "One open trade per symbol": True,
+            "Allow short-direction entries": False,
+            "Enable ORB confirmation gate": True,
+            "Enable ATR stop floor": True,
+            "Enable RSI extremes gate": True,
+            "Enable EMA9 regime gate": True,
+            "Enable volatility regime gate": True,
+        }
+        return selected_map.get(label, value)
+
+    def _number_input(label: str, value=0, key: str | None = None, **kwargs):  # noqa: ANN001,ARG001
+        selected_map = {
+            "Starting capital": 25_000.0,
+            "Risk per trade (%)": 2.5,
+            "Max hold (bars)": 20,
+            "R ladder min (tenths)": 12,
+            "R ladder max (tenths)": 16,
+            "R ladder step (tenths)": 2,
+            "MA fast window": 21,
+            "MA slow window": 55,
+            "MA trend window": 200,
+            "Trend slope lookback (bars)": 4,
+            "ATR window": 10,
+            "ATR stop multiple": 1.7,
+            "ORB range (minutes)": 20,
+            "ATR stop floor multiple": 0.8,
+            "EMA9 slope lookback (bars)": 5,
+        }
+        if label in selected_map:
+            return selected_map[label]
+        if key and key in st.session_state:
+            return st.session_state[key]
+        return value
+
+    def _text_input(label: str, value: str = "", key: str | None = None, **kwargs) -> str:  # noqa: ARG001
+        selected_map = {
+            "Profile store path": str(profile_path),
+            "Profile name": "portal_orb",
+            "Segment values (comma-separated)": "",
+            "ORB confirmation cutoff ET (HH:MM)": "10:15",
+            "Export reports dir": str(tmp_path / "reports"),
+            "Export output timezone": "America/Chicago",
+        }
+        selected = selected_map.get(label, value)
+        if key is not None:
+            st.session_state[key] = selected
+        return selected
+
+    def _date_input(label: str, value=None, **kwargs):  # noqa: ANN001,ARG001
+        selected_map = {
+            "Start date": date(2026, 1, 1),
+            "End date": date(2026, 1, 31),
+        }
+        return selected_map.get(label, value)
+
+    def _button(label: str, *args: object, **kwargs: object) -> bool:  # noqa: ARG001
+        return label == "Save Profile"
+
+    monkeypatch.setattr(st, "selectbox", _selectbox)
+    monkeypatch.setattr(st, "multiselect", _multiselect)
+    monkeypatch.setattr(st, "checkbox", _checkbox)
+    monkeypatch.setattr(st, "number_input", _number_input)
+    monkeypatch.setattr(st, "text_input", _text_input)
+    monkeypatch.setattr(st, "date_input", _date_input)
+    monkeypatch.setattr(st, "button", _button)
+    monkeypatch.setattr(st, "rerun", lambda: None)
+
+    runpy.run_path(str(PAGE_PATH), run_name="__strategy_modeling_page_save_profile__")
+
+    saved_profile = load_strategy_modeling_profile(profile_path, "portal_orb")
+    assert saved_profile.strategy == "orb"
+    assert saved_profile.symbols == ("SPY",)
+    assert saved_profile.intraday_timeframe == "5Min"
+    assert saved_profile.r_ladder_min_tenths == 12
+    assert saved_profile.r_ladder_max_tenths == 16
+    assert saved_profile.r_ladder_step_tenths == 2
+
+    class _CliStubService:
+        def __init__(self) -> None:
+            self.last_request = None
+
+        def list_universe_loader(self, *, database_path=None):  # noqa: ANN001
+            del database_path
+            return SimpleNamespace(symbols=["SPY"], notes=[])
+
+        def run(self, request):  # noqa: ANN001
+            self.last_request = request
+            return SimpleNamespace(
+                strategy=request.strategy,
+                as_of=request.end_date,
+                requested_symbols=tuple(request.symbols or ()),
+                modeled_symbols=tuple(request.symbols or ()),
+                signal_events=(),
+                trade_simulations=(),
+                accepted_trade_ids=(),
+                skipped_trade_ids=(),
+                intraday_preflight=SimpleNamespace(
+                    blocked_symbols=[],
+                    coverage_by_symbol={},
+                    notes=[],
+                ),
+                portfolio_metrics=None,
+                target_hit_rates=(),
+                segment_records=(),
+                filter_summary={},
+                directional_metrics={},
+            )
+
+    cli_stub = _CliStubService()
+    monkeypatch.setattr(
+        "options_helper.commands.technicals.cli_deps.build_strategy_modeling_service",
+        lambda: cli_stub,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--profile-path",
+            str(profile_path),
+            "--profile",
+            "portal_orb",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert cli_stub.last_request is not None
+    assert cli_stub.last_request.strategy == "orb"
+    assert tuple(cli_stub.last_request.symbols) == ("SPY",)
+    assert cli_stub.last_request.intraday_timeframe == "5Min"
+
+
+def test_strategy_modeling_page_load_profile_populates_request_values(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("streamlit")
+    pytest.importorskip("options_helper.analysis.strategy_modeling")
+    if not PAGE_PATH.exists():
+        pytest.skip("Strategy modeling page scaffold is not present in this workspace.")
+
+    from apps.streamlit.components import strategy_modeling_page as component
+    import options_helper.cli_deps as cli_deps
+    import streamlit as st
+
+    class _StubService:
+        def __init__(self) -> None:
+            self.last_request = None
+
+        def run(self, request):  # noqa: ANN001
+            self.last_request = request
+            return SimpleNamespace(
+                portfolio_metrics=None,
+                target_hit_rates=(),
+                equity_curve=(),
+                segment_records=(),
+                trade_simulations=(),
+                filter_summary={},
+                directional_metrics={},
+            )
+
+    st.session_state.clear()
+    profile_path = tmp_path / "strategy_profiles.json"
+    st.session_state["strategy_modeling_profile_path"] = str(profile_path)
+    loaded = _profile_fixture(
+        strategy="trend_following",
+        intraday_timeframe="5Min",
+        intraday_source="stocks_bars_local",
+        starting_capital=30_000.0,
+        risk_per_trade_pct=3.0,
+        max_hold_bars=15,
+        r_ladder_min_tenths=11,
+        r_ladder_max_tenths=13,
+        r_ladder_step_tenths=1,
+    )
+    save_strategy_modeling_profile(profile_path, "cli_saved", loaded, overwrite=False)
+
+    stub = _StubService()
+    _clear_component_caches(component)
+    monkeypatch.setattr(component, "list_strategy_modeling_symbols", lambda **_: (["SPY"], []))
+    monkeypatch.setattr(component, "load_strategy_modeling_data_payload", lambda **_: _ready_payload())
+    monkeypatch.setattr(cli_deps, "build_strategy_modeling_service", lambda: stub)
+
+    active_buttons: set[str] = {"Load Profile"}
+
+    def _selectbox(label: str, *, options, index: int = 0, key: str | None = None, **kwargs):  # noqa: ANN001,ARG001
+        option_values = list(options)
+        if key and key in st.session_state and st.session_state[key] in option_values:
+            return st.session_state[key]
+        selected_map = {"Saved profiles": "cli_saved"}
+        selected = selected_map.get(label)
+        if selected in option_values:
+            return selected
+        if option_values:
+            return option_values[index]
+        return None
+
+    def _multiselect(label: str, *, options, default=None, key: str | None = None, **kwargs):  # noqa: ANN001,ARG001
+        option_values = list(options)
+        if key and key in st.session_state:
+            return [item for item in list(st.session_state[key] or []) if item in option_values]
+        if default is None:
+            return []
+        return [item for item in list(default) if item in option_values]
+
+    def _checkbox(label: str, value: bool = False, key: str | None = None, **kwargs):  # noqa: ANN001,ARG001
+        if key and key in st.session_state:
+            return bool(st.session_state[key])
+        return value
+
+    def _number_input(label: str, value=0, key: str | None = None, **kwargs):  # noqa: ANN001,ARG001
+        if key and key in st.session_state:
+            return st.session_state[key]
+        return value
+
+    def _text_input(label: str, value: str = "", key: str | None = None, **kwargs) -> str:  # noqa: ARG001
+        selected_map = {
+            "Profile store path": str(profile_path),
+            "Profile name": "cli_saved",
+            "Segment values (comma-separated)": "",
+            "ORB confirmation cutoff ET (HH:MM)": "10:30",
+            "Export reports dir": str(tmp_path / "reports"),
+            "Export output timezone": "America/Chicago",
+        }
+        selected = selected_map.get(label, value)
+        if key is not None:
+            st.session_state[key] = selected
+        return selected
+
+    def _date_input(label: str, value=None, key: str | None = None, **kwargs):  # noqa: ANN001,ARG001
+        if key and key in st.session_state:
+            return st.session_state[key]
+        selected_map = {"Start date": date(2026, 1, 1), "End date": date(2026, 1, 31)}
+        return selected_map.get(label, value)
+
+    def _button(label: str, *args: object, **kwargs: object) -> bool:  # noqa: ARG001
+        return label in active_buttons
+
+    monkeypatch.setattr(st, "selectbox", _selectbox)
+    monkeypatch.setattr(st, "multiselect", _multiselect)
+    monkeypatch.setattr(st, "checkbox", _checkbox)
+    monkeypatch.setattr(st, "number_input", _number_input)
+    monkeypatch.setattr(st, "text_input", _text_input)
+    monkeypatch.setattr(st, "date_input", _date_input)
+    monkeypatch.setattr(st, "button", _button)
+    monkeypatch.setattr(st, "rerun", lambda: None)
+
+    runpy.run_path(str(PAGE_PATH), run_name="__strategy_modeling_page_load_profile_step1__")
+
+    active_buttons.clear()
+    active_buttons.add("Run Strategy Modeling")
+    runpy.run_path(str(PAGE_PATH), run_name="__strategy_modeling_page_load_profile_step2__")
+
+    assert stub.last_request is not None
+    assert stub.last_request.strategy == "trend_following"
+    assert tuple(stub.last_request.symbols) == ("SPY",)
+    assert stub.last_request.intraday_timeframe == "5Min"
+    assert stub.last_request.starting_capital == 30_000.0
+    assert stub.last_request.max_hold_bars == 15
+    assert stub.last_request.policy["risk_per_trade_pct"] == 3.0
+    assert [target.label for target in stub.last_request.target_ladder] == ["1.1R", "1.2R", "1.3R"]
 
 
 def test_strategy_modeling_page_can_export_reports_bundle(

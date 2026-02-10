@@ -9,6 +9,8 @@ This page documents the implemented behavior of:
 - Strategy-modeling artifacts (`summary.json`, `trades.csv`, `r_ladder.csv`, `segments.csv`, `summary.md`, `llm_analysis_prompt.md`)
 - Streamlit strategy-modeling page parity (`apps/streamlit/pages/11_Strategy_Modeling.py`)
 
+For reusable run presets across CLI and dashboard, see [Strategy Modeling Profiles](STRATEGY_MODELING_PROFILES.md).
+
 ## CLI Contract
 
 Command:
@@ -46,6 +48,10 @@ ORB/filter options:
 - `--allowed-volatility-regimes` (default `low,normal,high`; must be non-empty, unique, values in `{low,normal,high}`)
 
 General modeling options:
+- `--profile` (load named profile from profile store)
+- `--save-profile` (save effective run inputs as named profile)
+- `--overwrite-profile/--no-overwrite-profile` (default no-overwrite)
+- `--profile-path` (default `config/strategy_modeling_profiles.json`)
 - `--symbols`, `--exclude-symbols`, `--universe-limit`
 - `--start-date`, `--end-date` (ISO `YYYY-MM-DD`; start must be `<=` end)
 - `--intraday-timeframe` (default `5Min`)
@@ -54,11 +60,18 @@ General modeling options:
 - `--starting-capital` (must be `> 0`)
 - `--risk-per-trade-pct` (must be `> 0` and `<= 100`)
 - `--gap-fill-policy` (currently only `fill_at_open`)
+- `--max-hold-bars` (optional, must be `>= 1` when provided)
+- `--one-open-per-symbol/--no-one-open-per-symbol`
 - `--signal-confirmation-lag-bars`
 - `--segment-dimensions`, `--segment-values`, `--segment-min-trades`, `--segment-limit`
 - `--output-timezone` (default `America/Chicago`; `CST`/`CDT` alias to `America/Chicago`)
 - `--out`, `--write-json/--no-write-json`, `--write-csv/--no-write-csv`, `--write-md/--no-write-md`
 - `--show-progress/--no-show-progress`
+
+Profile precedence:
+- Loaded profile values apply first.
+- Explicit CLI flags override loaded profile values.
+- Saving uses the final effective validated values.
 
 Example:
 
