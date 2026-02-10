@@ -32,6 +32,7 @@ This repo is an information/decision-support tool. Keep outputs and docs clear t
   - a CLI entrypoint (if user-facing),
   - docs (one feature per doc in `docs/`),
   - tests (offline, deterministic).
+- BUGS: add regression test when it fits.
 
 ## Performance architecture guardrails
 - Treat performance as a first-class requirement for modeling/backtesting paths, not a post-hoc cleanup item.
