@@ -20,7 +20,7 @@ Command:
 ```
 
 Primary strategy options:
-- `--strategy sfp|msb|orb|ma_crossover|trend_following` (default `sfp`)
+- `--strategy sfp|msb|fib_retracement|orb|ma_crossover|trend_following` (default `sfp`)
 - `--allow-shorts/--no-allow-shorts` (default `--allow-shorts`)
 
 MA/trend strategy signal options:
@@ -33,6 +33,9 @@ MA/trend strategy signal options:
 - `--trend-slope-lookback-bars` (default `3`, must be `>= 1`)
 - `--atr-window` (default `14`, must be `>= 1`)
 - `--atr-stop-multiple` (default `2.0`, must be `> 0`)
+
+Fib retracement strategy signal options:
+- `--fib-retracement-pct` (default `61.8`; accepts percent like `61.8` or ratio like `0.618`)
 
 ORB/filter options:
 - `--enable-orb-confirmation/--no-enable-orb-confirmation` (default off)
@@ -127,6 +130,20 @@ Trend following example:
   --atr-stop-multiple 2.0
 ```
 
+Fib retracement example:
+
+```bash
+./.venv/bin/options-helper technicals strategy-model \
+  --strategy fib_retracement \
+  --symbols SPY \
+  --fib-retracement-pct 61.8
+```
+
+Fib retracement semantics:
+- Setup sequence is MSB -> next confirmed swing pivot -> first fib-level touch in the post-MSB range.
+- Signal is close-confirmed on the touch bar; entry remains anchored to the next bar open.
+- See [Fib Retracement Strategy](TECHNICAL_FIB_RETRACEMENT.md) for detailed semantics, anti-lookahead rules, and limitations.
+
 ## Anti-Lookahead Semantics
 
 Global rule:
@@ -134,7 +151,7 @@ Global rule:
 - `entry_ts` must be the first tradable bar open strictly after `signal_confirmed_ts`.
 - Same-bar close entry is not allowed.
 
-Daily close-confirmed paths (`sfp`/`msb`):
+Daily close-confirmed paths (`sfp`/`msb`/`fib_retracement`):
 - Events are normalized with `entry_ts = next bar timestamp` in the signal frame.
 - Simulation enforces next tradable regular-session open anchoring for daily workflows.
 
@@ -201,7 +218,7 @@ Evaluation order (stable deterministic order):
 7. ATR stop floor
 
 Daily indicator anchoring:
-- `sfp`/`msb`/`ma_crossover`/`trend_following`: anchor on event `signal_ts` day.
+- `sfp`/`msb`/`fib_retracement`/`ma_crossover`/`trend_following`: anchor on event `signal_ts` day.
 - `orb`: anchor on most recent completed daily bar strictly before ORB signal day.
 
 Filter formulas:

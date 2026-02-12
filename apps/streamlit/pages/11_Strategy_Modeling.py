@@ -26,6 +26,7 @@ from apps.streamlit.components.strategy_modeling_trade_drilldown import (
     supported_chart_timeframes,
 )
 from apps.streamlit.components.strategy_modeling_trade_review import build_trade_review_tables
+from options_helper.analysis.fib_retracement import normalize_fib_retracement_pct
 from options_helper.analysis.strategy_modeling import StrategyModelingRequest
 from options_helper.analysis.strategy_simulator import build_r_target_ladder
 from options_helper.data.strategy_modeling_artifacts import write_strategy_modeling_artifacts
@@ -90,6 +91,7 @@ _WIDGET_KEYS: dict[str, str] = {
     "intraday_source": "strategy_modeling_intraday_source",
     "starting_capital": "strategy_modeling_starting_capital",
     "risk_per_trade_pct": "strategy_modeling_risk_per_trade_pct",
+    "fib_retracement_pct": "strategy_modeling_fib_retracement_pct",
     "gap_fill_policy": "strategy_modeling_gap_fill_policy",
     "max_hold_enabled": "strategy_modeling_max_hold_enabled",
     "max_hold_bars": "strategy_modeling_max_hold_bars",
@@ -539,6 +541,7 @@ def _build_signal_kwargs(
     trend_slope_lookback_bars: int,
     atr_window: int,
     atr_stop_multiple: float,
+    fib_retracement_pct: float,
 ) -> dict[str, object]:
     if ma_fast_window < 1:
         raise ValueError("MA fast window must be >= 1.")
@@ -578,6 +581,8 @@ def _build_signal_kwargs(
             "atr_window": int(atr_window),
             "atr_stop_multiple": float(atr_stop_multiple),
         }
+    if strategy == "fib_retracement":
+        return {"fib_retracement_pct": float(normalize_fib_retracement_pct(fib_retracement_pct))}
     return {}
 
 
@@ -797,6 +802,7 @@ def _ensure_sidebar_state_defaults(
         _WIDGET_KEYS["intraday_source"]: "stocks_bars_local",
         _WIDGET_KEYS["starting_capital"]: 10_000.0,
         _WIDGET_KEYS["risk_per_trade_pct"]: 1.0,
+        _WIDGET_KEYS["fib_retracement_pct"]: 61.8,
         _WIDGET_KEYS["gap_fill_policy"]: "fill_at_open",
         _WIDGET_KEYS["max_hold_enabled"]: True,
         _WIDGET_KEYS["max_hold_bars"]: 20,
@@ -908,6 +914,7 @@ def _build_profile_from_inputs(
     intraday_source: str,
     starting_capital: float,
     risk_per_trade_pct: float,
+    fib_retracement_pct: float,
     gap_fill_policy: str,
     max_hold_bars: int | None,
     max_hold_timeframe: str,
@@ -946,6 +953,7 @@ def _build_profile_from_inputs(
         "intraday_source": intraday_source,
         "starting_capital": float(starting_capital),
         "risk_per_trade_pct": float(risk_per_trade_pct),
+        "fib_retracement_pct": float(fib_retracement_pct),
         "gap_fill_policy": gap_fill_policy,
         "max_hold_bars": int(max_hold_bars) if max_hold_bars is not None else None,
         "max_hold_timeframe": str(max_hold_timeframe),
@@ -1002,6 +1010,7 @@ def _apply_loaded_profile_to_state(
     )
     st.session_state[_WIDGET_KEYS["starting_capital"]] = float(profile.starting_capital)
     st.session_state[_WIDGET_KEYS["risk_per_trade_pct"]] = float(profile.risk_per_trade_pct)
+    st.session_state[_WIDGET_KEYS["fib_retracement_pct"]] = float(profile.fib_retracement_pct)
     st.session_state[_WIDGET_KEYS["gap_fill_policy"]] = profile.gap_fill_policy
     st.session_state[_WIDGET_KEYS["max_hold_enabled"]] = profile.max_hold_bars is not None
     st.session_state[_WIDGET_KEYS["max_hold_bars"]] = (
@@ -1134,7 +1143,7 @@ st.info(
 symbols, symbol_notes = list_strategy_modeling_symbols(database_path=None)
 default_end = date.today()
 default_start = default_end - timedelta(days=365)
-_STRATEGY_OPTIONS = ["sfp", "msb", "orb", "ma_crossover", "trend_following"]
+_STRATEGY_OPTIONS = ["sfp", "msb", "orb", "ma_crossover", "trend_following", "fib_retracement"]
 _INTRADAY_TIMEFRAMES = ["1Min", "5Min", "15Min", "30Min", "60Min"]
 _INTRADAY_SOURCES = ["stocks_bars_local", "alpaca"]
 _MAX_HOLD_TIMEFRAME_OPTIONS = ["entry", "1Min", "5Min", "10Min", "15Min", "30Min", "60Min", "1H", "1D", "1W"]
@@ -1342,6 +1351,18 @@ with st.sidebar:
     )
 
     st.markdown("### Strategy Signal Parameters")
+    fib_retracement_pct = float(st.session_state.get(_WIDGET_KEYS["fib_retracement_pct"], 61.8))
+    if str(strategy) == "fib_retracement":
+        fib_retracement_pct = float(
+            st.number_input(
+                "Fib retracement (%)",
+                min_value=0.001,
+                max_value=100.0,
+                value=float(st.session_state.get(_WIDGET_KEYS["fib_retracement_pct"], 61.8)),
+                step=0.1,
+                key=_WIDGET_KEYS["fib_retracement_pct"],
+            )
+        )
     ma_fast_window = int(
         st.number_input(
             "MA fast window",
@@ -1600,6 +1621,7 @@ try:
         trend_slope_lookback_bars=int(trend_slope_lookback_bars),
         atr_window=int(atr_window),
         atr_stop_multiple=float(atr_stop_multiple),
+        fib_retracement_pct=float(fib_retracement_pct),
     )
 except ValueError as exc:
     signal_kwargs_error = f"Invalid strategy signal parameters: {exc}"
@@ -1627,6 +1649,7 @@ try:
         intraday_source=str(intraday_source),
         starting_capital=float(starting_capital),
         risk_per_trade_pct=float(risk_pct),
+        fib_retracement_pct=float(fib_retracement_pct),
         gap_fill_policy=str(gap_policy),
         max_hold_bars=max_hold_bars,
         max_hold_timeframe=str(max_hold_timeframe),

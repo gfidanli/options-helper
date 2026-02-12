@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
+from options_helper.analysis.fib_retracement import normalize_fib_retracement_pct
 from options_helper.schemas.common import ArtifactBase, utc_now
 from options_helper.schemas.strategy_modeling_contracts import StrategyId
 from options_helper.schemas.strategy_modeling_filters import OrbStopPolicy, VolatilityRegime
@@ -33,6 +34,7 @@ class StrategyModelingProfile(ArtifactBase):
 
     starting_capital: float = Field(default=100_000.0, gt=0.0)
     risk_per_trade_pct: float = Field(default=1.0, gt=0.0, le=100.0)
+    fib_retracement_pct: float = Field(default=61.8, gt=0.0, le=100.0)
     gap_fill_policy: GapFillPolicy = "fill_at_open"
     max_hold_bars: int | None = Field(default=None, ge=1)
     max_hold_timeframe: str = "entry"
@@ -105,6 +107,11 @@ class StrategyModelingProfile(ArtifactBase):
     @classmethod
     def _normalize_max_hold_timeframe(cls, value: object) -> str:
         return normalize_max_hold_timeframe(value)
+
+    @field_validator("fib_retracement_pct", mode="before")
+    @classmethod
+    def _normalize_fib_retracement_pct(cls, value: object) -> float:
+        return normalize_fib_retracement_pct(value)
 
     @field_validator("stop_move_rules", mode="before")
     @classmethod

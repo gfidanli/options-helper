@@ -8,7 +8,7 @@ from pydantic import ConfigDict, Field
 from options_helper.schemas.common import ArtifactBase
 
 
-StrategyId = Literal["sfp", "msb", "orb", "ma_crossover", "trend_following"]
+StrategyId = Literal["sfp", "msb", "orb", "ma_crossover", "trend_following", "fib_retracement"]
 SignalDirection = Literal["long", "short"]
 EntryPriceSource = Literal[
     "first_tradable_bar_open_after_signal_confirmed_ts",

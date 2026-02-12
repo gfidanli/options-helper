@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from options_helper.analysis.fib_retracement import compute_fib_retracement_signals
 from options_helper.analysis.ma_crossover import (
     compute_ma_crossover_signals,
     extract_ma_crossover_signal_candidates,
@@ -437,6 +438,101 @@ def normalize_trend_following_signal_events(
     return events
 
 
+def normalize_fib_retracement_signal_events(
+    signals: pd.DataFrame,
+    *,
+    symbol: str,
+    timeframe: str | None = "1d",
+    entry_price_source: EntryPriceSource = _DEFAULT_ENTRY_PRICE_SOURCE,
+) -> list[StrategySignalEvent]:
+    if signals is None or signals.empty:
+        return []
+
+    normalized_symbol = str(symbol).strip().upper()
+    if not normalized_symbol:
+        raise ValueError("symbol must be non-empty")
+
+    index_values = list(signals.index)
+    timeframe_label = _normalize_timeframe_label(timeframe)
+    events: list[StrategySignalEvent] = []
+
+    long_flags = signals.get("fib_retracement_long")
+    short_flags = signals.get("fib_retracement_short")
+    if long_flags is None or short_flags is None:
+        return []
+
+    long_mask = long_flags.fillna(False).to_numpy(dtype=bool)
+    short_mask = short_flags.fillna(False).to_numpy(dtype=bool)
+    candidate_positions = np.flatnonzero(long_mask | short_mask)
+
+    for row_position in candidate_positions:
+        if row_position + 1 >= len(index_values):
+            # The last bar has no first tradable bar after confirmation in this frame.
+            continue
+
+        is_long = bool(long_mask[row_position])
+        is_short = bool(short_mask[row_position])
+        if is_long == is_short:
+            continue
+        direction = "long" if is_long else "short"
+
+        signal_ts = _to_datetime(index_values[row_position])
+        signal_confirmed_ts = signal_ts
+        entry_ts = _to_datetime(index_values[row_position + 1])
+        if entry_ts <= signal_confirmed_ts:
+            continue
+
+        row = signals.iloc[int(row_position)]
+        signal_open = _float_or_none(row.get("Open"))
+        signal_high = _float_or_none(row.get("High"))
+        signal_low = _float_or_none(row.get("Low"))
+        signal_close = _float_or_none(row.get("Close"))
+        stop_price = _float_or_none(
+            row.get("fib_range_low_level") if direction == "long" else row.get("fib_range_high_level")
+        )
+        if stop_price is None:
+            continue
+
+        notes = [
+            f"fib_retracement_pct={row.get('fib_retracement_pct')}",
+            f"fib_entry_level={row.get('fib_entry_level')}",
+            f"fib_range_high_level={row.get('fib_range_high_level')}",
+            f"fib_range_low_level={row.get('fib_range_low_level')}",
+            f"fib_range_high_timestamp={row.get('fib_range_high_timestamp')}",
+            f"fib_range_low_timestamp={row.get('fib_range_low_timestamp')}",
+            f"fib_msb_timestamp={row.get('fib_msb_timestamp')}",
+            f"fib_broken_swing_level={row.get('fib_broken_swing_level')}",
+            f"fib_broken_swing_timestamp={row.get('fib_broken_swing_timestamp')}",
+            "entry_ts_policy=next_bar_open_after_signal_confirmed_ts",
+        ]
+
+        event_id = (
+            f"fib_retracement:{normalized_symbol}:{timeframe_label}:"
+            f"{pd.Timestamp(signal_ts).isoformat()}:{direction}"
+        )
+        events.append(
+            StrategySignalEvent(
+                event_id=event_id,
+                strategy="fib_retracement",
+                symbol=normalized_symbol,
+                timeframe=timeframe_label,
+                direction=direction,  # type: ignore[arg-type]
+                signal_ts=signal_ts,
+                signal_confirmed_ts=signal_confirmed_ts,
+                entry_ts=entry_ts,
+                entry_price_source=entry_price_source,
+                signal_open=signal_open,
+                signal_high=signal_high,
+                signal_low=signal_low,
+                signal_close=signal_close,
+                stop_price=stop_price,
+                notes=notes,
+            )
+        )
+
+    return events
+
+
 def normalize_orb_signal_events(
     signals: pd.DataFrame,
     *,
@@ -629,6 +725,28 @@ def adapt_trend_following_signal_events(
     )
 
 
+def adapt_fib_retracement_signal_events(
+    ohlc: pd.DataFrame,
+    *,
+    symbol: str,
+    timeframe: str | None = None,
+    fib_retracement_pct: float = 61.8,
+    entry_price_source: EntryPriceSource = _DEFAULT_ENTRY_PRICE_SOURCE,
+    **_: Any,
+) -> list[StrategySignalEvent]:
+    signals = compute_fib_retracement_signals(
+        ohlc,
+        fib_retracement_pct=fib_retracement_pct,
+        timeframe=timeframe,
+    )
+    return normalize_fib_retracement_signal_events(
+        signals,
+        symbol=symbol,
+        timeframe=timeframe,
+        entry_price_source=entry_price_source,
+    )
+
+
 def _resolve_orb_intraday_bars(
     *,
     symbol: str,
@@ -694,10 +812,12 @@ register_strategy_signal_adapter("msb", adapt_msb_signal_events, replace=True)
 register_strategy_signal_adapter("orb", adapt_orb_signal_events, replace=True)
 register_strategy_signal_adapter("ma_crossover", adapt_ma_crossover_signal_events, replace=True)
 register_strategy_signal_adapter("trend_following", adapt_trend_following_signal_events, replace=True)
+register_strategy_signal_adapter("fib_retracement", adapt_fib_retracement_signal_events, replace=True)
 
 
 __all__ = [
     "StrategySignalAdapter",
+    "adapt_fib_retracement_signal_events",
     "adapt_ma_crossover_signal_events",
     "adapt_trend_following_signal_events",
     "adapt_orb_signal_events",
@@ -706,6 +826,7 @@ __all__ = [
     "build_strategy_signal_events",
     "get_strategy_signal_adapter",
     "list_registered_strategy_signal_adapters",
+    "normalize_fib_retracement_signal_events",
     "normalize_ma_crossover_signal_events",
     "normalize_orb_signal_events",
     "normalize_msb_signal_events",

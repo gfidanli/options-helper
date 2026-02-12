@@ -274,6 +274,7 @@ def test_strategy_model_rejects_invalid_strategy_value() -> None:
     assert "--strategy must be one of:" in res.output
     assert "ma_crossover" in res.output
     assert "trend_following" in res.output
+    assert "fib_retracement" in res.output
 
 
 def test_strategy_model_rejects_invalid_orb_confirmation_cutoff() -> None:
@@ -481,6 +482,62 @@ def test_strategy_model_accepts_trend_following_strategy_and_signal_kwargs(
         "atr_window": 12,
         "atr_stop_multiple": 2.5,
     }
+
+
+def test_strategy_model_accepts_fib_retracement_strategy_and_signal_kwargs(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    stub = _StubStrategyModelingService(blocked=False)
+    monkeypatch.setattr(
+        "options_helper.commands.technicals.cli_deps.build_strategy_modeling_service",
+        lambda: stub,
+    )
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--strategy",
+            "fib_retracement",
+            "--symbols",
+            "SPY",
+            "--fib-retracement-pct",
+            "0.5",
+        ],
+    )
+
+    assert res.exit_code == 0, res.output
+    assert stub.last_request is not None
+    assert stub.last_request.strategy == "fib_retracement"
+    assert stub.last_request.signal_kwargs == {"fib_retracement_pct": 50.0}
+
+
+def test_strategy_model_rejects_invalid_fib_retracement_pct_value() -> None:
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--strategy",
+            "fib_retracement",
+            "--symbols",
+            "SPY",
+            "--fib-retracement-pct",
+            "0",
+        ],
+    )
+
+    assert res.exit_code != 0
+    assert "--fib-retracement-pct" in res.output
+    assert "fib_retracement_pct must be in (0, 1]" in res.output
+    assert "percent form." in res.output
 
 
 def test_strategy_model_rejects_invalid_ma_window_relationship_for_ma_crossover() -> None:

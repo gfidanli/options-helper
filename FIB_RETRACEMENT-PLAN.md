@@ -250,3 +250,76 @@ T2 ──┘                                   └── T8
 - **Lookahead bias** (range pivot uses right-side confirmation): mitigate by enforcing `scan_start_idx = pivot_idx + right + 1` and emitting entry only on subsequent bars.
 - **Percent vs ratio confusion**: mitigate by normalization accepting `0.618` or `61.8` and storing **percent** in profiles.
 - **Duplicate/overlapping setups**: mitigate with explicit long/short state machines and “latest MSB wins while waiting for next pivot” rule.
+
+## Task Completion Log
+### T1: Extend strategy id contract (completed 2026-02-10)
+- Work log: Added `fib_retracement` to `StrategyId` and extended the strategy-id acceptance contract test to include it.
+- Files modified: `options_helper/schemas/strategy_modeling_contracts.py`, `tests/test_strategy_modeling_contracts.py`.
+- Validation: `./.venv/bin/python -m pytest /Volumes/develop/options-helper-fib-retracement/tests/test_strategy_modeling_contracts.py` passed (`15 passed`).
+- Errors/gotchas: Initial validation failed because `.venv` and `pytest` were absent in this checkout; resolved by creating `.venv` and installing `-e .[dev]`.
+
+### T4: Add fib pct to profile schema (completed 2026-02-10)
+- Work log: Added `fib_retracement_pct` to `StrategyModelingProfile` and normalized input with a before-validator that accepts ratio (`0.618`) or percent (`61.8`) using the shared fib normalization helper.
+- Files modified: `options_helper/schemas/strategy_modeling_profile.py`.
+- Validation: `./.venv/bin/python -m py_compile /Volumes/develop/options-helper-fib-retracement/options_helper/schemas/strategy_modeling_profile.py` passed.
+- Errors/gotchas: None.
+
+### T2: Implement fib retracement signal computation (completed 2026-02-10)
+- Work log:
+  - Added new pure analysis module `fib_retracement.py` with `normalize_fib_retracement_pct(...)` accepting ratio (`0.618`) and percent (`61.8`) forms and normalizing to percent.
+  - Implemented `compute_fib_retracement_signals(...)` on top of `compute_msb_signals(...)` defaults, with deterministic long/short setup state machines, pivot-confirmation guard (`scan_start_idx = pivot_idx + right + 1`), and first-touch signal emission.
+  - Added required fib signal metadata columns and end-of-series guard (drop touch on final bar where next-bar entry is unavailable).
+- Files modified: `options_helper/analysis/fib_retracement.py`.
+- Validation: `./.venv/bin/python -m py_compile /Volumes/develop/options-helper-fib-retracement/options_helper/analysis/fib_retracement.py` passed.
+- Errors/gotchas: None.
+
+### T3: Wire `fib_retracement` into strategy signal registry (completed 2026-02-10)
+- Work log:
+  - Added `normalize_fib_retracement_signal_events(...)` to convert fib signal rows into `StrategySignalEvent` objects with close-confirmed signal timestamps and next-bar-open entry anchors.
+  - Added `adapt_fib_retracement_signal_events(...)` to call `compute_fib_retracement_signals(...)` and normalize the results for `build_strategy_signal_events(...)`.
+  - Registered the strategy adapter for `fib_retracement` and exported the new adapter/normalizer in module `__all__`.
+- Files modified: `options_helper/analysis/strategy_signals.py`.
+- Validation: `./.venv/bin/python -m py_compile /Volumes/develop/options-helper-fib-retracement/options_helper/analysis/strategy_signals.py` passed.
+- Errors/gotchas: None.
+
+### T6: Streamlit add strategy option + fib pct widget + profile integration (completed 2026-02-10)
+- Work log:
+  - Added `fib_retracement` to Streamlit strategy options and added `_WIDGET_KEYS["fib_retracement_pct"]` with sidebar default state `61.8`.
+  - Added a conditional sidebar `number_input` for fib percent shown only when strategy is `fib_retracement`.
+  - Extended `_build_signal_kwargs(...)` to accept `fib_retracement_pct`, normalize it via `normalize_fib_retracement_pct(...)`, and return fib signal kwargs for the fib strategy.
+  - Extended profile save/load wiring to persist and hydrate `fib_retracement_pct` via `_build_profile_from_inputs(...)` and `_apply_loaded_profile_to_state(...)`.
+- Files modified: `apps/streamlit/pages/11_Strategy_Modeling.py`.
+- Validation: `./.venv/bin/python -m pytest /Volumes/develop/options-helper-fib-retracement/tests/portal/test_streamlit_scaffold.py` passed (`1 passed, 3 skipped`); `./.venv/bin/python -m py_compile /Volumes/develop/options-helper-fib-retracement/apps/streamlit/pages/11_Strategy_Modeling.py` passed.
+- Errors/gotchas: None.
+
+### T5: CLI enable `fib_retracement` strategy + fib pct option (completed 2026-02-10)
+- Work log:
+  - Enabled `fib_retracement` in `technicals strategy-model` strategy help/allowlist and invalid-value error messaging.
+  - Added `--fib-retracement-pct` option (default `61.8`) and wired it through CLI pre-validation, profile-merge payload, and final strategy signal kwargs construction.
+  - Extended `_build_strategy_signal_kwargs(...)` to normalize/validate fib percent and emit `{"fib_retracement_pct": normalized_percent}` for fib strategy.
+  - Added CLI regression tests for updated allowlist messaging, fib kwargs normalization from ratio input, and invalid fib pct rejection.
+- Files modified: `options_helper/commands/technicals.py`, `tests/test_strategy_modeling_cli.py`, `FIB_RETRACEMENT-PLAN.md`.
+- Validation: `./.venv/bin/python -m pytest /Volumes/develop/options-helper-fib-retracement/tests/test_strategy_modeling_cli.py` passed.
+- Errors/gotchas: None.
+
+### T7: Documentation + mkdocs nav (completed 2026-02-10)
+- Work log:
+  - Added `docs/TECHNICAL_FIB_RETRACEMENT.md` with strategy semantics (`MSB -> next swing pivot -> fib touch`), CLI usage with `--fib-retracement-pct`, anti-lookahead entry anchoring, and explicit fill limitations.
+  - Updated `docs/TECHNICAL_STRATEGY_MODELING.md` to include `fib_retracement` in strategy docs, added fib option/example text, and linked to the dedicated fib strategy document.
+  - Added the fib doc to `mkdocs.yml` nav under `Research & Analysis`.
+- Files modified: `docs/TECHNICAL_FIB_RETRACEMENT.md`, `docs/TECHNICAL_STRATEGY_MODELING.md`, `mkdocs.yml`, `FIB_RETRACEMENT-PLAN.md`.
+- Validation: `./.venv/bin/mkdocs build` unavailable in this checkout (`no such file or directory: ./.venv/bin/mkdocs`); manually verified doc file presence and link/nav references.
+- Errors/gotchas: Local `.venv` does not include `mkdocs` binary.
+
+### T8: Add deterministic unit tests for fib retracement strategy (completed 2026-02-10)
+- Work log:
+  - Added deterministic compute coverage for `compute_fib_retracement_signals(...)` with synthetic OHLC fixtures that explicitly assert bullish MSB formation, next swing-high selection, right-bars confirmation lag behavior, fib-touch triggering, expected entry level tolerance, and long stop-anchor metadata (`fib_range_low_level`).
+  - Added an explicit i+1 anti-lookahead guard regression where a valid fib touch on the final bar emits no signal due to missing next-bar entry anchor.
+  - Added adapter coverage through `build_strategy_signal_events("fib_retracement", ...)` asserting normalized `strategy`, `direction`, `stop_price`, and `entry_ts == next index`, plus final-bar touch suppression.
+  - Kept CLI regression coverage in `tests/test_strategy_modeling_cli.py` that already asserts invalid strategy output includes `fib_retracement`.
+- Files modified: `tests/test_fib_retracement.py`, `tests/test_strategy_signals_fib_retracement.py`, `FIB_RETRACEMENT-PLAN.md`.
+- Validation:
+  - `./.venv/bin/python -m pytest /Volumes/develop/options-helper-fib-retracement/tests/test_fib_retracement.py` passed (`2 passed`).
+  - `./.venv/bin/python -m pytest /Volumes/develop/options-helper-fib-retracement/tests/test_strategy_signals_fib_retracement.py` passed (`2 passed`).
+  - `./.venv/bin/python -m pytest /Volumes/develop/options-helper-fib-retracement/tests/test_strategy_modeling_cli.py` passed (`24 passed`).
+- Errors/gotchas: No implementation fixes were required in analysis/adapter/CLI code for T8; adapter test run emits an existing pandas resample deprecation warning from `options_helper/analysis/sfp.py`.
