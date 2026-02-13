@@ -7,23 +7,23 @@ from types import SimpleNamespace
 import typer
 from rich.console import Console
 
-from options_helper.commands import technicals_legacy as legacy
-
-cli_deps = legacy.cli_deps
-_parse_iso_date = legacy._parse_iso_date
-_split_csv_option = legacy._split_csv_option
-_parse_allowed_volatility_regimes = legacy._parse_allowed_volatility_regimes
-_build_strategy_signal_kwargs = legacy._build_strategy_signal_kwargs
-_build_strategy_filter_config = legacy._build_strategy_filter_config
-_merge_strategy_modeling_profile_values = legacy._merge_strategy_modeling_profile_values
-_option_was_set_on_command_line = legacy._option_was_set_on_command_line
-_build_target_ladder = legacy._build_target_ladder
-_resolve_strategy_symbols = legacy._resolve_strategy_symbols
-_intraday_coverage_block_message = legacy._intraday_coverage_block_message
-_normalize_output_timezone = legacy._normalize_output_timezone
-_mapping_view = legacy._mapping_view
-_coerce_int = legacy._coerce_int
-_extract_directional_headline = legacy._extract_directional_headline
+import options_helper.cli_deps as cli_deps
+from options_helper.commands.technicals.strategy_model_helpers_legacy import (
+    _build_strategy_filter_config,
+    _build_strategy_signal_kwargs,
+    _build_target_ladder,
+    _coerce_int,
+    _extract_directional_headline,
+    _intraday_coverage_block_message,
+    _mapping_view,
+    _merge_strategy_modeling_profile_values,
+    _normalize_output_timezone,
+    _option_was_set_on_command_line,
+    _parse_allowed_volatility_regimes,
+    _parse_iso_date,
+    _resolve_strategy_symbols,
+    _split_csv_option,
+)
 
 
 def technicals_strategy_model(
