@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import wraps
 from pathlib import Path
+import time
 from typing import Any
 
 import typer
@@ -83,10 +84,24 @@ def analyze(*args: Any, **kwargs: Any):
     return legacy.analyze(*args, **kwargs)
 
 
-@wraps(legacy.watch)
-def watch(*args: Any, **kwargs: Any):
-    sync_legacy_seams()
-    return legacy.watch(*args, **kwargs)
+def watch(
+    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
+    minutes: int = typer.Option(15, "--minutes", help="Polling interval in minutes."),
+) -> None:
+    """Continuously re-run analysis at a fixed interval."""
+    if minutes <= 0:
+        raise typer.BadParameter("--minutes must be > 0")
+
+    console = Console()
+    console.print(f"Watching {portfolio_path} every {minutes} minute(s). Ctrl+C to stop.")
+    while True:
+        try:
+            analyze(portfolio_path)
+        except typer.Exit:
+            pass
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[red]Watch error:[/red] {exc}")
+        time.sleep(minutes * 60)
 
 
 __all__ = ["research", "refresh_candles", "analyze", "watch"]
