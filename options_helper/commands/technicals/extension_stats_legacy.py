@@ -7,11 +7,33 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
-from options_helper.commands import technicals_legacy as legacy
+from options_helper.commands.technicals_common import setup_technicals_logging
+from options_helper.data.technical_backtesting_config import load_technical_backtesting_config
 
-_load_ohlc_df = legacy._load_ohlc_df
-load_technical_backtesting_config = legacy.load_technical_backtesting_config
-setup_technicals_logging = legacy.setup_technicals_logging
+
+def _load_ohlc_df(
+    *,
+    ohlc_path: Path | None,
+    symbol: str | None,
+    cache_dir: Path,
+):
+    from options_helper.data.candles import CandleCacheError
+    from options_helper.data.technical_backtesting_io import load_ohlc_from_cache, load_ohlc_from_path
+
+    if ohlc_path:
+        return load_ohlc_from_path(ohlc_path)
+    if symbol:
+        try:
+            return load_ohlc_from_cache(
+                symbol,
+                cache_dir,
+                backfill_if_missing=True,
+                period="max",
+                raise_on_backfill_error=True,
+            )
+        except CandleCacheError as exc:
+            raise typer.BadParameter(f"Failed to backfill OHLC for {symbol}: {exc}") from exc
+    raise typer.BadParameter("Provide --ohlc-path or --symbol/--cache-dir")
 
 
 def technicals_extension_stats(
