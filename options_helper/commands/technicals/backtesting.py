@@ -40,7 +40,84 @@ def technicals_compute_indicators(
         console.print(f"Wrote features to {output}")
 
 
-technicals_optimize = legacy.technicals_optimize
+def technicals_optimize(
+    strategy: str = typer.Option(..., "--strategy", help="Strategy name."),
+    ohlc_path: Path | None = typer.Option(None, "--ohlc-path", help="CSV/parquet OHLC path."),
+    symbol: str | None = typer.Option(None, "--symbol", help="Symbol to load from cache."),
+    cache_dir: Path = typer.Option(Path("data/candles"), "--cache-dir", help="Candle cache dir."),
+    config_path: Path = typer.Option(
+        Path("config/technical_backtesting.yaml"), "--config", help="Config path."
+    ),
+) -> None:
+    """Optimize strategy parameters for a single dataset."""
+    from options_helper.data.technical_backtesting_artifacts import write_artifacts
+    from options_helper.technicals_backtesting.backtest.optimizer import optimize_params
+    from options_helper.technicals_backtesting.feature_selection import required_feature_columns_for_strategy
+    from options_helper.technicals_backtesting.pipeline import compute_features, warmup_bars
+    from options_helper.technicals_backtesting.strategies.registry import get_strategy
+
+    console = Console(width=200)
+    cfg = legacy.load_technical_backtesting_config(config_path)
+    legacy.setup_technicals_logging(cfg)
+
+    df = legacy._load_ohlc_df(ohlc_path=ohlc_path, symbol=symbol, cache_dir=cache_dir)
+    if df.empty:
+        raise typer.BadParameter("No OHLC data found for optimization.")
+
+    features = compute_features(df, cfg)
+    StrategyClass = get_strategy(strategy)
+    strat_cfg = cfg["strategies"][strategy]
+    opt_cfg = cfg["optimization"]
+    needed = required_feature_columns_for_strategy(strategy, strat_cfg)
+    cols = ["Open", "High", "Low", "Close"]
+    if "Volume" in features.columns:
+        cols.append("Volume")
+    cols += [column for column in needed if column in features.columns]
+    features = features.loc[:, [column for column in cols if column in features.columns]]
+
+    warmup = warmup_bars(cfg)
+    best_params, best_stats, heatmap = optimize_params(
+        features,
+        StrategyClass,
+        cfg["backtest"],
+        strat_cfg["search_space"],
+        strat_cfg["constraints"],
+        opt_cfg["maximize"],
+        opt_cfg["method"],
+        opt_cfg.get("sambo", {}),
+        opt_cfg.get("custom_score", {}),
+        warmup_bars=warmup,
+        return_heatmap=cfg["artifacts"].get("write_heatmap", False),
+    )
+
+    console.print(f"Best params: {best_params}")
+    ticker = symbol or "UNKNOWN"
+    data_meta = {
+        "start": features.index.min(),
+        "end": features.index.max(),
+        "bars": len(features),
+        "warmup_bars": warmup,
+    }
+    optimize_meta = {
+        "method": opt_cfg["method"],
+        "maximize": opt_cfg["maximize"],
+        "constraints": strat_cfg["constraints"],
+    }
+    paths = write_artifacts(
+        cfg,
+        ticker=ticker,
+        strategy=strategy,
+        params=best_params,
+        train_stats=best_stats,
+        walk_forward_result=None,
+        optimize_meta=optimize_meta,
+        data_meta=data_meta,
+        heatmap=heatmap,
+    )
+    console.print(f"Wrote params: {paths.params_path}")
+    console.print(f"Wrote summary: {paths.report_path}")
+
+
 technicals_walk_forward = legacy.technicals_walk_forward
 technicals_run_all = legacy.technicals_run_all
 
