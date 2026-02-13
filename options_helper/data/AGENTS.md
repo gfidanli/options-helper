@@ -6,6 +6,11 @@
   - candle cache reads/writes
   - options snapshot reads/writes
 
+## Debt containment
+- Keep modules scoped by storage/domain responsibility to avoid “god modules”.
+- For very large modules (>1,000 lines), prefer extraction into domain files/packages before adding new features.
+- Keep data APIs stable when refactoring internals so CLI and tests remain behavior-compatible.
+
 ## yfinance hardening
 - Assume fields can be missing, stale, or zero (`bid/ask=0`, `IV=0`, etc.).
 - Wrap errors in project exceptions (e.g. `DataFetchError`) with actionable messages.

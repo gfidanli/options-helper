@@ -14,8 +14,12 @@ When changing behavior, also update docs:
 - cron behavior
 - known limitations and “best effort” caveats
 
+## Governance docs
+- `docs/TECH_DEBT_GUARDRAILS.md` is the canonical anti-debt policy.
+- `docs/plans/` is the canonical plan directory.
+- Keep legacy plan migrations indexed in `docs/plans/LEGACY_INDEX.md`.
+
 ## Content guidelines
 - Prefer concrete examples (commands + output paths).
 - Call out data assumptions (e.g., “uses latest daily close”, “Yahoo can be stale”).
 - Avoid long walls of text; use short sections and bullet lists.
-

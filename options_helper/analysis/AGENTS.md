@@ -6,6 +6,11 @@ Analysis code should be **pure**:
 - No filesystem writes
 - Deterministic outputs for a given input DataFrame/config
 
+## Import boundaries
+- Do not import `options_helper.data.*` directly from analysis modules.
+- Allowed exception: explicit I/O adapter seams documented in `docs/TECH_DEBT_GUARDRAILS.md`.
+- If analysis needs I/O-backed helpers, isolate the import in an adapter module and keep core computations pure.
+
 ## Technical analysis guidelines
 - Operate on cached daily candles (timezone-naive `DatetimeIndex`).
 - Resample from daily to higher timeframes (weekly, multi-day) inside analysis modules.

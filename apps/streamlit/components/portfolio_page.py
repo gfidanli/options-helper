@@ -6,7 +6,7 @@ from typing import Any
 
 import pandas as pd
 
-from options_helper.models import Leg, MultiLegPosition, Portfolio, Position, PositionLike
+from options_helper.models import Leg, Portfolio, Position, PositionLike
 from options_helper.storage import load_portfolio
 from options_helper.ui.dashboard import load_briefing_artifact, resolve_briefing_json
 

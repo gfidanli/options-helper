@@ -9,8 +9,7 @@ import typer
 from rich.console import Console
 
 import options_helper.cli_deps as cli_deps
-from options_helper.analysis.chain_metrics import compute_chain_report
-from options_helper.analysis.derived_metrics import DerivedRow, compute_derived_stats
+from options_helper.analysis.derived_metrics import compute_derived_stats
 from options_helper.data.providers.runtime import get_default_provider_name
 from options_helper.pipelines.visibility_jobs import (
     VisibilityJobExecutionError,

@@ -67,7 +67,9 @@ nav:
   - Planning:
       - Backlog: BACKLOG.md
       - Repo Improvements: REPO_IMPROVEMENTS.md
+      - Tech Debt Guardrails: TECH_DEBT_GUARDRAILS.md
       - Plans Index: plans/README.md
+      - Legacy Plan Index: plans/LEGACY_INDEX.md
   - Diagrams: DIAGRAMS.md
   - Docs Site: DOCS_SITE.md
   - Reference:

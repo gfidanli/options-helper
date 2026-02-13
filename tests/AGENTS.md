@@ -20,3 +20,4 @@
 - Saved artifacts: reports, snapshots, metadata correctness.
 - Lookahead guardrails: assert forward-return anchors use next-bar open for close-confirmed signals.
 - Swing-based signals with right-side confirmation should have tests proving no pre-confirmation consumption.
+- Debt guardrails: add tests when introducing policy checks (for example import boundaries, plan-path conventions).

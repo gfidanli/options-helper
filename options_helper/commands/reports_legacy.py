@@ -13,32 +13,26 @@ import typer
 from rich.console import Console
 
 import options_helper.cli_deps as cli_deps
-from options_helper.analysis.advice import PositionMetrics
 from options_helper.analysis.chain_metrics import compute_chain_report
 from options_helper.analysis.compare_metrics import compute_compare_report
-from options_helper.analysis.confluence import ConfluenceInputs, score_confluence
 from options_helper.analysis.derived_metrics import DerivedRow, compute_derived_stats
 from options_helper.analysis.exposure import ExposureSlice, compute_exposure_slices
-from options_helper.analysis.events import earnings_event_risk
-from options_helper.analysis.flow import FlowGroupBy, aggregate_flow_window, compute_flow, summarize_flow
+from options_helper.analysis.flow import FlowGroupBy, aggregate_flow_window, compute_flow
 from options_helper.analysis.iv_surface import compute_iv_surface
 from options_helper.analysis.levels import compute_anchored_vwap, compute_levels_summary, compute_volume_profile
-from options_helper.analysis.portfolio_risk import compute_portfolio_exposure, run_stress
 from options_helper.analysis.roll_plan import compute_roll_plan
 from options_helper.analysis.roll_plan_multileg import compute_roll_plan_multileg
 from options_helper.analysis.scenarios import compute_position_scenarios
-from options_helper.commands.common import _build_stress_scenarios, _parse_date, _spot_from_meta
-from options_helper.commands.position_metrics import _extract_float, _mark_price, _position_metrics
-from options_helper.commands.technicals import technicals_extension_stats
+from options_helper.commands.common import _parse_date, _spot_from_meta
+from options_helper.commands.position_metrics import _mark_price
 from options_helper.data.candles import close_asof, last_close
-from options_helper.data.confluence_config import ConfigError as ConfluenceConfigError, load_confluence_config
 from options_helper.data.derived import DERIVED_COLUMNS
 from options_helper.data.earnings import safe_next_earnings_date
 from options_helper.data.intraday_store import IntradayStore
 from options_helper.data.options_snapshots import find_snapshot_row
 from options_helper.data.providers.runtime import get_default_provider_name
-from options_helper.data.technical_backtesting_config import load_technical_backtesting_config
 from options_helper.models import MultiLegPosition, OptionType, Position
+from options_helper.pipelines.technicals_extension_stats import run_extension_stats_for_symbol
 from options_helper.pipelines.visibility_jobs import (
     VisibilityJobExecutionError,
     VisibilityJobParameterError,
@@ -47,19 +41,12 @@ from options_helper.pipelines.visibility_jobs import (
     run_dashboard_job,
     run_flow_report_job,
 )
-from options_helper.reporting_briefing import (
-    BriefingSymbolSection,
-    build_briefing_payload,
-    render_briefing_markdown,
-    render_portfolio_table_markdown,
-)
 from options_helper.reporting_chain import (
     render_chain_report_console,
     render_chain_report_markdown,
     render_compare_report_console,
 )
 from options_helper.reporting_roll import render_roll_plan_console, render_roll_plan_multileg_console
-from options_helper.schemas.briefing import BriefingArtifact
 from options_helper.schemas.chain_report import ChainReportArtifact
 from options_helper.schemas.common import clean_nan, utc_now
 from options_helper.schemas.exposure import (
@@ -86,8 +73,6 @@ from options_helper.schemas.levels import (
 )
 from options_helper.schemas.scenarios import ScenarioGridRow, ScenarioSummaryRow, ScenariosArtifact
 from options_helper.storage import load_portfolio
-from options_helper.technicals_backtesting.snapshot import TechnicalSnapshot, compute_technical_snapshot
-from options_helper.ui.dashboard import load_briefing_artifact, render_dashboard, resolve_briefing_paths
 from options_helper.watchlists import load_watchlists
 
 if TYPE_CHECKING:
@@ -1384,7 +1369,7 @@ def report_pack(
 
         if technicals:
             try:
-                technicals_extension_stats(
+                run_extension_stats_for_symbol(
                     symbol=sym,
                     ohlc_path=None,
                     cache_dir=candle_cache_dir,

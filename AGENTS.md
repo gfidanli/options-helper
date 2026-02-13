@@ -34,6 +34,14 @@ This repo is an information/decision-support tool. Keep outputs and docs clear t
   - tests (offline, deterministic).
 - BUGS: add regression test when it fits.
 
+## Technical debt guardrails
+- Follow `docs/TECH_DEBT_GUARDRAILS.md` as the canonical policy.
+- New production Python files should be <= 400 lines.
+- New production Python functions should be <= 80 lines.
+- When touching legacy files already > 1,000 lines, keep file size non-increasing unless the same PR performs extraction/splitting.
+- Avoid cross-command imports in `options_helper/commands/*`; shared logic belongs in `analysis/`, `pipelines/`, or `commands/common.py`.
+- `options_helper/analysis/*` must not import `options_helper/data/*` except explicit I/O adapter seams documented in `docs/TECH_DEBT_GUARDRAILS.md`.
+
 ## Performance architecture guardrails
 - Treat performance as a first-class requirement for modeling/backtesting paths, not a post-hoc cleanup item.
 - In hot paths, precompute symbol-level structures once (sorted timestamp `int64` arrays, session-date arrays/masks, OHLC numpy views) and reuse them.

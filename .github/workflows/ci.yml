@@ -25,5 +25,12 @@ jobs:
           python -m pip install -e ".[dev]"
       - name: Ruff
         run: ruff check .
+      - name: Debt guardrails report
+        run: python scripts/debt_guardrails.py report
+      # Warn-only window per TECH_DEBT_GUARDRAILS.md rollout:
+      # non-blocking through 2026-02-27, then switch continue-on-error to false.
+      - name: Debt guardrails enforce-changed (warn-only until 2026-02-27)
+        continue-on-error: true
+        run: python scripts/debt_guardrails.py enforce-changed
       - name: Pytest
         run: pytest

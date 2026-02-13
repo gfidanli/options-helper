@@ -8,7 +8,6 @@ import typer
 from rich.console import Console
 
 import options_helper.cli_deps as cli_deps
-from options_helper.commands.technicals import technicals_extension_stats
 from options_helper.commands.technicals_common import setup_technicals_logging
 from options_helper.data.confluence_config import ConfigError as ConfluenceConfigError, load_confluence_config
 from options_helper.data.options_snapshotter import snapshot_full_chain_for_symbols
@@ -34,6 +33,7 @@ from options_helper.schemas.scanner_shortlist import (
     ScannerShortlistArtifact,
     ScannerShortlistRow as ScannerShortlistRowSchema,
 )
+from options_helper.pipelines.technicals_extension_stats import run_extension_stats_for_symbol
 from options_helper.watchlists import load_watchlists, save_watchlists
 
 app = typer.Typer(help="Market opportunity scanner (not financial advice).")
@@ -579,7 +579,7 @@ def scanner_run(
         console.print(f"Running Extension Percentile Stats for {len(shortlist_symbols)} symbol(s)...")
         for sym in shortlist_symbols:
             try:
-                technicals_extension_stats(
+                run_extension_stats_for_symbol(
                     symbol=sym,
                     ohlc_path=None,
                     cache_dir=candle_cache_dir,

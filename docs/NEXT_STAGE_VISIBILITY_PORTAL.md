@@ -62,4 +62,4 @@ Producer commands and optional Dagster both write to this shared ledger.
 
 Execution plan and task status:
 
-- `docs/plan/VISIBILITY-PORTAL-ORCHESTRATION-PLAN.md`
+- `docs/plans/legacy/VISIBILITY-PORTAL-ORCHESTRATION-PLAN.md`

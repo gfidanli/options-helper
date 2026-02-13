@@ -14,6 +14,12 @@
 - Prefer dependency builders from `options_helper/cli_deps.py` and import as a module
   (`import options_helper.cli_deps as cli_deps`) so tests can monkeypatch a stable seam.
 
+## Debt containment
+- Follow `docs/TECH_DEBT_GUARDRAILS.md`.
+- Prefer extracting logic before adding to files already > 1,000 lines.
+- Do not add cross-command imports (for example `commands/reports` importing `commands/technicals`).
+- Shared logic should move to `options_helper/analysis/`, `options_helper/pipelines/`, or `options_helper/commands/common.py`.
+
 ## Error handling
 - Network/data failures must not crash the entire run when avoidable.
 - Prefer per-symbol warnings and continue.

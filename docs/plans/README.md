@@ -4,6 +4,7 @@ This directory contains **implementation plans** for the ranked improvement back
 
 - Ranked backlog: `docs/REPO_IMPROVEMENTS.md`
 - Plan template: `_TEMPLATE.md`
+- Legacy plan mapping: `LEGACY_INDEX.md`
 
 These plans are written to be **LLM-agent friendly**: clear goals, bounded scope, specific file touchpoints, and test/acceptance criteria.
 
@@ -65,3 +66,8 @@ When you start/finish a plan, update the header line in the plan doc, e.g.:
 ```
 
 If an item’s *rank* changes, update `docs/REPO_IMPROVEMENTS.md` to keep the backlog and this index consistent.
+
+## Canonical location policy
+
+- New plans must be added under `docs/plans/`.
+- Legacy plan files from root and `docs/plan/` are archived under `docs/plans/legacy/`.

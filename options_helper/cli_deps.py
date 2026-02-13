@@ -95,9 +95,17 @@ def build_research_metrics_store(root_dir: Path) -> DuckDBResearchMetricsStore:
 
 
 def build_strategy_modeling_service() -> StrategyModelingService:
-    from options_helper.analysis.strategy_modeling import build_strategy_modeling_service
-
-    return build_strategy_modeling_service()
+    """Build shared strategy-modeling service seam."""
+    try:
+        from options_helper.analysis.strategy_modeling import (
+            build_strategy_modeling_service as _build_strategy_modeling_service,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            "Strategy-modeling service is unavailable in this workspace. "
+            "Ensure strategy-modeling modules are present."
+        ) from exc
+    return _build_strategy_modeling_service()
 
 
 def build_run_logger(
@@ -138,14 +146,3 @@ def build_run_logger(
     )
     return logger
 
-
-def build_strategy_modeling_service() -> object:
-    """Build shared strategy-modeling service (T8A seam)."""
-    try:
-        from options_helper.analysis.strategy_modeling import build_strategy_modeling_service as _build
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(
-            "Strategy-modeling service is unavailable in this workspace. "
-            "Ensure T8A strategy-modeling modules are present."
-        ) from exc
-    return _build()

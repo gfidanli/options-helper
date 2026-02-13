@@ -10,6 +10,7 @@
 - Research: [Research workflow](RESEARCH.md), [SPXW 0DTE put study](SPXW_0DTE_PUT_STUDY.md), [IV surface](IV_SURFACE.md), [Dealer exposure](DEALER_EXPOSURE.md), [Intraday flow](INTRADAY_FLOW.md), [Levels](LEVELS.md), [Backtesting](BACKTESTING.md), [Technical strategy modeling](TECHNICAL_STRATEGY_MODELING.md), [Strategy modeling stop management](STRATEGY_MODELING_STOP_MANAGEMENT.md), [Strategy modeling profiles](STRATEGY_MODELING_PROFILES.md), [Strategy modeling dashboard export](STRATEGY_MODELING_DASHBOARD_EXPORT.md), [Performance architecture](PERFORMANCE_ARCHITECTURE.md)
 - Documentation tooling: [Diagram workflow](DIAGRAMS.md), [Docs site](DOCS_SITE.md)
 - Project planning: [Backlog](BACKLOG.md), [Plans index](plans/README.md)
+- Engineering governance: [Tech debt guardrails](TECH_DEBT_GUARDRAILS.md), [Legacy plan index](plans/LEGACY_INDEX.md)
 
 ## Documentation site
 

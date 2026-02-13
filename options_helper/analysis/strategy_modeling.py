@@ -24,6 +24,19 @@ from options_helper.analysis.strategy_metrics import (
 )
 from options_helper.analysis.strategy_modeling_contracts import parse_strategy_trade_simulations
 from options_helper.analysis.strategy_modeling_filters import apply_entry_filters
+from options_helper.analysis.strategy_modeling_io_adapter import (
+    AdjustedDataFallbackMode,
+    DailySourceMode,
+    StrategyModelingDailyLoadResult,
+    StrategyModelingIntradayLoadResult,
+    StrategyModelingIntradayPreflightResult,
+    StrategyModelingUniverseLoadResult,
+    build_required_intraday_sessions,
+    list_strategy_modeling_universe,
+    load_daily_ohlc_history,
+    load_required_intraday_bars,
+    normalize_symbol,
+)
 from options_helper.analysis.strategy_modeling_policy import parse_strategy_modeling_policy_config
 from options_helper.analysis.strategy_portfolio import (
     StrategyPortfolioLedgerResult,
@@ -36,19 +49,6 @@ from options_helper.analysis.strategy_signals import build_strategy_signal_event
 from options_helper.analysis.strategy_simulator import (
     StrategyRTarget,
     simulate_strategy_trade_paths,
-)
-from options_helper.data.strategy_modeling_io import (
-    AdjustedDataFallbackMode,
-    DailySourceMode,
-    StrategyModelingDailyLoadResult,
-    StrategyModelingIntradayLoadResult,
-    StrategyModelingIntradayPreflightResult,
-    StrategyModelingUniverseLoadResult,
-    build_required_intraday_sessions,
-    list_strategy_modeling_universe,
-    load_daily_ohlc_history,
-    load_required_intraday_bars,
-    normalize_symbol,
 )
 from options_helper.schemas.strategy_modeling_contracts import (
     SegmentDimension,

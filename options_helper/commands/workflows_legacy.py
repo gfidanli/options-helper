@@ -7,7 +7,6 @@ import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from zoneinfo import ZoneInfo
 
 import typer
 from rich.console import Console
@@ -16,10 +15,8 @@ import options_helper.cli_deps as cli_deps
 from options_helper.analysis.advice import Advice, PositionMetrics, advise
 from options_helper.analysis.confluence import ConfluenceScore, score_confluence
 from options_helper.analysis.extension_scan import compute_current_extension_percentile
-from options_helper.analysis.greeks import add_black_scholes_greeks_to_chain
 from options_helper.analysis.performance import compute_daily_performance_quote
 from options_helper.analysis.portfolio_risk import PortfolioExposure, compute_portfolio_exposure, run_stress
-from options_helper.analysis.quote_quality import compute_quote_quality
 from options_helper.analysis.research import (
     Direction,
     UnderlyingSetup,

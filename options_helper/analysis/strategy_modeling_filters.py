@@ -13,7 +13,7 @@ import pandas as pd
 from options_helper.analysis.orb import normalize_intraday_ohlc_frame
 from options_helper.analysis.strategy_features import StrategyFeatureConfig, compute_ema_slope
 from options_helper.analysis.strategy_modeling_contracts import parse_strategy_signal_events
-from options_helper.data.strategy_modeling_io import normalize_symbol
+from options_helper.analysis.strategy_modeling_io_adapter import normalize_symbol
 from options_helper.schemas.strategy_modeling_contracts import StrategySignalEvent
 from options_helper.schemas.strategy_modeling_filters import StrategyEntryFilterConfig
 
