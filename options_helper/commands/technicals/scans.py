@@ -6,7 +6,13 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
-from options_helper.commands import technicals_legacy as legacy
+from options_helper.commands.technicals.common import (
+    _compute_extension_percentile_series,
+    _date_only_label,
+    _load_ohlc_df,
+    _round2,
+    _rsi_series,
+)
 
 
 def technicals_sfp_scan(
@@ -71,7 +77,7 @@ def technicals_sfp_scan(
     if divergence_window_bars < 2:
         raise typer.BadParameter("--divergence-window-bars must be >= 2")
 
-    df = legacy._load_ohlc_df(ohlc_path=ohlc_path, symbol=symbol, cache_dir=cache_dir)
+    df = _load_ohlc_df(ohlc_path=ohlc_path, symbol=symbol, cache_dir=cache_dir)
     if df.empty:
         raise typer.BadParameter("No OHLC data found for SFP scan.")
 
@@ -91,7 +97,7 @@ def technicals_sfp_scan(
 
     events = extract_sfp_events(signals)
     event_rows: list[dict[str, object]] = [ev.to_dict() for ev in events]
-    extension_series, extension_percentile_series = legacy._compute_extension_percentile_series(signals)
+    extension_series, extension_percentile_series = _compute_extension_percentile_series(signals)
 
     idx = signals.index
     asof_label = (
@@ -102,7 +108,7 @@ def technicals_sfp_scan(
 
     rsi_series = None
     if rsi_window > 0:
-        rsi_series = legacy._rsi_series(signals["Close"], window=int(rsi_window))
+        rsi_series = _rsi_series(signals["Close"], window=int(rsi_window))
 
     divergence_flags = None
     if include_rsi_divergence and rsi_series is not None:
@@ -179,25 +185,25 @@ def technicals_sfp_scan(
                     entry_anchor_ts = signals.index[entry_i]
                     entry_anchor_price = float(entry_candidate)
 
-        ev["timestamp"] = legacy._date_only_label(ev.get("timestamp"))
-        ev["swept_swing_timestamp"] = legacy._date_only_label(ev.get("swept_swing_timestamp"))
+        ev["timestamp"] = _date_only_label(ev.get("timestamp"))
+        ev["swept_swing_timestamp"] = _date_only_label(ev.get("swept_swing_timestamp"))
         ev["entry_anchor_timestamp"] = (
-            legacy._date_only_label(entry_anchor_ts) if entry_anchor_ts is not None else None
+            _date_only_label(entry_anchor_ts) if entry_anchor_ts is not None else None
         )
-        ev["entry_anchor_price"] = legacy._round2(entry_anchor_price)
-        ev["candle_open"] = legacy._round2(ev.get("candle_open"))
-        ev["candle_high"] = legacy._round2(ev.get("candle_high"))
-        ev["candle_low"] = legacy._round2(ev.get("candle_low"))
-        ev["candle_close"] = legacy._round2(ev.get("candle_close"))
-        ev["sweep_level"] = legacy._round2(ev.get("sweep_level"))
-        ev["rsi"] = legacy._round2(ev.get("rsi"))
+        ev["entry_anchor_price"] = _round2(entry_anchor_price)
+        ev["candle_open"] = _round2(ev.get("candle_open"))
+        ev["candle_high"] = _round2(ev.get("candle_high"))
+        ev["candle_low"] = _round2(ev.get("candle_low"))
+        ev["candle_close"] = _round2(ev.get("candle_close"))
+        ev["sweep_level"] = _round2(ev.get("sweep_level"))
+        ev["rsi"] = _round2(ev.get("rsi"))
 
         if event_ts is not None and event_ts in extension_series.index:
-            ev["extension_atr"] = legacy._round2(extension_series.loc[event_ts])
+            ev["extension_atr"] = _round2(extension_series.loc[event_ts])
         else:
             ev["extension_atr"] = None
         if event_ts is not None and event_ts in extension_percentile_series.index:
-            ev["extension_percentile"] = legacy._round2(extension_percentile_series.loc[event_ts])
+            ev["extension_percentile"] = _round2(extension_percentile_series.loc[event_ts])
         else:
             ev["extension_percentile"] = None
 
@@ -378,7 +384,7 @@ def technicals_msb_scan(
     if min_swing_distance_bars < 1:
         raise typer.BadParameter("--min-swing-distance-bars must be >= 1")
 
-    df = legacy._load_ohlc_df(ohlc_path=ohlc_path, symbol=symbol, cache_dir=cache_dir)
+    df = _load_ohlc_df(ohlc_path=ohlc_path, symbol=symbol, cache_dir=cache_dir)
     if df.empty:
         raise typer.BadParameter("No OHLC data found for MSB scan.")
 
@@ -398,7 +404,7 @@ def technicals_msb_scan(
 
     events = extract_msb_events(signals)
     event_rows: list[dict[str, object]] = [ev.to_dict() for ev in events]
-    extension_series, extension_percentile_series = legacy._compute_extension_percentile_series(signals)
+    extension_series, extension_percentile_series = _compute_extension_percentile_series(signals)
 
     idx = signals.index
     asof_label = (
@@ -409,7 +415,7 @@ def technicals_msb_scan(
 
     rsi_series = None
     if rsi_window > 0:
-        rsi_series = legacy._rsi_series(signals["Close"], window=int(rsi_window))
+        rsi_series = _rsi_series(signals["Close"], window=int(rsi_window))
 
     open_series = signals["Open"].astype("float64")
     close_series = signals["Close"].astype("float64")
@@ -463,25 +469,25 @@ def technicals_msb_scan(
                     entry_anchor_ts = signals.index[entry_i]
                     entry_anchor_price = float(entry_candidate)
 
-        ev["timestamp"] = legacy._date_only_label(ev.get("timestamp"))
-        ev["broken_swing_timestamp"] = legacy._date_only_label(ev.get("broken_swing_timestamp"))
+        ev["timestamp"] = _date_only_label(ev.get("timestamp"))
+        ev["broken_swing_timestamp"] = _date_only_label(ev.get("broken_swing_timestamp"))
         ev["entry_anchor_timestamp"] = (
-            legacy._date_only_label(entry_anchor_ts) if entry_anchor_ts is not None else None
+            _date_only_label(entry_anchor_ts) if entry_anchor_ts is not None else None
         )
-        ev["entry_anchor_price"] = legacy._round2(entry_anchor_price)
-        ev["candle_open"] = legacy._round2(ev.get("candle_open"))
-        ev["candle_high"] = legacy._round2(ev.get("candle_high"))
-        ev["candle_low"] = legacy._round2(ev.get("candle_low"))
-        ev["candle_close"] = legacy._round2(ev.get("candle_close"))
-        ev["break_level"] = legacy._round2(ev.get("break_level"))
-        ev["rsi"] = legacy._round2(ev.get("rsi"))
+        ev["entry_anchor_price"] = _round2(entry_anchor_price)
+        ev["candle_open"] = _round2(ev.get("candle_open"))
+        ev["candle_high"] = _round2(ev.get("candle_high"))
+        ev["candle_low"] = _round2(ev.get("candle_low"))
+        ev["candle_close"] = _round2(ev.get("candle_close"))
+        ev["break_level"] = _round2(ev.get("break_level"))
+        ev["rsi"] = _round2(ev.get("rsi"))
 
         if event_ts is not None and event_ts in extension_series.index:
-            ev["extension_atr"] = legacy._round2(extension_series.loc[event_ts])
+            ev["extension_atr"] = _round2(extension_series.loc[event_ts])
         else:
             ev["extension_atr"] = None
         if event_ts is not None and event_ts in extension_percentile_series.index:
-            ev["extension_percentile"] = legacy._round2(extension_percentile_series.loc[event_ts])
+            ev["extension_percentile"] = _round2(extension_percentile_series.loc[event_ts])
         else:
             ev["extension_percentile"] = None
 
