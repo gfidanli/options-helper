@@ -1,17 +1,18 @@
 from __future__ import annotations
 
-from functools import wraps
+import json
+from datetime import date, timezone
 from pathlib import Path
-from typing import Any
 
 import typer
 from rich.console import Console
 
 import options_helper.cli_deps as cli_deps
 from options_helper.analysis.performance import compute_daily_performance_quote
+from options_helper.commands.common import _parse_date
 from options_helper.commands.position_metrics import _extract_float
 from options_helper.commands import workflows_legacy as legacy
-from options_helper.commands.workflows.compat import sync_legacy_seams
+from options_helper.data.earnings import EarningsRecord
 from options_helper.data.market_types import DataFetchError
 from options_helper.data.yf_client import contract_row_by_strike
 from options_helper.reporting import render_summary
@@ -291,16 +292,161 @@ def snapshot_options(
             )
 
 
-@wraps(legacy.earnings)
-def earnings(*args: Any, **kwargs: Any):
-    sync_legacy_seams()
-    return legacy.earnings(*args, **kwargs)
+def earnings(
+    symbol: str = typer.Argument(..., help="Ticker symbol (e.g. IREN)."),
+    refresh: bool = typer.Option(False, "--refresh", help="Fetch from yfinance and update the local cache."),
+    set_date: str | None = typer.Option(
+        None,
+        "--set",
+        help="Manually set the next earnings date (YYYY-MM-DD). Overrides cached value.",
+    ),
+    clear: bool = typer.Option(False, "--clear", help="Delete cached earnings for the symbol."),
+    cache_dir: Path = typer.Option(
+        Path("data/earnings"),
+        "--cache-dir",
+        help="Directory for cached earnings dates.",
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Print the cached record as JSON."),
+) -> None:
+    """Show/cache the next earnings date (best-effort; Yahoo can be wrong/stale)."""
+    console = Console(width=120)
+    store = cli_deps.build_earnings_store(cache_dir)
+    sym = symbol.upper().strip()
+
+    if clear:
+        deleted = store.delete(sym)
+        console.print(f"Deleted: {sym}" if deleted else f"No cache found for: {sym}")
+        return
+
+    import options_helper.commands.workflows as workflows_pkg
+
+    record: EarningsRecord | None = None
+
+    if set_date is not None:
+        parsed = _parse_date(set_date)
+        record = EarningsRecord.manual(symbol=sym, next_earnings_date=parsed, note="Set via CLI --set.")
+        out_path = store.save(record)
+        console.print(f"Saved: {out_path}")
+    else:
+        record = store.load(sym)
+        if refresh or record is None:
+            # Earnings data is sourced from Yahoo via yfinance (best-effort).
+            provider = cli_deps.build_provider("yahoo")
+            try:
+                event = provider.get_next_earnings_event(sym)
+            except DataFetchError as exc:
+                console.print(f"[red]Data error:[/red] {exc}")
+                raise typer.Exit(1) from exc
+            record = EarningsRecord(
+                symbol=sym,
+                fetched_at=workflows_pkg.datetime.now(tz=timezone.utc),
+                source=event.source,
+                next_earnings_date=event.next_date,
+                window_start=event.window_start,
+                window_end=event.window_end,
+                raw=event.raw,
+                notes=[],
+            )
+            out_path = store.save(record)
+            console.print(f"Saved: {out_path}")
+
+    if record is None:
+        console.print(f"No earnings record for {sym}.")
+        raise typer.Exit(1)
+
+    if json_out:
+        console.print_json(json.dumps(record.model_dump(mode="json"), sort_keys=True))
+        return
+
+    today = date.today()
+    if record.next_earnings_date is None:
+        console.print(f"{sym} next earnings date: [yellow]unknown[/yellow] (source={record.source})")
+        return
+
+    days = (record.next_earnings_date - today).days
+    suffix = "today" if days == 0 else f"in {days} day(s)"
+    console.print(f"{sym} next earnings: [bold]{record.next_earnings_date.isoformat()}[/bold] ({suffix})")
+    if record.window_start or record.window_end:
+        console.print(
+            f"Earnings window: {record.window_start.isoformat() if record.window_start else '-'}"
+            f" → {record.window_end.isoformat() if record.window_end else '-'}"
+        )
+    console.print(f"Source: {record.source} (fetched_at={record.fetched_at.isoformat()})")
 
 
-@wraps(legacy.refresh_earnings)
-def refresh_earnings(*args: Any, **kwargs: Any):
-    sync_legacy_seams()
-    return legacy.refresh_earnings(*args, **kwargs)
+def refresh_earnings(
+    watchlists_path: Path = typer.Option(
+        Path("data/watchlists.json"),
+        "--watchlists-path",
+        help="Path to watchlists JSON store (symbols source).",
+    ),
+    watchlist: list[str] = typer.Option(
+        [],
+        "--watchlist",
+        help="Watchlist name(s) to refresh (default: all watchlists).",
+    ),
+    cache_dir: Path = typer.Option(
+        Path("data/earnings"),
+        "--cache-dir",
+        help="Directory for cached earnings dates.",
+    ),
+) -> None:
+    """Fetch and cache next earnings dates for symbols in watchlists (best-effort)."""
+    console = Console(width=120)
+    wl = load_watchlists(watchlists_path)
+
+    symbols: set[str] = set()
+    if watchlist:
+        for name in watchlist:
+            symbols.update(wl.get(name))
+    else:
+        for syms in (wl.watchlists or {}).values():
+            symbols.update(syms or [])
+
+    symbols = {s.strip().upper() for s in symbols if s and s.strip()}
+    if not symbols:
+        console.print("No symbols found (no watchlists or empty watchlist selection).")
+        raise typer.Exit(0)
+
+    import options_helper.commands.workflows as workflows_pkg
+
+    store = cli_deps.build_earnings_store(cache_dir)
+    # Earnings data is sourced from Yahoo via yfinance (best-effort).
+    provider = cli_deps.build_provider("yahoo")
+
+    ok = 0
+    err = 0
+    unknown = 0
+
+    console.print(f"Refreshing earnings for {len(symbols)} symbol(s)...")
+    for sym in sorted(symbols):
+        try:
+            event = provider.get_next_earnings_event(sym)
+            record = EarningsRecord(
+                symbol=sym,
+                fetched_at=workflows_pkg.datetime.now(tz=timezone.utc),
+                source=event.source,
+                next_earnings_date=event.next_date,
+                window_start=event.window_start,
+                window_end=event.window_end,
+                raw=event.raw,
+                notes=[],
+            )
+            path = store.save(record)
+            ok += 1
+            if record.next_earnings_date is None:
+                unknown += 1
+                console.print(f"[yellow]Warning:[/yellow] {sym}: next earnings unknown (saved {path})")
+            else:
+                console.print(f"{sym}: {record.next_earnings_date.isoformat()} (saved {path})")
+        except DataFetchError as exc:
+            err += 1
+            console.print(f"[red]Error:[/red] {sym}: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            err += 1
+            console.print(f"[red]Error:[/red] {sym}: {exc}")
+
+    console.print(f"Done. ok={ok} unknown={unknown} errors={err}")
 
 
 __all__ = [
