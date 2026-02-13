@@ -20,33 +20,26 @@ from options_helper.analysis.exposure import ExposureSlice, compute_exposure_sli
 from options_helper.analysis.flow import FlowGroupBy, aggregate_flow_window, compute_flow
 from options_helper.analysis.iv_surface import compute_iv_surface
 from options_helper.analysis.levels import compute_anchored_vwap, compute_levels_summary, compute_volume_profile
-from options_helper.analysis.roll_plan import compute_roll_plan
-from options_helper.analysis.roll_plan_multileg import compute_roll_plan_multileg
 from options_helper.analysis.scenarios import compute_position_scenarios
-from options_helper.commands.common import _parse_date, _spot_from_meta
+from options_helper.commands.common import _spot_from_meta
 from options_helper.commands.position_metrics import _mark_price
 from options_helper.data.candles import close_asof, last_close
 from options_helper.data.derived import DERIVED_COLUMNS
-from options_helper.data.earnings import safe_next_earnings_date
+from options_helper.data.earnings import safe_next_earnings_date as _safe_next_earnings_date
 from options_helper.data.intraday_store import IntradayStore
 from options_helper.data.options_snapshots import find_snapshot_row
 from options_helper.data.providers.runtime import get_default_provider_name
 from options_helper.models import MultiLegPosition, OptionType, Position
 from options_helper.pipelines.technicals_extension_stats import run_extension_stats_for_symbol
 from options_helper.pipelines.visibility_jobs import (
-    VisibilityJobExecutionError,
-    VisibilityJobParameterError,
-    render_dashboard_report,
-    run_briefing_job,
-    run_dashboard_job,
-    run_flow_report_job,
+    VisibilityJobExecutionError as _VisibilityJobExecutionError,
+    VisibilityJobParameterError as _VisibilityJobParameterError,
+    render_dashboard_report as _render_dashboard_report,
+    run_briefing_job as _run_briefing_job,
+    run_dashboard_job as _run_dashboard_job,
+    run_flow_report_job as _run_flow_report_job,
 )
-from options_helper.reporting_chain import (
-    render_chain_report_console,
-    render_chain_report_markdown,
-    render_compare_report_console,
-)
-from options_helper.reporting_roll import render_roll_plan_console, render_roll_plan_multileg_console
+from options_helper.reporting_chain import render_chain_report_markdown
 from options_helper.schemas.chain_report import ChainReportArtifact
 from options_helper.schemas.common import clean_nan, utc_now
 from options_helper.schemas.exposure import (
@@ -81,6 +74,14 @@ if TYPE_CHECKING:
 
 pd: object | None = None
 
+VisibilityJobExecutionError = _VisibilityJobExecutionError
+VisibilityJobParameterError = _VisibilityJobParameterError
+render_dashboard_report = _render_dashboard_report
+run_briefing_job = _run_briefing_job
+run_dashboard_job = _run_dashboard_job
+run_flow_report_job = _run_flow_report_job
+safe_next_earnings_date = _safe_next_earnings_date
+
 JOB_COMPUTE_FLOW = "compute_flow"
 JOB_BUILD_BRIEFING = "build_briefing"
 JOB_BUILD_DASHBOARD = "build_dashboard"
@@ -103,6 +104,13 @@ _FLOW_HEADER_RE = re.compile(
 )
 _FLOW_NO_DATA_RE = re.compile(r"^No flow data for\s+([A-Z0-9._-]+):")
 _SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _load_reports_command(module_name: str, function_name: str):
+    import importlib
+
+    module = importlib.import_module(module_name)
+    return getattr(module, function_name)
 
 
 @dataclass(frozen=True)
@@ -517,333 +525,13 @@ def register(app: typer.Typer) -> None:
     app.command("roll-plan")(roll_plan)
 
 
-def flow_report(
-    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
-    symbol: str | None = typer.Option(
-        None,
-        "--symbol",
-        help="Restrict flow report to a single symbol.",
-    ),
-    watchlists_path: Path = typer.Option(
-        Path("data/watchlists.json"),
-        "--watchlists-path",
-        help="Path to watchlists JSON store.",
-    ),
-    watchlist: list[str] = typer.Option(
-        [],
-        "--watchlist",
-        help="Use symbols from watchlist (repeatable). Ignored when --all-watchlists is set.",
-    ),
-    all_watchlists: bool = typer.Option(
-        False,
-        "--all-watchlists",
-        help="Use all watchlists instead of portfolio symbols.",
-    ),
-    cache_dir: Path = typer.Option(
-        Path("data/options_snapshots"),
-        "--cache-dir",
-        help="Directory containing options snapshot folders.",
-    ),
-    window: int = typer.Option(
-        1,
-        "--window",
-        min=1,
-        max=30,
-        help="Number of snapshot-to-snapshot deltas to net (requires N+1 snapshots).",
-    ),
-    group_by: str = typer.Option(
-        "contract",
-        "--group-by",
-        help="Aggregation mode: contract|strike|expiry|expiry-strike",
-    ),
-    top: int = typer.Option(10, "--top", min=1, max=100, help="Top contracts per symbol to display."),
-    out: Path | None = typer.Option(
-        None,
-        "--out",
-        help="Output root for saved artifacts (writes under {out}/flow/{SYMBOL}/).",
-    ),
-    strict: bool = typer.Option(
-        False,
-        "--strict",
-        help="Validate JSON artifacts against schemas.",
-    ),
-) -> None:
-    """Report OI/volume deltas from locally captured snapshots (single-day or windowed)."""
-    console = Console()
-    with _observed_run(
-        console=console,
-        job_name=JOB_COMPUTE_FLOW,
-        args={
-            "portfolio_path": str(portfolio_path),
-            "symbol": symbol,
-            "watchlists_path": str(watchlists_path),
-            "watchlist": watchlist,
-            "all_watchlists": all_watchlists,
-            "cache_dir": str(cache_dir),
-            "window": window,
-            "group_by": group_by,
-            "top": top,
-            "out": None if out is None else str(out),
-            "strict": strict,
-        },
-    ) as run_logger:
-        try:
-            result = run_flow_report_job(
-                portfolio_path=portfolio_path,
-                symbol=symbol,
-                watchlists_path=watchlists_path,
-                watchlist=watchlist,
-                all_watchlists=all_watchlists,
-                cache_dir=cache_dir,
-                window=window,
-                group_by=group_by,
-                top=top,
-                out=out,
-                strict=strict,
-                snapshot_store_builder=cli_deps.build_snapshot_store,
-                portfolio_loader=load_portfolio,
-                watchlists_loader=load_watchlists,
-            )
-        except VisibilityJobParameterError as exc:
-            if exc.param_hint:
-                raise typer.BadParameter(str(exc), param_hint=exc.param_hint) from exc
-            raise typer.BadParameter(str(exc)) from exc
-
-        for renderable in result.renderables:
-            console.print(renderable)
-
-        if result.no_symbols:
-            run_logger.log_asset_skipped(
-                asset_key=ASSET_OPTIONS_FLOW,
-                asset_kind="file",
-                partition_key="ALL",
-                extra={"reason": "no_symbols"},
-            )
-            raise typer.Exit(0)
-
-        success_by_symbol, skipped_symbols = _flow_renderable_statuses(result.renderables)
-        for sym, flow_end_date in sorted(success_by_symbol.items()):
-            run_logger.log_asset_success(
-                asset_key=ASSET_OPTIONS_FLOW,
-                asset_kind="file",
-                partition_key=sym,
-                min_event_ts=flow_end_date,
-                max_event_ts=flow_end_date,
-            )
-            if flow_end_date is not None:
-                run_logger.upsert_watermark(
-                    asset_key=ASSET_OPTIONS_FLOW,
-                    scope_key=sym,
-                    watermark_ts=flow_end_date,
-                )
-
-        for sym in sorted(skipped_symbols):
-            run_logger.log_asset_skipped(
-                asset_key=ASSET_OPTIONS_FLOW,
-                asset_kind="file",
-                partition_key=sym,
-                extra={"reason": "insufficient_snapshots"},
-            )
-
-        if success_by_symbol:
-            latest = max((d for d in success_by_symbol.values() if d is not None), default=None)
-            if latest is not None:
-                run_logger.upsert_watermark(
-                    asset_key=ASSET_OPTIONS_FLOW,
-                    scope_key="ALL",
-                    watermark_ts=latest,
-                )
-        elif not skipped_symbols:
-            run_logger.log_asset_success(
-                asset_key=ASSET_OPTIONS_FLOW,
-                asset_kind="file",
-                partition_key="ALL",
-            )
+flow_report = _load_reports_command("options_helper.commands.reports.flow", "flow_report")
 
 
-def chain_report(
-    symbol: str = typer.Option(..., "--symbol", help="Symbol to report on."),
-    as_of: str = typer.Option("latest", "--as-of", help="Snapshot date (YYYY-MM-DD) or 'latest'."),
-    cache_dir: Path = typer.Option(
-        Path("data/options_snapshots"),
-        "--cache-dir",
-        help="Directory for options chain snapshots.",
-    ),
-    format: str = typer.Option(
-        "console",
-        "--format",
-        help="Output format: console|md|json",
-    ),
-    out: Path | None = typer.Option(
-        None,
-        "--out",
-        help="Output root for saved artifacts (writes under {out}/chains/{SYMBOL}/).",
-    ),
-    strict: bool = typer.Option(
-        False,
-        "--strict",
-        help="Validate JSON artifacts against schemas.",
-    ),
-    top: int = typer.Option(10, "--top", min=1, max=100, help="Top strikes to show for walls/gamma."),
-    include_expiry: list[str] = typer.Option(
-        [],
-        "--include-expiry",
-        help="Include a specific expiry date (repeatable). When provided, overrides --expiries selection.",
-    ),
-    expiries: str = typer.Option(
-        "near",
-        "--expiries",
-        help="Expiry selection mode: near|monthly|all (ignored when --include-expiry is used).",
-    ),
-    best_effort: bool = typer.Option(
-        False,
-        "--best-effort",
-        help="Don't fail hard on missing fields; emit warnings and partial outputs.",
-    ),
-) -> None:
-    """Offline options chain dashboard from local snapshot files."""
-    console = Console()
-    store = cli_deps.build_snapshot_store(cache_dir)
-
-    try:
-        as_of_date = store.resolve_date(symbol, as_of)
-        df = store.load_day(symbol, as_of_date)
-        meta = store.load_meta(symbol, as_of_date)
-        spot = _spot_from_meta(meta)
-        if spot is None:
-            raise ValueError("missing spot price in meta.json (run snapshot-options first)")
-
-        fmt = format.strip().lower()
-        if fmt not in {"console", "md", "json"}:
-            raise typer.BadParameter("Invalid --format (use console|md|json)", param_hint="--format")
-
-        expiries_mode = expiries.strip().lower()
-        if expiries_mode not in {"near", "monthly", "all"}:
-            raise typer.BadParameter("Invalid --expiries (use near|monthly|all)", param_hint="--expiries")
-
-        include_dates = [_parse_date(x) for x in include_expiry] if include_expiry else None
-
-        report = compute_chain_report(
-            df,
-            symbol=symbol,
-            as_of=as_of_date,
-            spot=spot,
-            expiries_mode=expiries_mode,  # type: ignore[arg-type]
-            include_expiries=include_dates,
-            top=top,
-            best_effort=best_effort,
-        )
-        report_artifact = ChainReportArtifact(
-            generated_at=utc_now(),
-            **report.model_dump(),
-        )
-        if strict:
-            ChainReportArtifact.model_validate(report_artifact.to_dict())
-
-        if fmt == "console":
-            render_chain_report_console(console, report)
-        elif fmt == "md":
-            console.print(render_chain_report_markdown(report))
-        else:
-            console.print(report_artifact.model_dump_json(indent=2))
-
-        if out is not None:
-            base = out / "chains" / report.symbol
-            base.mkdir(parents=True, exist_ok=True)
-            json_path = base / f"{as_of_date.isoformat()}.json"
-            json_path.write_text(report_artifact.model_dump_json(indent=2), encoding="utf-8")
-            md_path = base / f"{as_of_date.isoformat()}.md"
-            md_path.write_text(render_chain_report_markdown(report), encoding="utf-8")
-            console.print(f"\nSaved: {json_path}")
-            console.print(f"Saved: {md_path}")
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"[red]Error:[/red] {exc}")
-        raise typer.Exit(1) from exc
+chain_report = _load_reports_command("options_helper.commands.reports.chain", "chain_report")
 
 
-def compare_report(
-    symbol: str = typer.Option(..., "--symbol", help="Symbol to compare."),
-    from_spec: str = typer.Option(
-        "-1",
-        "--from",
-        help="From snapshot date (YYYY-MM-DD) or a negative offset relative to --to (e.g. -1).",
-    ),
-    to_spec: str = typer.Option("latest", "--to", help="To snapshot date (YYYY-MM-DD) or 'latest'."),
-    cache_dir: Path = typer.Option(
-        Path("data/options_snapshots"),
-        "--cache-dir",
-        help="Directory for options chain snapshots.",
-    ),
-    out: Path | None = typer.Option(
-        None,
-        "--out",
-        help="Output root for saved artifacts (writes under {out}/compare/{SYMBOL}/).",
-    ),
-    top: int = typer.Option(10, "--top", min=1, max=100, help="Top strikes to show for walls/gamma."),
-    strict: bool = typer.Option(
-        False,
-        "--strict",
-        help="Validate JSON artifacts against schemas.",
-    ),
-) -> None:
-    """Compare two snapshot days for a symbol (delta in OI/IV/Greeks)."""
-    console = Console()
-    store = cli_deps.build_snapshot_store(cache_dir)
-
-    try:
-        to_dt = store.resolve_date(symbol, to_spec)
-        from_spec_norm = from_spec.strip().lower()
-        if from_spec_norm.startswith("-") and from_spec_norm[1:].isdigit():
-            from_dt = store.resolve_relative_date(symbol, to_date=to_dt, offset=int(from_spec_norm))
-        else:
-            from_dt = store.resolve_date(symbol, from_spec_norm)
-
-        if from_dt == to_dt:
-            raise typer.BadParameter("--from and --to must be different dates.")
-
-        df_from = store.load_day(symbol, from_dt)
-        df_to = store.load_day(symbol, to_dt)
-        meta_from = store.load_meta(symbol, from_dt)
-        meta_to = store.load_meta(symbol, to_dt)
-        spot_from = _spot_from_meta(meta_from)
-        spot_to = _spot_from_meta(meta_to)
-        if spot_from is None or spot_to is None:
-            raise ValueError("missing spot price in meta.json (run snapshot-options first)")
-
-        diff, report_from, report_to = compute_compare_report(
-            symbol=symbol,
-            from_date=from_dt,
-            to_date=to_dt,
-            from_df=df_from,
-            to_df=df_to,
-            spot_from=spot_from,
-            spot_to=spot_to,
-            top=top,
-        )
-
-        artifact = CompareArtifact(
-            schema_version=1,
-            generated_at=utc_now(),
-            as_of=to_dt.isoformat(),
-            symbol=symbol.upper(),
-            from_report=report_from.model_dump(),
-            to_report=report_to.model_dump(),
-            diff=diff.model_dump(),
-        )
-        if strict:
-            CompareArtifact.model_validate(artifact.to_dict())
-
-        render_compare_report_console(console, diff)
-
-        if out is not None:
-            base = out / "compare" / symbol.upper()
-            base.mkdir(parents=True, exist_ok=True)
-            out_path = base / f"{from_dt.isoformat()}_to_{to_dt.isoformat()}.json"
-            out_path.write_text(json.dumps(artifact.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
-            console.print(f"\nSaved: {out_path}")
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"[red]Error:[/red] {exc}")
-        raise typer.Exit(1) from exc
+compare_report = _load_reports_command("options_helper.commands.reports.chain", "compare_report")
 
 
 def report_pack(
@@ -1507,380 +1195,10 @@ def report_pack(
     )
 
 
-def briefing(
-    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
-    watchlists_path: Path = typer.Option(
-        Path("data/watchlists.json"),
-        "--watchlists-path",
-        help="Path to watchlists JSON store (used with --watchlist).",
-    ),
-    watchlist: list[str] = typer.Option(
-        [],
-        "--watchlist",
-        help="Watchlist name to include (repeatable). Adds to portfolio symbols.",
-    ),
-    symbol: str | None = typer.Option(
-        None,
-        "--symbol",
-        help="Only include a single symbol (overrides portfolio/watchlists selection).",
-    ),
-    as_of: str = typer.Option("latest", "--as-of", help="Snapshot date (YYYY-MM-DD) or 'latest'."),
-    compare: str = typer.Option(
-        "-1",
-        "--compare",
-        help="Compare spec: -1|-5|YYYY-MM-DD|none (relative offsets are per-symbol).",
-    ),
-    cache_dir: Path = typer.Option(
-        Path("data/options_snapshots"),
-        "--cache-dir",
-        help="Directory for options chain snapshots.",
-    ),
-    candle_cache_dir: Path = typer.Option(
-        Path("data/candles"),
-        "--candle-cache-dir",
-        help="Directory for cached daily candles (used for technical context).",
-    ),
-    technicals_config: Path = typer.Option(
-        Path("config/technical_backtesting.yaml"),
-        "--technicals-config",
-        help="Technical backtesting config (canonical indicator definitions).",
-    ),
-    out: Path | None = typer.Option(
-        None,
-        "--out",
-        help="Output path (Markdown) or directory. Default: data/reports/daily/{ASOF}.md",
-    ),
-    print_to_console: bool = typer.Option(
-        False,
-        "--print/--no-print",
-        help="Print the briefing to the console (in addition to writing files).",
-    ),
-    write_json: bool = typer.Option(
-        True,
-        "--write-json/--no-write-json",
-        help="Write a JSON version of the briefing alongside the Markdown (LLM-friendly).",
-    ),
-    strict: bool = typer.Option(
-        False,
-        "--strict",
-        help="Validate JSON artifacts against schemas.",
-    ),
-    update_derived: bool = typer.Option(
-        True,
-        "--update-derived/--no-update-derived",
-        help="Update derived metrics for included symbols (per-symbol CSV).",
-    ),
-    derived_dir: Path = typer.Option(
-        Path("data/derived"),
-        "--derived-dir",
-        help="Directory for derived metric files (used when --update-derived).",
-    ),
-    top: int = typer.Option(3, "--top", min=1, max=10, help="Top rows to include in compare/flow sections."),
-) -> None:
-    """Generate a daily Markdown briefing for portfolio + optional watchlists (offline-first)."""
-    console = Console(width=200)
-    with _observed_run(
-        console=console,
-        job_name=JOB_BUILD_BRIEFING,
-        args={
-            "portfolio_path": str(portfolio_path),
-            "watchlists_path": str(watchlists_path),
-            "watchlist": watchlist,
-            "symbol": symbol,
-            "as_of": as_of,
-            "compare": compare,
-            "cache_dir": str(cache_dir),
-            "candle_cache_dir": str(candle_cache_dir),
-            "technicals_config": str(technicals_config),
-            "out": None if out is None else str(out),
-            "print_to_console": print_to_console,
-            "write_json": write_json,
-            "strict": strict,
-            "update_derived": update_derived,
-            "derived_dir": str(derived_dir),
-            "top": top,
-        },
-    ) as run_logger:
-        try:
-            result = run_briefing_job(
-                portfolio_path=portfolio_path,
-                watchlists_path=watchlists_path,
-                watchlist=watchlist,
-                symbol=symbol,
-                as_of=as_of,
-                compare=compare,
-                cache_dir=cache_dir,
-                candle_cache_dir=candle_cache_dir,
-                technicals_config=technicals_config,
-                out=out,
-                print_to_console=print_to_console,
-                write_json=write_json,
-                strict=strict,
-                update_derived=update_derived,
-                derived_dir=derived_dir,
-                top=top,
-                snapshot_store_builder=cli_deps.build_snapshot_store,
-                derived_store_builder=cli_deps.build_derived_store,
-                candle_store_builder=cli_deps.build_candle_store,
-                earnings_store_builder=cli_deps.build_earnings_store,
-                safe_next_earnings_date_fn=safe_next_earnings_date,
-            )
-        except VisibilityJobExecutionError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(1) from exc
-
-        report_day = _coerce_iso_date(result.report_date)
-        md_bytes = result.markdown_path.stat().st_size if result.markdown_path.exists() else None
-        run_logger.log_asset_success(
-            asset_key=ASSET_BRIEFING_MARKDOWN,
-            asset_kind="file",
-            partition_key=result.report_date,
-            bytes_written=md_bytes,
-            min_event_ts=report_day,
-            max_event_ts=report_day,
-        )
-        if report_day is not None:
-            run_logger.upsert_watermark(
-                asset_key=ASSET_BRIEFING_MARKDOWN,
-                scope_key="ALL",
-                watermark_ts=report_day,
-            )
-
-        if result.json_path is not None:
-            json_bytes = result.json_path.stat().st_size if result.json_path.exists() else None
-            run_logger.log_asset_success(
-                asset_key=ASSET_BRIEFING_JSON,
-                asset_kind="file",
-                partition_key=result.report_date,
-                bytes_written=json_bytes,
-                min_event_ts=report_day,
-                max_event_ts=report_day,
-            )
-            if report_day is not None:
-                run_logger.upsert_watermark(
-                    asset_key=ASSET_BRIEFING_JSON,
-                    scope_key="ALL",
-                    watermark_ts=report_day,
-                )
-        else:
-            run_logger.log_asset_skipped(
-                asset_key=ASSET_BRIEFING_JSON,
-                asset_kind="file",
-                partition_key=result.report_date,
-                extra={"reason": "write_json_disabled"},
-            )
-
-        for renderable in result.renderables:
-            console.print(renderable)
+briefing = _load_reports_command("options_helper.commands.reports.daily", "briefing")
 
 
-def dashboard(
-    report_date: str = typer.Option(
-        "latest",
-        "--date",
-        help="Briefing date (YYYY-MM-DD) or 'latest'.",
-    ),
-    reports_dir: Path = typer.Option(
-        Path("data/reports"),
-        "--reports-dir",
-        help="Reports root (expects {reports_dir}/daily/{DATE}.json).",
-    ),
-    scanner_run_dir: Path = typer.Option(
-        Path("data/scanner/runs"),
-        "--scanner-run-dir",
-        help="Scanner runs directory (for shortlist view).",
-    ),
-    scanner_run_id: str | None = typer.Option(
-        None,
-        "--scanner-run-id",
-        help="Specific scanner run id to display (defaults to latest for the date).",
-    ),
-    max_shortlist_rows: int = typer.Option(
-        20,
-        "--max-shortlist-rows",
-        min=1,
-        max=200,
-        help="Max rows to show in the scanner shortlist table.",
-    ),
-) -> None:
-    """Render a read-only daily dashboard from briefing JSON + artifacts."""
-    console = Console(width=200)
-    with _observed_run(
-        console=console,
-        job_name=JOB_BUILD_DASHBOARD,
-        args={
-            "report_date": report_date,
-            "reports_dir": str(reports_dir),
-            "scanner_run_dir": str(scanner_run_dir),
-            "scanner_run_id": scanner_run_id,
-            "max_shortlist_rows": max_shortlist_rows,
-        },
-    ) as run_logger:
-        try:
-            result = run_dashboard_job(
-                report_date=report_date,
-                reports_dir=reports_dir,
-            )
-        except VisibilityJobExecutionError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(1) from exc
-
-        report_day = _coerce_iso_date(report_date)
-        if report_day is None:
-            artifact = result.artifact
-            if isinstance(artifact, dict):
-                report_day = _coerce_iso_date(artifact.get("as_of") or artifact.get("report_date"))
-            else:
-                report_day = _coerce_iso_date(getattr(artifact, "as_of", None))
-                if report_day is None:
-                    report_day = _coerce_iso_date(getattr(artifact, "report_date", None))
-
-        json_bytes = result.json_path.stat().st_size if result.json_path.exists() else None
-        partition_key = report_day.isoformat() if report_day is not None else str(report_date)
-        run_logger.log_asset_success(
-            asset_key=ASSET_DASHBOARD,
-            asset_kind="view",
-            partition_key=partition_key,
-            bytes_written=json_bytes,
-            min_event_ts=report_day,
-            max_event_ts=report_day,
-        )
-        if report_day is not None:
-            run_logger.upsert_watermark(
-                asset_key=ASSET_DASHBOARD,
-                scope_key="ALL",
-                watermark_ts=report_day,
-            )
-
-        render_dashboard_report(
-            result=result,
-            reports_dir=reports_dir,
-            scanner_run_dir=scanner_run_dir,
-            scanner_run_id=scanner_run_id,
-            max_shortlist_rows=max_shortlist_rows,
-            render_console=console,
-        )
+dashboard = _load_reports_command("options_helper.commands.reports.daily", "dashboard")
 
 
-def roll_plan(
-    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON (positions + risk profile)."),
-    position_id: str = typer.Option(..., "--id", help="Position id to plan a roll for."),
-    as_of: str = typer.Option("latest", "--as-of", help="Snapshot date (YYYY-MM-DD) or 'latest'."),
-    cache_dir: Path = typer.Option(
-        Path("data/options_snapshots"),
-        "--cache-dir",
-        help="Directory for options chain snapshots.",
-    ),
-    intent: str = typer.Option(
-        "max-upside",
-        "--intent",
-        help="Intent: max-upside|reduce-theta|increase-delta|de-risk",
-    ),
-    horizon_months: int = typer.Option(..., "--horizon-months", min=1, max=60),
-    shape: str = typer.Option(
-        "out-same-strike",
-        "--shape",
-        help="Roll shape: out-same-strike|out-up|out-down",
-    ),
-    top: int = typer.Option(10, "--top", min=1, max=50, help="Number of candidates to display."),
-    max_debit: float | None = typer.Option(
-        None,
-        "--max-debit",
-        help="Max roll debit in dollars (total for position size).",
-    ),
-    min_credit: float | None = typer.Option(
-        None,
-        "--min-credit",
-        help="Min roll credit in dollars (total for position size).",
-    ),
-    min_open_interest: int | None = typer.Option(
-        None,
-        "--min-open-interest",
-        help="Override minimum open interest liquidity gate (default from risk profile).",
-    ),
-    min_volume: int | None = typer.Option(
-        None,
-        "--min-volume",
-        help="Override minimum volume liquidity gate (default from risk profile).",
-    ),
-    include_bad_quotes: bool = typer.Option(
-        False,
-        "--include-bad-quotes",
-        help="Include candidates with bad quote quality (best-effort).",
-    ),
-) -> None:
-    """Propose and rank roll candidates for a single position using offline snapshots."""
-    console = Console(width=200)
-
-    portfolio = load_portfolio(portfolio_path)
-    position = next((p for p in portfolio.positions if p.id == position_id), None)
-    if position is None:
-        raise typer.BadParameter(f"No position found with id: {position_id}", param_hint="--id")
-
-    intent_norm = intent.strip().lower()
-    if intent_norm not in {"max-upside", "reduce-theta", "increase-delta", "de-risk"}:
-        raise typer.BadParameter(
-            "Invalid --intent (use max-upside|reduce-theta|increase-delta|de-risk)",
-            param_hint="--intent",
-        )
-
-    shape_norm = shape.strip().lower()
-    if shape_norm not in {"out-same-strike", "out-up", "out-down"}:
-        raise typer.BadParameter("Invalid --shape (use out-same-strike|out-up|out-down)", param_hint="--shape")
-
-    rp = portfolio.risk_profile
-    min_oi = rp.min_open_interest if min_open_interest is None else int(min_open_interest)
-    min_vol = rp.min_volume if min_volume is None else int(min_volume)
-
-    store = cli_deps.build_snapshot_store(cache_dir)
-    earnings_store = cli_deps.build_earnings_store(Path("data/earnings"))
-    next_earnings_date = safe_next_earnings_date(earnings_store, position.symbol)
-
-    try:
-        as_of_date = store.resolve_date(position.symbol, as_of)
-        df = store.load_day(position.symbol, as_of_date)
-        meta = store.load_meta(position.symbol, as_of_date)
-        spot = _spot_from_meta(meta)
-        if spot is None:
-            raise ValueError("missing spot price in meta.json (run snapshot-options first)")
-
-        if isinstance(position, MultiLegPosition):
-            report = compute_roll_plan_multileg(
-                df,
-                symbol=position.symbol,
-                as_of=as_of_date,
-                spot=spot,
-                position=position,
-                horizon_months=horizon_months,
-                min_open_interest=min_oi,
-                min_volume=min_vol,
-                top=top,
-                include_bad_quotes=include_bad_quotes,
-                max_debit=max_debit,
-                min_credit=min_credit,
-            )
-            render_roll_plan_multileg_console(console, report)
-        else:
-            report = compute_roll_plan(
-                df,
-                symbol=position.symbol,
-                as_of=as_of_date,
-                spot=spot,
-                position=position,
-                intent=intent_norm,
-                horizon_months=horizon_months,
-                shape=shape_norm,
-                min_open_interest=min_oi,
-                min_volume=min_vol,
-                top=top,
-                include_bad_quotes=include_bad_quotes,
-                max_debit=max_debit,
-                min_credit=min_credit,
-                next_earnings_date=next_earnings_date,
-                earnings_warn_days=rp.earnings_warn_days,
-                earnings_avoid_days=rp.earnings_avoid_days,
-            )
-            render_roll_plan_console(console, report)
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"[red]Error:[/red] {exc}")
-        raise typer.Exit(1) from exc
+roll_plan = _load_reports_command("options_helper.commands.reports.chain", "roll_plan")
