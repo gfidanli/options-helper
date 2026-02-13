@@ -5,7 +5,45 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
-from options_helper.commands import technicals_legacy as legacy
+from options_helper.commands.technicals_common import setup_technicals_logging
+from options_helper.data.technical_backtesting_config import load_technical_backtesting_config
+
+
+def _load_ohlc_df(
+    *,
+    ohlc_path: Path | None,
+    symbol: str | None,
+    cache_dir: Path,
+):
+    from options_helper.data.candles import CandleCacheError
+    from options_helper.data.technical_backtesting_io import load_ohlc_from_cache, load_ohlc_from_path
+
+    if ohlc_path:
+        return load_ohlc_from_path(ohlc_path)
+    if symbol:
+        try:
+            return load_ohlc_from_cache(
+                symbol,
+                cache_dir,
+                backfill_if_missing=True,
+                period="max",
+                raise_on_backfill_error=True,
+            )
+        except CandleCacheError as exc:
+            raise typer.BadParameter(f"Failed to backfill OHLC for {symbol}: {exc}") from exc
+    raise typer.BadParameter("Provide --ohlc-path or --symbol/--cache-dir")
+
+
+def _stats_to_dict(stats: object | None) -> dict | None:
+    import pandas as pd
+
+    if stats is None:
+        return None
+    if isinstance(stats, pd.Series):
+        return {k: v for k, v in stats.to_dict().items() if not str(k).startswith("_")}
+    if isinstance(stats, dict):
+        return {k: v for k, v in stats.items() if not str(k).startswith("_")}
+    return {"value": stats}
 
 
 def technicals_compute_indicators(
@@ -21,10 +59,10 @@ def technicals_compute_indicators(
     from options_helper.technicals_backtesting.pipeline import compute_features
 
     console = Console(width=200)
-    cfg = legacy.load_technical_backtesting_config(config_path)
-    legacy.setup_technicals_logging(cfg)
+    cfg = load_technical_backtesting_config(config_path)
+    setup_technicals_logging(cfg)
 
-    df = legacy._load_ohlc_df(ohlc_path=ohlc_path, symbol=symbol, cache_dir=cache_dir)
+    df = _load_ohlc_df(ohlc_path=ohlc_path, symbol=symbol, cache_dir=cache_dir)
     if df.empty:
         raise typer.BadParameter("No OHLC data found for indicator computation.")
 
@@ -57,10 +95,10 @@ def technicals_optimize(
     from options_helper.technicals_backtesting.strategies.registry import get_strategy
 
     console = Console(width=200)
-    cfg = legacy.load_technical_backtesting_config(config_path)
-    legacy.setup_technicals_logging(cfg)
+    cfg = load_technical_backtesting_config(config_path)
+    setup_technicals_logging(cfg)
 
-    df = legacy._load_ohlc_df(ohlc_path=ohlc_path, symbol=symbol, cache_dir=cache_dir)
+    df = _load_ohlc_df(ohlc_path=ohlc_path, symbol=symbol, cache_dir=cache_dir)
     if df.empty:
         raise typer.BadParameter("No OHLC data found for optimization.")
 
@@ -135,10 +173,10 @@ def technicals_walk_forward(
     from options_helper.technicals_backtesting.strategies.registry import get_strategy
 
     console = Console(width=200)
-    cfg = legacy.load_technical_backtesting_config(config_path)
-    legacy.setup_technicals_logging(cfg)
+    cfg = load_technical_backtesting_config(config_path)
+    setup_technicals_logging(cfg)
 
-    df = legacy._load_ohlc_df(ohlc_path=ohlc_path, symbol=symbol, cache_dir=cache_dir)
+    df = _load_ohlc_df(ohlc_path=ohlc_path, symbol=symbol, cache_dir=cache_dir)
     if df.empty:
         raise typer.BadParameter("No OHLC data found for walk-forward.")
 
@@ -193,8 +231,8 @@ def technicals_walk_forward(
                 "validate_start": fold["validate_start"],
                 "validate_end": fold["validate_end"],
                 "best_params": fold["best_params"],
-                "train_stats": legacy._stats_to_dict(fold["train_stats"]),
-                "validate_stats": legacy._stats_to_dict(fold["validate_stats"]),
+                "train_stats": _stats_to_dict(fold["train_stats"]),
+                "validate_stats": _stats_to_dict(fold["validate_stats"]),
                 "validate_score": fold["validate_score"],
             }
         )
@@ -242,8 +280,8 @@ def technicals_run_all(
     from options_helper.technicals_backtesting.strategies.registry import get_strategy
 
     console = Console(width=200)
-    cfg = legacy.load_technical_backtesting_config(config_path)
-    legacy.setup_technicals_logging(cfg)
+    cfg = load_technical_backtesting_config(config_path)
+    setup_technicals_logging(cfg)
 
     symbols = [token.strip().upper() for token in tickers.split(",") if token.strip()]
     if not symbols:
@@ -294,8 +332,8 @@ def technicals_run_all(
                                 "validate_start": fold["validate_start"],
                                 "validate_end": fold["validate_end"],
                                 "best_params": fold["best_params"],
-                                "train_stats": legacy._stats_to_dict(fold["train_stats"]),
-                                "validate_stats": legacy._stats_to_dict(fold["validate_stats"]),
+                                "train_stats": _stats_to_dict(fold["train_stats"]),
+                                "validate_stats": _stats_to_dict(fold["validate_stats"]),
                                 "validate_score": fold["validate_score"],
                             }
                         )
