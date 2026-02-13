@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time, timedelta
 import hashlib
+import importlib
 import json
 from pathlib import Path
 from typing import Any
@@ -32,10 +33,8 @@ from options_helper.backtesting.zero_dte_put import ZeroDTEPutSimulatorConfig
 from options_helper.backtesting.zero_dte_walk_forward import ZeroDTEWalkForwardConfig, run_zero_dte_walk_forward
 from options_helper.commands.common import _parse_date, _spot_from_meta
 from options_helper.data.confluence_config import ConfigError, load_confluence_config
-from options_helper.data.intraday_store import IntradayStore
 from options_helper.data.options_snapshots import OptionsSnapshotError
 from options_helper.data.providers.runtime import get_default_provider_name
-from options_helper.data.storage_runtime import get_storage_runtime_config
 from options_helper.data.tail_risk_artifacts import write_tail_risk_artifacts
 from options_helper.data.zero_dte_dataset import DEFAULT_PROXY_UNDERLYING, ZeroDTEIntradayDatasetLoader
 from options_helper.schemas.common import clean_nan, utc_now
@@ -107,6 +106,23 @@ class _ZeroDTEStudyResult:
 class _ZeroDTEForwardResult:
     payload: dict[str, Any]
     rows: list[dict[str, Any]]
+
+
+def _package_workflows() -> tuple[Any, Any, Any, Any]:
+    """Resolve package-level seams for monkeypatch compatibility."""
+    market_analysis_pkg = importlib.import_module("options_helper.commands.market_analysis")
+
+    return (
+        market_analysis_pkg.get_storage_runtime_config,
+        market_analysis_pkg.IntradayStore,
+        market_analysis_pkg._run_zero_dte_put_study_workflow,
+        market_analysis_pkg._run_zero_dte_forward_snapshot_workflow,
+    )
+
+
+def _build_intraday_store(root_dir: Path) -> Any:
+    _, intraday_store_cls, _, _ = _package_workflows()
+    return intraday_store_cls(root_dir)
 
 
 @app.command("tail-risk")
@@ -473,7 +489,7 @@ def levels(
         rs_window=rs_window,
     )
 
-    intraday_store = IntradayStore(intraday_dir)
+    intraday_store = _build_intraday_store(intraday_dir)
     intraday_bars = intraday_store.load_partition("stocks", "bars", intraday_timeframe, sym, as_of_date)
 
     anchored = compute_anchored_vwap(intraday_bars, anchor_type="session_open", spot=summary.spot)
@@ -611,12 +627,13 @@ def zero_dte_put_study(
     sym = _normalize_symbol(symbol)
 
     try:
+        _, _, run_study_workflow, _ = _package_workflows()
         parsed_mode = _parse_decision_mode(decision_mode)
         parsed_times = _parse_time_csv(decision_times)
         parsed_risk_tiers = _parse_positive_probability_csv(risk_tiers)
         parsed_strike_grid = _parse_strike_return_csv(strike_grid)
         parsed_fill_model = _parse_fill_model(fill_model)
-        result = _run_zero_dte_put_study_workflow(
+        result = run_study_workflow(
             symbol=sym,
             start_date=start_date,
             end_date=end_date,
@@ -708,7 +725,8 @@ def zero_dte_put_forward_snapshot(
     sym = _normalize_symbol(symbol)
 
     try:
-        result = _run_zero_dte_forward_snapshot_workflow(
+        _, _, _, run_forward_workflow = _package_workflows()
+        result = run_forward_workflow(
             symbol=sym,
             session_date=session_date,
             intraday_dir=intraday_dir,
@@ -775,7 +793,7 @@ def _run_zero_dte_put_study_workflow(
         raise ValueError("No sessions in requested date range.")
 
     loader = ZeroDTEIntradayDatasetLoader(
-        intraday_store=IntradayStore(intraday_dir),
+        intraday_store=_build_intraday_store(intraday_dir),
         options_snapshot_store=cli_deps.build_snapshot_store(snapshot_cache_dir),
     )
     candles = _normalize_daily_history(cli_deps.build_candle_store(candle_cache_dir).load(symbol))
@@ -897,7 +915,7 @@ def _run_zero_dte_forward_snapshot_workflow(
         )
 
     loader = ZeroDTEIntradayDatasetLoader(
-        intraday_store=IntradayStore(intraday_dir),
+        intraday_store=_build_intraday_store(intraday_dir),
         options_snapshot_store=cli_deps.build_snapshot_store(snapshot_cache_dir),
     )
     candles = _normalize_daily_history(cli_deps.build_candle_store(candle_cache_dir).load(symbol))
@@ -2414,7 +2432,8 @@ def _slice_history_to_as_of(history: pd.DataFrame, as_of_spec: str) -> tuple[pd.
 
 
 def _duckdb_backend_enabled() -> bool:
-    return get_storage_runtime_config().backend == "duckdb"
+    runtime_config, _, _, _ = _package_workflows()
+    return runtime_config().backend == "duckdb"
 
 
 def _persist_iv_surface(tenor: pd.DataFrame, delta_buckets: pd.DataFrame, research_dir: Path) -> tuple[int, int]:
