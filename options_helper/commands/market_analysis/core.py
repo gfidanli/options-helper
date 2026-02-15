@@ -2,12 +2,7 @@ from __future__ import annotations
 
 import typer
 
-from options_helper.commands import market_analysis_legacy as legacy
-
-tail_risk = legacy.tail_risk
-iv_surface = legacy.iv_surface
-exposure = legacy.exposure
-levels = legacy.levels
+from options_helper.commands.market_analysis.core_impl import exposure, iv_surface, levels, tail_risk
 
 
 def register(app: typer.Typer) -> None:
