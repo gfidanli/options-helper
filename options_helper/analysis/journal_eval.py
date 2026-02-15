@@ -2,14 +2,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Iterable, Protocol, Sequence
 
 import pandas as pd
 
-from options_helper.data.journal import SignalEvent
-
-
 SnapshotLoader = Callable[[str, date], pd.DataFrame | None]
+
+
+class _SignalContextLike(Protocol):
+    value: str
+
+
+class SignalEventLike(Protocol):
+    date: date
+    symbol: str
+    context: _SignalContextLike
+    snapshot_date: date | None
+    contract_symbol: str | None
+    payload: object | None
 
 
 @dataclass(frozen=True)
@@ -26,7 +36,7 @@ class HorizonOutcome:
 
 @dataclass(frozen=True)
 class EventOutcome:
-    event: SignalEvent
+    event: SignalEventLike
     outcomes: dict[int, HorizonOutcome]
     start_date: date | None
     start_close: float | None
@@ -116,7 +126,7 @@ def _extract_action(payload: object | None) -> str | None:
 
 
 def compute_event_outcomes(
-    events: Iterable[SignalEvent],
+    events: Iterable[SignalEventLike],
     *,
     history_by_symbol: dict[str, pd.DataFrame],
     horizons: Sequence[int] = (1, 5, 20),
@@ -289,7 +299,7 @@ def _top_bottom(
 
 
 def build_journal_report(
-    events: Iterable[SignalEvent],
+    events: Iterable[SignalEventLike],
     *,
     history_by_symbol: dict[str, pd.DataFrame],
     horizons: Sequence[int] = (1, 5, 20),

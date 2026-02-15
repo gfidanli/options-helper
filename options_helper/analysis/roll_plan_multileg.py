@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+import re
 
 import pandas as pd
 
 from options_helper.analysis.chain_metrics import execution_quality
-from options_helper.data.options_snapshots import find_snapshot_row
 from options_helper.models import LegSide, MultiLegPosition, OptionType
 
 
@@ -184,6 +184,71 @@ def _candidate_expiries(
     return candidates
 
 
+def _infer_option_type_from_contract_symbol(contract_symbol: str | None) -> str | None:
+    if contract_symbol is None:
+        return None
+    raw = str(contract_symbol).strip().upper()
+    if not raw:
+        return None
+    match = re.search(r"\d{6}([CP])\d{8}$", raw)
+    if not match:
+        return None
+    if match.group(1) == "C":
+        return "call"
+    if match.group(1) == "P":
+        return "put"
+    return None
+
+
+def _find_snapshot_row(
+    df: pd.DataFrame,
+    *,
+    expiry: date,
+    strike: float,
+    option_type: str,
+    contract_symbol: str | None = None,
+    strike_tol: float = 1e-6,
+) -> pd.Series | None:
+    if df is None or df.empty:
+        return None
+
+    if contract_symbol and "contractSymbol" in df.columns:
+        mask = df["contractSymbol"].astype(str) == str(contract_symbol)
+        if mask.any():
+            return df.loc[mask].iloc[0]
+
+    sub = df
+    expiry_str = expiry.isoformat()
+    if "expiry" in sub.columns:
+        sub = sub[sub["expiry"].astype(str) == expiry_str]
+        if sub.empty:
+            return None
+
+    option_type_norm = str(option_type).strip().lower()
+    if "optionType" in sub.columns:
+        sub = sub[sub["optionType"].astype(str).str.lower() == option_type_norm]
+        if sub.empty:
+            return None
+    elif "contractSymbol" in sub.columns and option_type_norm in {"call", "put"}:
+        inferred = sub["contractSymbol"].map(_infer_option_type_from_contract_symbol)
+        sub = sub[inferred == option_type_norm]
+        if sub.empty:
+            return None
+
+    if "strike" not in sub.columns:
+        return None
+
+    strike_series = pd.to_numeric(sub["strike"], errors="coerce")
+    if strike_series.isna().all():
+        return None
+
+    diff = (strike_series.astype(float) - float(strike)).abs()
+    match = diff < float(strike_tol)
+    if match.any():
+        return sub.loc[match].iloc[0]
+    return None
+
+
 def compute_roll_plan_multileg(
     df: pd.DataFrame,
     *,
@@ -231,7 +296,7 @@ def compute_roll_plan_multileg(
     current_mark_ready = True
 
     for leg in position.legs:
-        row = find_snapshot_row(df, expiry=leg.expiry, strike=leg.strike, option_type=leg.option_type)
+        row = _find_snapshot_row(df, expiry=leg.expiry, strike=leg.strike, option_type=leg.option_type)
         leg_metrics = _row_to_leg(
             side=leg.side,
             option_type=leg.option_type,
@@ -268,8 +333,8 @@ def compute_roll_plan_multileg(
         strike_long = long_leg.strike
         strike_short = strike_long + width
 
-        row_long = find_snapshot_row(df, expiry=expiry, strike=strike_long, option_type=option_type)
-        row_short = find_snapshot_row(df, expiry=expiry, strike=strike_short, option_type=option_type)
+        row_long = _find_snapshot_row(df, expiry=expiry, strike=strike_long, option_type=option_type)
+        row_short = _find_snapshot_row(df, expiry=expiry, strike=strike_short, option_type=option_type)
         if row_long is None or row_short is None:
             continue
 

@@ -8,7 +8,6 @@ from typing import Any
 import pandas as pd
 
 from options_helper.analysis.osi import ParsedContract, format_osi, format_osi_compact, normalize_underlying
-from options_helper.data.alpaca_symbols import to_alpaca_symbol
 from options_helper.models import MultiLegPosition, Portfolio, Position
 
 _WIDE_SPREAD_PCT = 0.35
@@ -72,6 +71,15 @@ def _normalize_symbol(value: Any) -> str | None:
         return None
     symbol = str(value).strip().upper()
     return symbol or None
+
+
+def _to_alpaca_symbol(repo_symbol: str) -> str:
+    normalized = normalize_underlying(repo_symbol)
+    if not normalized:
+        return ""
+    if "-" in normalized and "." not in normalized:
+        return normalized.replace("-", ".")
+    return normalized
 
 
 def _field(obj: Any, name: str) -> Any:
@@ -225,11 +233,11 @@ def _contract_candidates(parsed: ParsedContract) -> tuple[str, list[str]]:
 
     raw_candidates = [
         compact,
-        to_alpaca_symbol(compact),
+        _to_alpaca_symbol(compact),
         padded,
         padded.replace(" ", ""),
-        to_alpaca_symbol(padded),
-        to_alpaca_symbol(padded.replace(" ", "")),
+        _to_alpaca_symbol(padded),
+        _to_alpaca_symbol(padded.replace(" ", "")),
     ]
     candidates: list[str] = []
     for value in raw_candidates:
