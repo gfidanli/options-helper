@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, cast
-from zoneinfo import ZoneInfo
 
 from rich.console import RenderableType
 from rich.markdown import Markdown
-from rich.table import Table
 
 import options_helper.cli_deps as cli_deps
 from options_helper.analysis.chain_metrics import compute_chain_report
@@ -17,10 +15,8 @@ from options_helper.analysis.compare_metrics import compute_compare_report
 from options_helper.analysis.confluence import ConfluenceInputs, score_confluence
 from options_helper.analysis.derived_metrics import DerivedRow
 from options_helper.analysis.events import earnings_event_risk
-from options_helper.analysis.flow import FlowGroupBy, aggregate_flow_window, compute_flow, summarize_flow
-from options_helper.analysis.greeks import add_black_scholes_greeks_to_chain
+from options_helper.analysis.flow import aggregate_flow_window, compute_flow
 from options_helper.analysis.portfolio_risk import compute_portfolio_exposure, run_stress
-from options_helper.analysis.quote_quality import compute_quote_quality
 from options_helper.commands.common import _build_stress_scenarios, _spot_from_meta
 from options_helper.commands.position_metrics import _extract_float, _mark_price, _position_metrics
 from options_helper.data.alpaca_client import AlpacaClient
@@ -28,30 +24,18 @@ from options_helper.data.candles import CandleStore, close_asof, last_close
 from options_helper.data.confluence_config import ConfigError as ConfluenceConfigError, load_confluence_config
 from options_helper.data.derived import DerivedStore
 from options_helper.data.earnings import safe_next_earnings_date
-from options_helper.data.ingestion.candles import (
-    CandleIngestOutput,
-    CandleIngestResult,
-    ingest_candles_with_summary,
-)
-from options_helper.data.ingestion.common import (
-    DEFAULT_WATCHLISTS,
-    SymbolSelection,
-    parse_date,
-    resolve_symbols,
-    shift_years,
-)
+from options_helper.data.ingestion.candles import CandleIngestResult
 from options_helper.data.ingestion.options_bars import (
+    BarsEndpointStats,
     BarsBackfillSummary,
     ContractDiscoveryOutput,
     ContractDiscoveryStats,
     PreparedContracts,
-    BarsEndpointStats,
     backfill_option_bars,
     discover_option_contracts,
     prepare_contracts_for_bars,
 )
 from options_helper.data.ingestion.tuning import EndpointStats
-from options_helper.data.market_types import DataFetchError
 from options_helper.data.quality_checks import (
     persist_quality_checks,
     run_candle_quality_checks,
@@ -68,12 +52,21 @@ from options_helper.reporting_briefing import (
     render_briefing_markdown,
     render_portfolio_table_markdown,
 )
+from options_helper.pipelines.visibility_jobs_derived_dashboard_legacy import (
+    render_dashboard_report_impl,
+    run_dashboard_job_impl,
+    run_derived_update_job_impl,
+)
+from options_helper.pipelines.visibility_jobs_flow_legacy import run_flow_report_job_impl
+from options_helper.pipelines.visibility_jobs_ingest_candles_legacy import run_ingest_candles_job_impl
+from options_helper.pipelines.visibility_jobs_ingest_options_bars_legacy import (
+    run_ingest_options_bars_job_impl,
+)
+from options_helper.pipelines.visibility_jobs_snapshot_legacy import run_snapshot_options_job_impl
 from options_helper.schemas.briefing import BriefingArtifact
-from options_helper.schemas.common import utc_now
-from options_helper.schemas.flow import FlowArtifact
 from options_helper.storage import load_portfolio
 from options_helper.technicals_backtesting.snapshot import TechnicalSnapshot, compute_technical_snapshot
-from options_helper.ui.dashboard import load_briefing_artifact, render_dashboard, resolve_briefing_paths
+from options_helper.ui.dashboard import render_dashboard
 from options_helper.watchlists import load_watchlists
 
 if TYPE_CHECKING:
@@ -233,47 +226,23 @@ def run_ingest_candles_job(
     candle_store_builder: Callable[..., Any] = cli_deps.build_candle_store,
     run_logger: Any | None = None,
 ) -> IngestCandlesJobResult:
-    quality_logger = _resolve_quality_run_logger(run_logger)
-    selection = resolve_symbols(
-        watchlists_path=watchlists_path,
-        watchlists=watchlist,
-        symbols=symbol,
-        default_watchlists=DEFAULT_WATCHLISTS,
-    )
-
-    if not selection.symbols:
-        _persist_quality_results(
-            quality_logger,
-            run_candle_quality_checks(candle_store=None, symbols=[], skip_reason="no_symbols"),
-        )
-        return IngestCandlesJobResult(
-            warnings=list(selection.warnings),
-            symbols=[],
-            results=[],
-            no_symbols=True,
-            endpoint_stats=None,
-        )
-
-    provider = provider_builder()
-    store = candle_store_builder(candle_cache_dir, provider=provider)
-    output: CandleIngestOutput = ingest_candles_with_summary(
-        store,
-        selection.symbols,
-        period="max",
-        best_effort=True,
-        concurrency=max(1, int(candles_concurrency)),
-        max_requests_per_second=candles_max_requests_per_second,
-    )
-    _persist_quality_results(
-        quality_logger,
-        run_candle_quality_checks(candle_store=store, symbols=selection.symbols),
-    )
-    return IngestCandlesJobResult(
-        warnings=list(selection.warnings),
-        symbols=list(selection.symbols),
-        results=output.results,
-        no_symbols=False,
-        endpoint_stats=output.summary.endpoint_stats,
+    return cast(
+        IngestCandlesJobResult,
+        run_ingest_candles_job_impl(
+            watchlists_path=watchlists_path,
+            watchlist=watchlist,
+            symbol=symbol,
+            candle_cache_dir=candle_cache_dir,
+            candles_concurrency=candles_concurrency,
+            candles_max_requests_per_second=candles_max_requests_per_second,
+            provider_builder=provider_builder,
+            candle_store_builder=candle_store_builder,
+            run_logger=run_logger,
+            resolve_quality_run_logger_fn=_resolve_quality_run_logger,
+            persist_quality_results_fn=_persist_quality_results,
+            run_candle_quality_checks_fn=run_candle_quality_checks,
+            result_factory=IngestCandlesJobResult,
+        ),
     )
 
 
@@ -313,286 +282,52 @@ def run_ingest_options_bars_job(
     today: date | None = None,
     run_logger: Any | None = None,
 ) -> IngestOptionsBarsJobResult:
-    quality_logger = _resolve_quality_run_logger(run_logger)
-    if dry_run and fetch_only:
-        raise VisibilityJobParameterError("fetch-only and dry-run are mutually exclusive.")
-
-    quality_dry_run = dry_run or fetch_only
-    effective_resume = resume and not fetch_only
-    root_symbols = [
-        str(sym).strip().upper()
-        for sym in (contracts_root_symbols or [])
-        if str(sym or "").strip()
-    ]
-
-    try:
-        selection = resolve_symbols(
+    return cast(
+        IngestOptionsBarsJobResult,
+        run_ingest_options_bars_job_impl(
             watchlists_path=watchlists_path,
-            watchlists=watchlist,
-            symbols=symbol,
-            default_watchlists=DEFAULT_WATCHLISTS,
-        )
-    except Exception as exc:  # noqa: BLE001
-        if root_symbols:
-            selection = SymbolSelection(
-                symbols=[],
-                watchlists_used=[],
-                warnings=[f"Watchlists unavailable: {exc}"],
-            )
-        else:
-            raise
-
-    if not selection.symbols and not root_symbols:
-        _persist_quality_results(
-            quality_logger,
-            run_options_bars_quality_checks(
-                bars_store=None,
-                contract_symbols=[],
-                dry_run=quality_dry_run,
-                skip_reason="no_symbols",
-            ),
-        )
-        return IngestOptionsBarsJobResult(
-            warnings=list(selection.warnings),
-            underlyings=[],
-            root_symbols=[],
-            limited_underlyings=False,
-            discovery=None,
-            prepared=None,
-            summary=None,
+            watchlist=watchlist,
+            symbol=symbol,
+            contracts_root_symbols=contracts_root_symbols,
+            contract_symbol_prefix=contract_symbol_prefix,
+            contracts_exp_start=contracts_exp_start,
+            contracts_exp_end=contracts_exp_end,
+            lookback_years=lookback_years,
+            page_limit=page_limit,
+            contracts_page_size=contracts_page_size,
+            max_underlyings=max_underlyings,
+            max_contracts=max_contracts,
+            max_expiries=max_expiries,
+            contracts_max_requests_per_second=contracts_max_requests_per_second,
+            bars_concurrency=bars_concurrency,
+            bars_max_requests_per_second=bars_max_requests_per_second,
+            bars_batch_mode=bars_batch_mode,
+            bars_batch_size=bars_batch_size,
+            bars_write_batch_size=bars_write_batch_size,
+            resume=resume,
             dry_run=dry_run,
+            fail_fast=fail_fast,
+            contracts_status=contracts_status,
             contracts_only=contracts_only,
-            no_symbols=True,
-            no_contracts=False,
-            no_eligible_contracts=False,
-        )
-
-    underlyings = list(selection.symbols)
-    limited_underlyings = False
-    if max_underlyings is not None:
-        underlyings = underlyings[:max_underlyings]
-        limited_underlyings = True
-
-    provider = provider_builder()
-    provider_name = getattr(provider, "name", None)
-    if provider_name != "alpaca":
-        raise VisibilityJobParameterError("Options bars ingestion requires --provider alpaca.")
-
-    run_day = today or date.today()
-    try:
-        exp_start = parse_date(contracts_exp_start, label="contracts-exp-start")
-    except ValueError as exc:
-        raise VisibilityJobParameterError(str(exc), param_hint="--contracts-exp-start") from exc
-
-    if contracts_exp_end:
-        try:
-            exp_end = parse_date(contracts_exp_end, label="contracts-exp-end")
-        except ValueError as exc:
-            raise VisibilityJobParameterError(str(exc), param_hint="--contracts-exp-end") from exc
-    else:
-        exp_end = shift_years(run_day, 5)
-
-    if exp_end < exp_start:
-        raise VisibilityJobParameterError("contracts-exp-end must be >= contracts-exp-start")
-    contract_status = str(contracts_status or "").strip().lower()
-    if contract_status not in {"active", "inactive", "all"}:
-        raise VisibilityJobParameterError(
-            "contracts-status must be one of: active, inactive, all",
-            param_hint="--contracts-status",
-        )
-
-    contracts_store = contracts_store_builder(contracts_store_dir) if not dry_run and not fetch_only else None
-    bars_store: Any
-    if fetch_only:
-        bars_store = _FetchOnlyOptionBarsStore()
-    else:
-        bars_store = bars_store_builder(bars_store_dir)
-
-    client = client_factory()
-    discovery = discover_option_contracts(
-        client,
-        underlyings=underlyings,
-        root_symbols=root_symbols or None,
-        exp_start=exp_start,
-        exp_end=exp_end,
-        contract_symbol_prefix=contract_symbol_prefix,
-        limit=contracts_page_size,
-        page_limit=page_limit,
-        max_contracts=max_contracts,
-        max_requests_per_second=contracts_max_requests_per_second,
-        contract_status=contract_status,
-        fail_fast=fail_fast,
-    )
-
-    if discovery.contracts.empty:
-        _persist_quality_results(
-            quality_logger,
-            run_options_bars_quality_checks(
-                bars_store=bars_store,
-                contract_symbols=[],
-                dry_run=quality_dry_run,
-                skip_reason="no_contracts",
-            ),
-        )
-        return IngestOptionsBarsJobResult(
-            warnings=list(selection.warnings),
-            underlyings=underlyings,
-            root_symbols=root_symbols,
-            limited_underlyings=limited_underlyings,
-            discovery=discovery,
-            prepared=None,
-            summary=None,
-            dry_run=dry_run,
-            contracts_only=contracts_only,
-            no_symbols=False,
-            no_contracts=True,
-            no_eligible_contracts=False,
-        )
-
-    if contracts_store is not None:
-        contracts_frame = discovery.contracts.reset_index(drop=True)
-        contract_write_batch_size = max(1, int(contracts_page_size or 10000))
-        for offset in range(0, len(contracts_frame), contract_write_batch_size):
-            chunk = contracts_frame.iloc[offset : offset + contract_write_batch_size].copy()
-            if chunk.empty:
-                continue
-            chunk_symbols: set[str] = set()
-            if "contractSymbol" in chunk.columns:
-                chunk_symbols = {
-                    str(value).strip().upper()
-                    for value in chunk["contractSymbol"].tolist()
-                    if str(value or "").strip()
-                }
-            chunk_raw = (
-                {key: val for key, val in discovery.raw_by_symbol.items() if key in chunk_symbols}
-                if chunk_symbols
-                else None
-            )
-            contracts_store.upsert_contracts(
-                chunk,
-                provider="alpaca",
-                as_of_date=run_day,
-                raw_by_contract_symbol=chunk_raw,
-            )
-
-    if contracts_only:
-        _persist_quality_results(
-            quality_logger,
-            run_options_bars_quality_checks(
-                bars_store=bars_store,
-                contract_symbols=[],
-                dry_run=quality_dry_run,
-                skip_reason="contracts_only",
-            ),
-        )
-        summary = BarsBackfillSummary(
-            total_contracts=0,
-            total_expiries=0,
-            planned_contracts=0,
-            skipped_contracts=0,
-            ok_contracts=0,
-            error_contracts=0,
-            bars_rows=0,
-            requests_attempted=0,
-            endpoint_stats=None,
-        )
-        return IngestOptionsBarsJobResult(
-            warnings=list(selection.warnings),
-            underlyings=underlyings,
-            root_symbols=root_symbols,
-            limited_underlyings=limited_underlyings,
-            discovery=discovery,
-            prepared=None,
-            summary=summary,
-            dry_run=dry_run,
-            contracts_only=True,
-            no_symbols=False,
-            no_contracts=False,
-            no_eligible_contracts=False,
-            contracts_endpoint_stats=discovery.endpoint_stats,
-            bars_endpoint_stats=None,
-        )
-
-    prepared = prepare_contracts_for_bars(
-        discovery.contracts,
-        max_expiries=max_expiries,
-        max_contracts=max_contracts,
-    )
-
-    if prepared.contracts.empty:
-        _persist_quality_results(
-            quality_logger,
-            run_options_bars_quality_checks(
-                bars_store=bars_store,
-                contract_symbols=[],
-                dry_run=quality_dry_run,
-                skip_reason="no_eligible_contracts",
-            ),
-        )
-        return IngestOptionsBarsJobResult(
-            warnings=list(selection.warnings),
-            underlyings=underlyings,
-            root_symbols=root_symbols,
-            limited_underlyings=limited_underlyings,
-            discovery=discovery,
-            prepared=prepared,
-            summary=None,
-            dry_run=dry_run,
-            contracts_only=contracts_only,
-            no_symbols=False,
-            no_contracts=False,
-            no_eligible_contracts=True,
-        )
-
-    summary = backfill_option_bars(
-        client,
-        bars_store,
-        prepared.contracts,
-        provider="alpaca",
-        lookback_years=lookback_years,
-        page_limit=None,
-        bars_concurrency=bars_concurrency,
-        bars_max_requests_per_second=bars_max_requests_per_second,
-        bars_batch_mode=bars_batch_mode,
-        bars_batch_size=bars_batch_size,
-        bars_write_batch_size=bars_write_batch_size,
-        resume=effective_resume,
-        dry_run=dry_run,
-        fail_fast=fail_fast,
-        today=run_day,
-    )
-
-    contract_symbols: list[str] = []
-    if "contractSymbol" in prepared.contracts.columns:
-        contract_symbols = [
-            str(value).strip().upper()
-            for value in prepared.contracts["contractSymbol"].tolist()
-            if str(value or "").strip()
-        ]
-    _persist_quality_results(
-        quality_logger,
-        run_options_bars_quality_checks(
-            bars_store=bars_store,
-            contract_symbols=contract_symbols,
-            dry_run=quality_dry_run,
+            fetch_only=fetch_only,
+            provider_builder=provider_builder,
+            contracts_store_builder=contracts_store_builder,
+            bars_store_builder=bars_store_builder,
+            client_factory=client_factory,
+            contracts_store_dir=contracts_store_dir,
+            bars_store_dir=bars_store_dir,
+            today=today,
+            run_logger=run_logger,
+            resolve_quality_run_logger_fn=_resolve_quality_run_logger,
+            persist_quality_results_fn=_persist_quality_results,
+            run_options_bars_quality_checks_fn=run_options_bars_quality_checks,
+            parameter_error_factory=VisibilityJobParameterError,
+            result_factory=IngestOptionsBarsJobResult,
+            fetch_only_store_factory=_FetchOnlyOptionBarsStore,
+            discover_option_contracts_fn=discover_option_contracts,
+            prepare_contracts_for_bars_fn=prepare_contracts_for_bars,
+            backfill_option_bars_fn=backfill_option_bars,
         ),
-    )
-
-    return IngestOptionsBarsJobResult(
-        warnings=list(selection.warnings),
-        underlyings=underlyings,
-        root_symbols=root_symbols,
-        limited_underlyings=limited_underlyings,
-        discovery=discovery,
-        prepared=prepared,
-        summary=summary,
-        dry_run=dry_run,
-        contracts_only=contracts_only,
-        no_symbols=False,
-        no_contracts=False,
-        no_eligible_contracts=False,
-        contracts_endpoint_stats=discovery.endpoint_stats,
-        bars_endpoint_stats=summary.endpoint_stats if summary is not None else None,
     )
 
 
@@ -619,341 +354,36 @@ def run_snapshot_options_job(
     watchlists_loader: Callable[[Path], Any] = load_watchlists,
     run_logger: Any | None = None,
 ) -> SnapshotOptionsJobResult:
-    import numpy as np
-    import pandas as pd
-
-    quality_logger = _resolve_quality_run_logger(run_logger)
-    portfolio = portfolio_loader(portfolio_path)
-    store = _active_snapshot_store(snapshot_store_builder(cache_dir))
-    provider = provider_builder()
-    candle_store = candle_store_builder(candle_cache_dir, provider=provider)
-    provider_name = getattr(provider, "name", "unknown")
-    provider_version = (
-        getattr(provider, "version", None)
-        or getattr(provider, "provider_version", None)
-        or getattr(provider, "__version__", None)
-    )
-
-    want_full_chain = full_chain
-    want_all_expiries = all_expiries
-    use_watchlists = bool(watchlist) or all_watchlists
-
-    watchlists_used: list[str] = []
-    expiries_by_symbol: dict[str, set[date]] = {}
-    symbols: list[str]
-    messages: list[str] = []
-
-    if use_watchlists:
-        wl = watchlists_loader(watchlists_path)
-        if all_watchlists:
-            watchlists_used = sorted(wl.watchlists.keys())
-            symbols = sorted({s for syms in wl.watchlists.values() for s in syms})
-            if not symbols:
-                _persist_quality_results(
-                    quality_logger,
-                    run_snapshot_quality_checks(
-                        snapshot_store=store,
-                        snapshot_dates_by_symbol={},
-                        skip_reason="no_symbols",
-                    ),
-                )
-                return SnapshotOptionsJobResult(
-                    messages=[f"No watchlists in {watchlists_path}"],
-                    dates_used=[],
-                    symbols=[],
-                    no_symbols=True,
-                )
-        else:
-            symbols_set: set[str] = set()
-            for name in watchlist:
-                syms = wl.get(name)
-                if not syms:
-                    raise VisibilityJobParameterError(
-                        f"Watchlist '{name}' is empty or missing in {watchlists_path}",
-                        param_hint="--watchlist",
-                    )
-                symbols_set.update(syms)
-            symbols = sorted(symbols_set)
-            watchlists_used = sorted(set(watchlist))
-    else:
-        if not portfolio.positions:
-            _persist_quality_results(
-                quality_logger,
-                run_snapshot_quality_checks(
-                    snapshot_store=store,
-                    snapshot_dates_by_symbol={},
-                    skip_reason="no_symbols",
-                ),
-            )
-            return SnapshotOptionsJobResult(
-                messages=["No positions."],
-                dates_used=[],
-                symbols=[],
-                no_symbols=True,
-            )
-        for p in portfolio.positions:
-            expiries_by_symbol.setdefault(p.symbol, set()).add(p.expiry)
-        symbols = sorted(expiries_by_symbol.keys())
-
-    dates_used: set[date] = set()
-    snapshot_dates_by_symbol: dict[str, date] = {}
-
-    required_date: date | None = None
-    if require_data_date is not None:
-        spec = require_data_date.strip().lower()
-        try:
-            if spec in {"today", "now"}:
-                required_date = datetime.now(ZoneInfo(require_data_tz)).date()
-            else:
-                required_date = date.fromisoformat(spec)
-        except Exception as exc:  # noqa: BLE001
-            raise VisibilityJobParameterError(
-                f"Invalid --require-data-date/--require-data-tz: {exc}",
-                param_hint="--require-data-date",
-            ) from exc
-
-    mode = "watchlists" if use_watchlists else "portfolio"
-    messages.append(
-        f"Snapshotting options chains for {len(symbols)} symbol(s) "
-        f"({mode}, {'full-chain' if want_full_chain else 'windowed'})..."
-    )
-
-    effective_max_expiries = max_expiries
-    if use_watchlists and not want_all_expiries and effective_max_expiries is None:
-        effective_max_expiries = 2
-
-    for symbol_value in symbols:
-        history = candle_store.get_daily_history(symbol_value, period=spot_period)
-        spot = last_close(history)
-        data_date: date | None = history.index.max().date() if not history.empty else None
-        if spot is None:
-            try:
-                underlying = provider.get_underlying(symbol_value, period=spot_period, interval="1d")
-                spot = underlying.last_price
-                if data_date is None and underlying.history is not None and not underlying.history.empty:
-                    try:
-                        data_date = underlying.history.index.max().date()
-                    except Exception:  # noqa: BLE001
-                        pass
-            except DataFetchError:
-                spot = None
-
-        if spot is None or spot <= 0:
-            messages.append(f"[yellow]Warning:[/yellow] {symbol_value}: missing spot price; skipping snapshot.")
-            continue
-
-        if required_date is not None and data_date != required_date:
-            got = "-" if data_date is None else data_date.isoformat()
-            messages.append(
-                f"[yellow]Warning:[/yellow] {symbol_value}: candle date {got} != required {required_date.isoformat()}; "
-                "skipping snapshot to avoid mis-dated overwrite."
-            )
-            continue
-
-        effective_snapshot_date = data_date or date.today()
-        dates_used.add(effective_snapshot_date)
-
-        strike_min = spot * (1.0 - window_pct)
-        strike_max = spot * (1.0 + window_pct)
-
-        meta = {
-            "spot": spot,
-            "spot_period": spot_period,
-            "full_chain": want_full_chain,
-            "all_expiries": want_all_expiries,
-            "risk_free_rate": risk_free_rate,
-            "window_pct": None if want_full_chain else window_pct,
-            "strike_min": None if want_full_chain else strike_min,
-            "strike_max": None if want_full_chain else strike_max,
-            "snapshot_date": effective_snapshot_date.isoformat(),
-            "symbol_source": mode,
-            "watchlists": watchlists_used,
-            "provider": provider_name,
-        }
-        if provider_version:
-            meta["provider_version"] = provider_version
-
-        expiries: list[date]
-        if not use_watchlists and not want_all_expiries:
-            expiries = sorted(expiries_by_symbol.get(symbol_value, set()))
-        else:
-            expiries = provider.list_option_expiries(symbol_value)
-            if not expiries:
-                messages.append(
-                    f"[yellow]Warning:[/yellow] {symbol_value}: no listed option expiries; skipping snapshot."
-                )
-                continue
-            if effective_max_expiries is not None:
-                expiries = expiries[:effective_max_expiries]
-
-        chain_frames: list[pd.DataFrame] = []
-        quality_frames: list[pd.DataFrame] = []
-        saved_expiries: list[date] = []
-        raw_by_expiry: dict[date, dict[str, object]] = {}
-        underlying_payload: dict[str, object] | None = None
-
-        for exp in expiries:
-            if want_full_chain:
-                try:
-                    raw = provider.get_options_chain_raw(symbol_value, exp)
-                except DataFetchError as exc:
-                    messages.append(
-                        f"[yellow]Warning:[/yellow] {symbol_value} {exp.isoformat()}: {exc}; skipping snapshot."
-                    )
-                    continue
-
-                underlying = raw.get("underlying")
-                if not isinstance(underlying, dict):
-                    underlying = {}
-                if underlying_payload is None or underlying:
-                    underlying_payload = underlying
-
-                calls = pd.DataFrame(raw.get("calls", []))
-                puts = pd.DataFrame(raw.get("puts", []))
-                calls["optionType"] = "call"
-                puts["optionType"] = "put"
-                calls["expiry"] = exp.isoformat()
-                puts["expiry"] = exp.isoformat()
-
-                df = pd.concat([calls, puts], ignore_index=True)
-                df = add_black_scholes_greeks_to_chain(
-                    df,
-                    spot=spot,
-                    expiry=exp,
-                    as_of=effective_snapshot_date,
-                    r=risk_free_rate,
-                )
-
-                chain_frames.append(df)
-                quality_frames.append(df)
-                raw_by_expiry[exp] = raw
-                saved_expiries.append(exp)
-                messages.append(f"{symbol_value} {exp.isoformat()}: saved {len(df)} contracts (full)")
-                continue
-
-            try:
-                chain = provider.get_options_chain(symbol_value, exp)
-            except DataFetchError as exc:
-                messages.append(
-                    f"[yellow]Warning:[/yellow] {symbol_value} {exp.isoformat()}: {exc}; skipping snapshot."
-                )
-                continue
-
-            calls = chain.calls.copy()
-            puts = chain.puts.copy()
-            calls["optionType"] = "call"
-            puts["optionType"] = "put"
-            calls["expiry"] = exp.isoformat()
-            puts["expiry"] = exp.isoformat()
-
-            df = pd.concat([calls, puts], ignore_index=True)
-            if not want_full_chain and "strike" in df.columns:
-                df = df[(df["strike"] >= strike_min) & (df["strike"] <= strike_max)]
-
-            df = add_black_scholes_greeks_to_chain(
-                df,
-                spot=spot,
-                expiry=exp,
-                as_of=effective_snapshot_date,
-                r=risk_free_rate,
-            )
-
-            quality_frames.append(df)
-
-            keep = [
-                "contractSymbol",
-                "optionType",
-                "expiry",
-                "strike",
-                "lastPrice",
-                "bid",
-                "ask",
-                "change",
-                "percentChange",
-                "volume",
-                "openInterest",
-                "impliedVolatility",
-                "inTheMoney",
-                "bs_price",
-                "bs_delta",
-                "bs_gamma",
-                "bs_theta_per_day",
-                "bs_vega",
-            ]
-            keep = [c for c in keep if c in df.columns]
-            df = df[keep]
-
-            chain_frames.append(df)
-            saved_expiries.append(exp)
-            messages.append(f"{symbol_value} {exp.isoformat()}: saved {len(df)} contracts")
-
-        if not saved_expiries:
-            continue
-
-        chain_df = pd.concat(chain_frames, ignore_index=True) if chain_frames else pd.DataFrame()
-        quality_df = pd.concat(quality_frames, ignore_index=True) if quality_frames else pd.DataFrame()
-
-        total_contracts = int(len(quality_df))
-        if total_contracts > 0:
-            quality = compute_quote_quality(
-                quality_df,
-                min_volume=0,
-                min_open_interest=0,
-                as_of=effective_snapshot_date,
-            )
-            missing_bid_ask = 0
-            stale_quotes = 0
-            spread_pcts: list[float] = []
-            if not quality.empty:
-                q_warn = quality["quality_warnings"].tolist()
-                missing_bid_ask = sum("quote_missing_bid_ask" in w for w in q_warn if isinstance(w, list))
-                stale_quotes = sum("quote_stale" in w for w in q_warn if isinstance(w, list))
-                spread_series = pd.to_numeric(quality["spread_pct"], errors="coerce")
-                spread_series = spread_series.where(spread_series >= 0)
-                spread_pcts.extend(spread_series.dropna().tolist())
-            spread_median = float(np.nanmedian(spread_pcts)) if spread_pcts else None
-            spread_worst = float(np.nanmax(spread_pcts)) if spread_pcts else None
-            meta["quote_quality"] = {
-                "contracts": total_contracts,
-                "missing_bid_ask_count": int(missing_bid_ask),
-                "missing_bid_ask_pct": float(missing_bid_ask / total_contracts),
-                "spread_pct_median": spread_median,
-                "spread_pct_worst": spread_worst,
-                "stale_quotes": int(stale_quotes),
-                "stale_pct": float(stale_quotes / total_contracts),
-            }
-
-        if want_full_chain and underlying_payload is not None:
-            meta["underlying"] = underlying_payload
-
-        store.save_day_snapshot(
-            symbol_value,
-            effective_snapshot_date,
-            chain=chain_df,
-            expiries=saved_expiries,
-            raw_by_expiry=raw_by_expiry if raw_by_expiry else None,
-            meta=meta,
-        )
-        snapshot_dates_by_symbol[symbol_value.upper()] = effective_snapshot_date
-
-    if dates_used:
-        days = ", ".join(sorted({d.isoformat() for d in dates_used}))
-        messages.append(f"Snapshot complete. Data date(s): {days}.")
-
-    _persist_quality_results(
-        quality_logger,
-        run_snapshot_quality_checks(
-            snapshot_store=store,
-            snapshot_dates_by_symbol=snapshot_dates_by_symbol,
-            skip_reason="no_snapshots_saved" if not snapshot_dates_by_symbol else None,
+    return cast(
+        SnapshotOptionsJobResult,
+        run_snapshot_options_job_impl(
+            portfolio_path=portfolio_path,
+            cache_dir=cache_dir,
+            candle_cache_dir=candle_cache_dir,
+            window_pct=window_pct,
+            spot_period=spot_period,
+            require_data_date=require_data_date,
+            require_data_tz=require_data_tz,
+            watchlists_path=watchlists_path,
+            watchlist=watchlist,
+            all_watchlists=all_watchlists,
+            all_expiries=all_expiries,
+            full_chain=full_chain,
+            max_expiries=max_expiries,
+            risk_free_rate=risk_free_rate,
+            provider_builder=provider_builder,
+            snapshot_store_builder=snapshot_store_builder,
+            candle_store_builder=candle_store_builder,
+            portfolio_loader=portfolio_loader,
+            watchlists_loader=watchlists_loader,
+            run_logger=run_logger,
+            resolve_quality_run_logger_fn=_resolve_quality_run_logger,
+            persist_quality_results_fn=_persist_quality_results,
+            run_snapshot_quality_checks_fn=run_snapshot_quality_checks,
+            active_snapshot_store_fn=_active_snapshot_store,
+            parameter_error_factory=VisibilityJobParameterError,
+            result_factory=SnapshotOptionsJobResult,
         ),
-    )
-
-    return SnapshotOptionsJobResult(
-        messages=messages,
-        dates_used=sorted(dates_used),
-        symbols=symbols,
-        no_symbols=False,
     )
 
 
@@ -976,311 +406,33 @@ def run_flow_report_job(
     watchlists_loader: Callable[[Path], Any] = load_watchlists,
     run_logger: Any | None = None,
 ) -> FlowReportJobResult:
-    import pandas as pd
-
-    quality_logger = _resolve_quality_run_logger(run_logger)
-    portfolio = portfolio_loader(portfolio_path)
-    renderables: list[RenderableType] = []
-
-    store = _active_snapshot_store(snapshot_store_builder(cache_dir))
-    flow_store = flow_store_builder(cache_dir)
-    use_watchlists = bool(watchlist) or all_watchlists
-    if use_watchlists:
-        wl = watchlists_loader(watchlists_path)
-        if all_watchlists:
-            symbols = sorted({s for syms in wl.watchlists.values() for s in syms})
-            if not symbols:
-                _persist_quality_results(
-                    quality_logger,
-                    run_flow_quality_checks(
-                        flow_store=flow_store,
-                        symbols=[],
-                        skip_reason="no_symbols",
-                    ),
-                )
-                return FlowReportJobResult(
-                    renderables=[f"No watchlists in {watchlists_path}"],
-                    no_symbols=True,
-                )
-        else:
-            symbols_set: set[str] = set()
-            for name in watchlist:
-                syms = wl.get(name)
-                if not syms:
-                    raise VisibilityJobParameterError(
-                        f"Watchlist '{name}' is empty or missing in {watchlists_path}",
-                        param_hint="--watchlist",
-                    )
-                symbols_set.update(syms)
-            symbols = sorted(symbols_set)
-    else:
-        symbols = sorted({p.symbol for p in portfolio.positions})
-        if not symbols and symbol is None:
-            _persist_quality_results(
-                quality_logger,
-                run_flow_quality_checks(
-                    flow_store=flow_store,
-                    symbols=[],
-                    skip_reason="no_symbols",
-                ),
-            )
-            return FlowReportJobResult(renderables=["No positions."], no_symbols=True)
-
-    if symbol is not None:
-        symbols = [symbol.upper()]
-
-    pos_keys = {(p.symbol, p.expiry.isoformat(), float(p.strike), p.option_type) for p in portfolio.positions}
-
-    group_by_norm = group_by.strip().lower()
-    valid_group_by = {"contract", "strike", "expiry", "expiry-strike"}
-    if group_by_norm not in valid_group_by:
-        raise VisibilityJobParameterError(
-            f"Invalid --group-by (use {', '.join(sorted(valid_group_by))})",
-            param_hint="--group-by",
-        )
-    group_by_val = cast(FlowGroupBy, group_by_norm)
-
-    for sym in symbols:
-        need = window + 1
-        dates = store.latest_dates(sym, n=need)
-        if len(dates) < need:
-            renderables.append(f"[yellow]No flow data for {sym}:[/yellow] need at least {need} snapshots.")
-            continue
-
-        pair_flows: list[pd.DataFrame] = []
-        for prev_date, today_date in zip(dates[:-1], dates[1:], strict=False):
-            today_df = store.load_day(sym, today_date)
-            prev_df = store.load_day(sym, prev_date)
-            if today_df.empty or prev_df.empty:
-                renderables.append(f"[yellow]No flow data for {sym}:[/yellow] empty snapshot(s) in window.")
-                pair_flows = []
-                break
-
-            spot = _spot_from_meta(store.load_meta(sym, today_date))
-            pair_flows.append(compute_flow(today_df, prev_df, spot=spot))
-
-        if not pair_flows:
-            continue
-
-        start_date, end_date = dates[0], dates[-1]
-
-        if window == 1 and group_by_norm == "contract":
-            prev_date, today_date = dates[-2], dates[-1]
-            flow = pair_flows[-1]
-            summary = summarize_flow(flow)
-
-            renderables.append(
-                f"\n[bold]{sym}[/bold] flow {prev_date.isoformat()} → {today_date.isoformat()} | "
-                f"calls ΔOI$={summary['calls_delta_oi_notional']:,.0f} | puts ΔOI$={summary['puts_delta_oi_notional']:,.0f}"
-            )
-
-            if flow.empty:
-                renderables.append("No flow rows.")
-                continue
-
-            if "deltaOI_notional" in flow.columns:
-                flow = flow.assign(_abs=flow["deltaOI_notional"].abs())
-                flow = flow.sort_values("_abs", ascending=False).drop(columns=["_abs"])
-
-            table = Table(title=f"{sym} top {top} contracts by |ΔOI_notional|")
-            table.add_column("*")
-            table.add_column("Expiry")
-            table.add_column("Type")
-            table.add_column("Strike", justify="right")
-            table.add_column("ΔOI", justify="right")
-            table.add_column("OI", justify="right")
-            table.add_column("Vol", justify="right")
-            table.add_column("ΔOI$", justify="right")
-            table.add_column("Class")
-
-            for _, row in flow.head(top).iterrows():
-                expiry = str(row.get("expiry", "-"))
-                opt_type = str(row.get("optionType", "-"))
-                strike = row.get("strike")
-                strike_val = float(strike) if strike is not None and not pd.isna(strike) else None
-                key = (sym, expiry, strike_val if strike_val is not None else float("nan"), opt_type)
-                in_port = key in pos_keys if strike_val is not None else False
-
-                table.add_row(
-                    "*" if in_port else "",
-                    expiry,
-                    opt_type,
-                    "-" if strike_val is None else f"{strike_val:g}",
-                    "-" if pd.isna(row.get("deltaOI")) else f"{row.get('deltaOI'):+.0f}",
-                    "-" if pd.isna(row.get("openInterest")) else f"{row.get('openInterest'):.0f}",
-                    "-" if pd.isna(row.get("volume")) else f"{row.get('volume'):.0f}",
-                    "-" if pd.isna(row.get("deltaOI_notional")) else f"{row.get('deltaOI_notional'):+.0f}",
-                    str(row.get("flow_class", "-")),
-                )
-
-            renderables.append(table)
-
-            net = aggregate_flow_window(pair_flows, group_by="contract")
-            net = net.assign(_abs=net["deltaOI_notional"].abs() if "deltaOI_notional" in net.columns else 0.0)
-            sort_cols = ["_abs"]
-            ascending = [False]
-            for c in ["expiry", "strike", "optionType", "contractSymbol"]:
-                if c in net.columns:
-                    sort_cols.append(c)
-                    ascending.append(True)
-            net = net.sort_values(sort_cols, ascending=ascending, na_position="last").drop(columns=["_abs"])
-
-            artifact_net = net.rename(
-                columns={
-                    "contractSymbol": "contract_symbol",
-                    "optionType": "option_type",
-                    "deltaOI": "delta_oi",
-                    "deltaOI_notional": "delta_oi_notional",
-                    "size": "n_pairs",
-                }
-            )
-            artifact = FlowArtifact(
-                schema_version=1,
-                generated_at=utc_now(),
-                as_of=today_date.isoformat(),
-                symbol=sym.upper(),
-                from_date=prev_date.isoformat(),
-                to_date=today_date.isoformat(),
-                window=1,
-                group_by="contract",
-                snapshot_dates=[prev_date.isoformat(), today_date.isoformat()],
-                net=artifact_net.where(pd.notna(artifact_net), None).to_dict(orient="records"),
-            )
-            payload = artifact.to_dict()
-            if strict:
-                FlowArtifact.model_validate(payload)
-            flow_store.upsert_artifact(artifact)
-
-            if out is not None:
-                base = out / "flow" / sym.upper()
-                base.mkdir(parents=True, exist_ok=True)
-                out_path = base / f"{prev_date.isoformat()}_to_{today_date.isoformat()}_w1_contract.json"
-                out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-                renderables.append(f"\nSaved: {out_path}")
-            continue
-
-        net = aggregate_flow_window(pair_flows, group_by=group_by_val)
-        if net.empty:
-            renderables.append(
-                f"\n[bold]{sym}[/bold] flow net window={window} ({start_date.isoformat()} → {end_date.isoformat()})"
-            )
-            renderables.append("No net flow rows.")
-            continue
-
-        calls_premium = (
-            float(net[net["optionType"] == "call"]["deltaOI_notional"].sum()) if "deltaOI_notional" in net.columns else 0.0
-        )
-        puts_premium = (
-            float(net[net["optionType"] == "put"]["deltaOI_notional"].sum()) if "deltaOI_notional" in net.columns else 0.0
-        )
-
-        renderables.append(
-            f"\n[bold]{sym}[/bold] flow net window={window} ({start_date.isoformat()} → {end_date.isoformat()}) | "
-            f"group-by={group_by_norm} | calls ΔOI$={calls_premium:,.0f} | puts ΔOI$={puts_premium:,.0f}"
-        )
-
-        net = net.assign(_abs=net["deltaOI_notional"].abs() if "deltaOI_notional" in net.columns else 0.0)
-        sort_cols = ["_abs"]
-        ascending = [False]
-        for c in ["expiry", "strike", "optionType", "contractSymbol"]:
-            if c in net.columns:
-                sort_cols.append(c)
-                ascending.append(True)
-
-        net = net.sort_values(sort_cols, ascending=ascending, na_position="last").drop(columns=["_abs"])
-
-        def _render_zone_table(title: str) -> Table:
-            t = Table(title=title)
-            if group_by_norm == "contract":
-                t.add_column("*")
-            if group_by_norm in {"expiry", "expiry-strike", "contract"}:
-                t.add_column("Expiry")
-            if group_by_norm in {"strike", "expiry-strike", "contract"}:
-                t.add_column("Strike", justify="right")
-            t.add_column("Type")
-            t.add_column("Net ΔOI", justify="right")
-            t.add_column("Net ΔOI$", justify="right")
-            t.add_column("Net Δ$", justify="right")
-            t.add_column("N", justify="right")
-            return t
-
-        def _add_zone_row(t: Table, row: pd.Series) -> None:
-            expiry = str(row.get("expiry", "-"))
-            opt_type = str(row.get("optionType", "-"))
-            strike = row.get("strike")
-            strike_val = float(strike) if strike is not None and not pd.isna(strike) else None
-            key = (sym, expiry, strike_val if strike_val is not None else float("nan"), opt_type)
-            in_port = key in pos_keys if strike_val is not None else False
-
-            cells: list[str] = []
-            if group_by_norm == "contract":
-                cells.append("*" if in_port else "")
-            if group_by_norm in {"expiry", "expiry-strike", "contract"}:
-                cells.append(expiry)
-            if group_by_norm in {"strike", "expiry-strike", "contract"}:
-                cells.append("-" if strike_val is None else f"{strike_val:g}")
-            cells.extend(
-                [
-                    opt_type,
-                    "-" if pd.isna(row.get("deltaOI")) else f"{row.get('deltaOI'):+.0f}",
-                    "-" if pd.isna(row.get("deltaOI_notional")) else f"{row.get('deltaOI_notional'):+.0f}",
-                    "-" if pd.isna(row.get("delta_notional")) else f"{row.get('delta_notional'):+.0f}",
-                    "-" if pd.isna(row.get("size")) else f"{int(row.get('size')):d}",
-                ]
-            )
-            t.add_row(*cells)
-
-        building = net[net["deltaOI_notional"] > 0].head(top)
-        unwinding = net[net["deltaOI_notional"] < 0].head(top)
-
-        t_build = _render_zone_table(f"{sym} building zones (top {top} by |net ΔOI$|)")
-        for _, row in building.iterrows():
-            _add_zone_row(t_build, row)
-        renderables.append(t_build)
-
-        t_unwind = _render_zone_table(f"{sym} unwinding zones (top {top} by |net ΔOI$|)")
-        for _, row in unwinding.iterrows():
-            _add_zone_row(t_unwind, row)
-        renderables.append(t_unwind)
-
-        artifact_net = net.rename(
-            columns={
-                "contractSymbol": "contract_symbol",
-                "optionType": "option_type",
-                "deltaOI": "delta_oi",
-                "deltaOI_notional": "delta_oi_notional",
-                "size": "n_pairs",
-            }
-        )
-        artifact = FlowArtifact(
-            schema_version=1,
-            generated_at=utc_now(),
-            as_of=end_date.isoformat(),
-            symbol=sym.upper(),
-            from_date=start_date.isoformat(),
-            to_date=end_date.isoformat(),
+    return cast(
+        FlowReportJobResult,
+        run_flow_report_job_impl(
+            portfolio_path=portfolio_path,
+            symbol=symbol,
+            watchlists_path=watchlists_path,
+            watchlist=watchlist,
+            all_watchlists=all_watchlists,
+            cache_dir=cache_dir,
             window=window,
-            group_by=group_by_norm,
-            snapshot_dates=[d.isoformat() for d in dates],
-            net=artifact_net.where(pd.notna(artifact_net), None).to_dict(orient="records"),
-        )
-        payload = artifact.to_dict()
-        if strict:
-            FlowArtifact.model_validate(payload)
-        flow_store.upsert_artifact(artifact)
-
-        if out is not None:
-            base = out / "flow" / sym.upper()
-            base.mkdir(parents=True, exist_ok=True)
-            out_path = base / f"{start_date.isoformat()}_to_{end_date.isoformat()}_w{window}_{group_by_norm}.json"
-            out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-            renderables.append(f"\nSaved: {out_path}")
-
-    _persist_quality_results(
-        quality_logger,
-        run_flow_quality_checks(flow_store=flow_store, symbols=symbols),
+            group_by=group_by,
+            top=top,
+            out=out,
+            strict=strict,
+            snapshot_store_builder=snapshot_store_builder,
+            flow_store_builder=flow_store_builder,
+            portfolio_loader=portfolio_loader,
+            watchlists_loader=watchlists_loader,
+            run_logger=run_logger,
+            resolve_quality_run_logger_fn=_resolve_quality_run_logger,
+            persist_quality_results_fn=_persist_quality_results,
+            run_flow_quality_checks_fn=run_flow_quality_checks,
+            active_snapshot_store_fn=_active_snapshot_store,
+            parameter_error_factory=VisibilityJobParameterError,
+            result_factory=FlowReportJobResult,
+        ),
     )
-    return FlowReportJobResult(renderables=renderables, no_symbols=False)
 
 
 def run_derived_update_job(
@@ -1295,37 +447,28 @@ def run_derived_update_job(
     candle_store_builder: Callable[..., Any] = cli_deps.build_candle_store,
     run_logger: Any | None = None,
 ) -> DerivedUpdateJobResult:
-    quality_logger = _resolve_quality_run_logger(run_logger)
-    store = _active_snapshot_store(snapshot_store_builder(cache_dir))
-    derived = _filesystem_compatible_derived_store(derived_dir, derived_store_builder(derived_dir))
-    candle_store = _filesystem_compatible_candle_store(candle_cache_dir, candle_store_builder(candle_cache_dir))
-
-    as_of_date = store.resolve_date(symbol, as_of)
-    df = store.load_day(symbol, as_of_date)
-    meta = store.load_meta(symbol, as_of_date)
-    spot = _spot_from_meta(meta)
-    if spot is None:
-        raise VisibilityJobExecutionError("missing spot price in meta.json (run snapshot-options first)")
-
-    report = compute_chain_report(
-        df,
-        symbol=symbol,
-        as_of=as_of_date,
-        spot=spot,
-        expiries_mode="near",
-        top=10,
-        best_effort=True,
+    return cast(
+        DerivedUpdateJobResult,
+        run_derived_update_job_impl(
+            symbol=symbol,
+            as_of=as_of,
+            cache_dir=cache_dir,
+            derived_dir=derived_dir,
+            candle_cache_dir=candle_cache_dir,
+            snapshot_store_builder=snapshot_store_builder,
+            derived_store_builder=derived_store_builder,
+            candle_store_builder=candle_store_builder,
+            run_logger=run_logger,
+            resolve_quality_run_logger_fn=_resolve_quality_run_logger,
+            persist_quality_results_fn=_persist_quality_results,
+            run_derived_quality_checks_fn=run_derived_quality_checks,
+            active_snapshot_store_fn=_active_snapshot_store,
+            filesystem_compatible_derived_store_fn=_filesystem_compatible_derived_store,
+            filesystem_compatible_candle_store_fn=_filesystem_compatible_candle_store,
+            execution_error_factory=VisibilityJobExecutionError,
+            result_factory=DerivedUpdateJobResult,
+        ),
     )
-
-    candles = candle_store.load(symbol)
-    history = derived.load(symbol)
-    row = DerivedRow.from_chain_report(report, candles=candles, derived_history=history)
-    out_path = derived.upsert(symbol, row)
-    _persist_quality_results(
-        quality_logger,
-        run_derived_quality_checks(derived_store=derived, symbol=symbol.upper()),
-    )
-    return DerivedUpdateJobResult(symbol=symbol.upper(), as_of_date=as_of_date, output_path=out_path)
 
 
 def run_briefing_job(
@@ -1812,17 +955,15 @@ def run_dashboard_job(
     report_date: str,
     reports_dir: Path,
 ) -> DashboardJobResult:
-    try:
-        paths = resolve_briefing_paths(reports_dir, report_date)
-    except Exception as exc:  # noqa: BLE001
-        raise VisibilityJobExecutionError(str(exc)) from exc
-
-    try:
-        artifact = load_briefing_artifact(paths.json_path)
-    except Exception as exc:  # noqa: BLE001
-        raise VisibilityJobExecutionError(f"failed to load briefing JSON: {exc}") from exc
-
-    return DashboardJobResult(json_path=paths.json_path, artifact=artifact)
+    return cast(
+        DashboardJobResult,
+        run_dashboard_job_impl(
+            report_date=report_date,
+            reports_dir=reports_dir,
+            execution_error_factory=VisibilityJobExecutionError,
+            result_factory=DashboardJobResult,
+        ),
+    )
 
 
 def render_dashboard_report(
@@ -1835,12 +976,12 @@ def render_dashboard_report(
     render_fn: Callable[..., None] = render_dashboard,
     render_console: Any,
 ) -> None:
-    render_console.print(f"Briefing JSON: {result.json_path}")
-    render_fn(
-        artifact=result.artifact,
-        console=render_console,
+    render_dashboard_report_impl(
+        result=result,
         reports_dir=reports_dir,
         scanner_run_dir=scanner_run_dir,
         scanner_run_id=scanner_run_id,
         max_shortlist_rows=max_shortlist_rows,
+        render_fn=render_fn,
+        render_console=render_console,
     )
