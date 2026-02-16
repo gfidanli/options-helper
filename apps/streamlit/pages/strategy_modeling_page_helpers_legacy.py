@@ -329,40 +329,50 @@ def _resolve_import_summary_path(raw_path: str) -> Path:
     return resolved
 
 
-def _load_imported_strategy_modeling_summary(raw_path: str) -> tuple[SimpleNamespace, SimpleNamespace, Path]:
-    summary_path = _resolve_import_summary_path(raw_path)
+def _load_import_summary_payload(summary_path: Path) -> Mapping[str, Any]:
     try:
         payload = json.loads(summary_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"Import file is not valid JSON: {summary_path}") from exc
     except OSError as exc:
         raise ValueError(f"Failed reading import file: {summary_path} ({exc})") from exc
-
     if not isinstance(payload, Mapping):
         raise ValueError("Import file must contain a JSON object.")
+    return payload
 
-    strategy = str(payload.get("strategy") or "").strip().lower()
-    if not strategy:
-        raise ValueError("Import file is missing required `strategy` value.")
 
+def _resolve_import_symbols(payload: Mapping[str, Any]) -> tuple[list[str], list[str]]:
     requested_symbols = _normalize_string_list(payload.get("requested_symbols"), uppercase=True)
     modeled_symbols = _normalize_string_list(payload.get("modeled_symbols"), uppercase=True)
     if not modeled_symbols:
         modeled_symbols = requested_symbols
     if not requested_symbols:
         requested_symbols = modeled_symbols
+    return requested_symbols, modeled_symbols
 
+
+def _extract_import_rows(payload: Mapping[str, Any]) -> tuple[list[dict[str, Any]], ...]:
     trade_rows = _rows_to_df(payload.get("trade_log")).to_dict(orient="records")
     r_ladder_rows = _rows_to_df(payload.get("r_ladder")).to_dict(orient="records")
     segment_rows = _rows_to_df(payload.get("segments")).to_dict(orient="records")
     equity_rows = _rows_to_df(payload.get("equity_curve") or payload.get("equity")).to_dict(orient="records")
-    metrics_payload = _to_dict(payload.get("metrics"))
-    filter_metadata = _to_dict(payload.get("filter_metadata"))
-    filter_summary = _to_dict(payload.get("filter_summary"))
-    directional_metrics = _to_dict(payload.get("directional_metrics"))
-    summary_payload = _to_dict(payload.get("summary"))
-    policy_metadata = _to_dict(payload.get("policy_metadata"))
+    return trade_rows, r_ladder_rows, segment_rows, equity_rows
 
+
+def _pad_trade_ids(ids: list[str], *, prefix: str, target_count: int | None) -> list[str]:
+    if target_count is None or target_count <= len(ids):
+        return ids
+    out = list(ids)
+    for index in range(len(out) + 1, target_count + 1):
+        out.append(f"imported-{prefix}-{index}")
+    return out
+
+
+def _resolve_import_trade_ids(
+    *,
+    trade_rows: Sequence[Mapping[str, Any]],
+    summary_payload: Mapping[str, Any],
+) -> tuple[list[str], list[str], tuple[int, ...]]:
     accepted_trade_ids = [
         str(row.get("trade_id") or "").strip()
         for row in trade_rows
@@ -373,53 +383,62 @@ def _load_imported_strategy_modeling_summary(raw_path: str) -> tuple[SimpleNames
         for row in trade_rows
         if str(row.get("trade_id") or "").strip() and str(row.get("reject_code") or "").strip()
     ]
-
-    accepted_count = _coerce_int(summary_payload.get("accepted_trade_count"))
-    if accepted_count is not None and accepted_count > len(accepted_trade_ids):
-        for index in range(len(accepted_trade_ids) + 1, accepted_count + 1):
-            accepted_trade_ids.append(f"imported-accepted-{index}")
-
-    skipped_count = _coerce_int(summary_payload.get("skipped_trade_count"))
-    if skipped_count is not None and skipped_count > len(skipped_trade_ids):
-        for index in range(len(skipped_trade_ids) + 1, skipped_count + 1):
-            skipped_trade_ids.append(f"imported-skipped-{index}")
-
+    accepted_trade_ids = _pad_trade_ids(
+        accepted_trade_ids,
+        prefix="accepted",
+        target_count=_coerce_int(summary_payload.get("accepted_trade_count")),
+    )
+    skipped_trade_ids = _pad_trade_ids(
+        skipped_trade_ids,
+        prefix="skipped",
+        target_count=_coerce_int(summary_payload.get("skipped_trade_count")),
+    )
     signal_event_count = _coerce_int(summary_payload.get("signal_event_count")) or 0
     signal_events = tuple(range(signal_event_count)) if signal_event_count > 0 else ()
+    return accepted_trade_ids, skipped_trade_ids, signal_events
 
-    max_hold_bars = _coerce_int(policy_metadata.get("max_hold_bars"))
-    if max_hold_bars is not None and max_hold_bars < 1:
-        max_hold_bars = None
 
-    raw_max_hold_timeframe = str(policy_metadata.get("max_hold_timeframe") or "entry")
+def _resolve_import_end_date(*, summary_path: Path, payload: Mapping[str, Any]) -> date | None:
     try:
-        normalized_max_hold_timeframe = normalize_max_hold_timeframe(raw_max_hold_timeframe)
-    except ValueError:
-        normalized_max_hold_timeframe = "entry"
-
-    risk_per_trade_pct = _coerce_float(policy_metadata.get("risk_per_trade_pct"))
-    if risk_per_trade_pct is None:
-        risk_per_trade_pct = 1.0
-
-    output_timezone = str(policy_metadata.get("output_timezone") or _DEFAULT_EXPORT_TIMEZONE).strip()
-    if not output_timezone:
-        output_timezone = _DEFAULT_EXPORT_TIMEZONE
-
-    end_date: date | None = None
-    try:
-        end_date = date.fromisoformat(summary_path.parent.name)
+        return date.fromisoformat(summary_path.parent.name)
     except ValueError:
         generated_ts = pd.to_datetime(payload.get("generated_at"), errors="coerce")
         if isinstance(generated_ts, pd.Timestamp) and not pd.isna(generated_ts):
-            end_date = generated_ts.date()
+            return generated_ts.date()
+    return None
 
+
+def _resolve_max_hold_timeframe(policy_metadata: Mapping[str, Any]) -> str:
+    raw_max_hold_timeframe = str(policy_metadata.get("max_hold_timeframe") or "entry")
+    try:
+        return normalize_max_hold_timeframe(raw_max_hold_timeframe)
+    except ValueError:
+        return "entry"
+
+
+def _build_import_request_state(
+    *,
+    strategy: str,
+    requested_symbols: Sequence[str],
+    modeled_symbols: Sequence[str],
+    policy_metadata: Mapping[str, Any],
+    end_date: date | None,
+) -> SimpleNamespace:
+    max_hold_bars = _coerce_int(policy_metadata.get("max_hold_bars"))
+    if max_hold_bars is not None and max_hold_bars < 1:
+        max_hold_bars = None
+    normalized_max_hold_timeframe = _resolve_max_hold_timeframe(policy_metadata)
+    risk_per_trade_pct = _coerce_float(policy_metadata.get("risk_per_trade_pct"))
+    if risk_per_trade_pct is None:
+        risk_per_trade_pct = 1.0
+    output_timezone = str(policy_metadata.get("output_timezone") or _DEFAULT_EXPORT_TIMEZONE).strip()
+    if not output_timezone:
+        output_timezone = _DEFAULT_EXPORT_TIMEZONE
     request_symbols = tuple(requested_symbols or modeled_symbols)
     intraday_timeframe = str(policy_metadata.get("intraday_timeframe") or "1Min").strip() or "1Min"
-    intraday_source = str(policy_metadata.get("intraday_source") or "imported_summary").strip()
-    if not intraday_source:
-        intraday_source = "imported_summary"
-
-    request_state = SimpleNamespace(
+    intraday_source = str(policy_metadata.get("intraday_source") or "imported_summary").strip() or "imported_summary"
+    gap_fill_policy = str(policy_metadata.get("gap_fill_policy") or "fill_at_open")
+    return SimpleNamespace(
         strategy=strategy,
         symbols=request_symbols,
         start_date=None,
@@ -427,25 +446,41 @@ def _load_imported_strategy_modeling_summary(raw_path: str) -> tuple[SimpleNames
         intraday_dir=Path("data/intraday"),
         intraday_timeframe=intraday_timeframe,
         intraday_source=intraday_source,
-        gap_fill_policy=str(policy_metadata.get("gap_fill_policy") or "fill_at_open"),
+        gap_fill_policy=gap_fill_policy,
         max_hold_bars=max_hold_bars,
         max_hold_timeframe=normalized_max_hold_timeframe,
         output_timezone=output_timezone,
         policy={
             "require_intraday_bars": bool(policy_metadata.get("require_intraday_bars", True)),
             "risk_per_trade_pct": float(risk_per_trade_pct),
-            "gap_fill_policy": str(policy_metadata.get("gap_fill_policy") or "fill_at_open"),
+            "gap_fill_policy": gap_fill_policy,
             "max_hold_bars": max_hold_bars,
             "max_hold_timeframe": normalized_max_hold_timeframe,
             "one_open_per_symbol": bool(policy_metadata.get("one_open_per_symbol", True)),
         },
     )
 
-    run_result = SimpleNamespace(
+
+def _build_import_run_result(
+    *,
+    strategy: str,
+    requested_symbols: Sequence[str],
+    modeled_symbols: Sequence[str],
+    signal_events: Sequence[int],
+    accepted_trade_ids: Sequence[str],
+    skipped_trade_ids: Sequence[str],
+    rows: tuple[list[dict[str, Any]], ...],
+    metrics_payload: Mapping[str, Any],
+    filter_metadata: Mapping[str, Any],
+    filter_summary: Mapping[str, Any],
+    directional_metrics: Mapping[str, Any],
+) -> SimpleNamespace:
+    trade_rows, r_ladder_rows, segment_rows, equity_rows = rows
+    return SimpleNamespace(
         strategy=strategy,
         requested_symbols=tuple(requested_symbols),
         modeled_symbols=tuple(modeled_symbols),
-        signal_events=signal_events,
+        signal_events=tuple(signal_events),
         accepted_trade_ids=tuple(accepted_trade_ids),
         skipped_trade_ids=tuple(skipped_trade_ids),
         portfolio_metrics=metrics_payload,
@@ -453,6 +488,48 @@ def _load_imported_strategy_modeling_summary(raw_path: str) -> tuple[SimpleNames
         equity_curve=tuple(equity_rows),
         segment_records=tuple(segment_rows),
         trade_simulations=tuple(trade_rows),
+        filter_metadata=filter_metadata,
+        filter_summary=filter_summary,
+        directional_metrics=directional_metrics,
+    )
+
+
+def _load_imported_strategy_modeling_summary(raw_path: str) -> tuple[SimpleNamespace, SimpleNamespace, Path]:
+    summary_path = _resolve_import_summary_path(raw_path)
+    payload = _load_import_summary_payload(summary_path)
+    strategy = str(payload.get("strategy") or "").strip().lower()
+    if not strategy:
+        raise ValueError("Import file is missing required `strategy` value.")
+
+    requested_symbols, modeled_symbols = _resolve_import_symbols(payload)
+    rows = _extract_import_rows(payload)
+    trade_rows = rows[0]
+    metrics_payload = _to_dict(payload.get("metrics"))
+    filter_metadata = _to_dict(payload.get("filter_metadata"))
+    filter_summary = _to_dict(payload.get("filter_summary"))
+    directional_metrics = _to_dict(payload.get("directional_metrics"))
+    summary_payload = _to_dict(payload.get("summary"))
+    policy_metadata = _to_dict(payload.get("policy_metadata"))
+    accepted_trade_ids, skipped_trade_ids, signal_events = _resolve_import_trade_ids(
+        trade_rows=trade_rows,
+        summary_payload=summary_payload,
+    )
+    request_state = _build_import_request_state(
+        strategy=strategy,
+        requested_symbols=requested_symbols,
+        modeled_symbols=modeled_symbols,
+        policy_metadata=policy_metadata,
+        end_date=_resolve_import_end_date(summary_path=summary_path, payload=payload),
+    )
+    run_result = _build_import_run_result(
+        strategy=strategy,
+        requested_symbols=requested_symbols,
+        modeled_symbols=modeled_symbols,
+        signal_events=signal_events,
+        accepted_trade_ids=accepted_trade_ids,
+        skipped_trade_ids=skipped_trade_ids,
+        rows=rows,
+        metrics_payload=metrics_payload,
         filter_metadata=filter_metadata,
         filter_summary=filter_summary,
         directional_metrics=directional_metrics,
