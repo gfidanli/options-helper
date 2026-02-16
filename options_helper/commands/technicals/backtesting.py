@@ -46,6 +46,170 @@ def _stats_to_dict(stats: object | None) -> dict | None:
     return {"value": stats}
 
 
+def _select_strategy_feature_frame(
+    *,
+    features,
+    needed_columns: list[str],
+):
+    cols = ["Open", "High", "Low", "Close"]
+    if "Volume" in features.columns:
+        cols.append("Volume")
+    cols += [column for column in needed_columns if column in features.columns]
+    return features.loc[:, [column for column in cols if column in features.columns]]
+
+
+def _serialize_walk_forward_folds(folds: list[dict]) -> list[dict]:
+    rows: list[dict] = []
+    for fold in folds:
+        rows.append(
+            {
+                "train_start": fold["train_start"],
+                "train_end": fold["train_end"],
+                "validate_start": fold["validate_start"],
+                "validate_end": fold["validate_end"],
+                "best_params": fold["best_params"],
+                "train_stats": _stats_to_dict(fold["train_stats"]),
+                "validate_stats": _stats_to_dict(fold["validate_stats"]),
+                "validate_score": fold["validate_score"],
+            }
+        )
+    return rows
+
+
+def _walk_forward_artifacts_payload(result) -> tuple[dict, object | None]:
+    folds_out = _serialize_walk_forward_folds(result.folds)
+    wf_dict = {
+        "params": result.params,
+        "folds": folds_out,
+        "stability": result.stability,
+        "used_defaults": result.used_defaults,
+        "reason": result.reason,
+    }
+    heatmap = None
+    if result.folds:
+        best_fold = max(result.folds, key=lambda fold: fold.get("validate_score", float("-inf")))
+        heatmap = best_fold.get("heatmap")
+    return wf_dict, heatmap
+
+
+def _artifact_data_meta(features, *, warmup_bars: int) -> dict:
+    return {
+        "start": features.index.min(),
+        "end": features.index.max(),
+        "bars": len(features),
+        "warmup_bars": warmup_bars,
+    }
+
+
+def _artifact_optimize_meta(opt_cfg: dict, strat_cfg: dict) -> dict:
+    return {
+        "method": opt_cfg["method"],
+        "maximize": opt_cfg["maximize"],
+        "constraints": strat_cfg["constraints"],
+    }
+
+
+def _run_strategy_for_symbol(
+    *,
+    cfg: dict,
+    features,
+    strategy: str,
+    strat_cfg: dict,
+    warmup: int,
+    required_feature_columns_for_strategy,
+    get_strategy,
+    optimize_params,
+    walk_forward_optimize,
+) -> tuple[dict, object | None, dict | None, object | None]:
+    needed = required_feature_columns_for_strategy(strategy, strat_cfg)
+    strat_features = _select_strategy_feature_frame(features=features, needed_columns=needed)
+    StrategyClass = get_strategy(strategy)
+    opt_cfg = cfg["optimization"]
+    if cfg["walk_forward"]["enabled"]:
+        result = walk_forward_optimize(
+            strat_features,
+            StrategyClass,
+            cfg["backtest"],
+            strat_cfg["search_space"],
+            strat_cfg["constraints"],
+            opt_cfg["maximize"],
+            opt_cfg["method"],
+            opt_cfg.get("sambo", {}),
+            opt_cfg.get("custom_score", {}),
+            cfg["walk_forward"],
+            strat_cfg["defaults"],
+            warmup_bars=warmup,
+            min_train_bars=opt_cfg.get("min_train_bars", 0),
+            return_heatmap=cfg["artifacts"].get("write_heatmap", False),
+        )
+        wf_dict, heatmap = _walk_forward_artifacts_payload(result)
+        return result.params, None, wf_dict, heatmap
+
+    best_params, train_stats, heatmap = optimize_params(
+        strat_features,
+        StrategyClass,
+        cfg["backtest"],
+        strat_cfg["search_space"],
+        strat_cfg["constraints"],
+        opt_cfg["maximize"],
+        opt_cfg["method"],
+        opt_cfg.get("sambo", {}),
+        opt_cfg.get("custom_score", {}),
+        warmup_bars=warmup,
+        return_heatmap=cfg["artifacts"].get("write_heatmap", False),
+    )
+    return best_params, train_stats, None, heatmap
+
+
+def _run_all_strategies_for_symbol(
+    *,
+    symbol: str,
+    cache_dir: Path,
+    cfg: dict,
+    console: Console,
+    load_ohlc_from_cache,
+    compute_features,
+    warmup_bars,
+    write_artifacts,
+    required_feature_columns_for_strategy,
+    get_strategy,
+    optimize_params,
+    walk_forward_optimize,
+) -> None:
+    df = load_ohlc_from_cache(symbol, cache_dir)
+    if df.empty:
+        console.print(f"[yellow]No data for {symbol} in cache.[/yellow]")
+        return
+    features = compute_features(df, cfg)
+    warmup = warmup_bars(cfg)
+    for strategy, strat_cfg in cfg["strategies"].items():
+        if not strat_cfg.get("enabled", False):
+            continue
+        params, train_stats, wf_dict, heatmap = _run_strategy_for_symbol(
+            cfg=cfg,
+            features=features,
+            strategy=strategy,
+            strat_cfg=strat_cfg,
+            warmup=warmup,
+            required_feature_columns_for_strategy=required_feature_columns_for_strategy,
+            get_strategy=get_strategy,
+            optimize_params=optimize_params,
+            walk_forward_optimize=walk_forward_optimize,
+        )
+        write_artifacts(
+            cfg,
+            ticker=symbol,
+            strategy=strategy,
+            params=params,
+            train_stats=train_stats,
+            walk_forward_result=wf_dict,
+            optimize_meta=_artifact_optimize_meta(cfg["optimization"], strat_cfg),
+            data_meta=_artifact_data_meta(features, warmup_bars=warmup),
+            heatmap=heatmap,
+        )
+    console.print(f"[green]Completed[/green] {symbol}")
+
+
 def technicals_compute_indicators(
     ohlc_path: Path | None = typer.Option(None, "--ohlc-path", help="CSV/parquet OHLC path."),
     symbol: str | None = typer.Option(None, "--symbol", help="Symbol to load from cache."),
@@ -186,11 +350,7 @@ def technicals_walk_forward(
     opt_cfg = cfg["optimization"]
     walk_cfg = cfg["walk_forward"]
     needed = required_feature_columns_for_strategy(strategy, strat_cfg)
-    cols = ["Open", "High", "Low", "Close"]
-    if "Volume" in features.columns:
-        cols.append("Volume")
-    cols += [column for column in needed if column in features.columns]
-    features = features.loc[:, [column for column in cols if column in features.columns]]
+    features = _select_strategy_feature_frame(features=features, needed_columns=needed)
 
     warmup = warmup_bars(cfg)
     result = walk_forward_optimize(
@@ -211,42 +371,7 @@ def technicals_walk_forward(
     )
 
     ticker = symbol or "UNKNOWN"
-    data_meta = {
-        "start": features.index.min(),
-        "end": features.index.max(),
-        "bars": len(features),
-        "warmup_bars": warmup,
-    }
-    optimize_meta = {
-        "method": opt_cfg["method"],
-        "maximize": opt_cfg["maximize"],
-        "constraints": strat_cfg["constraints"],
-    }
-    folds_out = []
-    for fold in result.folds:
-        folds_out.append(
-            {
-                "train_start": fold["train_start"],
-                "train_end": fold["train_end"],
-                "validate_start": fold["validate_start"],
-                "validate_end": fold["validate_end"],
-                "best_params": fold["best_params"],
-                "train_stats": _stats_to_dict(fold["train_stats"]),
-                "validate_stats": _stats_to_dict(fold["validate_stats"]),
-                "validate_score": fold["validate_score"],
-            }
-        )
-    wf_dict = {
-        "params": result.params,
-        "folds": folds_out,
-        "stability": result.stability,
-        "used_defaults": result.used_defaults,
-        "reason": result.reason,
-    }
-    heatmap = None
-    if result.folds:
-        best_fold = max(result.folds, key=lambda fold: fold.get("validate_score", float("-inf")))
-        heatmap = best_fold.get("heatmap")
+    wf_dict, heatmap = _walk_forward_artifacts_payload(result)
 
     paths = write_artifacts(
         cfg,
@@ -255,8 +380,8 @@ def technicals_walk_forward(
         params=result.params,
         train_stats=None,
         walk_forward_result=wf_dict,
-        optimize_meta=optimize_meta,
-        data_meta=data_meta,
+        optimize_meta=_artifact_optimize_meta(opt_cfg, strat_cfg),
+        data_meta=_artifact_data_meta(features, warmup_bars=warmup),
         heatmap=heatmap,
     )
     console.print(f"Wrote params: {paths.params_path}")
@@ -289,107 +414,20 @@ def technicals_run_all(
 
     for symbol in symbols:
         try:
-            df = load_ohlc_from_cache(symbol, cache_dir)
-            if df.empty:
-                console.print(f"[yellow]No data for {symbol} in cache.[/yellow]")
-                continue
-            features = compute_features(df, cfg)
-            warmup = warmup_bars(cfg)
-            for strategy, strat_cfg in cfg["strategies"].items():
-                if not strat_cfg.get("enabled", False):
-                    continue
-                needed = required_feature_columns_for_strategy(strategy, strat_cfg)
-                cols = ["Open", "High", "Low", "Close"]
-                if "Volume" in features.columns:
-                    cols.append("Volume")
-                cols += [column for column in needed if column in features.columns]
-                strat_features = features.loc[:, [column for column in cols if column in features.columns]]
-                StrategyClass = get_strategy(strategy)
-                opt_cfg = cfg["optimization"]
-                if cfg["walk_forward"]["enabled"]:
-                    result = walk_forward_optimize(
-                        strat_features,
-                        StrategyClass,
-                        cfg["backtest"],
-                        strat_cfg["search_space"],
-                        strat_cfg["constraints"],
-                        opt_cfg["maximize"],
-                        opt_cfg["method"],
-                        opt_cfg.get("sambo", {}),
-                        opt_cfg.get("custom_score", {}),
-                        cfg["walk_forward"],
-                        strat_cfg["defaults"],
-                        warmup_bars=warmup,
-                        min_train_bars=opt_cfg.get("min_train_bars", 0),
-                        return_heatmap=cfg["artifacts"].get("write_heatmap", False),
-                    )
-                    folds_out = []
-                    for fold in result.folds:
-                        folds_out.append(
-                            {
-                                "train_start": fold["train_start"],
-                                "train_end": fold["train_end"],
-                                "validate_start": fold["validate_start"],
-                                "validate_end": fold["validate_end"],
-                                "best_params": fold["best_params"],
-                                "train_stats": _stats_to_dict(fold["train_stats"]),
-                                "validate_stats": _stats_to_dict(fold["validate_stats"]),
-                                "validate_score": fold["validate_score"],
-                            }
-                        )
-                    wf_dict = {
-                        "params": result.params,
-                        "folds": folds_out,
-                        "stability": result.stability,
-                        "used_defaults": result.used_defaults,
-                        "reason": result.reason,
-                    }
-                    heatmap = None
-                    if result.folds:
-                        best_fold = max(result.folds, key=lambda fold: fold.get("validate_score", float("-inf")))
-                        heatmap = best_fold.get("heatmap")
-                    train_stats = None
-                    params = result.params
-                else:
-                    best_params, train_stats, heatmap = optimize_params(
-                        strat_features,
-                        StrategyClass,
-                        cfg["backtest"],
-                        strat_cfg["search_space"],
-                        strat_cfg["constraints"],
-                        opt_cfg["maximize"],
-                        opt_cfg["method"],
-                        opt_cfg.get("sambo", {}),
-                        opt_cfg.get("custom_score", {}),
-                        warmup_bars=warmup,
-                        return_heatmap=cfg["artifacts"].get("write_heatmap", False),
-                    )
-                    wf_dict = None
-                    params = best_params
-
-                data_meta = {
-                    "start": features.index.min(),
-                    "end": features.index.max(),
-                    "bars": len(features),
-                    "warmup_bars": warmup,
-                }
-                optimize_meta = {
-                    "method": opt_cfg["method"],
-                    "maximize": opt_cfg["maximize"],
-                    "constraints": strat_cfg["constraints"],
-                }
-                write_artifacts(
-                    cfg,
-                    ticker=symbol,
-                    strategy=strategy,
-                    params=params,
-                    train_stats=train_stats,
-                    walk_forward_result=wf_dict,
-                    optimize_meta=optimize_meta,
-                    data_meta=data_meta,
-                    heatmap=heatmap,
-                )
-            console.print(f"[green]Completed[/green] {symbol}")
+            _run_all_strategies_for_symbol(
+                symbol=symbol,
+                cache_dir=cache_dir,
+                cfg=cfg,
+                console=console,
+                load_ohlc_from_cache=load_ohlc_from_cache,
+                compute_features=compute_features,
+                warmup_bars=warmup_bars,
+                write_artifacts=write_artifacts,
+                required_feature_columns_for_strategy=required_feature_columns_for_strategy,
+                get_strategy=get_strategy,
+                optimize_params=optimize_params,
+                walk_forward_optimize=walk_forward_optimize,
+            )
         except Exception as exc:  # noqa: BLE001
             console.print(f"[red]{symbol} failed:[/red] {exc}")
 
