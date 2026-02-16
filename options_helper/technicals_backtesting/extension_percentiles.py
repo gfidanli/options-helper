@@ -80,61 +80,54 @@ def compute_extension_quantiles(series: pd.Series, window: int) -> tuple[float |
     )
 
 
-def compute_extension_percentiles(
+def _empty_extension_percentile_report() -> ExtensionPercentileReport:
+    return ExtensionPercentileReport(
+        asof="-",
+        extension_atr=None,
+        current_percentiles={},
+        quantiles_by_window={},
+        tail_window_years=None,
+        tail_events=[],
+    )
+
+
+def _align_extension_inputs(
     *,
     extension_series: pd.Series,
     close_series: pd.Series,
-    open_series: pd.Series | None = None,
-    windows_years: Iterable[int],
-    days_per_year: int,
-    tail_high_pct: float,
-    tail_low_pct: float,
-    forward_days: Iterable[int],
-    include_tail_events: bool = True,
-) -> ExtensionPercentileReport:
-    if extension_series.empty:
-        return ExtensionPercentileReport(
-            asof="-",
-            extension_atr=None,
-            current_percentiles={},
-            quantiles_by_window={},
-            tail_window_years=None,
-            tail_events=[],
-        )
-
-    extension_series = extension_series.dropna()
+    open_series: pd.Series | None,
+) -> tuple[pd.Series, pd.Series, pd.Series] | None:
+    extension_clean = extension_series.dropna()
     entry_series = close_series if open_series is None else open_series
     aligned = pd.concat(
         [
-            extension_series.rename("extension"),
-            entry_series.reindex(extension_series.index).rename("entry"),
-            close_series.reindex(extension_series.index).rename("close"),
+            extension_clean.rename("extension"),
+            entry_series.reindex(extension_clean.index).rename("entry"),
+            close_series.reindex(extension_clean.index).rename("close"),
         ],
         axis=1,
     ).dropna(subset=["extension", "entry", "close"])
     if aligned.empty:
-        return ExtensionPercentileReport(
-            asof="-",
-            extension_atr=None,
-            current_percentiles={},
-            quantiles_by_window={},
-            tail_window_years=None,
-            tail_events=[],
-        )
-    extension_series = aligned["extension"].astype("float64")
-    entry_series = aligned["entry"].astype("float64")
-    close_series = aligned["close"].astype("float64")
+        return None
+    return (
+        aligned["extension"].astype("float64"),
+        aligned["entry"].astype("float64"),
+        aligned["close"].astype("float64"),
+    )
 
-    asof_idx = extension_series.index[-1]
-    asof = asof_idx.date().isoformat() if isinstance(asof_idx, pd.Timestamp) else str(asof_idx)
-    current_val = float(extension_series.iloc[-1])
 
-    windows = sorted({int(w) for w in windows_years if int(w) > 0})
-    window_bars = {w: int(w * days_per_year) for w in windows}
+def _compute_window_bars(*, windows_years: Iterable[int], days_per_year: int) -> dict[int, int]:
+    windows = sorted({int(window) for window in windows_years if int(window) > 0})
+    return {window: int(window * days_per_year) for window in windows}
 
+
+def _compute_current_percentiles_and_quantiles(
+    *,
+    extension_series: pd.Series,
+    window_bars: dict[int, int],
+) -> tuple[dict[int, float], dict[int, ExtensionQuantiles]]:
     current_percentiles: dict[int, float] = {}
     quantiles_by_window: dict[int, ExtensionQuantiles] = {}
-
     for years, bars in window_bars.items():
         bars = bars if len(extension_series) >= bars else len(extension_series)
         if bars <= 1:
@@ -151,53 +144,127 @@ def compute_extension_percentiles(
             p50=p50,
             p95=p95,
         )
+    return current_percentiles, quantiles_by_window
 
-    # Tail events: use the longest available window for stability.
+
+def _compute_forward_tail_metrics(
+    *,
+    i: int,
+    pct_series: pd.Series,
+    entry_series: pd.Series,
+    close_series: pd.Series,
+    extension_series: pd.Series,
+    forward_days: Iterable[int],
+) -> tuple[dict[int, float | None], dict[int, float | None]]:
+    forward_extension_percentiles: dict[int, float | None] = {}
+    forward_returns: dict[int, float | None] = {}
+    for day in forward_days:
+        j = i + int(day)
+        entry_i = i + 1
+        if j >= len(extension_series) or entry_i >= len(entry_series):
+            forward_extension_percentiles[int(day)] = None
+            forward_returns[int(day)] = None
+            continue
+        f_pct = pct_series.iloc[j]
+        forward_extension_percentiles[int(day)] = None if np.isnan(f_pct) else float(f_pct)
+        if entry_i <= j and j < len(close_series):
+            c0 = float(entry_series.iloc[entry_i])
+            c1 = float(close_series.iloc[j])
+            forward_returns[int(day)] = (c1 / c0 - 1.0) if c0 else None
+        else:
+            forward_returns[int(day)] = None
+    return forward_extension_percentiles, forward_returns
+
+
+def _collect_tail_events(
+    *,
+    extension_series: pd.Series,
+    entry_series: pd.Series,
+    close_series: pd.Series,
+    current_percentiles: dict[int, float],
+    window_bars: dict[int, int],
+    tail_high_pct: float,
+    tail_low_pct: float,
+    forward_days: Iterable[int],
+) -> tuple[int | None, list[ExtensionTailEvent]]:
+    if not current_percentiles:
+        return None, []
+    tail_window_years = max(current_percentiles.keys())
+    bars = window_bars[tail_window_years]
+    bars = bars if len(extension_series) >= bars else len(extension_series)
+    pct_series = rolling_percentile_rank(extension_series, bars)
+    tail_events: list[ExtensionTailEvent] = []
+    for i, (idx, pct) in enumerate(pct_series.items()):
+        if np.isnan(pct) or not (pct >= tail_high_pct or pct <= tail_low_pct):
+            continue
+        direction = "high" if pct >= tail_high_pct else "low"
+        fwd_pct, fwd_returns = _compute_forward_tail_metrics(
+            i=i,
+            pct_series=pct_series,
+            entry_series=entry_series,
+            close_series=close_series,
+            extension_series=extension_series,
+            forward_days=forward_days,
+        )
+        tail_events.append(
+            ExtensionTailEvent(
+                date=idx.date().isoformat() if isinstance(idx, pd.Timestamp) else str(idx),
+                percentile=float(pct),
+                extension_atr=float(extension_series.iloc[i]),
+                close=float(close_series.iloc[i]) if i < len(close_series) else float("nan"),
+                direction=direction,
+                forward_extension_percentiles=fwd_pct,
+                forward_returns=fwd_returns,
+            )
+        )
+    return tail_window_years, tail_events
+
+
+def compute_extension_percentiles(
+    *,
+    extension_series: pd.Series,
+    close_series: pd.Series,
+    open_series: pd.Series | None = None,
+    windows_years: Iterable[int],
+    days_per_year: int,
+    tail_high_pct: float,
+    tail_low_pct: float,
+    forward_days: Iterable[int],
+    include_tail_events: bool = True,
+) -> ExtensionPercentileReport:
+    if extension_series.empty:
+        return _empty_extension_percentile_report()
+
+    aligned = _align_extension_inputs(
+        extension_series=extension_series,
+        close_series=close_series,
+        open_series=open_series,
+    )
+    if aligned is None:
+        return _empty_extension_percentile_report()
+    extension_series, entry_series, close_series = aligned
+
+    asof_idx = extension_series.index[-1]
+    asof = asof_idx.date().isoformat() if isinstance(asof_idx, pd.Timestamp) else str(asof_idx)
+    current_val = float(extension_series.iloc[-1])
+    window_bars = _compute_window_bars(windows_years=windows_years, days_per_year=days_per_year)
+    current_percentiles, quantiles_by_window = _compute_current_percentiles_and_quantiles(
+        extension_series=extension_series,
+        window_bars=window_bars,
+    )
     tail_window_years = None
     tail_events: list[ExtensionTailEvent] = []
     if include_tail_events and current_percentiles:
-        tail_window_years = max(current_percentiles.keys())
-        bars = window_bars[tail_window_years]
-        bars = bars if len(extension_series) >= bars else len(extension_series)
-        pct_series = rolling_percentile_rank(extension_series, bars)
-        for i, (idx, pct) in enumerate(pct_series.items()):
-            if np.isnan(pct):
-                continue
-            if not (pct >= tail_high_pct or pct <= tail_low_pct):
-                continue
-            direction = "high" if pct >= tail_high_pct else "low"
-            ext_val = float(extension_series.iloc[i])
-            close_val = float(close_series.iloc[i]) if i < len(close_series) else float("nan")
-
-            forward_extension_percentiles: dict[int, float | None] = {}
-            forward_returns: dict[int, float | None] = {}
-            for d in forward_days:
-                j = i + int(d)
-                entry_i = i + 1
-                if j >= len(extension_series) or entry_i >= len(entry_series):
-                    forward_extension_percentiles[int(d)] = None
-                    forward_returns[int(d)] = None
-                    continue
-                f_pct = pct_series.iloc[j]
-                forward_extension_percentiles[int(d)] = None if np.isnan(f_pct) else float(f_pct)
-                if entry_i <= j and j < len(close_series):
-                    c0 = float(entry_series.iloc[entry_i])
-                    c1 = float(close_series.iloc[j])
-                    forward_returns[int(d)] = (c1 / c0 - 1.0) if c0 else None
-                else:
-                    forward_returns[int(d)] = None
-
-            tail_events.append(
-                ExtensionTailEvent(
-                    date=idx.date().isoformat() if isinstance(idx, pd.Timestamp) else str(idx),
-                    percentile=float(pct),
-                    extension_atr=ext_val,
-                    close=close_val,
-                    direction=direction,
-                    forward_extension_percentiles=forward_extension_percentiles,
-                    forward_returns=forward_returns,
-                )
-            )
+        tail_window_years, tail_events = _collect_tail_events(
+            extension_series=extension_series,
+            entry_series=entry_series,
+            close_series=close_series,
+            current_percentiles=current_percentiles,
+            window_bars=window_bars,
+            tail_high_pct=tail_high_pct,
+            tail_low_pct=tail_low_pct,
+            forward_days=forward_days,
+        )
 
     return ExtensionPercentileReport(
         asof=asof,
