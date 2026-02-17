@@ -88,6 +88,33 @@ def _find_latest_log_with_token(log_dir: Path, *, token: str, scan_lines: int) -
     return None
 
 
+def _collect_ratelimit_payloads(lines: list[str]) -> list[dict[str, Any]]:
+    matched: list[dict[str, Any]] = []
+    for line in lines:
+        if "ALPACA_RATELIMIT" not in line:
+            continue
+        try:
+            message = line.split(": ", 1)[1]
+        except IndexError:
+            message = line
+        if "ALPACA_RATELIMIT" in message:
+            message = message.split("ALPACA_RATELIMIT", 1)[1].strip()
+        payload = _parse_kv_tokens(message)
+        if payload:
+            matched.append(payload)
+    return matched
+
+
+def _format_reset_epoch_text(reset_epoch: Any) -> str:
+    try:
+        if reset_epoch and str(reset_epoch).isdigit():
+            reset_dt = datetime.fromtimestamp(int(reset_epoch), tz=timezone.utc)
+            return reset_dt.isoformat()
+    except Exception:  # noqa: BLE001
+        return "?"
+    return "?"
+
+
 @app.command("rate-limits")
 def rate_limits(
     provider: str = typer.Option(
@@ -131,19 +158,7 @@ def rate_limits(
         raise typer.Exit(2)
 
     lines = _iter_tail_lines(path, max_lines=max(scan_lines, tail, 1))
-    matched: list[dict[str, Any]] = []
-    for line in lines:
-        if "ALPACA_RATELIMIT" not in line:
-            continue
-        try:
-            message = line.split(": ", 1)[1]
-        except IndexError:
-            message = line
-        if "ALPACA_RATELIMIT" in message:
-            message = message.split("ALPACA_RATELIMIT", 1)[1].strip()
-        payload = _parse_kv_tokens(message)
-        if payload:
-            matched.append(payload)
+    matched = _collect_ratelimit_payloads(lines)
 
     if not matched:
         console.print(f"[yellow]No ratelimit lines found in[/yellow] {path}")
@@ -155,14 +170,7 @@ def rate_limits(
     limit = last.get("limit")
     reset_epoch = last.get("reset_epoch")
     reset_in_s = last.get("reset_in_s")
-
-    reset_text = "?"
-    try:
-        if reset_epoch and str(reset_epoch).isdigit():
-            reset_dt = datetime.fromtimestamp(int(reset_epoch), tz=timezone.utc)
-            reset_text = reset_dt.isoformat()
-    except Exception:  # noqa: BLE001
-        reset_text = "?"
+    reset_text = _format_reset_epoch_text(reset_epoch)
 
     console.print(f"[green]Log:[/green] {path}")
     console.print(
