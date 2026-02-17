@@ -240,7 +240,6 @@ def zero_dte_put_forward_snapshot(
     console = Console(width=200)
     output_fmt = _normalize_output_format(format)
     sym = _normalize_symbol(symbol)
-
     try:
         _, run_forward_workflow = _package_workflows()
         result = run_forward_workflow(
@@ -255,14 +254,12 @@ def zero_dte_put_forward_snapshot(
     except ValueError as exc:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
-
     effective_snapshot_path = snapshot_path or _default_zero_dte_forward_snapshot_path(out, sym)
     persisted_count = _upsert_forward_snapshot_records(
         effective_snapshot_path,
         rows=result.rows,
         key_fields=_ZERO_DTE_FORWARD_KEY_FIELDS,
     )
-
     if output_fmt == "json":
         payload = dict(result.payload)
         payload["persisted_rows"] = persisted_count
