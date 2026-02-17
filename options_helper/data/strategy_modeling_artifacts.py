@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel
 
 from options_helper.analysis.strategy_modeling_trade_review import rank_trades_for_review
+from options_helper.data.strategy_modeling_artifacts_prompt import render_llm_analysis_prompt
 from options_helper.schemas.common import clean_nan
 
 DISCLAIMER_TEXT = "Informational output only; this tool is not financial advice."
@@ -140,112 +141,158 @@ def write_strategy_modeling_artifacts(
     as_of_label = _resolve_as_of_label(request=request, run_result=run_result, generated_at=generated_ts)
     paths = build_strategy_modeling_artifact_paths(out_dir, strategy=strategy, as_of=as_of_label)
     paths.run_dir.mkdir(parents=True, exist_ok=True)
+    report_inputs = _build_strategy_modeling_report_inputs(
+        request=request,
+        run_result=run_result,
+        output_timezone=output_timezone,
+    )
+    payload = _build_strategy_modeling_payload(
+        strategy=strategy,
+        generated_output_ts=generated_output_ts,
+        output_timezone_name=output_timezone_name,
+        request=request,
+        run_result=run_result,
+        report_inputs=report_inputs,
+    )
+    _write_strategy_modeling_artifact_outputs(
+        paths=paths,
+        payload=payload,
+        report_inputs=report_inputs,
+        write_json=write_json,
+        write_csv=write_csv,
+        write_md=write_md,
+    )
+    return paths
 
-    metrics = _to_mapping(getattr(run_result, "portfolio_metrics", None))
-    r_ladder_rows = _normalize_records(getattr(run_result, "target_hit_rates", ()) or ())
-    segment_rows = _normalize_records(getattr(run_result, "segment_records", ()) or ())
-    filter_metadata = _to_mapping(getattr(run_result, "filter_metadata", None))
-    filter_summary = _to_mapping(getattr(run_result, "filter_summary", None))
-    directional_metrics = _to_mapping(getattr(run_result, "directional_metrics", None))
+
+def _build_strategy_modeling_report_inputs(
+    *,
+    request: object,
+    run_result: object,
+    output_timezone: ZoneInfo,
+) -> dict[str, Any]:
     trade_rows = [
         _build_trade_log_row(row, output_timezone=output_timezone)
         for row in _normalize_records(getattr(run_result, "trade_simulations", ()) or ())
     ]
-
-    requested_symbols = _to_string_list(
-        getattr(run_result, "requested_symbols", None) or getattr(request, "symbols", None)
-    )
-    modeled_symbols = _to_string_list(
-        getattr(run_result, "modeled_symbols", None) or getattr(request, "symbols", None)
-    )
-
-    signal_events = getattr(run_result, "signal_events", ()) or ()
     accepted_trade_ids = getattr(run_result, "accepted_trade_ids", ()) or ()
     accepted_trade_ids_for_review: Sequence[str] | None = None
     if hasattr(run_result, "accepted_trade_ids"):
-        accepted_trade_ids_for_review = tuple(
-            _normalize_string_sequence(getattr(run_result, "accepted_trade_ids", None))
-        )
-    skipped_trade_ids = getattr(run_result, "skipped_trade_ids", ()) or ()
-    losses_below_one_r = sum(1 for row in trade_rows if row.get("loss_below_1r") is True)
+        accepted_trade_ids_for_review = tuple(_normalize_string_sequence(getattr(run_result, "accepted_trade_ids", None)))
     trade_review = rank_trades_for_review(
         trade_rows,
         accepted_trade_ids=accepted_trade_ids_for_review,
         top_n=_TRADE_REVIEW_TOP_N,
     )
-    top_best_trade_rows = [clean_nan(_to_mapping(row)) for row in trade_review.top_best_rows]
-    top_worst_trade_rows = [clean_nan(_to_mapping(row)) for row in trade_review.top_worst_rows]
+    return {
+        "metrics": _to_mapping(getattr(run_result, "portfolio_metrics", None)),
+        "r_ladder_rows": _normalize_records(getattr(run_result, "target_hit_rates", ()) or ()),
+        "segment_rows": _normalize_records(getattr(run_result, "segment_records", ()) or ()),
+        "filter_metadata": _to_mapping(getattr(run_result, "filter_metadata", None)),
+        "filter_summary": _to_mapping(getattr(run_result, "filter_summary", None)),
+        "directional_metrics": _to_mapping(getattr(run_result, "directional_metrics", None)),
+        "trade_rows": trade_rows,
+        "requested_symbols": _to_string_list(
+            getattr(run_result, "requested_symbols", None) or getattr(request, "symbols", None)
+        ),
+        "modeled_symbols": _to_string_list(
+            getattr(run_result, "modeled_symbols", None) or getattr(request, "symbols", None)
+        ),
+        "signal_event_count": len(getattr(run_result, "signal_events", ()) or ()),
+        "accepted_trade_count": len(accepted_trade_ids),
+        "skipped_trade_count": len(getattr(run_result, "skipped_trade_ids", ()) or ()),
+        "losses_below_minus_one_r": sum(1 for row in trade_rows if row.get("loss_below_1r") is True),
+        "trade_review_metric": trade_review.metric,
+        "trade_review_scope": trade_review.scope,
+        "trade_review_candidate_count": trade_review.candidate_trade_count,
+        "top_best_trade_rows": [clean_nan(_to_mapping(row)) for row in trade_review.top_best_rows],
+        "top_worst_trade_rows": [clean_nan(_to_mapping(row)) for row in trade_review.top_worst_rows],
+    }
 
-    payload = clean_nan(
+
+def _build_strategy_modeling_payload(
+    *,
+    strategy: str,
+    generated_output_ts: datetime,
+    output_timezone_name: str,
+    request: object,
+    run_result: object,
+    report_inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    return clean_nan(
         {
             "schema_version": 1,
             "generated_at": generated_output_ts.isoformat(),
             "strategy": strategy.lower(),
-            "requested_symbols": requested_symbols,
-            "modeled_symbols": modeled_symbols,
+            "requested_symbols": report_inputs["requested_symbols"],
+            "modeled_symbols": report_inputs["modeled_symbols"],
             "disclaimer": DISCLAIMER_TEXT,
             "summary": {
-                "signal_event_count": len(signal_events),
-                "trade_count": len(trade_rows),
-                "accepted_trade_count": len(accepted_trade_ids),
-                "skipped_trade_count": len(skipped_trade_ids),
-                "losses_below_minus_one_r": losses_below_one_r,
+                "signal_event_count": report_inputs["signal_event_count"],
+                "trade_count": len(report_inputs["trade_rows"]),
+                "accepted_trade_count": report_inputs["accepted_trade_count"],
+                "skipped_trade_count": report_inputs["skipped_trade_count"],
+                "losses_below_minus_one_r": report_inputs["losses_below_minus_one_r"],
             },
             "policy_metadata": _build_policy_metadata(
                 request=request,
                 run_result=run_result,
                 output_timezone_name=output_timezone_name,
             ),
-            "filter_metadata": filter_metadata,
-            "filter_summary": filter_summary,
-            "directional_metrics": directional_metrics,
-            "metrics": metrics,
-            "r_ladder": r_ladder_rows,
-            "segments": segment_rows,
-            "trade_log": trade_rows,
+            "filter_metadata": report_inputs["filter_metadata"],
+            "filter_summary": report_inputs["filter_summary"],
+            "directional_metrics": report_inputs["directional_metrics"],
+            "metrics": report_inputs["metrics"],
+            "r_ladder": report_inputs["r_ladder_rows"],
+            "segments": report_inputs["segment_rows"],
+            "trade_log": report_inputs["trade_rows"],
             "trade_review": _build_trade_review_payload(
-                metric=trade_review.metric,
-                scope=trade_review.scope,
-                candidate_trade_count=trade_review.candidate_trade_count,
-                top_best_rows=top_best_trade_rows,
-                top_worst_rows=top_worst_trade_rows,
+                metric=report_inputs["trade_review_metric"],
+                scope=report_inputs["trade_review_scope"],
+                candidate_trade_count=report_inputs["trade_review_candidate_count"],
+                top_best_rows=report_inputs["top_best_trade_rows"],
+                top_worst_rows=report_inputs["top_worst_trade_rows"],
             ),
         }
     )
 
+
+def _write_strategy_modeling_artifact_outputs(
+    *,
+    paths: StrategyModelingArtifactPaths,
+    payload: Mapping[str, Any],
+    report_inputs: Mapping[str, Any],
+    write_json: bool,
+    write_csv: bool,
+    write_md: bool,
+) -> None:
     if write_json:
         paths.summary_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
     if write_csv:
-        _write_csv(path=paths.trade_log_csv, fieldnames=_TRADE_LOG_FIELDS, rows=trade_rows)
+        _write_csv(path=paths.trade_log_csv, fieldnames=_TRADE_LOG_FIELDS, rows=report_inputs["trade_rows"])
         _write_csv(
             path=paths.r_ladder_csv,
-            fieldnames=_csv_fields_for_rows(r_ladder_rows, _R_LADDER_PREFERRED_FIELDS),
-            rows=r_ladder_rows,
+            fieldnames=_csv_fields_for_rows(report_inputs["r_ladder_rows"], _R_LADDER_PREFERRED_FIELDS),
+            rows=report_inputs["r_ladder_rows"],
         )
         _write_csv(
             path=paths.segments_csv,
-            fieldnames=_csv_fields_for_rows(segment_rows, _SEGMENT_PREFERRED_FIELDS),
-            rows=segment_rows,
+            fieldnames=_csv_fields_for_rows(report_inputs["segment_rows"], _SEGMENT_PREFERRED_FIELDS),
+            rows=report_inputs["segment_rows"],
         )
         _write_csv(
             path=paths.top_best_trades_csv,
             fieldnames=_TRADE_REVIEW_CSV_FIELDS,
-            rows=top_best_trade_rows,
+            rows=report_inputs["top_best_trade_rows"],
         )
         _write_csv(
             path=paths.top_worst_trades_csv,
             fieldnames=_TRADE_REVIEW_CSV_FIELDS,
-            rows=top_worst_trade_rows,
+            rows=report_inputs["top_worst_trade_rows"],
         )
-
     if write_md:
-        markdown = _render_summary_markdown(payload)
-        paths.summary_md.write_text(markdown, encoding="utf-8")
-        llm_prompt = _render_llm_analysis_prompt(payload)
-        paths.llm_analysis_prompt_md.write_text(llm_prompt, encoding="utf-8")
-
-    return paths
+        paths.summary_md.write_text(_render_summary_markdown(payload), encoding="utf-8")
+        paths.llm_analysis_prompt_md.write_text(_render_llm_analysis_prompt(payload), encoding="utf-8")
 
 
 def _resolve_as_of_label(*, request: object, run_result: object, generated_at: datetime) -> str:
@@ -582,102 +629,7 @@ def _render_directional_bucket_lines(directional_metrics: Mapping[str, Any]) -> 
 
 
 def _render_llm_analysis_prompt(payload: Mapping[str, Any]) -> str:
-    strategy = str(payload.get("strategy", "")).upper() or "UNKNOWN"
-    generated_at = str(payload.get("generated_at", ""))
-    requested_symbols = _to_string_list(payload.get("requested_symbols"))
-    modeled_symbols = _to_string_list(payload.get("modeled_symbols"))
-    summary = _to_mapping(payload.get("summary"))
-    policy = _to_mapping(payload.get("policy_metadata"))
-    filters = _to_mapping(payload.get("filter_summary"))
-    directional = _to_mapping(payload.get("directional_metrics"))
-
-    reject_counts = _to_mapping(filters.get("reject_counts"))
-    nonzero_rejects = [
-        f"{reason}={count}"
-        for reason, count in reject_counts.items()
-        if (_as_int_or_none(count) or 0) > 0
-    ]
-
-    lines: list[str] = [
-        "# Strategy Modeling LLM Analysis Prompt",
-        "",
-        DISCLAIMER_TEXT,
-        "",
-        "Use the companion report files in this same folder to evaluate strategy quality and propose improvements.",
-        "",
-        "## Context Snapshot",
-        "",
-        f"- Strategy: `{strategy}`",
-        f"- Generated: `{generated_at}`",
-        f"- Requested symbols: `{', '.join(requested_symbols) if requested_symbols else '-'}`",
-        f"- Modeled symbols: `{', '.join(modeled_symbols) if modeled_symbols else '-'}`",
-        f"- Signal events: `{summary.get('signal_event_count', 0)}`",
-        f"- Simulated trades: `{summary.get('trade_count', 0)}`",
-        f"- Accepted / skipped trades: `{summary.get('accepted_trade_count', 0)}` / `{summary.get('skipped_trade_count', 0)}`",
-        f"- Losses below -1.0R: `{summary.get('losses_below_minus_one_r', 0)}`",
-        f"- Entry anchor: `{policy.get('entry_anchor', 'next_bar_open')}`",
-        f"- Gap policy: `{policy.get('gap_fill_policy', '-')}`",
-        f"- Intraday timeframe: `{policy.get('intraday_timeframe', '-')}`",
-        (
-            f"- Filter rejects (non-zero): "
-            f"`{', '.join(nonzero_rejects) if nonzero_rejects else 'none'}`"
-        ),
-        "",
-        "## Files To Read",
-        "",
-        "- `summary.json`: full machine-readable run payload and metrics.",
-        "- `summary.md`: human summary and caveats.",
-        "- `trades.csv`: per-trade outcomes (`realized_r`, stop slippage, gap exits).",
-        "- `top_20_best_trades.csv`: top accepted/fallback closed trades ranked by `realized_r`.",
-        "- `top_20_worst_trades.csv`: bottom accepted/fallback closed trades ranked by `realized_r`.",
-        "- `segments.csv`: grouped performance by dimension/value.",
-        "- `r_ladder.csv`: target hit rates and expectancy by R target.",
-        "",
-        "## Analysis Task",
-        "",
-        "Identify concrete, testable changes that could improve risk-adjusted performance while preserving anti-lookahead rules.",
-        "",
-        "## Required Output",
-        "",
-        "1. Baseline diagnosis",
-        "- Describe main weaknesses and strengths using explicit evidence from files/columns.",
-        "",
-        "2. Ranked improvement ideas",
-        "- Provide 5-10 changes, ranked by expected impact and confidence.",
-        "- For each change include: rationale, likely affected metrics, and failure modes.",
-        "",
-        "3. Experiment plan",
-        "- Define backtest experiments for the top 3 ideas with precise config deltas.",
-        "- Include acceptance criteria and guardrails against overfitting/lookahead bias.",
-        "",
-        "4. Risk controls",
-        "- Explain downside risks (for example regime concentration, tail-loss behavior, sparse segments).",
-        "- Recommend monitoring metrics and trigger thresholds.",
-        "",
-        "5. Portfolio/action summary",
-        "- Summarize whether the current strategy should be: keep, modify, or pause for further testing.",
-        "",
-        "## Non-negotiable Constraints",
-        "",
-        "- Treat this as informational research only, not financial advice.",
-        "- Do not use same-bar-close entry assumptions for close-confirmed signals.",
-        "- Explicitly call out data-quality limitations and sample-size caveats.",
-        "- Prefer robust changes that generalize across symbols/regimes over single-slice optimizations.",
-        "",
-        "Not financial advice.",
-    ]
-
-    if directional:
-        lines.extend(
-            [
-                "",
-                "## Directional Context",
-                "",
-                "- Use directional metrics in `summary.json -> directional_metrics` to compare long-only vs short-only behavior before recommending directional constraints.",
-            ]
-        )
-
-    return "\n".join(lines).rstrip() + "\n"
+    return render_llm_analysis_prompt(payload, disclaimer_text=DISCLAIMER_TEXT)
 
 
 def _build_trade_log_row(
