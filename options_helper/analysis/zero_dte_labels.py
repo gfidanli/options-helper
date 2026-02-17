@@ -81,24 +81,15 @@ def _build_label_row(
 ) -> dict[str, object]:
     decision_ts = _coerce_utc_timestamp(state_row.get("decision_ts"))
     decision_bar_ts = _coerce_utc_timestamp(state_row.get("bar_ts"))
-
-    row: dict[str, object] = {
-        "session_date": state_row.get("session_date"),
-        "decision_ts": decision_ts,
-        "decision_bar_completed_ts": decision_bar_ts,
-        "entry_anchor_ts": pd.NaT,
-        "entry_anchor_price": float("nan"),
-        "close_label_ts": close_bar.get("timestamp") if close_bar is not None else pd.NaT,
-        "close_price": float(pd.to_numeric(close_bar.get("close"), errors="coerce")) if close_bar is not None else float("nan"),
-        "close_return_from_entry": float("nan"),
-        "skip_reason": SkipReason.INSUFFICIENT_DATA.value,
-        "label_status": "missing_decision_anchor",
-    }
-
+    row = _initialize_label_row(
+        state_row=state_row,
+        decision_ts=decision_ts,
+        decision_bar_ts=decision_bar_ts,
+        close_bar=close_bar,
+    )
     state_status = str(state_row.get("status") or "").strip().lower()
     if state_status != "ok":
-        row["skip_reason"] = SkipReason.OUTSIDE_DECISION_WINDOW.value
-        row["label_status"] = f"state_{state_status or 'unknown'}"
+        _set_state_status_reject(row, state_status=state_status)
         return row
 
     if bars.empty:
@@ -153,6 +144,32 @@ def _build_label_row(
     row["skip_reason"] = None
     row["label_status"] = "ok"
     return row
+
+
+def _initialize_label_row(
+    *,
+    state_row: pd.Series,
+    decision_ts: pd.Timestamp | None,
+    decision_bar_ts: pd.Timestamp | None,
+    close_bar: pd.Series | None,
+) -> dict[str, object]:
+    return {
+        "session_date": state_row.get("session_date"),
+        "decision_ts": decision_ts,
+        "decision_bar_completed_ts": decision_bar_ts,
+        "entry_anchor_ts": pd.NaT,
+        "entry_anchor_price": float("nan"),
+        "close_label_ts": close_bar.get("timestamp") if close_bar is not None else pd.NaT,
+        "close_price": float(pd.to_numeric(close_bar.get("close"), errors="coerce")) if close_bar is not None else float("nan"),
+        "close_return_from_entry": float("nan"),
+        "skip_reason": SkipReason.INSUFFICIENT_DATA.value,
+        "label_status": "missing_decision_anchor",
+    }
+
+
+def _set_state_status_reject(row: dict[str, object], *, state_status: str) -> None:
+    row["skip_reason"] = SkipReason.OUTSIDE_DECISION_WINDOW.value
+    row["label_status"] = f"state_{state_status or 'unknown'}"
 
 
 def _normalize_underlying_bars(df: pd.DataFrame | None, *, market_tz: ZoneInfo) -> pd.DataFrame:
