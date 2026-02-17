@@ -380,91 +380,24 @@ def compute_option_bars_coverage(
     lookback_days: int,
     as_of: date | None = None,
 ) -> OptionBarsCoverage:
-    frame = option_bars_meta.copy() if option_bars_meta is not None else pd.DataFrame()
+    frame = _normalize_option_bars_meta(option_bars_meta)
     if frame.empty:
-        return OptionBarsCoverage(
-            contracts_total=0,
-            contracts_with_rows=0,
-            rows_total=0,
-            status_counts={},
-            start_date=None,
-            end_date=None,
-            contracts_covering_lookback_end=0,
-            covering_lookback_end_ratio=0.0,
-        )
-
-    symbol_col = _first_available_column(frame, ("contract_symbol", "contractSymbol"))
-    if symbol_col is None:
-        return OptionBarsCoverage(
-            contracts_total=0,
-            contracts_with_rows=0,
-            rows_total=0,
-            status_counts={},
-            start_date=None,
-            end_date=None,
-            contracts_covering_lookback_end=0,
-            covering_lookback_end_ratio=0.0,
-        )
-
-    frame["_contract_symbol"] = frame[symbol_col].map(_normalize_symbol)
-    frame = frame.dropna(subset=["_contract_symbol"]).copy()
-    frame = frame.drop_duplicates(subset=["_contract_symbol"], keep="last")
-    if frame.empty:
-        return OptionBarsCoverage(
-            contracts_total=0,
-            contracts_with_rows=0,
-            rows_total=0,
-            status_counts={},
-            start_date=None,
-            end_date=None,
-            contracts_covering_lookback_end=0,
-            covering_lookback_end_ratio=0.0,
-        )
-
-    status_series = frame.get("status")
-    statuses = (
-        status_series.map(lambda v: str(v or "").strip().lower() or "unknown")
-        if status_series is not None
-        else pd.Series(["unknown"] * len(frame), index=frame.index)
-    )
-    status_counts: dict[str, int] = {}
-    for raw, count in statuses.value_counts(dropna=False).items():
-        key = str(raw or "unknown").strip().lower() or "unknown"
-        status_counts[key] = int(count)
-
-    rows_series = pd.to_numeric(frame.get("rows"), errors="coerce") if "rows" in frame.columns else pd.Series([0] * len(frame))
-    rows_series = rows_series.fillna(0.0)
-
+        return _empty_option_bars_coverage()
+    status_counts = _option_bars_status_counts(frame)
+    rows_series = _option_bars_rows_series(frame)
     start_series = _coerce_timestamp_series(frame.get("start_ts"))
     end_series = _coerce_timestamp_series(frame.get("end_ts"))
-
     end_day = as_of
     if end_day is None and not end_series.dropna().empty:
         end_day = end_series.dropna().max().date()
-
     lookback_days_set = set(_expected_business_days(end_day=end_day, lookback_days=lookback_days))
     coverage_cutoff = max(lookback_days_set) if lookback_days_set else end_day
-
-    covering_end = 0
-    if coverage_cutoff is not None:
-        for ts in end_series.tolist():
-            if ts is None:
-                continue
-            try:
-                if pd.isna(ts):
-                    continue
-            except Exception:  # noqa: BLE001
-                pass
-            if ts.date() >= coverage_cutoff:
-                covering_end += 1
-
+    covering_end = _contracts_covering_lookback_end(end_series=end_series, coverage_cutoff=coverage_cutoff)
     contracts_total = int(len(frame))
     contracts_with_rows = int((rows_series > 0).sum())
     rows_total = int(rows_series.sum())
-
     start_date = start_series.dropna().min().date().isoformat() if not start_series.dropna().empty else None
     end_date = end_series.dropna().max().date().isoformat() if not end_series.dropna().empty else None
-
     return OptionBarsCoverage(
         contracts_total=contracts_total,
         contracts_with_rows=contracts_with_rows,
@@ -475,6 +408,73 @@ def compute_option_bars_coverage(
         contracts_covering_lookback_end=covering_end,
         covering_lookback_end_ratio=(float(covering_end / contracts_total) if contracts_total > 0 else 0.0),
     )
+
+
+def _empty_option_bars_coverage() -> OptionBarsCoverage:
+    return OptionBarsCoverage(
+        contracts_total=0,
+        contracts_with_rows=0,
+        rows_total=0,
+        status_counts={},
+        start_date=None,
+        end_date=None,
+        contracts_covering_lookback_end=0,
+        covering_lookback_end_ratio=0.0,
+    )
+
+
+def _normalize_option_bars_meta(option_bars_meta: pd.DataFrame | None) -> pd.DataFrame:
+    frame = option_bars_meta.copy() if option_bars_meta is not None else pd.DataFrame()
+    if frame.empty:
+        return pd.DataFrame()
+    symbol_col = _first_available_column(frame, ("contract_symbol", "contractSymbol"))
+    if symbol_col is None:
+        return pd.DataFrame()
+    frame["_contract_symbol"] = frame[symbol_col].map(_normalize_symbol)
+    frame = frame.dropna(subset=["_contract_symbol"]).copy()
+    frame = frame.drop_duplicates(subset=["_contract_symbol"], keep="last")
+    return frame
+
+
+def _option_bars_status_counts(frame: pd.DataFrame) -> dict[str, int]:
+    status_series = frame.get("status")
+    statuses = (
+        status_series.map(lambda value: str(value or "").strip().lower() or "unknown")
+        if status_series is not None
+        else pd.Series(["unknown"] * len(frame), index=frame.index)
+    )
+    status_counts: dict[str, int] = {}
+    for raw, count in statuses.value_counts(dropna=False).items():
+        key = str(raw or "unknown").strip().lower() or "unknown"
+        status_counts[key] = int(count)
+    return status_counts
+
+
+def _option_bars_rows_series(frame: pd.DataFrame) -> pd.Series:
+    if "rows" not in frame.columns:
+        return pd.Series([0] * len(frame), index=frame.index, dtype="float64")
+    return pd.to_numeric(frame["rows"], errors="coerce").fillna(0.0)
+
+
+def _contracts_covering_lookback_end(
+    *,
+    end_series: pd.Series,
+    coverage_cutoff: date | None,
+) -> int:
+    if coverage_cutoff is None:
+        return 0
+    covering_end = 0
+    for ts in end_series.tolist():
+        if ts is None:
+            continue
+        try:
+            if pd.isna(ts):
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        if ts.date() >= coverage_cutoff:
+            covering_end += 1
+    return covering_end
 
 
 def _empty_contract_oi_coverage(
