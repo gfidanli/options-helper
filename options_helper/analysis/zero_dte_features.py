@@ -109,8 +109,51 @@ def _build_feature_row(
         utc=False,
         market_tz=config.market_tz,
     )
+    out = _base_feature_row(
+        state_row=state_row,
+        decision_ts=decision_ts,
+        decision_ts_market=decision_ts_market,
+        decision_bar_ts=decision_bar_ts,
+        decision_bar_market=decision_bar_market,
+        iv_lookup=iv_lookup,
+    )
+    state_status = str(state_row.get("status") or "").strip().lower()
+    if state_status != "ok":
+        out["feature_status"] = f"state_{state_status or 'unknown'}"
+        return out
+    history, status = _feature_history_before_decision(
+        bars=bars,
+        decision_ts=decision_ts,
+        decision_bar_ts=decision_bar_ts,
+    )
+    if status is not None:
+        out["feature_status"] = status
+        return out
+    current = history.iloc[-1]
+    out["bars_observed"] = int(len(history))
+    _populate_price_distance_metrics(
+        out,
+        history=history,
+        current=current,
+        previous_close=previous_close,
+        previous_close_valid=previous_close_valid,
+    )
+    _populate_intraday_volatility_metrics(out, history=history, config=config)
+    _populate_time_bucket_metrics(out, history=history, current=current, config=config)
+    out["feature_status"] = "ok" if previous_close_valid else "invalid_previous_close"
+    return out
 
-    out: dict[str, object] = {
+
+def _base_feature_row(
+    *,
+    state_row: pd.Series,
+    decision_ts: pd.Timestamp | None,
+    decision_ts_market: pd.Timestamp | None,
+    decision_bar_ts: pd.Timestamp | None,
+    decision_bar_market: pd.Timestamp | None,
+    iv_lookup: dict[pd.Timestamp | date, object],
+) -> dict[str, object]:
+    return {
         "session_date": state_row.get("session_date"),
         "decision_ts": decision_ts,
         "decision_ts_market": decision_ts_market,
@@ -129,70 +172,78 @@ def _build_feature_row(
         "feature_status": "state_not_ok",
     }
 
-    state_status = str(state_row.get("status") or "").strip().lower()
-    if state_status != "ok":
-        out["feature_status"] = f"state_{state_status or 'unknown'}"
-        return out
 
+def _feature_history_before_decision(
+    *,
+    bars: pd.DataFrame,
+    decision_ts: pd.Timestamp | None,
+    decision_bar_ts: pd.Timestamp | None,
+) -> tuple[pd.DataFrame, str | None]:
     if bars.empty:
-        out["feature_status"] = "no_underlying_bars"
-        return out
-
+        return pd.DataFrame(), "no_underlying_bars"
     cutoff_ts = _resolve_cutoff_ts(decision_ts=decision_ts, decision_bar_ts=decision_bar_ts)
     if cutoff_ts is None:
-        out["feature_status"] = "missing_decision_timestamp"
-        return out
-
+        return pd.DataFrame(), "missing_decision_timestamp"
     history = bars.loc[bars["timestamp"] <= cutoff_ts].copy()
     if history.empty:
-        out["feature_status"] = "no_bars_before_decision"
-        return out
+        return pd.DataFrame(), "no_bars_before_decision"
+    return history, None
 
-    current = history.iloc[-1]
-    out["bars_observed"] = int(len(history))
 
+def _populate_price_distance_metrics(
+    out: dict[str, object],
+    *,
+    history: pd.DataFrame,
+    current: pd.Series,
+    previous_close: float,
+    previous_close_valid: bool,
+) -> None:
     current_close = float(pd.to_numeric(current.get("close"), errors="coerce"))
     if previous_close_valid and math.isfinite(current_close):
         out["intraday_return"] = (current_close / previous_close) - 1.0
-
     session_open = float(pd.to_numeric(history.iloc[0].get("open"), errors="coerce"))
     min_low = float(pd.to_numeric(history.get("low"), errors="coerce").min())
     if session_open > 0.0 and math.isfinite(min_low):
         out["drawdown_from_open"] = (min_low / session_open) - 1.0
-
     vwap_value = float(pd.to_numeric(current.get("vwap"), errors="coerce"))
     if not (math.isfinite(vwap_value) and vwap_value > 0.0):
         vwap_value = _cumulative_vwap(history)
     if math.isfinite(current_close) and math.isfinite(vwap_value) and vwap_value > 0.0:
         out["distance_from_vwap"] = (current_close / vwap_value) - 1.0
 
+
+def _populate_intraday_volatility_metrics(
+    out: dict[str, object],
+    *,
+    history: pd.DataFrame,
+    config: ZeroDTEFeatureConfig,
+) -> None:
     close_series = pd.to_numeric(history.get("close"), errors="coerce").astype("float64")
-    out["realized_intraday_vol"] = _realized_vol(
-        close_series,
-        min_returns=config.realized_vol_min_returns,
+    out["realized_intraday_vol"] = _realized_vol(close_series, min_returns=config.realized_vol_min_returns)
+    bar_range_series = _bar_range_series(history)
+    if bar_range_series.empty:
+        return
+    current_range = float(bar_range_series.iloc[-1])
+    out["current_bar_range"] = current_range
+    out["bar_range_percentile"] = _current_percentile_rank(
+        bar_range_series,
+        current_value=current_range,
+        min_points=config.bar_range_percentile_min_bars,
     )
 
-    bar_range_series = _bar_range_series(history)
-    if not bar_range_series.empty:
-        current_range = float(bar_range_series.iloc[-1])
-        out["current_bar_range"] = current_range
-        out["bar_range_percentile"] = _current_percentile_rank(
-            bar_range_series,
-            current_value=current_range,
-            min_points=config.bar_range_percentile_min_bars,
-        )
 
+def _populate_time_bucket_metrics(
+    out: dict[str, object],
+    *,
+    history: pd.DataFrame,
+    current: pd.Series,
+    config: ZeroDTEFeatureConfig,
+) -> None:
     session_open_market = pd.Timestamp(history.iloc[0]["timestamp_market"])
     bar_market_ts = pd.Timestamp(current["timestamp_market"])
     minutes_since_open = int((bar_market_ts - session_open_market).total_seconds() // 60)
     out["minutes_since_open"] = minutes_since_open
-    out["time_of_day_bucket"] = _time_bucket(
-        minutes_since_open,
-        cutoffs=config.time_bucket_cutoffs_minutes,
-    )
-
-    out["feature_status"] = "ok" if previous_close_valid else "invalid_previous_close"
-    return out
+    out["time_of_day_bucket"] = _time_bucket(minutes_since_open, cutoffs=config.time_bucket_cutoffs_minutes)
 
 
 def _normalize_underlying_bars(df: pd.DataFrame | None, *, market_tz: ZoneInfo) -> pd.DataFrame:
