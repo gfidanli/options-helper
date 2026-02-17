@@ -56,37 +56,24 @@ def run_zero_dte_preflight(
     config: ZeroDTEPreflightConfig | None = None,
 ) -> ZeroDTEPreflightResult:
     cfg = config or ZeroDTEPreflightConfig()
-
     features_frame = features.copy() if features is not None else pd.DataFrame()
     labels_frame = labels.copy() if labels is not None else pd.DataFrame()
     snapshot_frame = strike_snapshot.copy() if strike_snapshot is not None else pd.DataFrame()
-
     diagnostics: list[PreflightDiagnostic] = []
     metrics: dict[str, float] = {}
-
     usable_features = _usable_feature_rows(features_frame)
     feature_rows = int(len(usable_features))
     session_count = int(usable_features["session_date"].nunique()) if "session_date" in usable_features.columns else 0
     metrics["feature_rows"] = float(feature_rows)
     metrics["session_count"] = float(session_count)
-
-    diagnostics.append(
-        _threshold_diagnostic(
-            code="sessions",
-            observed=session_count,
-            required=cfg.min_sessions,
-            noun="sessions",
-        )
+    _append_threshold(diagnostics, code="sessions", observed=session_count, required=cfg.min_sessions, noun="sessions")
+    _append_threshold(
+        diagnostics,
+        code="feature_rows",
+        observed=feature_rows,
+        required=cfg.min_feature_rows,
+        noun="usable feature rows",
     )
-    diagnostics.append(
-        _threshold_diagnostic(
-            code="feature_rows",
-            observed=feature_rows,
-            required=cfg.min_feature_rows,
-            noun="usable feature rows",
-        )
-    )
-
     bucket_counts = _count_by_bucket(usable_features, column="time_of_day_bucket")
     if not bucket_counts:
         diagnostics.append(
@@ -97,28 +84,22 @@ def run_zero_dte_preflight(
             )
         )
     else:
-        for bucket, count in sorted(bucket_counts.items()):
-            diagnostics.append(
-                _threshold_diagnostic(
-                    code=f"time_bucket_{bucket}",
-                    observed=count,
-                    required=cfg.min_rows_per_time_bucket,
-                    noun=f"rows in time bucket '{bucket}'",
-                )
-            )
-
+        _append_bucket_thresholds(
+            diagnostics,
+            bucket_counts,
+            code_prefix="time_bucket",
+            required=cfg.min_rows_per_time_bucket,
+            noun_prefix="rows in time bucket",
+        )
     regime_counts = _count_by_bucket(usable_features, column="iv_regime")
     if regime_counts:
-        for regime, count in sorted(regime_counts.items()):
-            diagnostics.append(
-                _threshold_diagnostic(
-                    code=f"iv_regime_{regime}",
-                    observed=count,
-                    required=cfg.min_rows_per_iv_regime,
-                    noun=f"rows in iv_regime '{regime}'",
-                )
-            )
-
+        _append_bucket_thresholds(
+            diagnostics,
+            regime_counts,
+            code_prefix="iv_regime",
+            required=cfg.min_rows_per_iv_regime,
+            noun_prefix="rows in iv_regime",
+        )
     label_rate = _label_coverage_rate(labels_frame)
     metrics["label_coverage_rate"] = label_rate
     diagnostics.append(
@@ -129,7 +110,6 @@ def run_zero_dte_preflight(
             noun="label coverage rate",
         )
     )
-
     quote_rate = _quote_quality_pass_rate(snapshot_frame)
     metrics["quote_quality_pass_rate"] = quote_rate
     diagnostics.append(
@@ -140,13 +120,42 @@ def run_zero_dte_preflight(
             noun="quote-quality pass rate",
         )
     )
-
     passed = all(diagnostic.ok for diagnostic in diagnostics)
     return ZeroDTEPreflightResult(
         passed=passed,
         diagnostics=tuple(diagnostics),
         metrics=metrics,
     )
+
+
+def _append_threshold(
+    diagnostics: list[PreflightDiagnostic],
+    *,
+    code: str,
+    observed: int,
+    required: int,
+    noun: str,
+) -> None:
+    diagnostics.append(_threshold_diagnostic(code=code, observed=observed, required=required, noun=noun))
+
+
+def _append_bucket_thresholds(
+    diagnostics: list[PreflightDiagnostic],
+    bucket_counts: dict[str, int],
+    *,
+    code_prefix: str,
+    required: int,
+    noun_prefix: str,
+) -> None:
+    for bucket, count in sorted(bucket_counts.items()):
+        diagnostics.append(
+            _threshold_diagnostic(
+                code=f"{code_prefix}_{bucket}",
+                observed=count,
+                required=required,
+                noun=f"{noun_prefix} '{bucket}'",
+            )
+        )
 
 
 def _usable_feature_rows(features: pd.DataFrame) -> pd.DataFrame:
