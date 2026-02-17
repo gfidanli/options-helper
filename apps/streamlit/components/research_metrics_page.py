@@ -63,6 +63,16 @@ _INTRADAY_CONTRACT_COLUMNS = [
     "avg_unknown_trade_share",
     "avg_quote_coverage_pct",
 ]
+_INTRADAY_CONTRACT_NUMERIC_COLUMNS = (
+    "strike",
+    "source_rows",
+    "trade_count",
+    "buy_notional",
+    "sell_notional",
+    "net_notional",
+    "avg_unknown_trade_share",
+    "avg_quote_coverage_pct",
+)
 
 
 def resolve_duckdb_path(database_path: str | Path | None = None) -> Path:
@@ -634,17 +644,7 @@ def load_intraday_flow_top_contracts(
     out = df.copy()
     out["market_date"] = pd.to_datetime(out["market_date"], errors="coerce")
     out["expiry"] = pd.to_datetime(out["expiry"], errors="coerce")
-    for column in (
-        "strike",
-        "source_rows",
-        "trade_count",
-        "buy_notional",
-        "sell_notional",
-        "net_notional",
-        "avg_unknown_trade_share",
-        "avg_quote_coverage_pct",
-    ):
-        out[column] = pd.to_numeric(out[column], errors="coerce")
+    _coerce_numeric_columns(out, _INTRADAY_CONTRACT_NUMERIC_COLUMNS)
     out["option_type"] = out["option_type"].astype("string").str.lower()
     out = out.dropna(subset=["market_date"])
     out = out.reset_index(drop=True)
@@ -669,6 +669,11 @@ def _empty_intraday_strikes() -> pd.DataFrame:
 
 def _empty_intraday_contracts() -> pd.DataFrame:
     return pd.DataFrame(columns=_INTRADAY_CONTRACT_COLUMNS)
+
+
+def _coerce_numeric_columns(frame: pd.DataFrame, columns: tuple[str, ...]) -> None:
+    for column in columns:
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
 
 
 def _tenor_sort_key(value: Any) -> tuple[int, str]:
