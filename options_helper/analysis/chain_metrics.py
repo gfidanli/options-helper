@@ -377,84 +377,21 @@ def compute_chain_report(
     top: int = 10,
     best_effort: bool = False,
 ) -> ChainReport:
-    warnings: list[str] = []
     if spot <= 0:
         raise ValueError("spot must be > 0")
-
-    if df is None or df.empty:
-        if best_effort:
-            return ChainReport(
-                symbol=symbol.upper(),
-                as_of=as_of.isoformat(),
-                spot=spot,
-                totals=ChainTotals(),
-                walls_overall=Walls(),
-                gamma=GammaSummary(),
-                warnings=["empty_snapshot"],
-            )
-        raise ValueError("empty snapshot")
-
-    out = df.copy()
-
-    if "optionType" in out.columns:
-        out["optionType"] = out["optionType"].astype(str).str.lower().str.strip()
-    else:
-        warnings.append("missing_optionType")
-
-    if "expiry" not in out.columns:
-        warnings.append("missing_expiry")
-        out["expiry"] = None
-
+    out = df.copy() if df is not None else pd.DataFrame()
+    if out.empty:
+        return _empty_chain_report(symbol=symbol, as_of=as_of, spot=spot, best_effort=best_effort)
+    warnings, out = _normalize_chain_frame(out)
     out["mark"] = compute_mark_price(out)
-
-    available_dates: list[date] = []
-    expiry_strs = sorted({str(x) for x in out["expiry"].dropna().unique().tolist()})
-    for s in expiry_strs:
-        try:
-            available_dates.append(date.fromisoformat(s))
-        except ValueError:
-            continue
-    available_dates = sorted(set(available_dates))
-
+    available_dates = _parse_available_expiry_dates(out)
     selected = select_expiries(available_dates, mode=expiries_mode, include=include_expiries)
-
     included_strs = [d.isoformat() for d in selected]
     available_strs = [d.isoformat() for d in available_dates]
-
-    calls = out[out.get("optionType") == "call"] if "optionType" in out.columns else out.iloc[0:0]
-    puts = out[out.get("optionType") == "put"] if "optionType" in out.columns else out.iloc[0:0]
-
-    calls_oi = _safe_sum(_col_as_float(calls, "openInterest"))
-    puts_oi = _safe_sum(_col_as_float(puts, "openInterest"))
-    calls_vol = _safe_sum(_col_as_float(calls, "volume"))
-    puts_vol = _safe_sum(_col_as_float(puts, "volume"))
-
-    calls_vol_notional = _safe_sum(_col_as_float(calls, "volume") * calls["mark"] * 100.0) if "mark" in calls.columns else 0.0
-    puts_vol_notional = _safe_sum(_col_as_float(puts, "volume") * puts["mark"] * 100.0) if "mark" in puts.columns else 0.0
-
-    totals = ChainTotals(
-        calls_oi=calls_oi,
-        puts_oi=puts_oi,
-        pc_oi_ratio=_safe_ratio(puts_oi, calls_oi),
-        calls_volume=calls_vol,
-        puts_volume=puts_vol,
-        pc_volume_ratio=_safe_ratio(puts_vol, calls_vol),
-        calls_volume_notional=calls_vol_notional,
-        puts_volume_notional=puts_vol_notional,
-    )
-
+    totals = _compute_chain_totals(out)
     walls_overall = _compute_walls(out, spot=spot, top=top)
-
-    expiries: list[ExpiryStats] = []
-    walls_by_expiry: list[WallsByExpiry] = []
-    for exp in selected:
-        exp_str = exp.isoformat()
-        sub = out[out["expiry"] == exp_str]
-        expiries.append(_compute_expiry_stats(sub, expiry=exp_str, spot=spot))
-        walls_by_expiry.append(WallsByExpiry(expiry=exp_str, walls=_compute_walls(sub, spot=spot, top=top)))
-
+    expiries, walls_by_expiry = _compute_expiry_breakdown(out, selected=selected, spot=spot, top=top)
     gamma = _compute_gamma_summary(out, spot=spot, top=top)
-
     return ChainReport(
         symbol=symbol.upper(),
         as_of=as_of.isoformat(),
@@ -468,3 +405,82 @@ def compute_chain_report(
         gamma=gamma,
         warnings=warnings,
     )
+
+
+def _empty_chain_report(*, symbol: str, as_of: date, spot: float, best_effort: bool) -> ChainReport:
+    if best_effort:
+        return ChainReport(
+            symbol=symbol.upper(),
+            as_of=as_of.isoformat(),
+            spot=spot,
+            totals=ChainTotals(),
+            walls_overall=Walls(),
+            gamma=GammaSummary(),
+            warnings=["empty_snapshot"],
+        )
+    raise ValueError("empty snapshot")
+
+
+def _normalize_chain_frame(out: pd.DataFrame) -> tuple[list[str], pd.DataFrame]:
+    warnings: list[str] = []
+    if "optionType" in out.columns:
+        out["optionType"] = out["optionType"].astype(str).str.lower().str.strip()
+    else:
+        warnings.append("missing_optionType")
+    if "expiry" not in out.columns:
+        warnings.append("missing_expiry")
+        out["expiry"] = None
+    return warnings, out
+
+
+def _parse_available_expiry_dates(out: pd.DataFrame) -> list[date]:
+    available_dates: list[date] = []
+    expiry_strs = sorted({str(value) for value in out["expiry"].dropna().unique().tolist()})
+    for expiry_str in expiry_strs:
+        try:
+            available_dates.append(date.fromisoformat(expiry_str))
+        except ValueError:
+            continue
+    return sorted(set(available_dates))
+
+
+def _compute_chain_totals(out: pd.DataFrame) -> ChainTotals:
+    calls = out[out.get("optionType") == "call"] if "optionType" in out.columns else out.iloc[0:0]
+    puts = out[out.get("optionType") == "put"] if "optionType" in out.columns else out.iloc[0:0]
+    calls_oi = _safe_sum(_col_as_float(calls, "openInterest"))
+    puts_oi = _safe_sum(_col_as_float(puts, "openInterest"))
+    calls_vol = _safe_sum(_col_as_float(calls, "volume"))
+    puts_vol = _safe_sum(_col_as_float(puts, "volume"))
+    calls_vol_notional = (
+        _safe_sum(_col_as_float(calls, "volume") * calls["mark"] * 100.0) if "mark" in calls.columns else 0.0
+    )
+    puts_vol_notional = (
+        _safe_sum(_col_as_float(puts, "volume") * puts["mark"] * 100.0) if "mark" in puts.columns else 0.0
+    )
+    return ChainTotals(
+        calls_oi=calls_oi,
+        puts_oi=puts_oi,
+        pc_oi_ratio=_safe_ratio(puts_oi, calls_oi),
+        calls_volume=calls_vol,
+        puts_volume=puts_vol,
+        pc_volume_ratio=_safe_ratio(puts_vol, calls_vol),
+        calls_volume_notional=calls_vol_notional,
+        puts_volume_notional=puts_vol_notional,
+    )
+
+
+def _compute_expiry_breakdown(
+    out: pd.DataFrame,
+    *,
+    selected: list[date],
+    spot: float,
+    top: int,
+) -> tuple[list[ExpiryStats], list[WallsByExpiry]]:
+    expiries: list[ExpiryStats] = []
+    walls_by_expiry: list[WallsByExpiry] = []
+    for expiry in selected:
+        expiry_str = expiry.isoformat()
+        sub = out[out["expiry"] == expiry_str]
+        expiries.append(_compute_expiry_stats(sub, expiry=expiry_str, spot=spot))
+        walls_by_expiry.append(WallsByExpiry(expiry=expiry_str, walls=_compute_walls(sub, spot=spot, top=top)))
+    return expiries, walls_by_expiry
