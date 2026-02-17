@@ -70,21 +70,26 @@ class _OrbSessionDecision:
         return None
 
 
-def apply_entry_filters(
-    events: Iterable[Mapping[str, Any] | StrategySignalEvent],
+@dataclass(frozen=True)
+class _FilterRuntime:
+    sorted_events: tuple[StrategySignalEvent, ...]
+    reject_counts: dict[str, int]
+    daily_index_by_symbol: dict[str, _DailyContextIndex]
+    prepared_intraday_by_symbol: dict[str, _PreparedIntraday]
+    orb_cache_by_symbol: dict[str, dict[date, _OrbSessionDecision]]
+
+
+def _build_filter_runtime(
     *,
+    events: Iterable[Mapping[str, Any] | StrategySignalEvent],
     filter_config: StrategyEntryFilterConfig,
-    feature_config: StrategyFeatureConfig,
     daily_features_by_symbol: Mapping[str, pd.DataFrame],
     daily_ohlc_by_symbol: Mapping[str, pd.DataFrame],
-    intraday_bars_by_symbol: Mapping[str, pd.DataFrame] | None = None,
-) -> tuple[tuple[StrategySignalEvent, ...], dict[str, Any], dict[str, Any]]:
-    """Apply deterministic entry filters and return kept events + audit payloads."""
-
+    intraday_bars_by_symbol: Mapping[str, pd.DataFrame] | None,
+) -> _FilterRuntime:
     parsed_events = parse_strategy_signal_events(events)
     sorted_events = tuple(sorted(parsed_events, key=_event_sort_key))
     reject_counts = {reason: 0 for reason in FILTER_REJECT_REASONS}
-
     daily_index_by_symbol = _build_daily_context_index_by_symbol(
         daily_features_by_symbol=daily_features_by_symbol,
         daily_ohlc_by_symbol=daily_ohlc_by_symbol,
@@ -98,54 +103,59 @@ def apply_entry_filters(
             range_minutes=int(filter_config.orb_range_minutes),
             cutoff_et=str(filter_config.orb_confirmation_cutoff_et),
         )
+    return _FilterRuntime(
+        sorted_events=sorted_events,
+        reject_counts=reject_counts,
+        daily_index_by_symbol=daily_index_by_symbol,
+        prepared_intraday_by_symbol=prepared_intraday_by_symbol,
+        orb_cache_by_symbol=orb_cache_by_symbol,
+    )
 
-    kept_events: list[StrategySignalEvent] = []
-    for event in sorted_events:
-        reject_code: str | None = None
-        candidate = event
-        direction = str(event.direction).strip().lower()
-        symbol = normalize_symbol(event.symbol)
 
-        if direction == "short" and not bool(filter_config.allow_shorts):
-            reject_code = "shorts_disabled"
+def _apply_single_entry_filter(
+    *,
+    event: StrategySignalEvent,
+    filter_config: StrategyEntryFilterConfig,
+    feature_config: StrategyFeatureConfig,
+    daily_index_by_symbol: Mapping[str, _DailyContextIndex],
+    prepared_intraday_by_symbol: Mapping[str, _PreparedIntraday],
+    orb_cache_by_symbol: Mapping[str, Mapping[date, _OrbSessionDecision]],
+) -> tuple[StrategySignalEvent | None, str | None]:
+    reject_code: str | None = None
+    candidate = event
+    direction = str(event.direction).strip().lower()
+    symbol = normalize_symbol(event.symbol)
 
-        daily_context: dict[str, Any] | None = None
-        if reject_code is None and _requires_daily_context(filter_config):
-            daily_context = _resolve_daily_context_row(
-                event=candidate,
-                daily_index_by_symbol=daily_index_by_symbol,
-            )
-            if not _has_required_daily_context(daily_context, filter_config=filter_config):
-                reject_code = "missing_daily_context"
+    if direction == "short" and not bool(filter_config.allow_shorts):
+        reject_code = "shorts_disabled"
 
-        if reject_code is None and bool(filter_config.enable_rsi_extremes):
-            assert daily_context is not None
-            if not _passes_rsi_extreme(
-                daily_context=daily_context,
-                direction=direction,
-                oversold=float(feature_config.rsi_oversold),
-                overbought=float(feature_config.rsi_overbought),
-            ):
-                reject_code = "rsi_not_extreme"
+    daily_context: dict[str, Any] | None = None
+    if reject_code is None and _requires_daily_context(filter_config):
+        daily_context = _resolve_daily_context_row(event=candidate, daily_index_by_symbol=daily_index_by_symbol)
+        if not _has_required_daily_context(daily_context, filter_config=filter_config):
+            reject_code = "missing_daily_context"
 
-        if reject_code is None and bool(filter_config.enable_ema9_regime):
-            assert daily_context is not None
-            if not _passes_ema9_regime(daily_context=daily_context, direction=direction):
-                reject_code = "ema9_regime_mismatch"
-
-        if reject_code is None and bool(filter_config.enable_volatility_regime):
-            assert daily_context is not None
-            if not _passes_volatility_regime(
-                daily_context=daily_context,
-                allowed_regimes=filter_config.allowed_volatility_regimes,
-            ):
-                reject_code = "volatility_regime_disallowed"
-
-        if (
-            reject_code is None
-            and bool(filter_config.enable_orb_confirmation)
-            and str(candidate.strategy).strip().lower() in {"sfp", "msb"}
+    if reject_code is None and bool(filter_config.enable_rsi_extremes):
+        if not _passes_rsi_extreme(
+            daily_context=daily_context or {},
+            direction=direction,
+            oversold=float(feature_config.rsi_oversold),
+            overbought=float(feature_config.rsi_overbought),
         ):
+            reject_code = "rsi_not_extreme"
+    if reject_code is None and bool(filter_config.enable_ema9_regime):
+        if not _passes_ema9_regime(daily_context=daily_context or {}, direction=direction):
+            reject_code = "ema9_regime_mismatch"
+    if reject_code is None and bool(filter_config.enable_volatility_regime):
+        if not _passes_volatility_regime(
+            daily_context=daily_context or {},
+            allowed_regimes=filter_config.allowed_volatility_regimes,
+        ):
+            reject_code = "volatility_regime_disallowed"
+
+    if reject_code is None and bool(filter_config.enable_orb_confirmation):
+        strategy = str(candidate.strategy).strip().lower()
+        if strategy in {"sfp", "msb"}:
             session_day = _timestamp_to_date(candidate.entry_ts)
             session_cache = orb_cache_by_symbol.get(symbol, {})
             session_decision = session_cache.get(session_day) if session_day is not None else None
@@ -153,43 +163,76 @@ def apply_entry_filters(
                 reject_code = "orb_opening_range_missing"
             else:
                 breakout = session_decision.breakout_for_direction(direction)
-                if breakout is None:
-                    reject_code = "orb_breakout_missing"
-                else:
-                    updated_event = _apply_orb_confirmation_update(
+                updated = (
+                    _apply_orb_confirmation_update(
                         event=candidate,
                         breakout=breakout,
                         stop_policy=str(filter_config.orb_stop_policy),
                     )
-                    if updated_event is None:
-                        reject_code = "orb_breakout_missing"
-                    else:
-                        candidate = updated_event
+                    if breakout is not None
+                    else None
+                )
+                if updated is None:
+                    reject_code = "orb_breakout_missing"
+                else:
+                    candidate = updated
 
-        if reject_code is None and bool(filter_config.enable_atr_stop_floor):
-            assert daily_context is not None
-            if not _passes_atr_floor(
-                event=candidate,
-                daily_context=daily_context,
-                atr_floor_multiple=float(filter_config.atr_stop_floor_multiple),
-                prepared_intraday=prepared_intraday_by_symbol.get(symbol),
-            ):
-                reject_code = "atr_floor_failed"
+    if reject_code is None and bool(filter_config.enable_atr_stop_floor):
+        if not _passes_atr_floor(
+            event=candidate,
+            daily_context=daily_context or {},
+            atr_floor_multiple=float(filter_config.atr_stop_floor_multiple),
+            prepared_intraday=prepared_intraday_by_symbol.get(symbol),
+        ):
+            reject_code = "atr_floor_failed"
 
+    if reject_code is not None:
+        return None, reject_code
+    return candidate, None
+
+
+def apply_entry_filters(
+    events: Iterable[Mapping[str, Any] | StrategySignalEvent],
+    *,
+    filter_config: StrategyEntryFilterConfig,
+    feature_config: StrategyFeatureConfig,
+    daily_features_by_symbol: Mapping[str, pd.DataFrame],
+    daily_ohlc_by_symbol: Mapping[str, pd.DataFrame],
+    intraday_bars_by_symbol: Mapping[str, pd.DataFrame] | None = None,
+) -> tuple[tuple[StrategySignalEvent, ...], dict[str, Any], dict[str, Any]]:
+    """Apply deterministic entry filters and return kept events + audit payloads."""
+    runtime = _build_filter_runtime(
+        events=events,
+        filter_config=filter_config,
+        daily_features_by_symbol=daily_features_by_symbol,
+        daily_ohlc_by_symbol=daily_ohlc_by_symbol,
+        intraday_bars_by_symbol=intraday_bars_by_symbol,
+    )
+    kept_events: list[StrategySignalEvent] = []
+    for event in runtime.sorted_events:
+        accepted, reject_code = _apply_single_entry_filter(
+            event=event,
+            filter_config=filter_config,
+            feature_config=feature_config,
+            daily_index_by_symbol=runtime.daily_index_by_symbol,
+            prepared_intraday_by_symbol=runtime.prepared_intraday_by_symbol,
+            orb_cache_by_symbol=runtime.orb_cache_by_symbol,
+        )
         if reject_code is not None:
-            reject_counts[reject_code] += 1
+            runtime.reject_counts[reject_code] += 1
             continue
-        kept_events.append(candidate)
+        assert accepted is not None
+        kept_events.append(accepted)
 
     kept_events_sorted = tuple(sorted(kept_events, key=_event_sort_key))
     filter_summary = _build_filter_summary(
-        base_event_count=len(sorted_events),
+        base_event_count=len(runtime.sorted_events),
         kept_event_count=len(kept_events_sorted),
-        reject_counts=reject_counts,
+        reject_counts=runtime.reject_counts,
     )
     filter_metadata = _build_filter_metadata(
         filter_config=filter_config,
-        orb_cache_by_symbol=orb_cache_by_symbol,
+        orb_cache_by_symbol=runtime.orb_cache_by_symbol,
     )
     return kept_events_sorted, filter_summary, filter_metadata
 
