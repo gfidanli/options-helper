@@ -384,29 +384,21 @@ def _events_from_signals(
 ) -> list[dict[str, Any]]:
     if signals.empty:
         return []
-
     events = extract_msb_events(signals)
     rows: list[dict[str, Any]] = []
     daily_index = source_daily_close.index
-
     for ev in events:
         row = asdict(ev)
         raw_ts = pd.Timestamp(row["timestamp"])
         raw_swing_ts = pd.Timestamp(row["broken_swing_timestamp"])
         week_start = _week_start_monday(raw_ts)
-
-        if weekly_index_labels:
-            display_ts = week_start
-            display_swing_ts = _week_start_monday(raw_swing_ts)
-            anchor_candidates = daily_index[daily_index <= raw_ts]
-            anchor_ts = anchor_candidates.max() if len(anchor_candidates) > 0 else None
-        else:
-            display_ts = raw_ts
-            display_swing_ts = raw_swing_ts
-            anchor_ts = raw_ts if raw_ts in daily_index else None
-
+        display_ts, display_swing_ts, anchor_ts = _resolve_display_and_anchor_timestamps(
+            raw_ts=raw_ts,
+            raw_swing_ts=raw_swing_ts,
+            daily_index=daily_index,
+            weekly_index_labels=weekly_index_labels,
+        )
         anchor_pos = None if anchor_ts is None else int(daily_index.get_loc(anchor_ts))
-
         event_close = float(row["candle_close"])
         rsi_value = float(rsi_series.loc[raw_ts]) if raw_ts in rsi_series.index and pd.notna(rsi_series.loc[raw_ts]) else None
         ext_value = (
@@ -419,7 +411,6 @@ def _events_from_signals(
             if raw_ts in extension_percentile_series.index and pd.notna(extension_percentile_series.loc[raw_ts])
             else None
         )
-
         formatted: dict[str, Any] = {
             "timeframe": timeframe,
             "event_ts": display_ts.date().isoformat(),
@@ -456,6 +447,25 @@ def _events_from_signals(
 
     rows.sort(key=lambda item: str(item.get("event_ts") or ""), reverse=True)
     return rows
+
+
+def _resolve_display_and_anchor_timestamps(
+    *,
+    raw_ts: pd.Timestamp,
+    raw_swing_ts: pd.Timestamp,
+    daily_index: pd.DatetimeIndex,
+    weekly_index_labels: bool,
+) -> tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp | None]:
+    if weekly_index_labels:
+        display_ts = _week_start_monday(raw_ts)
+        display_swing_ts = _week_start_monday(raw_swing_ts)
+        anchor_candidates = daily_index[daily_index <= raw_ts]
+        anchor_ts = anchor_candidates.max() if len(anchor_candidates) > 0 else None
+        return display_ts, display_swing_ts, anchor_ts
+    display_ts = raw_ts
+    display_swing_ts = raw_swing_ts
+    anchor_ts = raw_ts if raw_ts in daily_index else None
+    return display_ts, display_swing_ts, anchor_ts
 
 
 def _build_summary_rows(*, daily_events: list[dict[str, Any]], weekly_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
