@@ -296,26 +296,26 @@ class ZeroDTEIntradayDatasetLoader:
                 continue
             normalized["contract_symbol"] = contract
             frames.append(normalized)
-
         if frames:
             return pd.concat(frames, ignore_index=True)
+        return self._load_option_bars_from_warehouse(session_date, normalized_contracts, timeframe, notes)
 
+    def _load_option_bars_from_warehouse(
+        self, session_date: date, normalized_contracts: Sequence[str], timeframe: str, notes: list[str]
+    ) -> pd.DataFrame:
         warehouse = self.warehouse
         if warehouse is None:
             return pd.DataFrame()
         if not _duckdb_table_exists(warehouse, "option_bars"):
             notes.append("DuckDB table missing: option_bars")
             return pd.DataFrame()
-
         placeholders = ",".join("?" for _ in normalized_contracts)
         if not placeholders:
             return pd.DataFrame()
-
         start_local = datetime.combine(session_date, time.min, tzinfo=self.market_tz)
         end_local = datetime.combine(session_date + timedelta(days=1), time.min, tzinfo=self.market_tz)
         start_utc = start_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
         end_utc = end_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
-
         try:
             loaded = warehouse.fetch_df(
                 f"""
@@ -341,12 +341,10 @@ class ZeroDTEIntradayDatasetLoader:
         except Exception as exc:  # noqa: BLE001
             notes.append(f"DuckDB option bars query failed: {exc}")
             return pd.DataFrame()
-
         if loaded is None or loaded.empty:
             return pd.DataFrame()
         if "contract_symbol" not in loaded.columns:
             return normalize_intraday_bars(loaded, market_tz=self.market_tz)
-
         frames = []
         for contract_symbol, sub in loaded.groupby("contract_symbol", sort=False):
             normalized = normalize_intraday_bars(sub, market_tz=self.market_tz)
