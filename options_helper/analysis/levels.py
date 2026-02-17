@@ -94,14 +94,7 @@ def compute_anchored_vwap(
     bars, warnings = _normalize_intraday_bars(intraday_bars)
     if bars.empty:
         warnings.append("empty_intraday_bars")
-        return AnchoredVwapResult(
-            anchor_type=anchor_type,
-            anchor_ts_utc=None,
-            anchor_price=None,
-            anchored_vwap=None,
-            distance_from_spot_pct=None,
-            warnings=_dedupe_preserve_order(warnings),
-        )
+        return _anchored_vwap_result(anchor_type=anchor_type, warnings=warnings)
 
     anchor_ts = _resolve_anchor_timestamp(
         bars,
@@ -112,74 +105,44 @@ def compute_anchored_vwap(
         breakout_lookback=breakout_lookback,
         warnings=warnings,
     )
-
     if anchor_ts is None:
-        return AnchoredVwapResult(
-            anchor_type=anchor_type,
-            anchor_ts_utc=None,
-            anchor_price=None,
-            anchored_vwap=None,
-            distance_from_spot_pct=None,
-            warnings=_dedupe_preserve_order(warnings),
-        )
-
+        return _anchored_vwap_result(anchor_type=anchor_type, warnings=warnings)
     anchored = bars.loc[bars["timestamp"] >= anchor_ts].copy()
     if anchored.empty:
         warnings.append("anchor_after_last_bar")
-        return AnchoredVwapResult(
+        return _anchored_vwap_result(
             anchor_type=anchor_type,
-            anchor_ts_utc=anchor_ts,
-            anchor_price=None,
-            anchored_vwap=None,
-            distance_from_spot_pct=None,
-            warnings=_dedupe_preserve_order(warnings),
+            anchor_ts=anchor_ts,
+            warnings=warnings,
         )
-
-    anchor_row = anchored.iloc[0]
-    anchor_price = _row_price(anchor_row)
-
-    vol = anchored["volume"].astype("float64")
-    weighted_price = anchored["vwap"]
-    typical = (anchored["high"] + anchored["low"] + anchored["close"]) / 3.0
-    fallback_price = typical.where(typical.notna(), anchored["close"])
-    weighted_price = weighted_price.where(weighted_price.notna(), fallback_price)
-
-    valid = (vol > 0.0) & weighted_price.notna()
-    skipped_price_rows = int(((vol > 0.0) & (~weighted_price.notna())).sum())
-    if skipped_price_rows > 0:
-        warnings.append("missing_prices_skipped")
-
-    if not bool(valid.any()):
-        warnings.append("zero_volume_after_anchor")
-        return AnchoredVwapResult(
+    anchor_price = _row_price(anchored.iloc[0])
+    anchored_vwap = _compute_weighted_anchored_vwap(anchored=anchored, warnings=warnings)
+    if anchored_vwap is None:
+        return _anchored_vwap_result(
             anchor_type=anchor_type,
-            anchor_ts_utc=anchor_ts,
+            anchor_ts=anchor_ts,
             anchor_price=anchor_price,
-            anchored_vwap=None,
-            distance_from_spot_pct=None,
-            warnings=_dedupe_preserve_order(warnings),
+            warnings=warnings,
         )
+    return _anchored_vwap_result(
+        anchor_type=anchor_type,
+        anchor_ts=anchor_ts,
+        anchor_price=anchor_price,
+        anchored_vwap=anchored_vwap,
+        distance_from_spot_pct=_distance_from_spot_pct(spot=spot, anchored_vwap=anchored_vwap),
+        warnings=warnings,
+    )
 
-    denominator = float(vol[valid].sum())
-    if denominator <= 0.0:
-        warnings.append("zero_volume_after_anchor")
-        return AnchoredVwapResult(
-            anchor_type=anchor_type,
-            anchor_ts_utc=anchor_ts,
-            anchor_price=anchor_price,
-            anchored_vwap=None,
-            distance_from_spot_pct=None,
-            warnings=_dedupe_preserve_order(warnings),
-        )
 
-    numerator = float((weighted_price[valid] * vol[valid]).sum())
-    anchored_vwap = numerator / denominator
-
-    distance_from_spot_pct: float | None = None
-    spot_value = _coerce_number(spot)
-    if spot_value is not None and anchored_vwap > 0.0:
-        distance_from_spot_pct = (spot_value - anchored_vwap) / anchored_vwap
-
+def _anchored_vwap_result(
+    *,
+    anchor_type: AnchorType,
+    anchor_ts: pd.Timestamp | None = None,
+    anchor_price: float | None = None,
+    anchored_vwap: float | None = None,
+    distance_from_spot_pct: float | None = None,
+    warnings: list[str],
+) -> AnchoredVwapResult:
     return AnchoredVwapResult(
         anchor_type=anchor_type,
         anchor_ts_utc=anchor_ts,
@@ -188,6 +151,37 @@ def compute_anchored_vwap(
         distance_from_spot_pct=distance_from_spot_pct,
         warnings=_dedupe_preserve_order(warnings),
     )
+
+
+def _compute_weighted_anchored_vwap(
+    *,
+    anchored: pd.DataFrame,
+    warnings: list[str],
+) -> float | None:
+    volume = anchored["volume"].astype("float64")
+    weighted_price = anchored["vwap"]
+    typical = (anchored["high"] + anchored["low"] + anchored["close"]) / 3.0
+    weighted_price = weighted_price.where(weighted_price.notna(), typical.where(typical.notna(), anchored["close"]))
+    valid = (volume > 0.0) & weighted_price.notna()
+    skipped_price_rows = int(((volume > 0.0) & (~weighted_price.notna())).sum())
+    if skipped_price_rows > 0:
+        warnings.append("missing_prices_skipped")
+    if not bool(valid.any()):
+        warnings.append("zero_volume_after_anchor")
+        return None
+    denominator = float(volume[valid].sum())
+    if denominator <= 0.0:
+        warnings.append("zero_volume_after_anchor")
+        return None
+    numerator = float((weighted_price[valid] * volume[valid]).sum())
+    return numerator / denominator
+
+
+def _distance_from_spot_pct(*, spot: float | None, anchored_vwap: float) -> float | None:
+    spot_value = _coerce_number(spot)
+    if spot_value is None or anchored_vwap <= 0.0:
+        return None
+    return (spot_value - anchored_vwap) / anchored_vwap
 
 
 def find_breakout_day(daily_candles: pd.DataFrame, *, lookback: int = 20) -> date | None:
