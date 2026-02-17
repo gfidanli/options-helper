@@ -140,7 +140,6 @@ def _simulate_exit_track(
     rows: list[dict[str, object]] = []
     equity = float(config.initial_equity)
     active_positions: list[dict[str, object]] = []
-
     ordered = frame.sort_values(
         by=["entry_anchor_ts", "decision_ts", "risk_tier"],
         ascending=[True, True, True],
@@ -149,39 +148,25 @@ def _simulate_exit_track(
     for _, candidate in ordered.iterrows():
         entry_ts = candidate["entry_anchor_ts"]
         session_date = candidate["session_date"]
-        active_positions = [
-            item for item in active_positions if pd.Timestamp(item["exit_ts"]) > pd.Timestamp(entry_ts)
-        ]
-
+        active_positions = _prune_active_positions(active_positions, entry_ts=entry_ts)
         base_row = _build_base_row(candidate, exit_mode=exit_mode, sizing_mode=config.sizing_mode)
         base_row["equity_before"] = equity
         base_row["equity_after"] = equity
         if _has_policy_skip(candidate):
-            base_row["skip_reason"] = _skip_reason_from_candidate(candidate)
-            base_row["status"] = "skipped"
-            rows.append(base_row)
+            rows.append(_build_skipped_row(base_row, skip_reason=_skip_reason_from_candidate(candidate)))
             continue
-
-        if len(active_positions) >= int(config.max_concurrent_positions):
-            base_row["skip_reason"] = "concurrency_cap_total"
-            base_row["status"] = "skipped"
-            rows.append(base_row)
+        concurrency_skip_reason = _concurrency_skip_reason(
+            active_positions=active_positions,
+            session_date=session_date,
+            config=config,
+        )
+        if concurrency_skip_reason is not None:
+            rows.append(_build_skipped_row(base_row, skip_reason=concurrency_skip_reason))
             continue
-
-        same_day_open = sum(1 for item in active_positions if item["session_date"] == session_date)
-        if same_day_open >= int(config.max_concurrent_positions_per_day):
-            base_row["skip_reason"] = "concurrency_cap_same_day"
-            base_row["status"] = "skipped"
-            rows.append(base_row)
-            continue
-
         price_inputs = _resolve_price_inputs(candidate, config=config, exit_mode=exit_mode)
         if price_inputs is None:
-            base_row["skip_reason"] = "invalid_pricing_inputs"
-            base_row["status"] = "skipped"
-            rows.append(base_row)
+            rows.append(_build_skipped_row(base_row, skip_reason="invalid_pricing_inputs"))
             continue
-
         quantity = _resolve_quantity(
             candidate,
             equity=equity,
@@ -189,11 +174,8 @@ def _simulate_exit_track(
             config=config,
         )
         if quantity < 1:
-            base_row["skip_reason"] = "sizing_zero_quantity"
-            base_row["status"] = "skipped"
-            rows.append(base_row)
+            rows.append(_build_skipped_row(base_row, skip_reason="sizing_zero_quantity"))
             continue
-
         pnl_per_contract = (
             (price_inputs["entry_premium_net"] - price_inputs["exit_premium_net"])
             * float(config.contract_multiplier)
@@ -202,35 +184,79 @@ def _simulate_exit_track(
         )
         pnl_total = pnl_per_contract * float(quantity)
         equity_after = equity + pnl_total
-
-        filled_row = base_row.copy()
-        filled_row["status"] = "filled"
-        filled_row["quantity"] = int(quantity)
-        filled_row["exit_ts"] = price_inputs["exit_ts"]
-        filled_row["exit_reason"] = price_inputs["exit_reason"]
-        filled_row["entry_premium_gross"] = price_inputs["entry_premium_gross"]
-        filled_row["entry_premium_net"] = price_inputs["entry_premium_net"]
-        filled_row["exit_premium_gross"] = price_inputs["exit_premium_gross"]
-        filled_row["exit_premium_net"] = price_inputs["exit_premium_net"]
-        filled_row["entry_fee_total"] = float(config.entry_fee_per_contract) * float(quantity)
-        filled_row["exit_fee_total"] = float(config.exit_fee_per_contract) * float(quantity)
-        filled_row["pnl_per_contract"] = pnl_per_contract
-        filled_row["pnl_total"] = pnl_total
-        filled_row["close_intrinsic"] = price_inputs["close_intrinsic"]
-        filled_row["max_loss_proxy_per_contract"] = price_inputs["max_loss_proxy_per_contract"]
-        filled_row["max_loss_proxy_total"] = price_inputs["max_loss_proxy_per_contract"] * float(quantity)
-        filled_row["equity_after"] = equity_after
-        rows.append(filled_row)
-
-        equity = equity_after
-        active_positions.append(
-            {
-                "session_date": session_date,
-                "exit_ts": price_inputs["exit_ts"],
-            }
+        filled_row = _build_filled_row(
+            base_row=base_row,
+            quantity=quantity,
+            price_inputs=price_inputs,
+            pnl_per_contract=pnl_per_contract,
+            pnl_total=pnl_total,
+            equity_after=equity_after,
+            config=config,
         )
-
+        rows.append(filled_row)
+        equity = equity_after
+        active_positions.append({"session_date": session_date, "exit_ts": price_inputs["exit_ts"]})
     return rows
+
+
+def _prune_active_positions(
+    active_positions: list[dict[str, object]],
+    *,
+    entry_ts: object,
+) -> list[dict[str, object]]:
+    entry_timestamp = pd.Timestamp(entry_ts)
+    return [item for item in active_positions if pd.Timestamp(item["exit_ts"]) > entry_timestamp]
+
+
+def _concurrency_skip_reason(
+    *,
+    active_positions: list[dict[str, object]],
+    session_date: object,
+    config: ZeroDTEPutSimulatorConfig,
+) -> str | None:
+    if len(active_positions) >= int(config.max_concurrent_positions):
+        return "concurrency_cap_total"
+    same_day_open = sum(1 for item in active_positions if item["session_date"] == session_date)
+    if same_day_open >= int(config.max_concurrent_positions_per_day):
+        return "concurrency_cap_same_day"
+    return None
+
+
+def _build_skipped_row(base_row: dict[str, object], *, skip_reason: str) -> dict[str, object]:
+    row = base_row.copy()
+    row["skip_reason"] = skip_reason
+    row["status"] = "skipped"
+    return row
+
+
+def _build_filled_row(
+    *,
+    base_row: dict[str, object],
+    quantity: int,
+    price_inputs: dict[str, object],
+    pnl_per_contract: float,
+    pnl_total: float,
+    equity_after: float,
+    config: ZeroDTEPutSimulatorConfig,
+) -> dict[str, object]:
+    row = base_row.copy()
+    row["status"] = "filled"
+    row["quantity"] = int(quantity)
+    row["exit_ts"] = price_inputs["exit_ts"]
+    row["exit_reason"] = price_inputs["exit_reason"]
+    row["entry_premium_gross"] = price_inputs["entry_premium_gross"]
+    row["entry_premium_net"] = price_inputs["entry_premium_net"]
+    row["exit_premium_gross"] = price_inputs["exit_premium_gross"]
+    row["exit_premium_net"] = price_inputs["exit_premium_net"]
+    row["entry_fee_total"] = float(config.entry_fee_per_contract) * float(quantity)
+    row["exit_fee_total"] = float(config.exit_fee_per_contract) * float(quantity)
+    row["pnl_per_contract"] = pnl_per_contract
+    row["pnl_total"] = pnl_total
+    row["close_intrinsic"] = price_inputs["close_intrinsic"]
+    row["max_loss_proxy_per_contract"] = price_inputs["max_loss_proxy_per_contract"]
+    row["max_loss_proxy_total"] = price_inputs["max_loss_proxy_per_contract"] * float(quantity)
+    row["equity_after"] = equity_after
+    return row
 
 
 def _resolve_price_inputs(
