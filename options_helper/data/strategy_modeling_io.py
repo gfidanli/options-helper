@@ -173,104 +173,115 @@ def load_daily_ohlc_history(
     fallback_mode = _normalize_fallback_mode(adjusted_data_fallback_mode)
     requested_symbols = _dedupe_symbols(symbols)
     notes: list[str] = []
-
     if not requested_symbols:
-        return StrategyModelingDailyLoadResult(
-            candles_by_symbol={},
-            source_by_symbol={},
-            skipped_symbols=[],
-            missing_symbols=[],
-            notes=notes,
-        )
-
+        return _daily_load_result(notes=notes)
     path = resolve_duckdb_path(database_path)
     if not path.exists():
         notes.append(f"DuckDB database not found: {path}")
-        return StrategyModelingDailyLoadResult(
-            candles_by_symbol={},
-            source_by_symbol={},
-            skipped_symbols=[],
-            missing_symbols=requested_symbols,
-            notes=notes,
-        )
-
+        return _daily_load_result(notes=notes, missing_symbols=requested_symbols)
     conn = _connect_read_only(path, notes)
     if conn is None:
-        return StrategyModelingDailyLoadResult(
-            candles_by_symbol={},
-            source_by_symbol={},
-            skipped_symbols=[],
-            missing_symbols=requested_symbols,
-            notes=notes,
-        )
-
+        return _daily_load_result(notes=notes, missing_symbols=requested_symbols)
     if not _table_exists(conn, "candles_daily"):
         conn.close()
         notes.append("candles_daily table not found. Run `options-helper ingest candles` first.")
-        return StrategyModelingDailyLoadResult(
-            candles_by_symbol={},
-            source_by_symbol={},
-            skipped_symbols=[],
-            missing_symbols=requested_symbols,
-            notes=notes,
-        )
-
+        return _daily_load_result(notes=notes, missing_symbols=requested_symbols)
     candles_by_symbol: dict[str, pd.DataFrame] = {}
     source_by_symbol: dict[str, DailySourceMode] = {}
     skipped_symbols: list[str] = []
     missing_symbols: list[str] = []
-
     try:
         for symbol in requested_symbols:
-            adjusted = _query_daily_history(
+            status, candles, note = _resolve_symbol_daily_history(
                 conn,
                 symbol,
-                auto_adjust=True,
                 interval=interval,
                 start_date=start_date,
                 end_date=end_date,
+                price_adjustment_policy=cfg.price_adjustment_policy,
+                fallback_mode=fallback_mode,
             )
-            if not adjusted.empty:
-                candles_by_symbol[symbol] = adjusted
+            if status == "adjusted" and candles is not None:
+                candles_by_symbol[symbol] = candles
                 source_by_symbol[symbol] = "adjusted"
-                continue
-
-            unadjusted = _query_daily_history(
-                conn,
-                symbol,
-                auto_adjust=False,
-                interval=interval,
-                start_date=start_date,
-                end_date=end_date,
-            )
-            if unadjusted.empty:
-                missing_symbols.append(symbol)
-                notes.append(f"{symbol}: no daily candles found for requested date range.")
-                continue
-
-            if cfg.price_adjustment_policy == "adjusted_ohlc" and fallback_mode == "warn_and_skip_symbol":
+            elif status == "unadjusted" and candles is not None:
+                candles_by_symbol[symbol] = candles
+                source_by_symbol[symbol] = "unadjusted"
+            elif status == "skip":
                 skipped_symbols.append(symbol)
-                notes.append(
-                    f"{symbol}: adjusted candles unavailable in requested date range; "
-                    "skipping symbol (fallback=warn_and_skip_symbol)."
-                )
-                continue
-
-            candles_by_symbol[symbol] = unadjusted
-            source_by_symbol[symbol] = "unadjusted"
-            notes.append(
-                f"{symbol}: adjusted candles unavailable in requested date range; "
-                "using unadjusted fallback."
-            )
+            else:
+                missing_symbols.append(symbol)
+            if note is not None:
+                notes.append(note)
     finally:
         conn.close()
-
-    return StrategyModelingDailyLoadResult(
+    return _daily_load_result(
         candles_by_symbol=candles_by_symbol,
         source_by_symbol=source_by_symbol,
         skipped_symbols=skipped_symbols,
         missing_symbols=missing_symbols,
         notes=notes,
+    )
+
+
+def _daily_load_result(
+    *,
+    candles_by_symbol: dict[str, pd.DataFrame] | None = None,
+    source_by_symbol: dict[str, DailySourceMode] | None = None,
+    skipped_symbols: list[str] | None = None,
+    missing_symbols: list[str] | None = None,
+    notes: list[str] | None = None,
+) -> StrategyModelingDailyLoadResult:
+    return StrategyModelingDailyLoadResult(
+        candles_by_symbol=candles_by_symbol or {},
+        source_by_symbol=source_by_symbol or {},
+        skipped_symbols=skipped_symbols or [],
+        missing_symbols=missing_symbols or [],
+        notes=notes or [],
+    )
+
+
+def _resolve_symbol_daily_history(
+    conn: duckdb.DuckDBPyConnection,
+    symbol: str,
+    *,
+    interval: str,
+    start_date: date | None,
+    end_date: date | None,
+    price_adjustment_policy: str,
+    fallback_mode: AdjustedDataFallbackMode,
+) -> tuple[DailySourceMode | Literal["skip", "missing"], pd.DataFrame | None, str | None]:
+    adjusted = _query_daily_history(
+        conn,
+        symbol,
+        auto_adjust=True,
+        interval=interval,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if not adjusted.empty:
+        return "adjusted", adjusted, None
+    unadjusted = _query_daily_history(
+        conn,
+        symbol,
+        auto_adjust=False,
+        interval=interval,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if unadjusted.empty:
+        return "missing", None, f"{symbol}: no daily candles found for requested date range."
+    if price_adjustment_policy == "adjusted_ohlc" and fallback_mode == "warn_and_skip_symbol":
+        return (
+            "skip",
+            None,
+            f"{symbol}: adjusted candles unavailable in requested date range; "
+            "skipping symbol (fallback=warn_and_skip_symbol).",
+        )
+    return (
+        "unadjusted",
+        unadjusted,
+        f"{symbol}: adjusted candles unavailable in requested date range; using unadjusted fallback.",
     )
 
 
