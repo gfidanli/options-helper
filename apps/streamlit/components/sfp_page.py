@@ -136,39 +136,86 @@ def _build_sfp_payload_cached(
     compute_supports_ignore_swept_swings: bool,
     database_path: str,
 ) -> dict[str, Any]:
-    notes: list[str] = []
-    if bool(ignore_swept_swings) and not bool(compute_supports_ignore_swept_swings):
-        notes.append(
-            "Runtime SFP engine does not expose native swept-swing ignore mode; "
-            "applied app-layer fallback filter."
-        )
-
+    notes = _sfp_runtime_notes(
+        ignore_swept_swings=bool(ignore_swept_swings),
+        compute_supports_ignore_swept_swings=bool(compute_supports_ignore_swept_swings),
+    )
+    normalized_symbol = normalize_symbol(symbol)
     candles, note = load_candles_history(
-        symbol=symbol,
+        symbol=normalized_symbol,
         database_path=database_path,
         limit=max(600, int(lookback_days) + 260),
     )
     if note is not None:
-        return {
-            "symbol": normalize_symbol(symbol),
-            "asof": None,
-            "daily_events": [],
-            "weekly_events": [],
-            "summary_rows": [],
-            "counts": {},
-            "notes": [*notes, note],
-        }
+        return _empty_sfp_payload(symbol=normalized_symbol, notes=notes, extra_note=note)
     if candles.empty:
-        return {
-            "symbol": normalize_symbol(symbol),
-            "asof": None,
-            "daily_events": [],
-            "weekly_events": [],
-            "summary_rows": [],
-            "counts": {},
-            "notes": [*notes, f"No daily candles found for {normalize_symbol(symbol)}."],
-        }
+        return _empty_sfp_payload(
+            symbol=normalized_symbol,
+            notes=notes,
+            extra_note=f"No daily candles found for {normalized_symbol}.",
+        )
 
+    daily_ohlc = _build_daily_ohlc(candles)
+    if daily_ohlc.empty:
+        return _empty_sfp_payload(
+            symbol=normalized_symbol,
+            notes=notes,
+            extra_note=f"No usable daily OHLC candles found for {normalized_symbol}.",
+        )
+
+    latest_ts, daily_events_filtered, weekly_events_filtered = _build_filtered_sfp_events(
+        daily_ohlc=daily_ohlc,
+        tail_low_pct=float(tail_low_pct),
+        tail_high_pct=float(tail_high_pct),
+        swing_left_bars=swing_left_bars,
+        swing_right_bars=swing_right_bars,
+        min_swing_distance_bars=min_swing_distance_bars,
+        ignore_swept_swings=bool(ignore_swept_swings),
+        rsi_overbought=float(rsi_overbought),
+        rsi_oversold=float(rsi_oversold),
+        lookback_days=int(lookback_days),
+    )
+    summary_rows = _build_summary_rows(
+        daily_events=daily_events_filtered,
+        weekly_events=weekly_events_filtered,
+    )
+    return {
+        "symbol": normalized_symbol,
+        "asof": latest_ts.date().isoformat(),
+        "daily_events": daily_events_filtered,
+        "weekly_events": weekly_events_filtered,
+        "summary_rows": summary_rows,
+        "counts": _build_sfp_counts(daily_events_filtered, weekly_events_filtered),
+        "notes": notes,
+    }
+
+
+def _sfp_runtime_notes(*, ignore_swept_swings: bool, compute_supports_ignore_swept_swings: bool) -> list[str]:
+    notes: list[str] = []
+    if ignore_swept_swings and not compute_supports_ignore_swept_swings:
+        notes.append(
+            "Runtime SFP engine does not expose native swept-swing ignore mode; "
+            "applied app-layer fallback filter."
+        )
+    return notes
+
+
+def _empty_sfp_payload(*, symbol: str, notes: list[str], extra_note: str | None = None) -> dict[str, Any]:
+    payload_notes = [*notes]
+    if extra_note is not None:
+        payload_notes.append(extra_note)
+    return {
+        "symbol": symbol,
+        "asof": None,
+        "daily_events": [],
+        "weekly_events": [],
+        "summary_rows": [],
+        "counts": {},
+        "notes": payload_notes,
+    }
+
+
+def _build_daily_ohlc(candles: pd.DataFrame) -> pd.DataFrame:
     daily_ohlc = candles.rename(
         columns={
             "open": "Open",
@@ -177,61 +224,130 @@ def _build_sfp_payload_cached(
             "close": "Close",
         }
     ).set_index("ts")[["Open", "High", "Low", "Close"]]
-    daily_ohlc = daily_ohlc.sort_index()
-    if daily_ohlc.empty:
-        return {
-            "symbol": normalize_symbol(symbol),
-            "asof": None,
-            "daily_events": [],
-            "weekly_events": [],
-            "summary_rows": [],
-            "counts": {},
-            "notes": [*notes, f"No usable daily OHLC candles found for {normalize_symbol(symbol)}."],
-        }
+    return daily_ohlc.sort_index()
 
+
+def _prepare_daily_context(
+    *,
+    daily_ohlc: pd.DataFrame,
+    tail_low_pct: float,
+    tail_high_pct: float,
+) -> dict[str, Any]:
     daily_close = daily_ohlc["Close"].astype("float64")
-    daily_open = daily_ohlc["Open"].astype("float64")
-    daily_high = daily_ohlc["High"].astype("float64")
-    daily_low = daily_ohlc["Low"].astype("float64")
-    daily_rsi = _rsi_series(daily_close)
     daily_ext, daily_ext_pct = _compute_extension_percentile_series(daily_ohlc)
-    week_start_idx_daily = pd.DatetimeIndex([_week_start_monday(ts) for ts in daily_ohlc.index])
-    daily_extreme_mask = ((daily_ext_pct <= float(tail_low_pct)) | (daily_ext_pct >= float(tail_high_pct))).fillna(
-        False
-    )
+    week_start_idx = pd.DatetimeIndex([_week_start_monday(ts) for ts in daily_ohlc.index])
+    daily_extreme_mask = ((daily_ext_pct <= tail_low_pct) | (daily_ext_pct >= tail_high_pct)).fillna(False)
     daily_week_has_extreme = (
-        pd.Series(daily_extreme_mask.to_numpy(dtype=bool), index=week_start_idx_daily)
-        .groupby(level=0)
-        .max()
-        .astype(bool)
-        .to_dict()
+        pd.Series(daily_extreme_mask.to_numpy(dtype=bool), index=week_start_idx).groupby(level=0).max().astype(bool).to_dict()
     )
+    return {
+        "daily_close": daily_close,
+        "daily_open": daily_ohlc["Open"].astype("float64"),
+        "daily_high": daily_ohlc["High"].astype("float64"),
+        "daily_low": daily_ohlc["Low"].astype("float64"),
+        "daily_rsi": _rsi_series(daily_close),
+        "daily_ext": daily_ext,
+        "daily_ext_pct": daily_ext_pct,
+        "daily_week_has_extreme": daily_week_has_extreme,
+    }
 
+
+def _build_filtered_sfp_events(
+    *,
+    daily_ohlc: pd.DataFrame,
+    tail_low_pct: float,
+    tail_high_pct: float,
+    swing_left_bars: int,
+    swing_right_bars: int,
+    min_swing_distance_bars: int,
+    ignore_swept_swings: bool,
+    rsi_overbought: float,
+    rsi_oversold: float,
+    lookback_days: int,
+) -> tuple[pd.Timestamp, list[dict[str, Any]], list[dict[str, Any]]]:
+    daily_context = _prepare_daily_context(
+        daily_ohlc=daily_ohlc,
+        tail_low_pct=tail_low_pct,
+        tail_high_pct=tail_high_pct,
+    )
+    daily_events = _build_daily_events(
+        daily_ohlc=daily_ohlc,
+        daily_context=daily_context,
+        swing_left_bars=swing_left_bars,
+        swing_right_bars=swing_right_bars,
+        min_swing_distance_bars=min_swing_distance_bars,
+        ignore_swept_swings=ignore_swept_swings,
+        rsi_overbought=rsi_overbought,
+        rsi_oversold=rsi_oversold,
+    )
+    weekly_events = _build_weekly_events(
+        daily_ohlc=daily_ohlc,
+        daily_context=daily_context,
+        swing_left_bars=swing_left_bars,
+        swing_right_bars=swing_right_bars,
+        min_swing_distance_bars=min_swing_distance_bars,
+        ignore_swept_swings=ignore_swept_swings,
+        rsi_overbought=rsi_overbought,
+        rsi_oversold=rsi_oversold,
+    )
+    latest_ts = daily_ohlc.index.max()
+    daily_filtered, weekly_filtered = _filter_events_by_lookback(
+        daily_events=daily_events,
+        weekly_events=weekly_events,
+        latest_ts=latest_ts,
+        lookback_days=lookback_days,
+    )
+    return latest_ts, daily_filtered, weekly_filtered
+
+
+def _build_daily_events(
+    *,
+    daily_ohlc: pd.DataFrame,
+    daily_context: dict[str, Any],
+    swing_left_bars: int,
+    swing_right_bars: int,
+    min_swing_distance_bars: int,
+    ignore_swept_swings: bool,
+    rsi_overbought: float,
+    rsi_oversold: float,
+) -> list[dict[str, Any]]:
     daily_signals = _compute_sfp_signals_compat(
         daily_ohlc,
         swing_left_bars=swing_left_bars,
         swing_right_bars=swing_right_bars,
         min_swing_distance_bars=min_swing_distance_bars,
-        ignore_swept_swings=bool(ignore_swept_swings),
+        ignore_swept_swings=ignore_swept_swings,
         timeframe="native",
     )
-    daily_events = _events_from_signals(
+    return _events_from_signals(
         signals=daily_signals,
-        source_daily_close=daily_close,
-        source_daily_open=daily_open,
-        source_daily_high=daily_high,
-        source_daily_low=daily_low,
-        rsi_series=daily_rsi,
-        extension_series=daily_ext,
-        extension_percentile_series=daily_ext_pct,
-        rsi_overbought=float(rsi_overbought),
-        rsi_oversold=float(rsi_oversold),
+        source_daily_close=daily_context["daily_close"],
+        source_daily_open=daily_context["daily_open"],
+        source_daily_high=daily_context["daily_high"],
+        source_daily_low=daily_context["daily_low"],
+        rsi_series=daily_context["daily_rsi"],
+        extension_series=daily_context["daily_ext"],
+        extension_percentile_series=daily_context["daily_ext_pct"],
+        rsi_overbought=rsi_overbought,
+        rsi_oversold=rsi_oversold,
         timeframe="daily",
-        week_has_daily_extension_map=daily_week_has_extreme,
+        week_has_daily_extension_map=daily_context["daily_week_has_extreme"],
         weekly_index_labels=False,
-        ignore_swept_swings=bool(ignore_swept_swings),
+        ignore_swept_swings=ignore_swept_swings,
     )
 
+
+def _build_weekly_events(
+    *,
+    daily_ohlc: pd.DataFrame,
+    daily_context: dict[str, Any],
+    swing_left_bars: int,
+    swing_right_bars: int,
+    min_swing_distance_bars: int,
+    ignore_swept_swings: bool,
+    rsi_overbought: float,
+    rsi_oversold: float,
+) -> list[dict[str, Any]]:
     weekly_ohlc = (
         daily_ohlc.resample("W-FRI")
         .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
@@ -245,49 +361,49 @@ def _build_sfp_payload_cached(
         swing_left_bars=swing_left_bars,
         swing_right_bars=swing_right_bars,
         min_swing_distance_bars=min_swing_distance_bars,
-        ignore_swept_swings=bool(ignore_swept_swings),
+        ignore_swept_swings=ignore_swept_swings,
         timeframe="native",
     )
-    weekly_events = _events_from_signals(
+    return _events_from_signals(
         signals=weekly_signals,
-        source_daily_close=daily_close,
-        source_daily_open=daily_open,
-        source_daily_high=daily_high,
-        source_daily_low=daily_low,
+        source_daily_close=daily_context["daily_close"],
+        source_daily_open=daily_context["daily_open"],
+        source_daily_high=daily_context["daily_high"],
+        source_daily_low=daily_context["daily_low"],
         rsi_series=weekly_rsi,
         extension_series=weekly_ext,
         extension_percentile_series=weekly_ext_pct,
-        rsi_overbought=float(rsi_overbought),
-        rsi_oversold=float(rsi_oversold),
+        rsi_overbought=rsi_overbought,
+        rsi_oversold=rsi_oversold,
         timeframe="weekly",
-        week_has_daily_extension_map=daily_week_has_extreme,
+        week_has_daily_extension_map=daily_context["daily_week_has_extreme"],
         weekly_index_labels=True,
-        ignore_swept_swings=bool(ignore_swept_swings),
+        ignore_swept_swings=ignore_swept_swings,
     )
 
-    latest_ts = daily_ohlc.index.max()
-    cutoff_ts = latest_ts - pd.Timedelta(days=int(lookback_days))
-    daily_events_filtered = [row for row in daily_events if pd.Timestamp(row["event_ts"]) >= cutoff_ts]
-    weekly_events_filtered = [row for row in weekly_events if pd.Timestamp(row["event_ts"]) >= cutoff_ts]
 
-    summary_rows = _build_summary_rows(
-        daily_events=daily_events_filtered,
-        weekly_events=weekly_events_filtered,
-    )
+def _filter_events_by_lookback(
+    *,
+    daily_events: list[dict[str, Any]],
+    weekly_events: list[dict[str, Any]],
+    latest_ts: pd.Timestamp,
+    lookback_days: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    cutoff_ts = latest_ts - pd.Timedelta(days=lookback_days)
+    daily_filtered = [row for row in daily_events if pd.Timestamp(row["event_ts"]) >= cutoff_ts]
+    weekly_filtered = [row for row in weekly_events if pd.Timestamp(row["event_ts"]) >= cutoff_ts]
+    return daily_filtered, weekly_filtered
 
+
+def _build_sfp_counts(
+    daily_events: list[dict[str, Any]],
+    weekly_events: list[dict[str, Any]],
+) -> dict[str, int]:
     return {
-        "symbol": normalize_symbol(symbol),
-        "asof": latest_ts.date().isoformat(),
-        "daily_events": daily_events_filtered,
-        "weekly_events": weekly_events_filtered,
-        "summary_rows": summary_rows,
-        "counts": {
-            "daily_events": len(daily_events_filtered),
-            "weekly_events": len(weekly_events_filtered),
-            "daily_bullish": sum(1 for row in daily_events_filtered if row.get("direction") == "bullish"),
-            "daily_bearish": sum(1 for row in daily_events_filtered if row.get("direction") == "bearish"),
-        },
-        "notes": notes,
+        "daily_events": len(daily_events),
+        "weekly_events": len(weekly_events),
+        "daily_bullish": sum(1 for row in daily_events if row.get("direction") == "bullish"),
+        "daily_bearish": sum(1 for row in daily_events if row.get("direction") == "bearish"),
     }
 
 
@@ -478,57 +594,34 @@ def _events_from_signals(
         raw_ts = pd.Timestamp(row["timestamp"])
         raw_swing_ts = pd.Timestamp(row["swept_swing_timestamp"])
         week_start = _week_start_monday(raw_ts)
-
-        if weekly_index_labels:
-            display_ts = week_start
-            display_swing_ts = _week_start_monday(raw_swing_ts)
-            anchor_candidates = daily_index[daily_index <= raw_ts]
-            anchor_ts = anchor_candidates.max() if len(anchor_candidates) > 0 else None
-        else:
-            display_ts = raw_ts
-            display_swing_ts = raw_swing_ts
-            anchor_ts = raw_ts if raw_ts in daily_index else None
-
+        display_ts, display_swing_ts, anchor_ts = _resolve_display_and_anchor_timestamps(
+            raw_ts=raw_ts,
+            raw_swing_ts=raw_swing_ts,
+            daily_index=daily_index,
+            weekly_index_labels=weekly_index_labels,
+        )
         anchor_pos = None if anchor_ts is None else int(daily_index.get_loc(anchor_ts))
-
         event_close = float(row["candle_close"])
-        rsi_value = float(rsi_series.loc[raw_ts]) if raw_ts in rsi_series.index and pd.notna(rsi_series.loc[raw_ts]) else None
-        ext_value = (
-            float(extension_series.loc[raw_ts])
-            if raw_ts in extension_series.index and pd.notna(extension_series.loc[raw_ts])
-            else None
+        rsi_value, ext_value, ext_pct = _lookup_event_indicators(
+            raw_ts,
+            rsi_series=rsi_series,
+            extension_series=extension_series,
+            extension_percentile_series=extension_percentile_series,
         )
-        ext_pct = (
-            float(extension_percentile_series.loc[raw_ts])
-            if raw_ts in extension_percentile_series.index and pd.notna(extension_percentile_series.loc[raw_ts])
-            else None
+        formatted = _build_sfp_event_row(
+            row=row,
+            timeframe=timeframe,
+            display_ts=display_ts,
+            display_swing_ts=display_swing_ts,
+            week_start=week_start,
+            week_has_daily_extension_map=week_has_daily_extension_map,
+            event_close=event_close,
+            rsi_value=rsi_value,
+            ext_value=ext_value,
+            ext_pct=ext_pct,
+            rsi_overbought=rsi_overbought,
+            rsi_oversold=rsi_oversold,
         )
-
-        formatted: dict[str, Any] = {
-            "timeframe": timeframe,
-            "event_ts": display_ts.date().isoformat(),
-            "swept_swing_ts": display_swing_ts.date().isoformat(),
-            "direction": str(row["direction"]),
-            "bars_since_swing": int(row["bars_since_swing"]),
-            "candle_open": round(float(row["candle_open"]), 2),
-            "candle_high": round(float(row["candle_high"]), 2),
-            "candle_low": round(float(row["candle_low"]), 2),
-            "candle_close": round(event_close, 2),
-            "sweep_level": round(float(row["sweep_level"]), 2),
-            "extension_atr": None if ext_value is None else round(ext_value, 2),
-            "extension_percentile": None if ext_pct is None else round(ext_pct, 2),
-            "rsi": None if rsi_value is None else round(rsi_value, 2),
-            "rsi_regime": (
-                None
-                if rsi_value is None
-                else rsi_regime_tag(
-                    rsi_value=float(rsi_value),
-                    rsi_overbought=float(rsi_overbought),
-                    rsi_oversold=float(rsi_oversold),
-                )
-            ),
-            "week_has_daily_extension_extreme": bool(week_has_daily_extension_map.get(week_start, False)),
-        }
         formatted.update(
             _forward_returns_from_anchor(
                 daily_open=source_daily_open,
@@ -542,9 +635,86 @@ def _events_from_signals(
 
     if ignore_swept_swings and rows:
         rows = _consume_reused_swept_swings(rows)
-
     rows.sort(key=lambda item: str(item.get("event_ts") or ""), reverse=True)
     return rows
+
+
+def _build_sfp_event_row(
+    *,
+    row: dict[str, Any],
+    timeframe: str,
+    display_ts: pd.Timestamp,
+    display_swing_ts: pd.Timestamp,
+    week_start: pd.Timestamp,
+    week_has_daily_extension_map: dict[pd.Timestamp, bool],
+    event_close: float,
+    rsi_value: float | None,
+    ext_value: float | None,
+    ext_pct: float | None,
+    rsi_overbought: float,
+    rsi_oversold: float,
+) -> dict[str, Any]:
+    return {
+        "timeframe": timeframe,
+        "event_ts": display_ts.date().isoformat(),
+        "swept_swing_ts": display_swing_ts.date().isoformat(),
+        "direction": str(row["direction"]),
+        "bars_since_swing": int(row["bars_since_swing"]),
+        "candle_open": round(float(row["candle_open"]), 2),
+        "candle_high": round(float(row["candle_high"]), 2),
+        "candle_low": round(float(row["candle_low"]), 2),
+        "candle_close": round(event_close, 2),
+        "sweep_level": round(float(row["sweep_level"]), 2),
+        "extension_atr": None if ext_value is None else round(ext_value, 2),
+        "extension_percentile": None if ext_pct is None else round(ext_pct, 2),
+        "rsi": None if rsi_value is None else round(rsi_value, 2),
+        "rsi_regime": (
+            None
+            if rsi_value is None
+            else rsi_regime_tag(
+                rsi_value=float(rsi_value),
+                rsi_overbought=float(rsi_overbought),
+                rsi_oversold=float(rsi_oversold),
+            )
+        ),
+        "week_has_daily_extension_extreme": bool(week_has_daily_extension_map.get(week_start, False)),
+    }
+
+
+def _lookup_event_indicators(
+    ts: pd.Timestamp,
+    *,
+    rsi_series: pd.Series,
+    extension_series: pd.Series,
+    extension_percentile_series: pd.Series,
+) -> tuple[float | None, float | None, float | None]:
+    rsi_value = float(rsi_series.loc[ts]) if ts in rsi_series.index and pd.notna(rsi_series.loc[ts]) else None
+    ext_value = float(extension_series.loc[ts]) if ts in extension_series.index and pd.notna(extension_series.loc[ts]) else None
+    ext_pct = (
+        float(extension_percentile_series.loc[ts])
+        if ts in extension_percentile_series.index and pd.notna(extension_percentile_series.loc[ts])
+        else None
+    )
+    return rsi_value, ext_value, ext_pct
+
+
+def _resolve_display_and_anchor_timestamps(
+    *,
+    raw_ts: pd.Timestamp,
+    raw_swing_ts: pd.Timestamp,
+    daily_index: pd.DatetimeIndex,
+    weekly_index_labels: bool,
+) -> tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp | None]:
+    if weekly_index_labels:
+        display_ts = _week_start_monday(raw_ts)
+        display_swing_ts = _week_start_monday(raw_swing_ts)
+        anchor_candidates = daily_index[daily_index <= raw_ts]
+        anchor_ts = anchor_candidates.max() if len(anchor_candidates) > 0 else None
+        return display_ts, display_swing_ts, anchor_ts
+    display_ts = raw_ts
+    display_swing_ts = raw_swing_ts
+    anchor_ts = raw_ts if raw_ts in daily_index else None
+    return display_ts, display_swing_ts, anchor_ts
 
 
 def _consume_reused_swept_swings(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
