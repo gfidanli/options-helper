@@ -166,6 +166,83 @@ class DuckDBOptionsSnapshotStore:
                     return fs_meta
         return fs_meta
 
+    def _write_chain_parquet(self, chain: pd.DataFrame, *, chain_path: Path) -> None:
+        if chain is None or chain.empty:
+            return
+        frame = chain.copy()
+        frame.columns = [str(column) for column in frame.columns]
+        with self.warehouse.transaction() as tx:
+            tx.register("tmp_chain", frame)
+            tx.execute(f"COPY tmp_chain TO '{_sql_quote(str(chain_path))}' (FORMAT PARQUET)")
+            tx.unregister("tmp_chain")
+
+    def _build_meta_payload(
+        self,
+        *,
+        meta: dict[str, Any] | None,
+        snapshot_date: date,
+        symbol: str,
+        provider: str,
+        expiries: list[date],
+    ) -> dict[str, Any]:
+        payload = dict(meta or {})
+        payload.setdefault("snapshot_date", snapshot_date.isoformat())
+        payload.setdefault("symbol", symbol)
+        payload.setdefault("provider", provider)
+        payload.setdefault("expiries", [expiry.isoformat() for expiry in expiries])
+        return payload
+
+    def _write_gzip_json(self, *, path: Path, payload: Any) -> None:
+        with gzip.open(path, "wt", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, default=str)
+
+    def _upsert_snapshot_header(
+        self,
+        *,
+        symbol: str,
+        snapshot_date: date,
+        provider: str,
+        chain_path: Path,
+        meta_path: Path,
+        raw_path: Path,
+        raw_by_expiry: dict[date, dict[str, Any]] | None,
+        chain: pd.DataFrame,
+        meta_payload: dict[str, Any],
+    ) -> None:
+        contracts = int(len(chain)) if chain is not None else 0
+        now = datetime.now(timezone.utc)
+        with self.warehouse.transaction() as tx:
+            tx.execute(
+                """
+                DELETE FROM options_snapshot_headers
+                WHERE symbol = ? AND snapshot_date = ? AND provider = ?
+                """,
+                [symbol, snapshot_date.isoformat(), provider],
+            )
+            tx.execute(
+                """
+                INSERT INTO options_snapshot_headers(
+                  symbol, snapshot_date, provider,
+                  chain_path, meta_path, raw_path,
+                  spot, risk_free_rate, contracts, updated_at, meta_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    symbol,
+                    snapshot_date.isoformat(),
+                    provider,
+                    str(chain_path),
+                    str(meta_path),
+                    str(raw_path) if raw_by_expiry else None,
+                    (meta_payload.get("spot") if meta_payload.get("spot") is not None else None),
+                    (meta_payload.get("risk_free_rate") if meta_payload.get("risk_free_rate") is not None else None),
+                    contracts,
+                    now,
+                    json.dumps(meta_payload, default=str),
+                ],
+            )
+
     def save_day_snapshot(
         self,
         symbol: str,
@@ -188,81 +265,37 @@ class DuckDBOptionsSnapshotStore:
         chain_path = day_dir / "chain.parquet"
         meta_path = day_dir / "meta.json.gz"
         raw_path = day_dir / "raw.json.gz"
-
-        if chain is None:
-            chain = pd.DataFrame()
-        if not chain.empty:
-            df = chain.copy()
-            df.columns = [str(c) for c in df.columns]
-            with self.warehouse.transaction() as tx:
-                tx.register("tmp_chain", df)
-                tx.execute(f"COPY tmp_chain TO '{_sql_quote(str(chain_path))}' (FORMAT PARQUET)")
-                tx.unregister("tmp_chain")
-        else:
-            # Ensure file exists? Prefer not; load_day will handle missing.
-            pass
-
-        meta_payload = dict(meta or {})
-        meta_payload.setdefault("snapshot_date", snapshot_date.isoformat())
-        meta_payload.setdefault("symbol", sym)
-        meta_payload.setdefault("provider", provider)
-        meta_payload.setdefault("expiries", [d.isoformat() for d in expiries])
-
-        with gzip.open(meta_path, "wt", encoding="utf-8") as handle:
-            json.dump(meta_payload, handle, indent=2, default=str)
-
+        normalized_chain = chain if chain is not None else pd.DataFrame()
+        self._write_chain_parquet(normalized_chain, chain_path=chain_path)
+        meta_payload = self._build_meta_payload(
+            meta=meta,
+            snapshot_date=snapshot_date,
+            symbol=sym,
+            provider=provider,
+            expiries=expiries,
+        )
+        self._write_gzip_json(path=meta_path, payload=meta_payload)
         if raw_by_expiry:
             raw_payload = {k.isoformat(): v for k, v in raw_by_expiry.items()}
-            with gzip.open(raw_path, "wt", encoding="utf-8") as handle:
-                json.dump(raw_payload, handle, indent=2, default=str)
-
-        # Upsert header row
-        contracts = int(len(chain)) if chain is not None else 0
-        now = datetime.now(timezone.utc)
-
-        with self.warehouse.transaction() as tx:
-            tx.execute(
-                """
-                DELETE FROM options_snapshot_headers
-                WHERE symbol = ? AND snapshot_date = ? AND provider = ?
-                """,
-                [sym, snapshot_date.isoformat(), provider],
-            )
-            tx.execute(
-                """
-                INSERT INTO options_snapshot_headers(
-                  symbol, snapshot_date, provider,
-                  chain_path, meta_path, raw_path,
-                  spot, risk_free_rate, contracts, updated_at, meta_json
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    sym,
-                    snapshot_date.isoformat(),
-                    provider,
-                    str(chain_path),
-                    str(meta_path),
-                    str(raw_path) if raw_by_expiry else None,
-                    (meta_payload.get("spot") if meta_payload.get("spot") is not None else None),
-                    (
-                        meta_payload.get("risk_free_rate")
-                        if meta_payload.get("risk_free_rate") is not None
-                        else None
-                    ),
-                    contracts,
-                    now,
-                    json.dumps(meta_payload, default=str),
-                ],
-            )
-
+            self._write_gzip_json(path=raw_path, payload=raw_payload)
+        self._upsert_snapshot_header(
+            symbol=sym,
+            snapshot_date=snapshot_date,
+            provider=provider,
+            chain_path=chain_path,
+            meta_path=meta_path,
+            raw_path=raw_path,
+            raw_by_expiry=raw_by_expiry,
+            chain=normalized_chain,
+            meta_payload=meta_payload,
+        )
         if self.sync_legacy_files:
             # Optional compatibility path for legacy commands/tests that read
             # day-folder CSV/meta artifacts directly.
             self._filesystem_store().save_day_snapshot(
                 sym,
                 snapshot_date,
-                chain=chain,
+                chain=normalized_chain,
                 expiries=expiries,
                 raw_by_expiry=raw_by_expiry,
                 meta=meta_payload,
