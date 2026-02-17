@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import typer
@@ -179,6 +180,18 @@ def briefing(
             console.print(renderable)
 
 
+def _resolve_dashboard_report_day(report_date: str, artifact: object) -> date | None:
+    report_day = legacy._coerce_iso_date(report_date)
+    if report_day is not None:
+        return report_day
+    if isinstance(artifact, dict):
+        return legacy._coerce_iso_date(artifact.get("as_of") or artifact.get("report_date"))
+    as_of = legacy._coerce_iso_date(getattr(artifact, "as_of", None))
+    if as_of is not None:
+        return as_of
+    return legacy._coerce_iso_date(getattr(artifact, "report_date", None))
+
+
 def dashboard(
     report_date: str = typer.Option(
         "latest",
@@ -233,16 +246,7 @@ def dashboard(
             console.print(f"[red]Error:[/red] {exc}")
             raise typer.Exit(1) from exc
 
-        report_day = legacy._coerce_iso_date(report_date)
-        if report_day is None:
-            artifact = result.artifact
-            if isinstance(artifact, dict):
-                report_day = legacy._coerce_iso_date(artifact.get("as_of") or artifact.get("report_date"))
-            else:
-                report_day = legacy._coerce_iso_date(getattr(artifact, "as_of", None))
-                if report_day is None:
-                    report_day = legacy._coerce_iso_date(getattr(artifact, "report_date", None))
-
+        report_day = _resolve_dashboard_report_day(report_date, result.artifact)
         json_bytes = result.json_path.stat().st_size if result.json_path.exists() else None
         partition_key = report_day.isoformat() if report_day is not None else str(report_date)
         run_logger.log_asset_success(
