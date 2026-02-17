@@ -64,6 +64,111 @@ def _float_or_none(value: object) -> float | None:
     return number
 
 
+def _normalize_signal_context(
+    signals: pd.DataFrame,
+    *,
+    symbol: str,
+    timeframe: str | None,
+) -> tuple[str, list[object], str] | None:
+    if signals is None or signals.empty:
+        return None
+    normalized_symbol = str(symbol).strip().upper()
+    if not normalized_symbol:
+        raise ValueError("symbol must be non-empty")
+    index_values = list(signals.index)
+    timeframe_label = _normalize_timeframe_label(timeframe)
+    return normalized_symbol, index_values, timeframe_label
+
+
+def _next_bar_signal_timing(
+    index_values: list[object],
+    *,
+    row_position: int,
+) -> tuple[datetime, datetime, datetime] | None:
+    if row_position + 1 >= len(index_values):
+        # The last bar has no first tradable bar after confirmation in this frame.
+        return None
+    signal_ts = _to_datetime(index_values[row_position])
+    signal_confirmed_ts = signal_ts
+    entry_ts = _to_datetime(index_values[row_position + 1])
+    if entry_ts <= signal_confirmed_ts:
+        return None
+    return signal_ts, signal_confirmed_ts, entry_ts
+
+
+def _direction_from_bullish_bearish(raw_direction: object) -> str | None:
+    direction_key = str(raw_direction)
+    if direction_key == "bullish":
+        return "long"
+    if direction_key == "bearish":
+        return "short"
+    return None
+
+
+def _direction_from_long_short(raw_direction: object) -> str | None:
+    direction_key = str(raw_direction or "").strip().lower()
+    if direction_key not in {"long", "short"}:
+        return None
+    return direction_key
+
+
+def _extract_signal_ohlc(
+    row: object,
+    *,
+    open_key: str = "candle_open",
+    high_key: str = "candle_high",
+    low_key: str = "candle_low",
+    close_key: str = "candle_close",
+) -> tuple[float | None, float | None, float | None, float | None]:
+    row_getter = getattr(row, "get")
+    return (
+        _float_or_none(row_getter(open_key)),
+        _float_or_none(row_getter(high_key)),
+        _float_or_none(row_getter(low_key)),
+        _float_or_none(row_getter(close_key)),
+    )
+
+
+def _build_strategy_signal_event(
+    *,
+    strategy: str,
+    normalized_symbol: str,
+    timeframe_label: str,
+    direction: str,
+    signal_ts: datetime,
+    signal_confirmed_ts: datetime,
+    entry_ts: datetime,
+    entry_price_source: EntryPriceSource,
+    signal_open: float | None,
+    signal_high: float | None,
+    signal_low: float | None,
+    signal_close: float | None,
+    stop_price: float | None,
+    notes: list[str],
+) -> StrategySignalEvent:
+    event_id = (
+        f"{strategy}:{normalized_symbol}:{timeframe_label}:"
+        f"{pd.Timestamp(signal_ts).isoformat()}:{direction}"
+    )
+    return StrategySignalEvent(
+        event_id=event_id,
+        strategy=strategy,
+        symbol=normalized_symbol,
+        timeframe=timeframe_label,
+        direction=direction,  # type: ignore[arg-type]
+        signal_ts=signal_ts,
+        signal_confirmed_ts=signal_confirmed_ts,
+        entry_ts=entry_ts,
+        entry_price_source=entry_price_source,
+        signal_open=signal_open,
+        signal_high=signal_high,
+        signal_low=signal_low,
+        signal_close=signal_close,
+        stop_price=stop_price,
+        notes=notes,
+    )
+
+
 def register_strategy_signal_adapter(
     strategy: str,
     adapter: StrategySignalAdapter,
@@ -106,51 +211,30 @@ def normalize_sfp_signal_events(
     swing_right_bars: int = 1,
     entry_price_source: EntryPriceSource = _DEFAULT_ENTRY_PRICE_SOURCE,
 ) -> list[StrategySignalEvent]:
-    if signals is None or signals.empty:
+    context = _normalize_signal_context(signals, symbol=symbol, timeframe=timeframe)
+    if context is None:
         return []
-
-    normalized_symbol = str(symbol).strip().upper()
-    if not normalized_symbol:
-        raise ValueError("symbol must be non-empty")
+    normalized_symbol, index_values, timeframe_label = context
 
     required_lag = int(swing_right_bars)
     if required_lag < 1:
         raise ValueError("swing_right_bars must be >= 1")
 
-    index_values = list(signals.index)
-    timeframe_label = _normalize_timeframe_label(timeframe)
     events: list[StrategySignalEvent] = []
-
     for row in extract_sfp_signal_candidates(signals):
         row_position = int(row["row_position"])
-        if row_position + 1 >= len(index_values):
-            # The last bar has no first tradable bar after confirmation in this frame.
+        timing = _next_bar_signal_timing(index_values, row_position=row_position)
+        if timing is None:
             continue
-
         bars_since_swing = int(row["bars_since_swing"])
         if bars_since_swing < required_lag:
             continue
-
-        raw_direction = str(row["direction"])
-        if raw_direction == "bullish":
-            direction = "long"
-        elif raw_direction == "bearish":
-            direction = "short"
-        else:
+        direction = _direction_from_bullish_bearish(row["direction"])
+        if direction is None:
             continue
-
-        signal_ts = _to_datetime(index_values[row_position])
-        signal_confirmed_ts = signal_ts
-        entry_ts = _to_datetime(index_values[row_position + 1])
-        if entry_ts <= signal_confirmed_ts:
-            continue
-
-        signal_open = _float_or_none(row.get("candle_open"))
-        signal_high = _float_or_none(row.get("candle_high"))
-        signal_low = _float_or_none(row.get("candle_low"))
-        signal_close = _float_or_none(row.get("candle_close"))
+        signal_ts, signal_confirmed_ts, entry_ts = timing
+        signal_open, signal_high, signal_low, signal_close = _extract_signal_ohlc(row)
         stop_price = signal_low if direction == "long" else signal_high
-
         notes = [
             f"swept_swing_timestamp={row['swept_swing_timestamp']}",
             f"sweep_level={row['sweep_level']}",
@@ -158,17 +242,11 @@ def normalize_sfp_signal_events(
             f"swing_right_bars={required_lag}",
             "entry_ts_policy=next_bar_open_after_signal_confirmed_ts",
         ]
-
-        event_id = (
-            f"sfp:{normalized_symbol}:{timeframe_label}:"
-            f"{pd.Timestamp(signal_ts).isoformat()}:{direction}"
-        )
         events.append(
-            StrategySignalEvent(
-                event_id=event_id,
+            _build_strategy_signal_event(
                 strategy="sfp",
-                symbol=normalized_symbol,
-                timeframe=timeframe_label,
+                normalized_symbol=normalized_symbol,
+                timeframe_label=timeframe_label,
                 direction=direction,
                 signal_ts=signal_ts,
                 signal_confirmed_ts=signal_confirmed_ts,
@@ -182,7 +260,6 @@ def normalize_sfp_signal_events(
                 notes=notes,
             )
         )
-
     return events
 
 
@@ -194,51 +271,30 @@ def normalize_msb_signal_events(
     swing_right_bars: int = 1,
     entry_price_source: EntryPriceSource = _DEFAULT_ENTRY_PRICE_SOURCE,
 ) -> list[StrategySignalEvent]:
-    if signals is None or signals.empty:
+    context = _normalize_signal_context(signals, symbol=symbol, timeframe=timeframe)
+    if context is None:
         return []
-
-    normalized_symbol = str(symbol).strip().upper()
-    if not normalized_symbol:
-        raise ValueError("symbol must be non-empty")
+    normalized_symbol, index_values, timeframe_label = context
 
     required_lag = int(swing_right_bars)
     if required_lag < 1:
         raise ValueError("swing_right_bars must be >= 1")
 
-    index_values = list(signals.index)
-    timeframe_label = _normalize_timeframe_label(timeframe)
     events: list[StrategySignalEvent] = []
-
     for row in extract_msb_signal_candidates(signals):
         row_position = int(row["row_position"])
-        if row_position + 1 >= len(index_values):
-            # The last bar has no first tradable bar after confirmation in this frame.
+        timing = _next_bar_signal_timing(index_values, row_position=row_position)
+        if timing is None:
             continue
-
         bars_since_swing = int(row["bars_since_swing"])
         if bars_since_swing < required_lag:
             continue
-
-        raw_direction = str(row["direction"])
-        if raw_direction == "bullish":
-            direction = "long"
-        elif raw_direction == "bearish":
-            direction = "short"
-        else:
+        direction = _direction_from_bullish_bearish(row["direction"])
+        if direction is None:
             continue
-
-        signal_ts = _to_datetime(index_values[row_position])
-        signal_confirmed_ts = signal_ts
-        entry_ts = _to_datetime(index_values[row_position + 1])
-        if entry_ts <= signal_confirmed_ts:
-            continue
-
-        signal_open = _float_or_none(row.get("candle_open"))
-        signal_high = _float_or_none(row.get("candle_high"))
-        signal_low = _float_or_none(row.get("candle_low"))
-        signal_close = _float_or_none(row.get("candle_close"))
+        signal_ts, signal_confirmed_ts, entry_ts = timing
+        signal_open, signal_high, signal_low, signal_close = _extract_signal_ohlc(row)
         stop_price = signal_low if direction == "long" else signal_high
-
         notes = [
             f"broken_swing_timestamp={row['broken_swing_timestamp']}",
             f"break_level={row['break_level']}",
@@ -246,17 +302,11 @@ def normalize_msb_signal_events(
             f"swing_right_bars={required_lag}",
             "entry_ts_policy=next_bar_open_after_signal_confirmed_ts",
         ]
-
-        event_id = (
-            f"msb:{normalized_symbol}:{timeframe_label}:"
-            f"{pd.Timestamp(signal_ts).isoformat()}:{direction}"
-        )
         events.append(
-            StrategySignalEvent(
-                event_id=event_id,
+            _build_strategy_signal_event(
                 strategy="msb",
-                symbol=normalized_symbol,
-                timeframe=timeframe_label,
+                normalized_symbol=normalized_symbol,
+                timeframe_label=timeframe_label,
                 direction=direction,
                 signal_ts=signal_ts,
                 signal_confirmed_ts=signal_confirmed_ts,
@@ -270,7 +320,6 @@ def normalize_msb_signal_events(
                 notes=notes,
             )
         )
-
     return events
 
 
@@ -362,40 +411,24 @@ def normalize_trend_following_signal_events(
     timeframe: str | None = "1d",
     entry_price_source: EntryPriceSource = _DEFAULT_ENTRY_PRICE_SOURCE,
 ) -> list[StrategySignalEvent]:
-    if signals is None or signals.empty:
+    context = _normalize_signal_context(signals, symbol=symbol, timeframe=timeframe)
+    if context is None:
         return []
-
-    normalized_symbol = str(symbol).strip().upper()
-    if not normalized_symbol:
-        raise ValueError("symbol must be non-empty")
-
-    index_values = list(signals.index)
-    timeframe_label = _normalize_timeframe_label(timeframe)
+    normalized_symbol, index_values, timeframe_label = context
     events: list[StrategySignalEvent] = []
-
     for row in extract_trend_following_signal_candidates(signals):
         row_position = int(row["row_position"])
-        if row_position + 1 >= len(index_values):
+        timing = _next_bar_signal_timing(index_values, row_position=row_position)
+        if timing is None:
             continue
-
-        direction = str(row.get("direction") or "").strip().lower()
-        if direction not in {"long", "short"}:
+        direction = _direction_from_long_short(row.get("direction"))
+        if direction is None:
             continue
-
-        signal_ts = _to_datetime(index_values[row_position])
-        signal_confirmed_ts = signal_ts
-        entry_ts = _to_datetime(index_values[row_position + 1])
-        if entry_ts <= signal_confirmed_ts:
-            continue
-
-        signal_open = _float_or_none(row.get("candle_open"))
-        signal_high = _float_or_none(row.get("candle_high"))
-        signal_low = _float_or_none(row.get("candle_low"))
-        signal_close = _float_or_none(row.get("candle_close"))
+        signal_ts, signal_confirmed_ts, entry_ts = timing
+        signal_open, signal_high, signal_low, signal_close = _extract_signal_ohlc(row)
         stop_price = _float_or_none(row.get("stop_price"))
         if stop_price is None:
             continue
-
         notes = [
             f"trend_window={row.get('trend_window')}",
             f"trend_type={row.get('trend_type')}",
@@ -410,18 +443,12 @@ def normalize_trend_following_signal_events(
             f"atr_stop_multiple={row.get('atr_stop_multiple')}",
             "entry_ts_policy=next_bar_open_after_signal_confirmed_ts",
         ]
-
-        event_id = (
-            f"trend_following:{normalized_symbol}:{timeframe_label}:"
-            f"{pd.Timestamp(signal_ts).isoformat()}:{direction}"
-        )
         events.append(
-            StrategySignalEvent(
-                event_id=event_id,
+            _build_strategy_signal_event(
                 strategy="trend_following",
-                symbol=normalized_symbol,
-                timeframe=timeframe_label,
-                direction=direction,  # type: ignore[arg-type]
+                normalized_symbol=normalized_symbol,
+                timeframe_label=timeframe_label,
+                direction=direction,
                 signal_ts=signal_ts,
                 signal_confirmed_ts=signal_confirmed_ts,
                 entry_ts=entry_ts,
@@ -434,7 +461,6 @@ def normalize_trend_following_signal_events(
                 notes=notes,
             )
         )
-
     return events
 
 
@@ -445,17 +471,11 @@ def normalize_fib_retracement_signal_events(
     timeframe: str | None = "1d",
     entry_price_source: EntryPriceSource = _DEFAULT_ENTRY_PRICE_SOURCE,
 ) -> list[StrategySignalEvent]:
-    if signals is None or signals.empty:
+    context = _normalize_signal_context(signals, symbol=symbol, timeframe=timeframe)
+    if context is None:
         return []
-
-    normalized_symbol = str(symbol).strip().upper()
-    if not normalized_symbol:
-        raise ValueError("symbol must be non-empty")
-
-    index_values = list(signals.index)
-    timeframe_label = _normalize_timeframe_label(timeframe)
+    normalized_symbol, index_values, timeframe_label = context
     events: list[StrategySignalEvent] = []
-
     long_flags = signals.get("fib_retracement_long")
     short_flags = signals.get("fib_retracement_short")
     if long_flags is None or short_flags is None:
@@ -466,33 +486,28 @@ def normalize_fib_retracement_signal_events(
     candidate_positions = np.flatnonzero(long_mask | short_mask)
 
     for row_position in candidate_positions:
-        if row_position + 1 >= len(index_values):
-            # The last bar has no first tradable bar after confirmation in this frame.
+        timing = _next_bar_signal_timing(index_values, row_position=int(row_position))
+        if timing is None:
             continue
-
+        signal_ts, signal_confirmed_ts, entry_ts = timing
         is_long = bool(long_mask[row_position])
         is_short = bool(short_mask[row_position])
         if is_long == is_short:
             continue
         direction = "long" if is_long else "short"
-
-        signal_ts = _to_datetime(index_values[row_position])
-        signal_confirmed_ts = signal_ts
-        entry_ts = _to_datetime(index_values[row_position + 1])
-        if entry_ts <= signal_confirmed_ts:
-            continue
-
         row = signals.iloc[int(row_position)]
-        signal_open = _float_or_none(row.get("Open"))
-        signal_high = _float_or_none(row.get("High"))
-        signal_low = _float_or_none(row.get("Low"))
-        signal_close = _float_or_none(row.get("Close"))
+        signal_open, signal_high, signal_low, signal_close = _extract_signal_ohlc(
+            row,
+            open_key="Open",
+            high_key="High",
+            low_key="Low",
+            close_key="Close",
+        )
         stop_price = _float_or_none(
             row.get("fib_range_low_level") if direction == "long" else row.get("fib_range_high_level")
         )
         if stop_price is None:
             continue
-
         notes = [
             f"fib_retracement_pct={row.get('fib_retracement_pct')}",
             f"fib_entry_level={row.get('fib_entry_level')}",
@@ -505,18 +520,12 @@ def normalize_fib_retracement_signal_events(
             f"fib_broken_swing_timestamp={row.get('fib_broken_swing_timestamp')}",
             "entry_ts_policy=next_bar_open_after_signal_confirmed_ts",
         ]
-
-        event_id = (
-            f"fib_retracement:{normalized_symbol}:{timeframe_label}:"
-            f"{pd.Timestamp(signal_ts).isoformat()}:{direction}"
-        )
         events.append(
-            StrategySignalEvent(
-                event_id=event_id,
+            _build_strategy_signal_event(
                 strategy="fib_retracement",
-                symbol=normalized_symbol,
-                timeframe=timeframe_label,
-                direction=direction,  # type: ignore[arg-type]
+                normalized_symbol=normalized_symbol,
+                timeframe_label=timeframe_label,
+                direction=direction,
                 signal_ts=signal_ts,
                 signal_confirmed_ts=signal_confirmed_ts,
                 entry_ts=entry_ts,
@@ -529,7 +538,6 @@ def normalize_fib_retracement_signal_events(
                 notes=notes,
             )
         )
-
     return events
 
 
