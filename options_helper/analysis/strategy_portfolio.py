@@ -398,49 +398,12 @@ def select_portfolio_trade_subset(
 
     normalized_label = _normalize_target_label(preferred_target_label)
     normalized_target_r = _normalize_target_r(preferred_target_r)
-
-    if normalized_label is not None:
-        matched = tuple(
-            trade.trade_id for trade in parsed if _trade_matches_target(trade, target_label=normalized_label, target_r=None)
-        )
-        if matched:
-            matched_ids = set(matched)
-            inferred_target_r = normalized_target_r
-            if inferred_target_r is None:
-                for trade in parsed:
-                    if trade.trade_id not in matched_ids:
-                        continue
-                    inferred_target_r = _trade_target_r(trade)
-                    if inferred_target_r is not None:
-                        break
-            return StrategyPortfolioTargetSubset(
-                target_label=normalized_label,
-                target_r=inferred_target_r,
-                selection_source="preferred_target_label",
-                trade_ids=matched,
-            )
-
-    if normalized_target_r is not None:
-        matched = tuple(
-            trade.trade_id
-            for trade in parsed
-            if _trade_matches_target(trade, target_label=None, target_r=normalized_target_r)
-        )
-        if matched:
-            matched_ids = set(matched)
-            inferred_label: str | None = None
-            for trade in parsed:
-                if trade.trade_id not in matched_ids:
-                    continue
-                inferred_label = _trade_target_label(trade)
-                if inferred_label is not None:
-                    break
-            return StrategyPortfolioTargetSubset(
-                target_label=inferred_label,
-                target_r=normalized_target_r,
-                selection_source="preferred_target_r",
-                trade_ids=matched,
-            )
+    preferred_label_match = _select_subset_by_preferred_label(parsed, normalized_label, normalized_target_r)
+    if preferred_label_match is not None:
+        return preferred_label_match
+    preferred_target_r_match = _select_subset_by_preferred_target_r(parsed, normalized_target_r)
+    if preferred_target_r_match is not None:
+        return preferred_target_r_match
 
     inferred_label, inferred_target_r = _infer_first_target(parsed)
     if inferred_label is None and inferred_target_r is None:
@@ -471,6 +434,62 @@ def select_portfolio_trade_subset(
         target_label=inferred_label,
         target_r=inferred_target_r,
         selection_source="inferred_first_target",
+        trade_ids=matched,
+    )
+
+
+def _select_subset_by_preferred_label(
+    parsed: list[_TradeRecord],
+    normalized_label: str | None,
+    normalized_target_r: float | None,
+) -> StrategyPortfolioTargetSubset | None:
+    if normalized_label is None:
+        return None
+    matched = tuple(
+        trade.trade_id for trade in parsed if _trade_matches_target(trade, target_label=normalized_label, target_r=None)
+    )
+    if not matched:
+        return None
+    matched_ids = set(matched)
+    inferred_target_r = normalized_target_r
+    if inferred_target_r is None:
+        for trade in parsed:
+            if trade.trade_id not in matched_ids:
+                continue
+            inferred_target_r = _trade_target_r(trade)
+            if inferred_target_r is not None:
+                break
+    return StrategyPortfolioTargetSubset(
+        target_label=normalized_label,
+        target_r=inferred_target_r,
+        selection_source="preferred_target_label",
+        trade_ids=matched,
+    )
+
+
+def _select_subset_by_preferred_target_r(
+    parsed: list[_TradeRecord],
+    normalized_target_r: float | None,
+) -> StrategyPortfolioTargetSubset | None:
+    if normalized_target_r is None:
+        return None
+    matched = tuple(
+        trade.trade_id for trade in parsed if _trade_matches_target(trade, target_label=None, target_r=normalized_target_r)
+    )
+    if not matched:
+        return None
+    matched_ids = set(matched)
+    inferred_label: str | None = None
+    for trade in parsed:
+        if trade.trade_id not in matched_ids:
+            continue
+        inferred_label = _trade_target_label(trade)
+        if inferred_label is not None:
+            break
+    return StrategyPortfolioTargetSubset(
+        target_label=inferred_label,
+        target_r=normalized_target_r,
+        selection_source="preferred_target_r",
         trade_ids=matched,
     )
 
