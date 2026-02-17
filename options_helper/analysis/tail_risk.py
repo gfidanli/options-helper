@@ -53,6 +53,46 @@ class TailRiskResult:
     warnings: list[str]
 
 
+def _simulate_price_paths(
+    *,
+    spot: float,
+    mean: float,
+    std: float,
+    horizon: int,
+    sims: int,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    rng = np.random.default_rng(seed)
+    z = rng.standard_normal(size=(horizon, sims))
+    returns_matrix = mean + std * z
+    log_paths = np.cumsum(returns_matrix, axis=0)
+    simulated_paths = spot * np.exp(log_paths)
+    full_paths = np.vstack([np.full(shape=(1, sims), fill_value=spot), simulated_paths])
+    end_prices = full_paths[-1, :]
+    end_returns = (end_prices / spot) - 1.0
+    return full_paths, end_prices, end_returns
+
+
+def _build_daily_price_bands(full_paths: np.ndarray, *, chart_percentiles: list[float]) -> pd.DataFrame:
+    daily_price_bands = pd.DataFrame(index=np.arange(full_paths.shape[0]))
+    daily_price_bands.index.name = "step"
+    for pct in chart_percentiles:
+        daily_price_bands[_percentile_label(pct)] = np.quantile(full_paths, pct / 100.0, axis=1)
+    return daily_price_bands
+
+
+def _build_sample_price_paths(full_paths: np.ndarray, *, sample_paths: int) -> pd.DataFrame:
+    sample_count = min(max(int(sample_paths), 0), full_paths.shape[1])
+    sample_path_columns = [f"path_{idx}" for idx in range(sample_count)]
+    sample_price_paths = pd.DataFrame(
+        full_paths[:, :sample_count],
+        index=np.arange(full_paths.shape[0]),
+        columns=sample_path_columns,
+    )
+    sample_price_paths.index.name = "step"
+    return sample_price_paths
+
+
 def compute_tail_risk(close: pd.Series, *, config: TailRiskConfig) -> TailRiskResult:
     cleaned = pd.to_numeric(close, errors="coerce")
     cleaned = cleaned.where(cleaned > 0).dropna()
@@ -86,17 +126,14 @@ def compute_tail_risk(close: pd.Series, *, config: TailRiskConfig) -> TailRiskRe
 
     horizon = int(config.horizon_days)
     sims = int(config.num_simulations)
-
-    rng = np.random.default_rng(int(config.seed))
-    z = rng.standard_normal(size=(horizon, sims))
-    returns_matrix = m + s * z
-
-    log_paths = np.cumsum(returns_matrix, axis=0)
-    simulated_paths = spot * np.exp(log_paths)
-    full_paths = np.vstack([np.full(shape=(1, sims), fill_value=spot), simulated_paths])
-
-    end_prices = full_paths[-1, :]
-    end_returns = (end_prices / spot) - 1.0
+    full_paths, end_prices, end_returns = _simulate_price_paths(
+        spot=spot,
+        mean=m,
+        std=s,
+        horizon=horizon,
+        sims=sims,
+        seed=int(config.seed),
+    )
 
     end_price_percentiles = {
         float(pct): float(np.quantile(end_prices, pct / 100.0))
@@ -114,20 +151,8 @@ def compute_tail_risk(close: pd.Series, *, config: TailRiskConfig) -> TailRiskRe
     if cvar_return is None:
         warnings.append("degenerate_vol")
 
-    daily_price_bands = pd.DataFrame(index=np.arange(horizon + 1))
-    daily_price_bands.index.name = "step"
-    for pct in config.chart_percentiles:
-        label = _percentile_label(pct)
-        daily_price_bands[label] = np.quantile(full_paths, pct / 100.0, axis=1)
-
-    sample_count = min(max(int(config.sample_paths), 0), sims)
-    sample_path_columns = [f"path_{idx}" for idx in range(sample_count)]
-    sample_price_paths = pd.DataFrame(
-        full_paths[:, :sample_count],
-        index=np.arange(horizon + 1),
-        columns=sample_path_columns,
-    )
-    sample_price_paths.index.name = "step"
+    daily_price_bands = _build_daily_price_bands(full_paths, chart_percentiles=config.chart_percentiles)
+    sample_price_paths = _build_sample_price_paths(full_paths, sample_paths=int(config.sample_paths))
 
     realized_vol_annual = float(s * math.sqrt(float(config.trading_days_per_year)))
     expected_return_annual = float(m * float(config.trading_days_per_year))
