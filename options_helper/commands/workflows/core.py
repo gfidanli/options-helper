@@ -20,6 +20,32 @@ from options_helper.storage import load_portfolio
 from options_helper.watchlists import load_watchlists
 
 
+def _build_daily_performance_table():
+    from rich.table import Table
+
+    table = Table(title="Daily Performance (best-effort)")
+    table.add_column("ID")
+    table.add_column("Symbol")
+    table.add_column("Expiry")
+    table.add_column("Strike", justify="right")
+    table.add_column("Ct", justify="right")
+    table.add_column("Last", justify="right")
+    table.add_column("Chg", justify="right")
+    table.add_column("%Chg", justify="right")
+    table.add_column("Daily PnL $", justify="right")
+    return table
+
+
+def _daily_pnl_style(daily_pnl: float | None) -> str | None:
+    if daily_pnl is None:
+        return None
+    if daily_pnl > 0:
+        return "green"
+    if daily_pnl < 0:
+        return "red"
+    return None
+
+
 def daily_performance(
     portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
 ) -> None:
@@ -33,19 +59,7 @@ def daily_performance(
         raise typer.Exit(0)
 
     provider = cli_deps.build_provider()
-
-    from rich.table import Table
-
-    table = Table(title="Daily Performance (best-effort)")
-    table.add_column("ID")
-    table.add_column("Symbol")
-    table.add_column("Expiry")
-    table.add_column("Strike", justify="right")
-    table.add_column("Ct", justify="right")
-    table.add_column("Last", justify="right")
-    table.add_column("Chg", justify="right")
-    table.add_column("%Chg", justify="right")
-    table.add_column("Daily PnL $", justify="right")
+    table = _build_daily_performance_table()
 
     total_daily_pnl = 0.0
     total_prev_value = float(portfolio.cash)
@@ -86,13 +100,7 @@ def daily_performance(
                 "-" if quote.change is None else f"{quote.change:+.2f}",
                 "-" if quote.percent_change is None else f"{quote.percent_change:+.1f}%",
                 "-" if quote.daily_pnl is None else f"{quote.daily_pnl:+.2f}",
-                style=(
-                    "green"
-                    if quote.daily_pnl and quote.daily_pnl > 0
-                    else "red"
-                    if quote.daily_pnl and quote.daily_pnl < 0
-                    else None
-                ),
+                style=_daily_pnl_style(quote.daily_pnl),
             )
         except DataFetchError as exc:
             console.print(f"[red]Data error:[/red] {exc}")
