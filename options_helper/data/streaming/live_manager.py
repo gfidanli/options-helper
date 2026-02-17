@@ -472,109 +472,116 @@ class LiveStreamManager:
         stop_event: threading.Event,
     ) -> dict[str, _StreamWorker]:
         workers: dict[str, _StreamWorker] = {}
-
-        if config.stream_stocks and config.stocks:
-
-            async def _on_stock_quote(payload: Any) -> None:
-                self._enqueue_event(
-                    run_id=run_id,
-                    stream_key="stocks",
-                    event_kind=_EVENT_STOCK_QUOTE,
-                    payload=payload,
-                )
-
-            async def _on_stock_trade(payload: Any) -> None:
-                self._enqueue_event(
-                    run_id=run_id,
-                    stream_key="stocks",
-                    event_kind=_EVENT_STOCK_TRADE,
-                    payload=payload,
-                )
-
-            def _create_stock_streamer() -> Any:
-                return self._stock_streamer_factory(
-                    feed=config.stock_feed,
-                    on_quotes=_on_stock_quote,
-                    on_trades=_on_stock_trade,
-                    on_bars=None,
-                )
-
-            def _subscribe_stock(streamer: Any) -> None:
-                streamer.subscribe(config.stocks)
-
-            workers["stocks"] = self._new_worker(
-                run_id=run_id,
-                stream_key="stocks",
-                create_streamer=_create_stock_streamer,
-                subscribe=_subscribe_stock,
-                stop_event=stop_event,
-                config=config,
-            )
-
-        if config.stream_options and config.option_contracts:
-
-            async def _on_option_quote(payload: Any) -> None:
-                self._enqueue_event(
-                    run_id=run_id,
-                    stream_key="options",
-                    event_kind=_EVENT_OPTION_QUOTE,
-                    payload=payload,
-                )
-
-            async def _on_option_trade(payload: Any) -> None:
-                self._enqueue_event(
-                    run_id=run_id,
-                    stream_key="options",
-                    event_kind=_EVENT_OPTION_TRADE,
-                    payload=payload,
-                )
-
-            def _create_option_streamer() -> Any:
-                return self._option_streamer_factory(
-                    feed=config.options_feed,
-                    on_quotes=_on_option_quote,
-                    on_trades=_on_option_trade,
-                    on_bars=None,
-                )
-
-            def _subscribe_options(streamer: Any) -> None:
-                streamer.subscribe(config.option_contracts)
-
-            workers["options"] = self._new_worker(
-                run_id=run_id,
-                stream_key="options",
-                create_streamer=_create_option_streamer,
-                subscribe=_subscribe_options,
-                stop_event=stop_event,
-                config=config,
-            )
-
-        if config.stream_fills:
-
-            async def _on_fill(payload: Any) -> None:
-                self._enqueue_event(
-                    run_id=run_id,
-                    stream_key="fills",
-                    event_kind=_EVENT_FILL_UPDATE,
-                    payload=payload,
-                )
-
-            def _create_fill_streamer() -> Any:
-                return self._trading_streamer_factory(on_trade_updates=_on_fill)
-
-            def _subscribe_fills(streamer: Any) -> None:
-                streamer.subscribe_trade_updates()
-
-            workers["fills"] = self._new_worker(
-                run_id=run_id,
-                stream_key="fills",
-                create_streamer=_create_fill_streamer,
-                subscribe=_subscribe_fills,
-                stop_event=stop_event,
-                config=config,
-            )
-
+        stock_worker = self._build_stock_worker(config=config, run_id=run_id, stop_event=stop_event)
+        if stock_worker is not None:
+            workers["stocks"] = stock_worker
+        option_worker = self._build_option_worker(config=config, run_id=run_id, stop_event=stop_event)
+        if option_worker is not None:
+            workers["options"] = option_worker
+        fill_worker = self._build_fill_worker(config=config, run_id=run_id, stop_event=stop_event)
+        if fill_worker is not None:
+            workers["fills"] = fill_worker
         return workers
+
+    def _build_stock_worker(
+        self,
+        *,
+        config: LiveStreamConfig,
+        run_id: int,
+        stop_event: threading.Event,
+    ) -> _StreamWorker | None:
+        if not (config.stream_stocks and config.stocks):
+            return None
+
+        async def _on_stock_quote(payload: Any) -> None:
+            self._enqueue_event(run_id=run_id, stream_key="stocks", event_kind=_EVENT_STOCK_QUOTE, payload=payload)
+
+        async def _on_stock_trade(payload: Any) -> None:
+            self._enqueue_event(run_id=run_id, stream_key="stocks", event_kind=_EVENT_STOCK_TRADE, payload=payload)
+
+        def _create_stock_streamer() -> Any:
+            return self._stock_streamer_factory(
+                feed=config.stock_feed,
+                on_quotes=_on_stock_quote,
+                on_trades=_on_stock_trade,
+                on_bars=None,
+            )
+
+        def _subscribe_stock(streamer: Any) -> None:
+            streamer.subscribe(config.stocks)
+
+        return self._new_worker(
+            run_id=run_id,
+            stream_key="stocks",
+            create_streamer=_create_stock_streamer,
+            subscribe=_subscribe_stock,
+            stop_event=stop_event,
+            config=config,
+        )
+
+    def _build_option_worker(
+        self,
+        *,
+        config: LiveStreamConfig,
+        run_id: int,
+        stop_event: threading.Event,
+    ) -> _StreamWorker | None:
+        if not (config.stream_options and config.option_contracts):
+            return None
+
+        async def _on_option_quote(payload: Any) -> None:
+            self._enqueue_event(run_id=run_id, stream_key="options", event_kind=_EVENT_OPTION_QUOTE, payload=payload)
+
+        async def _on_option_trade(payload: Any) -> None:
+            self._enqueue_event(run_id=run_id, stream_key="options", event_kind=_EVENT_OPTION_TRADE, payload=payload)
+
+        def _create_option_streamer() -> Any:
+            return self._option_streamer_factory(
+                feed=config.options_feed,
+                on_quotes=_on_option_quote,
+                on_trades=_on_option_trade,
+                on_bars=None,
+            )
+
+        def _subscribe_options(streamer: Any) -> None:
+            streamer.subscribe(config.option_contracts)
+
+        return self._new_worker(
+            run_id=run_id,
+            stream_key="options",
+            create_streamer=_create_option_streamer,
+            subscribe=_subscribe_options,
+            stop_event=stop_event,
+            config=config,
+        )
+
+    def _build_fill_worker(
+        self,
+        *,
+        config: LiveStreamConfig,
+        run_id: int,
+        stop_event: threading.Event,
+    ) -> _StreamWorker | None:
+        if not config.stream_fills:
+            return None
+
+        async def _on_fill(payload: Any) -> None:
+            self._enqueue_event(run_id=run_id, stream_key="fills", event_kind=_EVENT_FILL_UPDATE, payload=payload)
+
+        def _create_fill_streamer() -> Any:
+            return self._trading_streamer_factory(on_trade_updates=_on_fill)
+
+        def _subscribe_fills(streamer: Any) -> None:
+            streamer.subscribe_trade_updates()
+
+        return self._new_worker(
+            run_id=run_id,
+            stream_key="fills",
+            create_streamer=_create_fill_streamer,
+            subscribe=_subscribe_fills,
+            stop_event=stop_event,
+            config=config,
+        )
 
     def _new_worker(
         self,
