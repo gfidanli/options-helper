@@ -333,6 +333,29 @@ def _compute_mark(df: pd.DataFrame) -> tuple[pd.Series, str | None]:
     return mark, mark_warning
 
 
+def _compute_tenor_atm_metrics(sub: pd.DataFrame, *, atm_strike: float) -> tuple[float | None, float | None, float | None, list[str]]:
+    warnings: list[str] = []
+    atm_iv = _atm_iv(sub, atm_strike)
+    if atm_iv is None:
+        warnings.append("missing_atm_iv")
+
+    call_mark = _atm_side_mark(sub, "call", atm_strike)
+    put_mark = _atm_side_mark(sub, "put", atm_strike)
+    if call_mark is not None or put_mark is not None:
+        marks = [x for x in (call_mark, put_mark) if x is not None]
+        atm_mark = float(sum(marks) / len(marks))
+    else:
+        atm_mark = None
+        warnings.append("missing_atm_mark")
+
+    straddle_mark = None
+    if call_mark is not None and put_mark is not None:
+        straddle_mark = float(call_mark + put_mark)
+    else:
+        warnings.append("missing_atm_straddle")
+    return atm_iv, atm_mark, straddle_mark, warnings
+
+
 def _compute_tenor_row(
     chain: pd.DataFrame,
     *,
@@ -372,22 +395,8 @@ def _compute_tenor_row(
                 warnings.append("missing_atm_strike")
 
         if atm_strike is not None:
-            atm_iv = _atm_iv(sub, atm_strike)
-            if atm_iv is None:
-                warnings.append("missing_atm_iv")
-
-            call_mark = _atm_side_mark(sub, "call", atm_strike)
-            put_mark = _atm_side_mark(sub, "put", atm_strike)
-            if call_mark is not None or put_mark is not None:
-                marks = [x for x in (call_mark, put_mark) if x is not None]
-                atm_mark = float(sum(marks) / len(marks))
-            else:
-                warnings.append("missing_atm_mark")
-
-            if call_mark is not None and put_mark is not None:
-                straddle_mark = float(call_mark + put_mark)
-            else:
-                warnings.append("missing_atm_straddle")
+            atm_iv, atm_mark, straddle_mark, atm_warnings = _compute_tenor_atm_metrics(sub, atm_strike=atm_strike)
+            warnings.extend(atm_warnings)
 
         if straddle_mark is not None and spot is not None and spot > 0:
             expected_move_pct = float(straddle_mark / spot)
