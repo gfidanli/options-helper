@@ -453,16 +453,7 @@ def compute_relative_strength_beta_corr(
 
     if underlying_frame.empty or benchmark_frame.empty:
         warnings.append("missing_benchmark_history")
-        empty_series = pd.Series(dtype="float64")
-        return RelativeStrengthBetaResult(
-            rs_ratio=None,
-            beta=None,
-            corr=None,
-            ratio_series=empty_series,
-            beta_series=empty_series,
-            corr_series=empty_series,
-            warnings=_dedupe_preserve_order(warnings),
-        )
+        return _empty_relative_strength_result(warnings)
 
     aligned = pd.concat(
         [
@@ -476,16 +467,7 @@ def compute_relative_strength_beta_corr(
     aligned = aligned.dropna(subset=["asset", "benchmark"])
     if aligned.empty:
         warnings.append("missing_benchmark_history")
-        empty_series = pd.Series(dtype="float64")
-        return RelativeStrengthBetaResult(
-            rs_ratio=None,
-            beta=None,
-            corr=None,
-            ratio_series=empty_series,
-            beta_series=empty_series,
-            corr_series=empty_series,
-            warnings=_dedupe_preserve_order(warnings),
-        )
+        return _empty_relative_strength_result(warnings)
 
     ratio_series = aligned["asset"] / aligned["benchmark"].where(aligned["benchmark"] > 0.0)
     ratio_series = ratio_series.astype("float64")
@@ -523,6 +505,19 @@ def compute_relative_strength_beta_corr(
         ratio_series=ratio_series,
         beta_series=beta_series,
         corr_series=corr_series,
+        warnings=_dedupe_preserve_order(warnings),
+    )
+
+
+def _empty_relative_strength_result(warnings: list[str]) -> RelativeStrengthBetaResult:
+    empty_series = pd.Series(dtype="float64")
+    return RelativeStrengthBetaResult(
+        rs_ratio=None,
+        beta=None,
+        corr=None,
+        ratio_series=empty_series,
+        beta_series=empty_series,
+        corr_series=empty_series,
         warnings=_dedupe_preserve_order(warnings),
     )
 
