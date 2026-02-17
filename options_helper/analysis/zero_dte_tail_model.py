@@ -106,92 +106,120 @@ def score_zero_dte_tail_model(
     state = state_rows.copy() if state_rows is not None else pd.DataFrame()
     if state.empty:
         return pd.DataFrame(columns=list(_PREDICTION_COLUMNS))
-
     cfg = model.config
     strikes = _normalize_strike_returns(strike_returns or model.strike_returns)
-    global_lookup = _stats_lookup(
-        model.global_stats,
-        key_cols=("strike_return",),
-    )
-    parent_lookup = _stats_lookup(
-        model.parent_stats,
-        key_cols=("time_of_day_bucket", "iv_regime", "strike_return"),
-    )
-    bucket_lookup = _stats_lookup(
-        model.bucket_stats,
-        key_cols=("time_of_day_bucket", "extension_bucket", "iv_regime", "strike_return"),
-    )
-
+    lookups = _prepare_score_lookups(model)
     rows: list[dict[str, object]] = []
     for row_idx, row in state.reset_index(drop=True).iterrows():
-        time_bucket = _normalize_bucket_value(row.get(cfg.time_bucket_col), default="unknown_time")
-        extension_bucket = _bucketize_extension(
-            row.get(cfg.extension_col),
-            edges=cfg.extension_bin_edges,
+        rows.extend(
+            _score_state_row(
+                row_idx=row_idx,
+                row=row,
+                strikes=strikes,
+                lookups=lookups,
+                config=cfg,
+            )
         )
-        iv_regime = _normalize_bucket_value(row.get(cfg.iv_regime_col), default="unknown_regime")
+    return _finalize_scored_predictions(rows)
 
-        for strike in strikes:
-            global_key = (strike,)
-            parent_key = (time_bucket, iv_regime, strike)
-            local_key = (time_bucket, extension_bucket, iv_regime, strike)
 
-            global_item = global_lookup.get(global_key)
-            parent_item = parent_lookup.get(parent_key)
-            local_item = bucket_lookup.get(local_key)
+def _prepare_score_lookups(model: ZeroDTETailModel) -> dict[str, dict[tuple[object, ...], dict[str, object]]]:
+    return {
+        "global": _stats_lookup(model.global_stats, key_cols=("strike_return",)),
+        "parent": _stats_lookup(model.parent_stats, key_cols=("time_of_day_bucket", "iv_regime", "strike_return")),
+        "bucket": _stats_lookup(
+            model.bucket_stats,
+            key_cols=("time_of_day_bucket", "extension_bucket", "iv_regime", "strike_return"),
+        ),
+    }
 
-            global_prob = float(global_item["smoothed_probability"]) if global_item else 0.5
-            parent_prob = float(parent_item["smoothed_probability"]) if parent_item else global_prob
 
-            local_n = int(local_item["sample_size"]) if local_item else 0
-            local_k = int(local_item["breach_count"]) if local_item else 0
-            parent_n = int(parent_item["sample_size"]) if parent_item else 0
-            prior_prob = parent_prob if parent_n > 0 else global_prob
-            posterior = _posterior_mean(
-                count=local_k,
-                sample_size=local_n,
-                prior_probability=prior_prob,
-                prior_strength=cfg.local_prior_strength,
+def _score_state_row(
+    *,
+    row_idx: int,
+    row: pd.Series,
+    strikes: tuple[float, ...],
+    lookups: dict[str, dict[tuple[object, ...], dict[str, object]]],
+    config: ZeroDTETailModelConfig,
+) -> list[dict[str, object]]:
+    time_bucket = _normalize_bucket_value(row.get(config.time_bucket_col), default="unknown_time")
+    extension_bucket = _bucketize_extension(row.get(config.extension_col), edges=config.extension_bin_edges)
+    iv_regime = _normalize_bucket_value(row.get(config.iv_regime_col), default="unknown_regime")
+    predictions: list[dict[str, object]] = []
+    for strike in strikes:
+        predictions.append(
+            _score_state_strike(
+                row_idx=row_idx,
+                row=row,
+                strike=strike,
+                time_bucket=time_bucket,
+                extension_bucket=extension_bucket,
+                iv_regime=iv_regime,
+                lookups=lookups,
+                config=config,
             )
-            k_eff = float(local_k) + prior_prob * float(cfg.local_prior_strength)
-            n_eff = float(local_n) + float(cfg.local_prior_strength)
-            ci_low, ci_high = _wilson_interval(
-                count=k_eff,
-                sample_size=n_eff,
-                confidence_level=cfg.confidence_level,
-            )
-            fallback_source = _fallback_source(
-                local_sample_size=local_n,
-                parent_sample_size=parent_n,
-                min_bucket_samples=cfg.min_bucket_samples,
-            )
+        )
+    return predictions
 
-            rows.append(
-                {
-                    "__row_id": row_idx,
-                    "session_date": row.get("session_date"),
-                    "decision_ts": pd.to_datetime(row.get("decision_ts"), errors="coerce", utc=True),
-                    "time_of_day_bucket": time_bucket,
-                    "extension_bucket": extension_bucket,
-                    "iv_regime": iv_regime,
-                    "strike_return": strike,
-                    "breach_probability": posterior,
-                    "breach_probability_ci_low": ci_low,
-                    "breach_probability_ci_high": ci_high,
-                    "sample_size": local_n,
-                    "parent_sample_size": parent_n,
-                    "effective_sample_size": n_eff,
-                    "breach_count": local_k,
-                    "low_sample_bin": local_n < cfg.min_bucket_samples,
-                    "fallback_source": fallback_source,
-                    "monotonic_adjusted": False,
-                }
-            )
 
+def _score_state_strike(
+    *,
+    row_idx: int,
+    row: pd.Series,
+    strike: float,
+    time_bucket: str,
+    extension_bucket: str,
+    iv_regime: str,
+    lookups: dict[str, dict[tuple[object, ...], dict[str, object]]],
+    config: ZeroDTETailModelConfig,
+) -> dict[str, object]:
+    global_item = lookups["global"].get((strike,))
+    parent_item = lookups["parent"].get((time_bucket, iv_regime, strike))
+    local_item = lookups["bucket"].get((time_bucket, extension_bucket, iv_regime, strike))
+    global_prob = float(global_item["smoothed_probability"]) if global_item else 0.5
+    parent_prob = float(parent_item["smoothed_probability"]) if parent_item else global_prob
+    local_n = int(local_item["sample_size"]) if local_item else 0
+    local_k = int(local_item["breach_count"]) if local_item else 0
+    parent_n = int(parent_item["sample_size"]) if parent_item else 0
+    prior_prob = parent_prob if parent_n > 0 else global_prob
+    posterior = _posterior_mean(
+        count=local_k,
+        sample_size=local_n,
+        prior_probability=prior_prob,
+        prior_strength=config.local_prior_strength,
+    )
+    k_eff = float(local_k) + prior_prob * float(config.local_prior_strength)
+    n_eff = float(local_n) + float(config.local_prior_strength)
+    ci_low, ci_high = _wilson_interval(count=k_eff, sample_size=n_eff, confidence_level=config.confidence_level)
+    return {
+        "__row_id": row_idx,
+        "session_date": row.get("session_date"),
+        "decision_ts": pd.to_datetime(row.get("decision_ts"), errors="coerce", utc=True),
+        "time_of_day_bucket": time_bucket,
+        "extension_bucket": extension_bucket,
+        "iv_regime": iv_regime,
+        "strike_return": strike,
+        "breach_probability": posterior,
+        "breach_probability_ci_low": ci_low,
+        "breach_probability_ci_high": ci_high,
+        "sample_size": local_n,
+        "parent_sample_size": parent_n,
+        "effective_sample_size": n_eff,
+        "breach_count": local_k,
+        "low_sample_bin": local_n < config.min_bucket_samples,
+        "fallback_source": _fallback_source(
+            local_sample_size=local_n,
+            parent_sample_size=parent_n,
+            min_bucket_samples=config.min_bucket_samples,
+        ),
+        "monotonic_adjusted": False,
+    }
+
+
+def _finalize_scored_predictions(rows: list[dict[str, object]]) -> pd.DataFrame:
     out = pd.DataFrame(rows)
     if out.empty:
         return pd.DataFrame(columns=list(_PREDICTION_COLUMNS))
-
     adjusted_parts: list[pd.DataFrame] = []
     for _, group in out.groupby("__row_id", sort=False):
         adjusted_parts.append(_enforce_monotonic_strike_probabilities(group))
