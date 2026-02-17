@@ -142,6 +142,246 @@ def _normalize_symbol(value: str) -> str:
     return value.strip().upper().replace(".", "-")
 
 
+def _safe_emit_row(row_callback: Callable[[ScannerScanRow], None] | None, row: ScannerScanRow) -> None:
+    if row_callback is None:
+        return
+    try:
+        row_callback(row)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _scan_symbol_row(
+    symbol: str,
+    *,
+    candle_store: CandleStore,
+    cfg: dict,
+    scan_period: str,
+    tail_low_pct: float,
+    tail_high_pct: float,
+    percentile_window_years: int | None,
+) -> tuple[ScannerScanRow, bool]:
+    sym = symbol.strip().upper()
+    try:
+        history = candle_store.get_daily_history(sym, period=scan_period)
+        if history.empty:
+            return (
+                ScannerScanRow(
+                    symbol=sym,
+                    asof=None,
+                    extension_atr=None,
+                    percentile=None,
+                    window_years=None,
+                    window_bars=None,
+                    tail=False,
+                    status="no_candles",
+                    error=None,
+                ),
+                False,
+            )
+        result: ExtensionScanResult = compute_current_extension_percentile(
+            history,
+            cfg,
+            percentile_window_years=percentile_window_years,
+        )
+        pct = result.percentile
+        tail = bool(pct is not None and (pct <= tail_low_pct or pct >= tail_high_pct))
+        row = ScannerScanRow(
+            symbol=sym,
+            asof=result.asof,
+            extension_atr=result.extension_atr,
+            percentile=pct,
+            window_years=result.window_years,
+            window_bars=result.window_bars,
+            tail=tail,
+            status="ok" if pct is not None else "no_percentile",
+            error=None,
+        )
+        return row, tail
+    except Exception as exc:  # noqa: BLE001
+        return (
+            ScannerScanRow(
+                symbol=sym,
+                asof=None,
+                extension_atr=None,
+                percentile=None,
+                window_years=None,
+                window_bars=None,
+                tail=False,
+                status="error",
+                error=str(exc),
+            ),
+            False,
+        )
+
+
+def _collect_scan_result(
+    *,
+    row: ScannerScanRow,
+    tail: bool,
+    rows: list[ScannerScanRow],
+    tail_symbols: set[str],
+    row_callback: Callable[[ScannerScanRow], None] | None,
+) -> None:
+    rows.append(row)
+    _safe_emit_row(row_callback, row)
+    if tail:
+        tail_symbols.add(row.symbol)
+
+
+def _scan_symbols_sequential(
+    symbols: list[str],
+    *,
+    candle_store: CandleStore,
+    cfg: dict,
+    scan_period: str,
+    tail_low_pct: float,
+    tail_high_pct: float,
+    percentile_window_years: int | None,
+    row_callback: Callable[[ScannerScanRow], None] | None,
+) -> tuple[list[ScannerScanRow], set[str]]:
+    rows: list[ScannerScanRow] = []
+    tail_symbols: set[str] = set()
+    for symbol in symbols:
+        if not symbol:
+            continue
+        row, tail = _scan_symbol_row(
+            symbol,
+            candle_store=candle_store,
+            cfg=cfg,
+            scan_period=scan_period,
+            tail_low_pct=tail_low_pct,
+            tail_high_pct=tail_high_pct,
+            percentile_window_years=percentile_window_years,
+        )
+        _collect_scan_result(
+            row=row,
+            tail=tail,
+            rows=rows,
+            tail_symbols=tail_symbols,
+            row_callback=row_callback,
+        )
+    return rows, tail_symbols
+
+
+def _scan_symbols_parallel(
+    symbols: list[str],
+    *,
+    workers: int,
+    batch_size: int,
+    batch_sleep_seconds: float,
+    candle_store: CandleStore,
+    cfg: dict,
+    scan_period: str,
+    tail_low_pct: float,
+    tail_high_pct: float,
+    percentile_window_years: int | None,
+    row_callback: Callable[[ScannerScanRow], None] | None,
+) -> tuple[list[ScannerScanRow], set[str]]:
+    rows: list[ScannerScanRow] = []
+    tail_symbols: set[str] = set()
+    for batch in _chunked(symbols, batch_size):
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(
+                    _scan_symbol_row,
+                    sym,
+                    candle_store=candle_store,
+                    cfg=cfg,
+                    scan_period=scan_period,
+                    tail_low_pct=tail_low_pct,
+                    tail_high_pct=tail_high_pct,
+                    percentile_window_years=percentile_window_years,
+                ): sym
+                for sym in batch
+                if sym
+            }
+            for fut in as_completed(futures):
+                row, tail = fut.result()
+                _collect_scan_result(
+                    row=row,
+                    tail=tail,
+                    rows=rows,
+                    tail_symbols=tail_symbols,
+                    row_callback=row_callback,
+                )
+        if batch_sleep_seconds > 0:
+            time.sleep(batch_sleep_seconds)
+    return rows, tail_symbols
+
+
+def _evaluate_liquidity_row(
+    symbol: str,
+    *,
+    store: OptionsSnapshotStore,
+    min_dte: int,
+    min_volume: int,
+    min_open_interest: int,
+) -> tuple[ScannerLiquidityRow, bool]:
+    try:
+        dates = store.latest_dates(symbol, n=1)
+        if not dates:
+            return (
+                ScannerLiquidityRow(
+                    symbol=symbol,
+                    snapshot_date=None,
+                    eligible_contracts=0,
+                    eligible_expiries="",
+                    is_liquid=False,
+                    status="no_snapshot",
+                    error=None,
+                ),
+                False,
+            )
+        snapshot_date = dates[-1]
+        df = store.load_day(symbol, snapshot_date)
+        if df.empty:
+            return (
+                ScannerLiquidityRow(
+                    symbol=symbol,
+                    snapshot_date=snapshot_date.isoformat(),
+                    eligible_contracts=0,
+                    eligible_expiries="",
+                    is_liquid=False,
+                    status="empty_snapshot",
+                    error=None,
+                ),
+                False,
+            )
+        result: LiquidityResult = evaluate_liquidity(
+            df,
+            snapshot_date=snapshot_date,
+            min_dte=min_dte,
+            min_volume=min_volume,
+            min_open_interest=min_open_interest,
+        )
+        return (
+            ScannerLiquidityRow(
+                symbol=symbol,
+                snapshot_date=snapshot_date.isoformat(),
+                eligible_contracts=result.eligible_contracts,
+                eligible_expiries=",".join(result.eligible_expiries),
+                is_liquid=result.is_liquid,
+                status="ok",
+                error=None,
+            ),
+            result.is_liquid,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return (
+            ScannerLiquidityRow(
+                symbol=symbol,
+                snapshot_date=None,
+                eligible_contracts=0,
+                eligible_expiries="",
+                is_liquid=False,
+                status="error",
+                error=str(exc),
+            ),
+            False,
+        )
+
+
 def read_symbol_set(path: Path) -> set[str]:
     if not path.exists():
         return set()
@@ -192,98 +432,33 @@ def scan_symbols(
     batch_sleep_seconds: float = 0.0,
     row_callback: Callable[[ScannerScanRow], None] | None = None,
 ) -> tuple[list[ScannerScanRow], list[str]]:
-    rows: list[ScannerScanRow] = []
-    tail_symbols: set[str] = set()
-
-    def _scan_one(symbol: str) -> tuple[ScannerScanRow, bool]:
-        sym = symbol.strip().upper()
-        try:
-            history = candle_store.get_daily_history(sym, period=scan_period)
-            if history.empty:
-                return (
-                    ScannerScanRow(
-                        symbol=sym,
-                        asof=None,
-                        extension_atr=None,
-                        percentile=None,
-                        window_years=None,
-                        window_bars=None,
-                        tail=False,
-                        status="no_candles",
-                        error=None,
-                    ),
-                    False,
-                )
-
-            result: ExtensionScanResult = compute_current_extension_percentile(
-                history,
-                cfg,
-                percentile_window_years=percentile_window_years,
-            )
-            pct = result.percentile
-            tail = bool(pct is not None and (pct <= tail_low_pct or pct >= tail_high_pct))
-            row = ScannerScanRow(
-                symbol=sym,
-                asof=result.asof,
-                extension_atr=result.extension_atr,
-                percentile=pct,
-                window_years=result.window_years,
-                window_bars=result.window_bars,
-                tail=tail,
-                status="ok" if pct is not None else "no_percentile",
-                error=None,
-            )
-            return row, tail
-        except Exception as exc:  # noqa: BLE001
-            return (
-                ScannerScanRow(
-                    symbol=sym,
-                    asof=None,
-                    extension_atr=None,
-                    percentile=None,
-                    window_years=None,
-                    window_bars=None,
-                    tail=False,
-                    status="error",
-                    error=str(exc),
-                ),
-                False,
-            )
-
     if workers is None:
         workers = min(8, max(1, (os.cpu_count() or 4)))
-
     if workers <= 1:
-        for symbol in symbols:
-            if not symbol:
-                continue
-            row, tail = _scan_one(symbol)
-            rows.append(row)
-            if row_callback is not None:
-                try:
-                    row_callback(row)
-                except Exception:  # noqa: BLE001
-                    pass
-            if tail:
-                tail_symbols.add(row.symbol)
+        rows, tail_symbols = _scan_symbols_sequential(
+            symbols,
+            candle_store=candle_store,
+            cfg=cfg,
+            scan_period=scan_period,
+            tail_low_pct=tail_low_pct,
+            tail_high_pct=tail_high_pct,
+            percentile_window_years=percentile_window_years,
+            row_callback=row_callback,
+        )
         return rows, sorted(tail_symbols)
-
-    for batch in _chunked(symbols, batch_size):
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(_scan_one, sym): sym for sym in batch if sym}
-            for fut in as_completed(futures):
-                row, tail = fut.result()
-                rows.append(row)
-                if row_callback is not None:
-                    try:
-                        row_callback(row)
-                    except Exception:  # noqa: BLE001
-                        pass
-                if tail:
-                    tail_symbols.add(row.symbol)
-        if batch_sleep_seconds > 0:
-            time.sleep(batch_sleep_seconds)
-
+    rows, tail_symbols = _scan_symbols_parallel(
+        symbols,
+        workers=workers,
+        batch_size=batch_size,
+        batch_sleep_seconds=batch_sleep_seconds,
+        candle_store=candle_store,
+        cfg=cfg,
+        scan_period=scan_period,
+        tail_low_pct=tail_low_pct,
+        tail_high_pct=tail_high_pct,
+        percentile_window_years=percentile_window_years,
+        row_callback=row_callback,
+    )
     return rows, sorted(tail_symbols)
 
 
@@ -319,78 +494,20 @@ def evaluate_liquidity_for_symbols(
 ) -> tuple[list[ScannerLiquidityRow], list[str]]:
     rows: list[ScannerLiquidityRow] = []
     liquid_symbols: list[str] = []
-
     for symbol in symbols:
         sym = symbol.strip().upper()
         if not sym:
             continue
-        try:
-            dates = store.latest_dates(sym, n=1)
-            if not dates:
-                rows.append(
-                    ScannerLiquidityRow(
-                        symbol=sym,
-                        snapshot_date=None,
-                        eligible_contracts=0,
-                        eligible_expiries="",
-                        is_liquid=False,
-                        status="no_snapshot",
-                        error=None,
-                    )
-                )
-                continue
-
-            snapshot_date = dates[-1]
-            df = store.load_day(sym, snapshot_date)
-            if df.empty:
-                rows.append(
-                    ScannerLiquidityRow(
-                        symbol=sym,
-                        snapshot_date=snapshot_date.isoformat(),
-                        eligible_contracts=0,
-                        eligible_expiries="",
-                        is_liquid=False,
-                        status="empty_snapshot",
-                        error=None,
-                    )
-                )
-                continue
-
-            result: LiquidityResult = evaluate_liquidity(
-                df,
-                snapshot_date=snapshot_date,
-                min_dte=min_dte,
-                min_volume=min_volume,
-                min_open_interest=min_open_interest,
-            )
-            if result.is_liquid:
-                liquid_symbols.append(sym)
-
-            rows.append(
-                ScannerLiquidityRow(
-                    symbol=sym,
-                    snapshot_date=snapshot_date.isoformat(),
-                    eligible_contracts=result.eligible_contracts,
-                    eligible_expiries=",".join(result.eligible_expiries),
-                    is_liquid=result.is_liquid,
-                    status="ok",
-                    error=None,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001
-            rows.append(
-                ScannerLiquidityRow(
-                    symbol=sym,
-                    snapshot_date=None,
-                    eligible_contracts=0,
-                    eligible_expiries="",
-                    is_liquid=False,
-                    status="error",
-                    error=str(exc),
-                )
-            )
-            continue
-
+        row, is_liquid = _evaluate_liquidity_row(
+            sym,
+            store=store,
+            min_dte=min_dte,
+            min_volume=min_volume,
+            min_open_interest=min_open_interest,
+        )
+        rows.append(row)
+        if is_liquid:
+            liquid_symbols.append(sym)
     return rows, sorted(set(liquid_symbols))
 
 
