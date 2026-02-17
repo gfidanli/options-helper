@@ -574,7 +574,6 @@ def _build_orb_session_cache(
     out: dict[str, dict[date, _OrbSessionDecision]] = {}
     cutoff_time = _parse_cutoff_time(cutoff_et)
     range_delta = pd.Timedelta(minutes=int(range_minutes))
-
     for symbol in sorted(prepared_intraday_by_symbol):
         prepared = prepared_intraday_by_symbol[symbol]
         frame = prepared.frame
@@ -585,67 +584,93 @@ def _build_orb_session_cache(
         confirmation_offset = max(bar_duration - pd.Timedelta(microseconds=1), _CONFIRMATION_FLOOR)
 
         session_map: dict[date, _OrbSessionDecision] = {}
-        grouped = frame.groupby("session_date", sort=True)
-        for session_day, session in grouped:
-            session_open_market = _session_timestamp(session_day, _REGULAR_OPEN)
-            range_end_market = session_open_market + range_delta
-            cutoff_market = _session_timestamp(session_day, cutoff_time)
-            cutoff_utc = cutoff_market.tz_convert("UTC")
-
-            session_rows = session.sort_values("timestamp", kind="stable").reset_index(drop=True)
-            opening = session_rows.loc[session_rows["timestamp_market"] < range_end_market]
-            if opening.empty:
-                session_map[session_day] = _OrbSessionDecision(has_opening_range=False)
-                continue
-
-            opening_range_high = float(opening["high"].max())
-            opening_range_low = float(opening["low"].min())
-            long_breakout: _OrbBreakoutDecision | None = None
-            short_breakout: _OrbBreakoutDecision | None = None
-
-            for row_position in range(len(session_rows)):
-                row_market_ts = pd.Timestamp(session_rows.at[row_position, "timestamp_market"])
-                if row_market_ts < range_end_market:
-                    continue
-
-                signal_ts = pd.Timestamp(session_rows.at[row_position, "timestamp"])
-                signal_confirmed_ts = signal_ts + confirmation_offset
-                if signal_confirmed_ts > cutoff_utc:
-                    break
-                if row_position + 1 >= len(session_rows):
-                    continue
-
-                entry_ts = pd.Timestamp(session_rows.at[row_position + 1, "timestamp"])
-                if entry_ts <= signal_confirmed_ts:
-                    continue
-
-                close_value = float(session_rows.at[row_position, "close"])
-                if close_value > opening_range_high and long_breakout is None:
-                    long_breakout = _OrbBreakoutDecision(
-                        signal_confirmed_ts=signal_confirmed_ts,
-                        entry_ts=entry_ts,
-                        stop_price=float(opening_range_low),
-                    )
-                elif close_value < opening_range_low and short_breakout is None:
-                    short_breakout = _OrbBreakoutDecision(
-                        signal_confirmed_ts=signal_confirmed_ts,
-                        entry_ts=entry_ts,
-                        stop_price=float(opening_range_high),
-                    )
-
-                if long_breakout is not None and short_breakout is not None:
-                    break
-
-            session_map[session_day] = _OrbSessionDecision(
-                has_opening_range=True,
-                opening_range_high=opening_range_high,
-                opening_range_low=opening_range_low,
-                long_breakout=long_breakout,
-                short_breakout=short_breakout,
+        for session_day, session in frame.groupby("session_date", sort=True):
+            session_map[session_day] = _build_orb_session_decision(
+                session_day=session_day,
+                session=session,
+                cutoff_time=cutoff_time,
+                range_delta=range_delta,
+                confirmation_offset=confirmation_offset,
             )
-
         out[symbol] = session_map
     return out
+
+
+def _orb_breakouts_for_session(
+    *,
+    session_rows: pd.DataFrame,
+    range_end_market: pd.Timestamp,
+    cutoff_utc: pd.Timestamp,
+    opening_range_high: float,
+    opening_range_low: float,
+    confirmation_offset: pd.Timedelta,
+) -> tuple[_OrbBreakoutDecision | None, _OrbBreakoutDecision | None]:
+    long_breakout: _OrbBreakoutDecision | None = None
+    short_breakout: _OrbBreakoutDecision | None = None
+    for row_position in range(len(session_rows)):
+        row_market_ts = pd.Timestamp(session_rows.at[row_position, "timestamp_market"])
+        if row_market_ts < range_end_market:
+            continue
+        signal_ts = pd.Timestamp(session_rows.at[row_position, "timestamp"])
+        signal_confirmed_ts = signal_ts + confirmation_offset
+        if signal_confirmed_ts > cutoff_utc:
+            break
+        if row_position + 1 >= len(session_rows):
+            continue
+        entry_ts = pd.Timestamp(session_rows.at[row_position + 1, "timestamp"])
+        if entry_ts <= signal_confirmed_ts:
+            continue
+        close_value = float(session_rows.at[row_position, "close"])
+        if close_value > opening_range_high and long_breakout is None:
+            long_breakout = _OrbBreakoutDecision(
+                signal_confirmed_ts=signal_confirmed_ts,
+                entry_ts=entry_ts,
+                stop_price=float(opening_range_low),
+            )
+        elif close_value < opening_range_low and short_breakout is None:
+            short_breakout = _OrbBreakoutDecision(
+                signal_confirmed_ts=signal_confirmed_ts,
+                entry_ts=entry_ts,
+                stop_price=float(opening_range_high),
+            )
+        if long_breakout is not None and short_breakout is not None:
+            break
+    return long_breakout, short_breakout
+
+
+def _build_orb_session_decision(
+    *,
+    session_day: date,
+    session: pd.DataFrame,
+    cutoff_time: time,
+    range_delta: pd.Timedelta,
+    confirmation_offset: pd.Timedelta,
+) -> _OrbSessionDecision:
+    session_open_market = _session_timestamp(session_day, _REGULAR_OPEN)
+    range_end_market = session_open_market + range_delta
+    cutoff_market = _session_timestamp(session_day, cutoff_time)
+    cutoff_utc = cutoff_market.tz_convert("UTC")
+    session_rows = session.sort_values("timestamp", kind="stable").reset_index(drop=True)
+    opening = session_rows.loc[session_rows["timestamp_market"] < range_end_market]
+    if opening.empty:
+        return _OrbSessionDecision(has_opening_range=False)
+    opening_range_high = float(opening["high"].max())
+    opening_range_low = float(opening["low"].min())
+    long_breakout, short_breakout = _orb_breakouts_for_session(
+        session_rows=session_rows,
+        range_end_market=range_end_market,
+        cutoff_utc=cutoff_utc,
+        opening_range_high=opening_range_high,
+        opening_range_low=opening_range_low,
+        confirmation_offset=confirmation_offset,
+    )
+    return _OrbSessionDecision(
+        has_opening_range=True,
+        opening_range_high=opening_range_high,
+        opening_range_low=opening_range_low,
+        long_breakout=long_breakout,
+        short_breakout=short_breakout,
+    )
 
 
 def _apply_orb_confirmation_update(
