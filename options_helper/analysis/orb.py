@@ -83,16 +83,7 @@ def compute_orb_signals(
 
     cutoff_time = _parse_cutoff_time(cutoff_et)
     out = normalize_intraday_ohlc_frame(intraday_bars).copy()
-
-    out["orb_opening_range_high"] = np.nan
-    out["orb_opening_range_low"] = np.nan
-    out["orb_breakout_direction"] = pd.Series([None] * len(out), index=out.index, dtype="object")
-    out["orb_signal"] = False
-    out["orb_signal_confirmed_ts"] = pd.Series([None] * len(out), index=out.index, dtype="object")
-    out["orb_entry_ts"] = pd.Series([None] * len(out), index=out.index, dtype="object")
-    out["orb_stop_price"] = np.nan
-    out["orb_range_end_ts"] = pd.Series([None] * len(out), index=out.index, dtype="object")
-    out["orb_cutoff_ts"] = pd.Series([None] * len(out), index=out.index, dtype="object")
+    _initialize_orb_signal_columns(out)
 
     if out.empty:
         return out.reindex(columns=[*list(_BASE_COLUMNS), *list(_SIGNAL_COLUMNS)])
@@ -220,6 +211,18 @@ def _resolve_price_column(frame: pd.DataFrame, canonical: str) -> str | None:
     if canonical in frame.columns:
         return canonical
     return alias_map.get(canonical)
+
+
+def _initialize_orb_signal_columns(frame: pd.DataFrame) -> None:
+    frame["orb_opening_range_high"] = np.nan
+    frame["orb_opening_range_low"] = np.nan
+    frame["orb_breakout_direction"] = pd.Series([None] * len(frame), index=frame.index, dtype="object")
+    frame["orb_signal"] = False
+    frame["orb_signal_confirmed_ts"] = pd.Series([None] * len(frame), index=frame.index, dtype="object")
+    frame["orb_entry_ts"] = pd.Series([None] * len(frame), index=frame.index, dtype="object")
+    frame["orb_stop_price"] = np.nan
+    frame["orb_range_end_ts"] = pd.Series([None] * len(frame), index=frame.index, dtype="object")
+    frame["orb_cutoff_ts"] = pd.Series([None] * len(frame), index=frame.index, dtype="object")
 
 
 def _parse_cutoff_time(value: str) -> time:
