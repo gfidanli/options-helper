@@ -56,6 +56,201 @@ def _require_alpaca_provider() -> None:
         raise typer.BadParameter("Events ingestion currently requires --provider alpaca.")
 
 
+def _resolve_symbols_and_range(
+    *,
+    symbol: list[str] | None,
+    symbols: str | None,
+    start: str,
+    end: str,
+) -> tuple[list[str], date, date]:
+    symbols_list = _parse_symbols(symbol, symbols)
+    if not symbols_list:
+        raise typer.BadParameter("Provide at least one --symbol or --symbols.")
+    start_dt = _parse_date(start)
+    end_dt = _parse_date(end)
+    if end_dt < start_dt:
+        raise typer.BadParameter("End date is before start date.")
+    return symbols_list, start_dt, end_dt
+
+
+def _group_actions_by_symbol(actions: list[dict], *, symbols_list: list[str]) -> dict[str, list[dict]]:
+    by_symbol: dict[str, list[dict]] = {sym: [] for sym in symbols_list}
+    for action in actions:
+        sym = str(action.get("symbol") or "").upper()
+        if not sym and len(symbols_list) == 1:
+            sym = symbols_list[0]
+        if sym in by_symbol:
+            by_symbol[sym].append(action)
+    return by_symbol
+
+
+def _corporate_actions_meta(
+    *,
+    client: AlpacaClient,
+    start_dt: date,
+    end_dt: date,
+    types_list: list[str],
+    limit: int | None,
+    page_limit: int | None,
+) -> dict:
+    return {
+        "provider": "alpaca",
+        "provider_version": client.provider_version,
+        "request": {
+            "start": start_dt.isoformat(),
+            "end": end_dt.isoformat(),
+            "types": types_list,
+            "limit": limit,
+            "page_limit": page_limit,
+        },
+    }
+
+
+def _save_corporate_actions(
+    *,
+    console: Console,
+    store: CorporateActionsStore,
+    symbols_list: list[str],
+    by_symbol: dict[str, list[dict]],
+    meta: dict,
+) -> None:
+    for sym in symbols_list:
+        path = store.save(sym, by_symbol.get(sym, []), meta=meta, merge=True)
+        console.print(f"[green]Saved[/green] {sym} -> {path}")
+
+
+def _run_refresh_corporate_actions(
+    *,
+    console: Console,
+    symbol: list[str] | None,
+    symbols: str | None,
+    start: str,
+    end: str,
+    action_type: list[str] | None,
+    types: str | None,
+    actions_dir: Path,
+    limit: int | None,
+    page_limit: int | None,
+) -> None:
+    symbols_list, start_dt, end_dt = _resolve_symbols_and_range(symbol=symbol, symbols=symbols, start=start, end=end)
+    types_list = _parse_types(action_type, types)
+    client = AlpacaClient()
+    store = CorporateActionsStore(actions_dir)
+    actions = client.get_corporate_actions(
+        symbols_list,
+        start=start_dt,
+        end=end_dt,
+        types=types_list or None,
+        limit=limit,
+        page_limit=page_limit,
+    )
+    by_symbol = _group_actions_by_symbol(actions, symbols_list=symbols_list)
+    meta = _corporate_actions_meta(
+        client=client,
+        start_dt=start_dt,
+        end_dt=end_dt,
+        types_list=types_list,
+        limit=limit,
+        page_limit=page_limit,
+    )
+    _save_corporate_actions(
+        console=console,
+        store=store,
+        symbols_list=symbols_list,
+        by_symbol=by_symbol,
+        meta=meta,
+    )
+
+
+def _group_news_by_symbol(items: list[dict], *, symbols_list: list[str]) -> dict[str, list[dict]]:
+    target_set = set(symbols_list)
+    by_symbol: dict[str, list[dict]] = {sym: [] for sym in symbols_list}
+    for item in items:
+        for sym in item.get("symbols", []) or []:
+            if sym in target_set:
+                by_symbol.setdefault(sym, []).append(item)
+    return by_symbol
+
+
+def _news_meta(
+    *,
+    client: AlpacaClient,
+    start_dt: date,
+    end_dt: date,
+    include_content: bool,
+    limit: int | None,
+    page_limit: int | None,
+) -> dict:
+    return {
+        "provider": "alpaca",
+        "provider_version": client.provider_version,
+        "request": {
+            "start": start_dt.isoformat(),
+            "end": end_dt.isoformat(),
+            "include_content": include_content,
+            "limit": limit,
+            "page_limit": page_limit,
+        },
+    }
+
+
+def _save_news_items(
+    *,
+    console: Console,
+    store: NewsStore,
+    symbols_list: list[str],
+    by_symbol: dict[str, list[dict]],
+    meta: dict,
+) -> None:
+    for sym in symbols_list:
+        paths = store.upsert_items(sym, by_symbol.get(sym, []), meta=meta)
+        if not paths:
+            console.print(f"[yellow]No news saved for {sym}.[/yellow]")
+            continue
+        console.print(f"[green]Saved[/green] {sym} -> {len(paths)} day(s)")
+
+
+def _run_refresh_news(
+    *,
+    console: Console,
+    symbol: list[str] | None,
+    symbols: str | None,
+    start: str,
+    end: str,
+    include_content: bool,
+    news_dir: Path,
+    limit: int | None,
+    page_limit: int | None,
+) -> None:
+    symbols_list, start_dt, end_dt = _resolve_symbols_and_range(symbol=symbol, symbols=symbols, start=start, end=end)
+    client = AlpacaClient()
+    store = NewsStore(news_dir)
+    items = client.get_news(
+        symbols_list,
+        start=start_dt,
+        end=end_dt,
+        include_content=include_content,
+        limit=limit,
+        page_limit=page_limit,
+    )
+    by_symbol = _group_news_by_symbol(items, symbols_list=symbols_list)
+    meta = _news_meta(
+        client=client,
+        start_dt=start_dt,
+        end_dt=end_dt,
+        include_content=include_content,
+        limit=limit,
+        page_limit=page_limit,
+    )
+    _save_news_items(
+        console=console,
+        store=store,
+        symbols_list=symbols_list,
+        by_symbol=by_symbol,
+        meta=meta,
+    )
+
+
 @app.command("refresh-corporate-actions")
 def refresh_corporate_actions(
     symbol: list[str] | None = typer.Option(
@@ -100,54 +295,22 @@ def refresh_corporate_actions(
     """Refresh corporate actions for symbols."""
     _require_alpaca_provider()
     console = Console()
-    symbols_list = _parse_symbols(symbol, symbols)
-    if not symbols_list:
-        raise typer.BadParameter("Provide at least one --symbol or --symbols.")
-
-    start_dt = _parse_date(start)
-    end_dt = _parse_date(end)
-    if end_dt < start_dt:
-        raise typer.BadParameter("End date is before start date.")
-
-    types_list = _parse_types(action_type, types)
-    client = AlpacaClient()
-    store = CorporateActionsStore(actions_dir)
-
     try:
-        actions = client.get_corporate_actions(
-            symbols_list,
-            start=start_dt,
-            end=end_dt,
-            types=types_list or None,
+        _run_refresh_corporate_actions(
+            console=console,
+            symbol=symbol,
+            symbols=symbols,
+            start=start,
+            end=end,
+            action_type=action_type,
+            types=types,
+            actions_dir=actions_dir,
             limit=limit,
             page_limit=page_limit,
         )
     except DataFetchError as exc:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
-
-    by_symbol: dict[str, list[dict]] = {sym: [] for sym in symbols_list}
-    for action in actions:
-        sym = str(action.get("symbol") or "").upper()
-        if not sym and len(symbols_list) == 1:
-            sym = symbols_list[0]
-        if sym in by_symbol:
-            by_symbol[sym].append(action)
-
-    for sym in symbols_list:
-        meta = {
-            "provider": "alpaca",
-            "provider_version": client.provider_version,
-            "request": {
-                "start": start_dt.isoformat(),
-                "end": end_dt.isoformat(),
-                "types": types_list,
-                "limit": limit,
-                "page_limit": page_limit,
-            },
-        }
-        path = store.save(sym, by_symbol.get(sym, []), meta=meta, merge=True)
-        console.print(f"[green]Saved[/green] {sym} -> {path}")
 
 
 @app.command("refresh-news")
@@ -189,52 +352,18 @@ def refresh_news(
     """Refresh news for symbols."""
     _require_alpaca_provider()
     console = Console()
-    symbols_list = _parse_symbols(symbol, symbols)
-    if not symbols_list:
-        raise typer.BadParameter("Provide at least one --symbol or --symbols.")
-
-    start_dt = _parse_date(start)
-    end_dt = _parse_date(end)
-    if end_dt < start_dt:
-        raise typer.BadParameter("End date is before start date.")
-
-    client = AlpacaClient()
-    store = NewsStore(news_dir)
-
     try:
-        items = client.get_news(
-            symbols_list,
-            start=start_dt,
-            end=end_dt,
+        _run_refresh_news(
+            console=console,
+            symbol=symbol,
+            symbols=symbols,
+            start=start,
+            end=end,
             include_content=include_content,
+            news_dir=news_dir,
             limit=limit,
             page_limit=page_limit,
         )
     except DataFetchError as exc:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
-
-    target_set = set(symbols_list)
-    by_symbol: dict[str, list[dict]] = {sym: [] for sym in symbols_list}
-    for item in items:
-        for sym in item.get("symbols", []) or []:
-            if sym in target_set:
-                by_symbol.setdefault(sym, []).append(item)
-
-    for sym in symbols_list:
-        meta = {
-            "provider": "alpaca",
-            "provider_version": client.provider_version,
-            "request": {
-                "start": start_dt.isoformat(),
-                "end": end_dt.isoformat(),
-                "include_content": include_content,
-                "limit": limit,
-                "page_limit": page_limit,
-            },
-        }
-        paths = store.upsert_items(sym, by_symbol.get(sym, []), meta=meta)
-        if not paths:
-            console.print(f"[yellow]No news saved for {sym}.[/yellow]")
-            continue
-        console.print(f"[green]Saved[/green] {sym} -> {len(paths)} day(s)")
