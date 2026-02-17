@@ -182,6 +182,15 @@ def summarize_intraday_contract_flow(
     return out.loc[:, INTRADAY_FLOW_CONTRACT_FIELDS]
 
 
+def _resolve_aggregate_source(values: list[object]) -> str:
+    source_values = sorted({text for text in (_clean_text(value) for value in values) if text is not None})
+    if len(source_values) == 1:
+        return source_values[0]
+    if source_values:
+        return "mixed"
+    return "unknown"
+
+
 def aggregate_intraday_flow_by_contract_terms(contract_flow: pd.DataFrame) -> pd.DataFrame:
     """
     Aggregate contract-day rows by expiry/strike/option_type/delta_bucket.
@@ -221,21 +230,7 @@ def aggregate_intraday_flow_by_contract_terms(contract_flow: pd.DataFrame) -> pd
         trade_count = int(group["trade_count"].fillna(0.0).sum())
         unknown_trade_count = float((group["unknown_trade_share"] * group["trade_count"]).fillna(0.0).sum())
         covered_trade_count = float((group["quote_coverage_pct"] * group["trade_count"]).fillna(0.0).sum())
-
-        source_values = sorted(
-            {
-                text
-                for text in (_clean_text(value) for value in group["source"].tolist())
-                if text is not None
-            }
-        )
-        if len(source_values) == 1:
-            source_value = source_values[0]
-        elif len(source_values) > 1:
-            source_value = "mixed"
-        else:
-            source_value = "unknown"
-
+        source_value = _resolve_aggregate_source(group["source"].tolist())
         warnings = _format_warning_counter(_warning_counter_from_series(group.get("warnings")))
 
         buy_notional = float(group["buy_notional"].fillna(0.0).sum())
