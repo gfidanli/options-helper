@@ -165,7 +165,6 @@ class YFinanceClient:
         sym = symbol.upper()
         today_val = today or date.today()
         ticker = self.ticker(sym)
-
         # 1) Prefer the historical-ish earnings dates table when present.
         try:
             get_dates = getattr(ticker, "get_earnings_dates", None)
@@ -188,7 +187,6 @@ class YFinanceClient:
                                 d = _coerce_to_date(v)
                                 if d is not None:
                                     dt_candidates.append(d)
-
                 future = sorted({d for d in dt_candidates if d >= today_val})
                 next_date = future[0] if future else None
                 if next_date is not None:
@@ -201,12 +199,10 @@ class YFinanceClient:
         except Exception:  # noqa: BLE001
             # Fall through to calendar parsing.
             pass
-
         # 2) Fall back to the calendar field (often a single date or a 2-date window).
         try:
             cal = getattr(ticker, "calendar", None)
             start = end = None
-
             if isinstance(cal, pd.DataFrame) and not cal.empty:
                 # Typical yfinance layout: index contains keys (e.g. "Earnings Date") and a single column.
                 if "Earnings Date" in cal.index:
@@ -217,18 +213,15 @@ class YFinanceClient:
                 elif "Earnings Date" in cal.columns:
                     values = cal["Earnings Date"].dropna().tolist()
                     start, end = _extract_date_window(values)
-
             elif isinstance(cal, dict):
                 # Some variants return a dict-like payload.
                 if "Earnings Date" in cal:
                     start, end = _extract_date_window([cal["Earnings Date"]])
-
             next_date = None
             if start is not None and start >= today_val:
                 next_date = start
             elif end is not None and end >= today_val:
                 next_date = end
-
             return EarningsEvent(
                 symbol=sym,
                 next_date=next_date,
