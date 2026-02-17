@@ -317,6 +317,40 @@ def _position_contract(position: Position) -> ParsedContract:
     )
 
 
+def _build_single_live_position_row(
+    *,
+    position: Position,
+    metrics: _ContractMetrics,
+    dte: int | None,
+    pnl_abs: float | None,
+    pnl_pct: float | None,
+    as_of: datetime | None,
+) -> dict[str, Any]:
+    return {
+        "id": position.id,
+        "symbol": normalize_underlying(position.symbol),
+        "structure": "single",
+        "option_type": position.option_type,
+        "expiry": position.expiry.isoformat(),
+        "dte": dte,
+        "strike": float(position.strike),
+        "contracts": int(position.contracts),
+        "cost_basis": float(position.cost_basis),
+        "contract_symbol": metrics.contract_symbol,
+        "live_symbol": metrics.live_symbol,
+        "bid": metrics.bid,
+        "ask": metrics.ask,
+        "last": metrics.last,
+        "mark": metrics.mark,
+        "spread_pct": metrics.spread_pct,
+        "quote_age_seconds": metrics.quote_age_seconds,
+        "pnl_abs": pnl_abs,
+        "pnl_pct": pnl_pct,
+        "warnings": metrics.warnings,
+        "as_of": None if as_of is None else as_of.isoformat(),
+    }
+
+
 def compute_live_position_rows(
     portfolio: Portfolio,
     live: Any,
@@ -375,29 +409,14 @@ def compute_live_position_rows(
                 pnl_pct = (metrics.mark / float(position.cost_basis)) - 1.0
 
         rows.append(
-            {
-                "id": position.id,
-                "symbol": normalize_underlying(position.symbol),
-                "structure": "single",
-                "option_type": position.option_type,
-                "expiry": position.expiry.isoformat(),
-                "dte": dte,
-                "strike": float(position.strike),
-                "contracts": int(position.contracts),
-                "cost_basis": float(position.cost_basis),
-                "contract_symbol": metrics.contract_symbol,
-                "live_symbol": metrics.live_symbol,
-                "bid": metrics.bid,
-                "ask": metrics.ask,
-                "last": metrics.last,
-                "mark": metrics.mark,
-                "spread_pct": metrics.spread_pct,
-                "quote_age_seconds": metrics.quote_age_seconds,
-                "pnl_abs": pnl_abs,
-                "pnl_pct": pnl_pct,
-                "warnings": metrics.warnings,
-                "as_of": None if caches.as_of is None else caches.as_of.isoformat(),
-            }
+            _build_single_live_position_row(
+                position=position,
+                metrics=metrics,
+                dte=dte,
+                pnl_abs=pnl_abs,
+                pnl_pct=pnl_pct,
+                as_of=caches.as_of,
+            )
         )
 
     if not rows:
