@@ -65,6 +65,42 @@ def _looks_like_429(error: Exception) -> bool:
     return "429" in message or "rate limit" in message or "too many requests" in message
 
 
+def _normalize_symbols(symbols: list[str]) -> list[str]:
+    return [sym for sym in (symbol.strip().upper() for symbol in symbols) if sym]
+
+
+def _build_ingest_output(
+    normalized_symbols: list[str],
+    results_by_symbol: dict[str, CandleIngestResult],
+    *,
+    timeout_count: int,
+    rate_limit_429: int,
+    latencies_ms: list[float],
+) -> CandleIngestOutput:
+    ordered_results = [results_by_symbol[sym] for sym in normalized_symbols if sym in results_by_symbol]
+    ok = sum(1 for item in ordered_results if item.status == "ok")
+    empty = sum(1 for item in ordered_results if item.status == "empty")
+    errors = sum(1 for item in ordered_results if item.status == "error")
+    endpoint_stats = build_endpoint_stats(
+        calls=len(ordered_results),
+        retries=0,
+        rate_limit_429=rate_limit_429,
+        timeout_count=timeout_count,
+        error_count=errors,
+        latencies_ms=latencies_ms,
+    )
+    return CandleIngestOutput(
+        results=ordered_results,
+        summary=CandleIngestSummary(
+            calls=len(ordered_results),
+            ok=ok,
+            empty=empty,
+            error=errors,
+            endpoint_stats=endpoint_stats,
+        ),
+    )
+
+
 def ingest_candles_with_summary(
     store: CandleStore,
     symbols: list[str],
@@ -74,22 +110,17 @@ def ingest_candles_with_summary(
     concurrency: int = 1,
     max_requests_per_second: float | None = None,
 ) -> CandleIngestOutput:
-    normalized_symbols: list[str] = []
-    for symbol in symbols:
-        sym = symbol.strip().upper()
-        if sym:
-            normalized_symbols.append(sym)
+    normalized_symbols = _normalize_symbols(symbols)
 
     results_by_symbol: dict[str, CandleIngestResult] = {}
     latencies_ms: list[float] = []
     timeout_count = 0
     rate_limit_429 = 0
-    error_count = 0
     limiter = _RequestRateLimiter(max_requests_per_second)
     lock = threading.Lock()
 
     def _ingest_symbol(sym: str) -> CandleIngestResult:
-        nonlocal timeout_count, rate_limit_429, error_count
+        nonlocal timeout_count, rate_limit_429
         limiter.wait_turn()
         started = time.perf_counter()
         try:
@@ -102,7 +133,6 @@ def ingest_candles_with_summary(
         except Exception as exc:  # noqa: BLE001
             result = CandleIngestResult(symbol=sym, status="error", last_date=None, error=str(exc))
             with lock:
-                error_count += 1
                 if _looks_like_timeout(exc):
                     timeout_count += 1
                 if _looks_like_429(exc):
@@ -128,28 +158,12 @@ def ingest_candles_with_summary(
                 result = future.result()
                 results_by_symbol[sym] = result
 
-    ordered_results = [results_by_symbol[sym] for sym in normalized_symbols if sym in results_by_symbol]
-    ok = sum(1 for item in ordered_results if item.status == "ok")
-    empty = sum(1 for item in ordered_results if item.status == "empty")
-    errors = sum(1 for item in ordered_results if item.status == "error")
-    endpoint_stats = build_endpoint_stats(
-        calls=len(ordered_results),
-        retries=0,
-        rate_limit_429=rate_limit_429,
+    return _build_ingest_output(
+        normalized_symbols,
+        results_by_symbol,
         timeout_count=timeout_count,
-        error_count=errors,
+        rate_limit_429=rate_limit_429,
         latencies_ms=latencies_ms,
-    )
-
-    return CandleIngestOutput(
-        results=ordered_results,
-        summary=CandleIngestSummary(
-            calls=len(ordered_results),
-            ok=ok,
-            empty=empty,
-            error=errors,
-            endpoint_stats=endpoint_stats,
-        ),
     )
 
 
