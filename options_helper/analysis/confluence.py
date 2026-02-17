@@ -243,7 +243,6 @@ def _score_extension(
             score=None,
             reason="Extension percentile out of range.",
         )
-
     tail_low = float((cfg.get("extension") or {}).get("tail_low", 5.0))
     tail_high = float((cfg.get("extension") or {}).get("tail_high", 95.0))
     if tail_low >= tail_high:
@@ -255,7 +254,6 @@ def _score_extension(
             score=None,
             reason="Extension thresholds invalid.",
         )
-
     if trend is None:
         return ConfluenceComponent(
             name="extension",
@@ -272,19 +270,9 @@ def _score_extension(
             score=0.0,
             reason="Trend flat; extension treated as neutral.",
         )
-
-    if pct <= tail_low:
-        aligned = trend == "up"
-        score = weight if aligned else -weight
-        reason = "Low extension tail aligned with trend." if aligned else "Low extension tail against trend."
-        return ConfluenceComponent(name="extension", weight=weight, value=pct, score=score, reason=reason)
-
-    if pct >= tail_high:
-        aligned = trend == "down"
-        score = weight if aligned else -weight
-        reason = "High extension tail aligned with trend." if aligned else "High extension tail against trend."
-        return ConfluenceComponent(name="extension", weight=weight, value=pct, score=score, reason=reason)
-
+    tail_component = _score_extension_tail(pct=pct, trend=trend, weight=weight, tail_low=tail_low, tail_high=tail_high)
+    if tail_component is not None:
+        return tail_component
     return ConfluenceComponent(
         name="extension",
         weight=weight,
@@ -292,6 +280,27 @@ def _score_extension(
         score=0.0,
         reason="Extension percentile neutral.",
     )
+
+
+def _score_extension_tail(
+    *,
+    pct: float,
+    trend: TrendDirection,
+    weight: float,
+    tail_low: float,
+    tail_high: float,
+) -> ConfluenceComponent | None:
+    if pct <= tail_low:
+        aligned = trend == "up"
+        score = weight if aligned else -weight
+        reason = "Low extension tail aligned with trend." if aligned else "Low extension tail against trend."
+        return ConfluenceComponent(name="extension", weight=weight, value=pct, score=score, reason=reason)
+    if pct >= tail_high:
+        aligned = trend == "down"
+        score = weight if aligned else -weight
+        reason = "High extension tail aligned with trend." if aligned else "High extension tail against trend."
+        return ConfluenceComponent(name="extension", weight=weight, value=pct, score=score, reason=reason)
+    return None
 
 
 def _score_flow(
