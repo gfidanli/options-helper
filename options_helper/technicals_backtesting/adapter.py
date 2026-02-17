@@ -104,24 +104,7 @@ def standardize_ohlc(
     if missing:
         raise ValueError(f"Missing required OHLC columns: {missing}")
 
-    # Normalize index to datetime.
-    if not isinstance(out.index, pd.DatetimeIndex):
-        for candidate in ("date", "datetime", "timestamp"):
-            if candidate in {str(c).lower() for c in out.columns}:
-                col_name = next(c for c in out.columns if str(c).lower() == candidate)
-                idx = pd.to_datetime(out[col_name], errors="coerce", utc=True)
-                out = out.drop(columns=[col_name])
-                out.index = idx
-                break
-
-    if not isinstance(out.index, pd.DatetimeIndex):
-        raise ValueError("OHLC DataFrame must have a DatetimeIndex or a date-like column")
-
-    idx = pd.to_datetime(out.index, errors="coerce", utc=True)
-    if idx.isna().all():
-        raise ValueError("Unable to parse OHLC index as datetimes")
-    out = out.loc[~idx.isna()].copy()
-    out.index = idx[~idx.isna()].tz_localize(None)
+    out = _normalize_ohlc_datetime_index(out)
 
     if out.index.has_duplicates:
         dupes = out.index.duplicated(keep="last")
@@ -164,4 +147,26 @@ def standardize_ohlc(
         if low_bad:
             logger.warning("Low > min(Open, Close) on %s rows", low_bad)
 
+    return out
+
+
+def _normalize_ohlc_datetime_index(frame: pd.DataFrame) -> pd.DataFrame:
+    out = frame
+    if not isinstance(out.index, pd.DatetimeIndex):
+        lower_names = {str(c).lower() for c in out.columns}
+        for candidate in ("date", "datetime", "timestamp"):
+            if candidate not in lower_names:
+                continue
+            col_name = next(c for c in out.columns if str(c).lower() == candidate)
+            idx = pd.to_datetime(out[col_name], errors="coerce", utc=True)
+            out = out.drop(columns=[col_name])
+            out.index = idx
+            break
+    if not isinstance(out.index, pd.DatetimeIndex):
+        raise ValueError("OHLC DataFrame must have a DatetimeIndex or a date-like column")
+    idx = pd.to_datetime(out.index, errors="coerce", utc=True)
+    if idx.isna().all():
+        raise ValueError("Unable to parse OHLC index as datetimes")
+    out = out.loc[~idx.isna()].copy()
+    out.index = idx[~idx.isna()].tz_localize(None)
     return out
