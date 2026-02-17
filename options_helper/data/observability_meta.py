@@ -379,6 +379,40 @@ class DuckDBRunLogger:
             raise RuntimeError("start_run must be called before writing run assets/checks")
         return self.run_id
 
+    @staticmethod
+    def _normalize_asset_event_fields(
+        *,
+        asset_key: str,
+        asset_kind: str,
+        partition_key: str,
+        status: str,
+    ) -> tuple[str, str, str, str]:
+        clean_partition_key = str(partition_key).strip() or "ALL"
+        clean_status = str(status).strip() or "success"
+        clean_asset_key = str(asset_key).strip()
+        clean_asset_kind = str(asset_kind).strip()
+        if not clean_asset_key:
+            raise ValueError("asset_key is required")
+        if not clean_asset_kind:
+            raise ValueError("asset_kind is required")
+        return clean_asset_key, clean_asset_kind, clean_partition_key, clean_status
+
+    @staticmethod
+    def _resolve_asset_event_timing(
+        *,
+        started_at: datetime | None,
+        ended_at: datetime | None,
+        duration_ms: int | None,
+    ) -> tuple[datetime | None, datetime | None, int | None]:
+        event_started_at = _coerce_datetime(started_at)
+        event_ended_at = _coerce_datetime(ended_at)
+        computed_duration_ms = duration_ms
+        if computed_duration_ms is None and event_started_at is not None and event_ended_at is not None:
+            computed_duration_ms = int(
+                max((event_ended_at - event_started_at).total_seconds() * 1000.0, 0.0)
+            )
+        return event_started_at, event_ended_at, computed_duration_ms
+
     def log_asset_event(
         self,
         *,
@@ -399,24 +433,17 @@ class DuckDBRunLogger:
     ) -> None:
         self._ensure_schema()
         run_id = self._require_started()
-
-        clean_partition_key = str(partition_key).strip() or "ALL"
-        clean_status = str(status).strip() or "success"
-        clean_asset_key = str(asset_key).strip()
-        clean_asset_kind = str(asset_kind).strip()
-        if not clean_asset_key:
-            raise ValueError("asset_key is required")
-        if not clean_asset_kind:
-            raise ValueError("asset_kind is required")
-
-        event_started_at = _coerce_datetime(started_at)
-        event_ended_at = _coerce_datetime(ended_at)
-        computed_duration_ms = duration_ms
-        if computed_duration_ms is None and event_started_at is not None and event_ended_at is not None:
-            computed_duration_ms = int(
-                max((event_ended_at - event_started_at).total_seconds() * 1000.0, 0.0)
-            )
-
+        clean_asset_key, clean_asset_kind, clean_partition_key, clean_status = self._normalize_asset_event_fields(
+            asset_key=asset_key,
+            asset_kind=asset_kind,
+            partition_key=partition_key,
+            status=status,
+        )
+        event_started_at, event_ended_at, computed_duration_ms = self._resolve_asset_event_timing(
+            started_at=started_at,
+            ended_at=ended_at,
+            duration_ms=duration_ms,
+        )
         with self.warehouse.transaction() as tx:
             tx.execute(
                 """
