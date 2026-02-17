@@ -111,101 +111,99 @@ def compute_flow(today: pd.DataFrame, prev: pd.DataFrame, *, spot: float | None 
     """
     if today.empty:
         return pd.DataFrame()
+    _validate_flow_inputs(today=today, prev=prev)
+    merged = _merge_prev_open_interest(today=today, prev=prev)
+    merged = _normalize_flow_numeric_columns(merged)
+    merged = _compute_flow_notional_columns(merged, spot=spot)
+    merged["flow_class"] = merged.apply(_classify_flow_row, axis=1)
+    return merged
 
+
+def _validate_flow_inputs(*, today: pd.DataFrame, prev: pd.DataFrame) -> None:
     required_today = {"contractSymbol", "optionType", "expiry"}
     missing = required_today - set(today.columns)
     if missing:
         raise ValueError(f"today snapshot missing columns: {sorted(missing)}")
-
     if "openInterest" not in prev.columns:
         raise ValueError("prev snapshot missing required columns: openInterest")
     if "contractSymbol" not in prev.columns and "osi" not in prev.columns:
         raise ValueError("prev snapshot missing required columns: contractSymbol or osi")
 
-    # Join strategy:
-    # - Prefer contractSymbol because it's always present in `today` and commonly present in `prev`.
-    # - Use OSI as a fallback join key to handle cases where contractSymbol differs across providers/versions.
-    # - Crucially, do NOT switch the entire join key to OSI when only one side has it (mixed-schema snapshots);
-    #   that causes all prev OI lookups to miss.
-    t = today.copy()
-    t["_contract_key"] = _clean_key_series(t["contractSymbol"])
-    t["_osi_key"] = _clean_key_series(t["osi"]) if "osi" in t.columns else pd.Series([None] * len(t), index=t.index)
 
-    merged = t.copy()
+def _merge_prev_open_interest(*, today: pd.DataFrame, prev: pd.DataFrame) -> pd.DataFrame:
+    merged = today.copy()
+    merged["_contract_key"] = _clean_key_series(merged["contractSymbol"])
+    merged["_osi_key"] = (
+        _clean_key_series(merged["osi"])
+        if "osi" in merged.columns
+        else pd.Series([None] * len(merged), index=merged.index)
+    )
     merged["openInterest_prev"] = float("nan")
-
-    p = prev.copy()
-
-    if "contractSymbol" in p.columns:
-        p_contract = pd.DataFrame(
+    prior = prev.copy()
+    if "contractSymbol" in prior.columns:
+        by_contract = pd.DataFrame(
             {
-                "_contract_key": _clean_key_series(p["contractSymbol"]),
-                "openInterest_prev": p["openInterest"],
+                "_contract_key": _clean_key_series(prior["contractSymbol"]),
+                "openInterest_prev": prior["openInterest"],
             }
         )
-        p_contract = p_contract.dropna(subset=["_contract_key"]).drop_duplicates(subset=["_contract_key"], keep="last")
-        merged = merged.merge(p_contract, on="_contract_key", how="left", suffixes=("", "_from_contract"))
+        by_contract = by_contract.dropna(subset=["_contract_key"]).drop_duplicates(subset=["_contract_key"], keep="last")
+        merged = merged.merge(by_contract, on="_contract_key", how="left", suffixes=("", "_from_contract"))
         if "openInterest_prev_from_contract" in merged.columns:
             merged["openInterest_prev"] = merged["openInterest_prev_from_contract"]
             merged = merged.drop(columns=["openInterest_prev_from_contract"])
-
-    if "osi" in p.columns:
-        p_osi = pd.DataFrame(
+    if "osi" in prior.columns:
+        by_osi = pd.DataFrame(
             {
-                "_osi_key": _clean_key_series(p["osi"]),
-                "openInterest_prev_from_osi": p["openInterest"],
+                "_osi_key": _clean_key_series(prior["osi"]),
+                "openInterest_prev_from_osi": prior["openInterest"],
             }
         )
-        p_osi = p_osi.dropna(subset=["_osi_key"]).drop_duplicates(subset=["_osi_key"], keep="last")
-        merged = merged.merge(p_osi, on="_osi_key", how="left")
+        by_osi = by_osi.dropna(subset=["_osi_key"]).drop_duplicates(subset=["_osi_key"], keep="last")
+        merged = merged.merge(by_osi, on="_osi_key", how="left")
         merged["openInterest_prev"] = merged["openInterest_prev"].where(
             merged["openInterest_prev"].notna(),
             merged["openInterest_prev_from_osi"],
         )
         merged = merged.drop(columns=["openInterest_prev_from_osi"])
+    return merged.drop(columns=["_contract_key", "_osi_key"])
 
-    merged = merged.drop(columns=["_contract_key", "_osi_key"])
 
-    # Normalize types (prefer numeric dtype + NaN for missing)
-    merged["lastPrice"] = (
-        pd.to_numeric(merged.get("lastPrice"), errors="coerce") if "lastPrice" in merged.columns else float("nan")
+def _normalize_flow_numeric_columns(merged: pd.DataFrame) -> pd.DataFrame:
+    out = merged.copy()
+    out["lastPrice"] = pd.to_numeric(out.get("lastPrice"), errors="coerce") if "lastPrice" in out.columns else float("nan")
+    out["volume"] = pd.to_numeric(out.get("volume"), errors="coerce") if "volume" in out.columns else float("nan")
+    out["openInterest"] = (
+        pd.to_numeric(out.get("openInterest"), errors="coerce")
+        if "openInterest" in out.columns
+        else float("nan")
     )
-    merged["volume"] = pd.to_numeric(merged.get("volume"), errors="coerce") if "volume" in merged.columns else float("nan")
-    merged["openInterest"] = (
-        pd.to_numeric(merged.get("openInterest"), errors="coerce") if "openInterest" in merged.columns else float("nan")
-    )
-    merged["openInterest_prev"] = pd.to_numeric(merged.get("openInterest_prev"), errors="coerce")
+    out["openInterest_prev"] = pd.to_numeric(out.get("openInterest_prev"), errors="coerce")
+    out["deltaOI"] = out["openInterest"] - out["openInterest_prev"]
+    return out
 
-    merged["deltaOI"] = merged["openInterest"] - merged["openInterest_prev"]
 
-    # Deterministic mark price for notional computations.
-    merged["mark"] = compute_mark_price(merged)
-
-    merged["deltaOI_notional"] = merged["deltaOI"] * merged["mark"] * 100.0
-    merged["volume_notional"] = merged["volume"] * merged["mark"] * 100.0
-
-    denom = merged["openInterest_prev"].clip(lower=1.0)
-    merged["vol_oi_ratio"] = merged["volume"] / denom
-
-    # Best-effort delta-notional:
-    #   ΔOI * delta * spot * 100
-    if spot is not None and spot > 0 and "bs_delta" in merged.columns:
-        merged["bs_delta"] = pd.to_numeric(merged.get("bs_delta"), errors="coerce")
-        merged["delta_notional"] = merged["deltaOI"] * merged["bs_delta"] * float(spot) * 100.0
+def _compute_flow_notional_columns(merged: pd.DataFrame, *, spot: float | None) -> pd.DataFrame:
+    out = merged.copy()
+    out["mark"] = compute_mark_price(out)
+    out["deltaOI_notional"] = out["deltaOI"] * out["mark"] * 100.0
+    out["volume_notional"] = out["volume"] * out["mark"] * 100.0
+    out["vol_oi_ratio"] = out["volume"] / out["openInterest_prev"].clip(lower=1.0)
+    if spot is not None and spot > 0 and "bs_delta" in out.columns:
+        out["bs_delta"] = pd.to_numeric(out.get("bs_delta"), errors="coerce")
+        out["delta_notional"] = out["deltaOI"] * out["bs_delta"] * float(spot) * 100.0
     else:
-        merged["delta_notional"] = float("nan")
+        out["delta_notional"] = float("nan")
+    return out
 
-    def _classify(row) -> str:
-        return classify_flow(
-            oi_prev=row["openInterest_prev"],
-            oi_today=row["openInterest"],
-            delta_oi=row["deltaOI"],
-            volume=row["volume"],
-        ).value
 
-    merged["flow_class"] = merged.apply(_classify, axis=1)
-
-    return merged
+def _classify_flow_row(row: pd.Series) -> str:
+    return classify_flow(
+        oi_prev=row["openInterest_prev"],
+        oi_today=row["openInterest"],
+        delta_oi=row["deltaOI"],
+        volume=row["volume"],
+    ).value
 
 
 def summarize_flow(flow: pd.DataFrame) -> dict[str, float]:
