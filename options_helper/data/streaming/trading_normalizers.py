@@ -76,68 +76,79 @@ def _coerce_timestamp(value: Any) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
-def normalize_trade_update(update: Any) -> dict[str, Any] | None:
-    if update is None:
-        return None
-    order = _get_field(update, ("order",))
+def _coalesce_field(
+    *,
+    update: Any,
+    order: Any,
+    update_names: tuple[str, ...],
+    order_names: tuple[str, ...],
+    caster,
+) -> Any:
+    value = caster(_get_field(update, update_names))
+    if value is not None:
+        return value
+    return caster(_get_field(order, order_names))
 
-    timestamp = _coerce_timestamp(
-        _get_field(update, ("timestamp", "at", "time", "updated_at", "ts"))
+
+def _normalize_trade_core_fields(*, update: Any, order: Any) -> dict[str, Any] | None:
+    timestamp = _coalesce_field(
+        update=update,
+        order=order,
+        update_names=("timestamp", "at", "time", "updated_at", "ts"),
+        order_names=("updated_at", "filled_at", "submitted_at", "created_at"),
+        caster=_coerce_timestamp,
     )
-    if timestamp is None:
-        timestamp = _coerce_timestamp(
-            _get_field(order, ("updated_at", "filled_at", "submitted_at", "created_at"))
-        )
-
     event = _coerce_lower_str(_get_field(update, ("event", "event_type")))
-    order_id = _coerce_str(_get_field(update, ("order_id", "id")))
-    if order_id is None:
-        order_id = _coerce_str(_get_field(order, ("id", "order_id", "client_order_id")))
-
-    symbol = _coerce_str(_get_field(update, ("symbol", "asset_symbol")))
-    if symbol is None:
-        symbol = _coerce_str(_get_field(order, ("symbol", "asset_symbol")))
+    order_id = _coalesce_field(
+        update=update,
+        order=order,
+        update_names=("order_id", "id"),
+        order_names=("id", "order_id", "client_order_id"),
+        caster=_coerce_str,
+    )
+    symbol = _coalesce_field(
+        update=update,
+        order=order,
+        update_names=("symbol", "asset_symbol"),
+        order_names=("symbol", "asset_symbol"),
+        caster=_coerce_str,
+    )
     if symbol is not None:
         symbol = symbol.upper()
-
-    side = _coerce_lower_str(_get_field(update, ("side",)))
-    if side is None:
-        side = _coerce_lower_str(_get_field(order, ("side",)))
-
-    qty = _coerce_float(_get_field(update, ("qty", "quantity")))
-    if qty is None:
-        qty = _coerce_float(_get_field(order, ("qty", "quantity", "order_qty")))
-
-    filled_qty = _coerce_float(_get_field(update, ("filled_qty", "filled_quantity")))
-    if filled_qty is None:
-        filled_qty = _coerce_float(
-            _get_field(order, ("filled_qty", "filled_quantity", "filled"))
-        )
-
-    filled_avg_price = _coerce_float(
-        _get_field(update, ("filled_avg_price", "average_fill_price"))
+    side = _coalesce_field(update=update, order=order, update_names=("side",), order_names=("side",), caster=_coerce_lower_str)
+    qty = _coalesce_field(
+        update=update,
+        order=order,
+        update_names=("qty", "quantity"),
+        order_names=("qty", "quantity", "order_qty"),
+        caster=_coerce_float,
     )
-    if filled_avg_price is None:
-        filled_avg_price = _coerce_float(
-            _get_field(order, ("filled_avg_price", "average_fill_price", "avg_fill_price"))
-        )
-
-    status = _coerce_lower_str(_get_field(update, ("status", "order_status")))
-    if status is None:
-        status = _coerce_lower_str(_get_field(order, ("status", "order_status")))
+    filled_qty = _coalesce_field(
+        update=update,
+        order=order,
+        update_names=("filled_qty", "filled_quantity"),
+        order_names=("filled_qty", "filled_quantity", "filled"),
+        caster=_coerce_float,
+    )
+    filled_avg_price = _coalesce_field(
+        update=update,
+        order=order,
+        update_names=("filled_avg_price", "average_fill_price"),
+        order_names=("filled_avg_price", "average_fill_price", "avg_fill_price"),
+        caster=_coerce_float,
+    )
+    status = _coalesce_field(
+        update=update,
+        order=order,
+        update_names=("status", "order_status"),
+        order_names=("status", "order_status"),
+        caster=_coerce_lower_str,
+    )
     if event is None:
         event = status
-
-    if (
-        timestamp is None
-        and event is None
-        and order_id is None
-        and symbol is None
-        and status is None
-    ):
+    if timestamp is None and event is None and order_id is None and symbol is None and status is None:
         return None
-
-    row: dict[str, Any] = {
+    return {
         "timestamp": timestamp,
         "event": event,
         "order_id": order_id,
@@ -149,30 +160,54 @@ def normalize_trade_update(update: Any) -> dict[str, Any] | None:
         "status": status,
     }
 
-    order_type = _coerce_lower_str(_get_field(update, ("type", "order_type")))
-    if order_type is None:
-        order_type = _coerce_lower_str(_get_field(order, ("type", "order_type")))
+
+def _set_optional_trade_fields(row: dict[str, Any], *, update: Any, order: Any) -> None:
+    order_type = _coalesce_field(
+        update=update,
+        order=order,
+        update_names=("type", "order_type"),
+        order_names=("type", "order_type"),
+        caster=_coerce_lower_str,
+    )
     if order_type is not None:
         row["type"] = order_type
-
-    tif = _coerce_lower_str(_get_field(update, ("tif", "time_in_force")))
-    if tif is None:
-        tif = _coerce_lower_str(_get_field(order, ("time_in_force", "tif")))
+    tif = _coalesce_field(
+        update=update,
+        order=order,
+        update_names=("tif", "time_in_force"),
+        order_names=("time_in_force", "tif"),
+        caster=_coerce_lower_str,
+    )
     if tif is not None:
         row["tif"] = tif
-
-    limit_price = _coerce_float(_get_field(update, ("limit_price",)))
-    if limit_price is None:
-        limit_price = _coerce_float(_get_field(order, ("limit_price",)))
+    limit_price = _coalesce_field(
+        update=update,
+        order=order,
+        update_names=("limit_price",),
+        order_names=("limit_price",),
+        caster=_coerce_float,
+    )
     if limit_price is not None:
         row["limit_price"] = limit_price
-
-    stop_price = _coerce_float(_get_field(update, ("stop_price",)))
-    if stop_price is None:
-        stop_price = _coerce_float(_get_field(order, ("stop_price",)))
+    stop_price = _coalesce_field(
+        update=update,
+        order=order,
+        update_names=("stop_price",),
+        order_names=("stop_price",),
+        caster=_coerce_float,
+    )
     if stop_price is not None:
         row["stop_price"] = stop_price
 
+
+def normalize_trade_update(update: Any) -> dict[str, Any] | None:
+    if update is None:
+        return None
+    order = _get_field(update, ("order",))
+    row = _normalize_trade_core_fields(update=update, order=order)
+    if row is None:
+        return None
+    _set_optional_trade_fields(row, update=update, order=order)
     return row
 
 
