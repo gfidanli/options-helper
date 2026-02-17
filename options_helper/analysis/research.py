@@ -176,95 +176,18 @@ def analyze_underlying(
     risk_profile: RiskProfile,
 ) -> UnderlyingSetup:
     reasons: list[str] = []
-
     if history.empty or "Close" not in history.columns:
-        return UnderlyingSetup(
-            symbol=symbol.upper(),
-            spot=None,
-            direction=Direction.NEUTRAL,
-            reasons=["No candle history available."],
-            daily_rsi=None,
-            daily_stoch_rsi=None,
-            weekly_rsi=None,
-            weekly_breakout=None,
-        )
-
+        return _empty_underlying_setup(symbol, reason="No candle history available.")
     close = history["Close"].dropna()
     if close.empty:
-        return UnderlyingSetup(
-            symbol=symbol.upper(),
-            spot=None,
-            direction=Direction.NEUTRAL,
-            reasons=["No close prices available."],
-            daily_rsi=None,
-            daily_stoch_rsi=None,
-            weekly_rsi=None,
-            weekly_breakout=None,
-        )
-
+        return _empty_underlying_setup(symbol, reason="No close prices available.")
     spot = float(close.iloc[-1])
-
     rsi_d = rsi(close, 14)
     stoch_rsi_d = stoch_rsi(close)
-
-    close_w = close.resample("W-FRI").last().dropna()
-    ema20_w = ema(close_w, 20) if not close_w.empty else None
-    ema50_w = ema(close_w, 50) if not close_w.empty else None
-    rsi_w = rsi(close_w, 14) if not close_w.empty else None
-
-    lookback = risk_profile.breakout_lookback_weeks
-    breakout_w = breakout_up(close_w, lookback) if not close_w.empty else None
-
-    bullish_weekly = False
-    bearish_weekly = False
-    if ema20_w is not None and ema50_w is not None and spot is not None:
-        bullish_weekly = (spot > ema50_w) and (ema20_w >= ema50_w)
-        bearish_weekly = (spot < ema50_w) and (ema20_w <= ema50_w)
-
-    if bullish_weekly:
-        reasons.append("Weekly trend bullish (price above EMA50; EMA20 ≥ EMA50).")
-    elif bearish_weekly:
-        reasons.append("Weekly trend bearish (price below EMA50; EMA20 ≤ EMA50).")
-    else:
-        reasons.append("Weekly trend neutral/mixed.")
-
-    if breakout_w is True:
-        reasons.append(f"Weekly breakout: close exceeded prior {lookback}-week high.")
-
-    if rsi_w is not None:
-        if rsi_w >= 55:
-            reasons.append(f"Weekly RSI strong ({rsi_w:.0f} ≥ 55).")
-        elif rsi_w <= 45:
-            reasons.append(f"Weekly RSI weak ({rsi_w:.0f} ≤ 45).")
-        else:
-            reasons.append(f"Weekly RSI neutral ({rsi_w:.0f}).")
-
-    if stoch_rsi_d is not None:
-        # User-friendly banding
-        if 40 <= stoch_rsi_d <= 60:
-            reasons.append(f"Daily StochRSI near mid-range ({stoch_rsi_d:.0f}), room for momentum expansion.")
-        elif stoch_rsi_d > 80:
-            reasons.append(f"Daily StochRSI elevated ({stoch_rsi_d:.0f}), momentum already extended.")
-        elif stoch_rsi_d < 20:
-            reasons.append(f"Daily StochRSI depressed ({stoch_rsi_d:.0f}), potential reset/bounce zone.")
-        else:
-            reasons.append(f"Daily StochRSI {stoch_rsi_d:.0f}.")
-
-    if rsi_d is not None:
-        if rsi_d >= 55:
-            reasons.append(f"Daily RSI supportive ({rsi_d:.0f} ≥ 55).")
-        elif rsi_d <= 45:
-            reasons.append(f"Daily RSI weak ({rsi_d:.0f} ≤ 45).")
-        else:
-            reasons.append(f"Daily RSI neutral ({rsi_d:.0f}).")
-
-    # Direction decision (simple, LEAPS-oriented)
-    direction = Direction.NEUTRAL
-    if bullish_weekly and (breakout_w is True or (rsi_w is not None and rsi_w >= 55)):
-        direction = Direction.BULLISH
-    elif bearish_weekly and (breakout_down(close_w, lookback) is True or (rsi_w is not None and rsi_w <= 45)):
-        direction = Direction.BEARISH
-
+    weekly_context = _weekly_underlying_context(close=close, spot=spot, risk_profile=risk_profile)
+    _append_weekly_trend_reasons(reasons, weekly_context)
+    _append_momentum_reasons(reasons, weekly_context=weekly_context, daily_rsi=rsi_d, daily_stoch_rsi=stoch_rsi_d)
+    direction = _choose_underlying_direction(close=weekly_context["close_w"], weekly_context=weekly_context)
     return UnderlyingSetup(
         symbol=symbol.upper(),
         spot=spot,
@@ -272,9 +195,105 @@ def analyze_underlying(
         reasons=reasons,
         daily_rsi=rsi_d,
         daily_stoch_rsi=stoch_rsi_d,
-        weekly_rsi=rsi_w,
-        weekly_breakout=breakout_w,
+        weekly_rsi=cast(float | None, weekly_context["weekly_rsi"]),
+        weekly_breakout=cast(bool | None, weekly_context["breakout"]),
     )
+
+
+def _empty_underlying_setup(symbol: str, *, reason: str) -> UnderlyingSetup:
+    return UnderlyingSetup(
+        symbol=symbol.upper(),
+        spot=None,
+        direction=Direction.NEUTRAL,
+        reasons=[reason],
+        daily_rsi=None,
+        daily_stoch_rsi=None,
+        weekly_rsi=None,
+        weekly_breakout=None,
+    )
+
+
+def _weekly_underlying_context(
+    *,
+    close: pd.Series,
+    spot: float,
+    risk_profile: RiskProfile,
+) -> dict[str, object]:
+    close_w = close.resample("W-FRI").last().dropna()
+    ema20_w = ema(close_w, 20) if not close_w.empty else None
+    ema50_w = ema(close_w, 50) if not close_w.empty else None
+    weekly_rsi = rsi(close_w, 14) if not close_w.empty else None
+    lookback = int(risk_profile.breakout_lookback_weeks)
+    breakout = breakout_up(close_w, lookback) if not close_w.empty else None
+    bullish_weekly = bool(ema20_w is not None and ema50_w is not None and spot > ema50_w and ema20_w >= ema50_w)
+    bearish_weekly = bool(ema20_w is not None and ema50_w is not None and spot < ema50_w and ema20_w <= ema50_w)
+    return {
+        "close_w": close_w,
+        "lookback": lookback,
+        "weekly_rsi": weekly_rsi,
+        "breakout": breakout,
+        "bullish_weekly": bullish_weekly,
+        "bearish_weekly": bearish_weekly,
+    }
+
+
+def _append_weekly_trend_reasons(reasons: list[str], weekly_context: dict[str, object]) -> None:
+    if cast(bool, weekly_context["bullish_weekly"]):
+        reasons.append("Weekly trend bullish (price above EMA50; EMA20 ≥ EMA50).")
+    elif cast(bool, weekly_context["bearish_weekly"]):
+        reasons.append("Weekly trend bearish (price below EMA50; EMA20 ≤ EMA50).")
+    else:
+        reasons.append("Weekly trend neutral/mixed.")
+    if weekly_context["breakout"] is True:
+        reasons.append(f"Weekly breakout: close exceeded prior {weekly_context['lookback']}-week high.")
+
+
+def _append_momentum_reasons(
+    reasons: list[str],
+    *,
+    weekly_context: dict[str, object],
+    daily_rsi: float | None,
+    daily_stoch_rsi: float | None,
+) -> None:
+    weekly_rsi = cast(float | None, weekly_context["weekly_rsi"])
+    if weekly_rsi is not None:
+        if weekly_rsi >= 55:
+            reasons.append(f"Weekly RSI strong ({weekly_rsi:.0f} ≥ 55).")
+        elif weekly_rsi <= 45:
+            reasons.append(f"Weekly RSI weak ({weekly_rsi:.0f} ≤ 45).")
+        else:
+            reasons.append(f"Weekly RSI neutral ({weekly_rsi:.0f}).")
+    if daily_stoch_rsi is not None:
+        if 40 <= daily_stoch_rsi <= 60:
+            reasons.append(f"Daily StochRSI near mid-range ({daily_stoch_rsi:.0f}), room for momentum expansion.")
+        elif daily_stoch_rsi > 80:
+            reasons.append(f"Daily StochRSI elevated ({daily_stoch_rsi:.0f}), momentum already extended.")
+        elif daily_stoch_rsi < 20:
+            reasons.append(f"Daily StochRSI depressed ({daily_stoch_rsi:.0f}), potential reset/bounce zone.")
+        else:
+            reasons.append(f"Daily StochRSI {daily_stoch_rsi:.0f}.")
+    if daily_rsi is not None:
+        if daily_rsi >= 55:
+            reasons.append(f"Daily RSI supportive ({daily_rsi:.0f} ≥ 55).")
+        elif daily_rsi <= 45:
+            reasons.append(f"Daily RSI weak ({daily_rsi:.0f} ≤ 45).")
+        else:
+            reasons.append(f"Daily RSI neutral ({daily_rsi:.0f}).")
+
+
+def _choose_underlying_direction(*, close: pd.Series, weekly_context: dict[str, object]) -> Direction:
+    bullish_weekly = cast(bool, weekly_context["bullish_weekly"])
+    bearish_weekly = cast(bool, weekly_context["bearish_weekly"])
+    weekly_rsi = cast(float | None, weekly_context["weekly_rsi"])
+    lookback = cast(int, weekly_context["lookback"])
+    breakout = weekly_context["breakout"] is True
+    if bullish_weekly and (breakout or (weekly_rsi is not None and weekly_rsi >= 55)):
+        return Direction.BULLISH
+    if bearish_weekly and (
+        breakout_down(close, lookback) is True or (weekly_rsi is not None and weekly_rsi <= 45)
+    ):
+        return Direction.BEARISH
+    return Direction.NEUTRAL
 
 
 def _breakout_up_level(close: pd.Series, lookback: int) -> float | None:
