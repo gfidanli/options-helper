@@ -213,80 +213,22 @@ def compute_derived_stats(
 
     Pure function: deterministic for a given DataFrame and inputs.
     """
-    if df is None or df.empty:
-        raise ValueError("empty derived data")
-    if "date" not in df.columns:
-        raise ValueError("derived data missing 'date' column")
-
-    if window < 1 or trend_window < 1:
-        raise ValueError("window and trend_window must be >= 1")
-
-    data = df.copy()
-    data["date"] = data["date"].astype(str)
-    data = data.sort_values(["date"], ascending=True, na_position="last")
-
-    as_of_norm = as_of.strip().lower()
-    as_of_date = str(data["date"].iloc[-1]) if as_of_norm == "latest" else as_of.strip()
-
-    if as_of_date not in set(data["date"].tolist()):
-        raise ValueError(f"date not found in derived data: {as_of_date}")
-
-    data = data[data["date"] <= as_of_date].copy()
-    data = data.sort_values(["date"], ascending=True, na_position="last")
-
-    current_rows = data[data["date"] == as_of_date]
-    if current_rows.empty:
-        raise ValueError(f"no row for date: {as_of_date}")
-    current = current_rows.iloc[-1]
-
-    if metric_columns is None:
-        metric_columns = [c for c in data.columns if c != "date"]
-
+    _validate_derived_stat_windows(window=window, trend_window=trend_window)
+    data, as_of_date, current = _prepare_derived_stats_inputs(df=df, as_of=as_of)
+    selected_columns = metric_columns or [column for column in data.columns if column != "date"]
     warnings: list[str] = []
     metrics: list[DerivedMetricStat] = []
-
-    for col in metric_columns:
-        if col not in data.columns:
-            warnings.append(f"missing_column:{col}")
-            metrics.append(DerivedMetricStat(name=col))
-            continue
-
-        series = pd.to_numeric(data[col], errors="coerce")
-        value = _to_float(current.get(col))
-
-        pct_values = series.dropna().tail(window)
-        percentile = None if value is None else _percentile_rank_last(pct_values)
-
-        trend_values = series.dropna().tail(trend_window)
-        trend_n = int(len(trend_values))
-        trend_direction: TrendDirection | None = None
-        trend_delta = trend_delta_pct = None
-        if value is not None and trend_n >= 2:
-            start = float(trend_values.iloc[0])
-            end = float(trend_values.iloc[-1])
-            trend_delta = float(end - start)
-            if start != 0:
-                trend_delta_pct = float(trend_delta / abs(start) * 100.0)
-            if abs(trend_delta) <= 1e-12:
-                trend_direction = "flat"
-            elif trend_delta > 0:
-                trend_direction = "up"
-            else:
-                trend_direction = "down"
-
-        metrics.append(
-            DerivedMetricStat(
-                name=col,
-                value=value,
-                percentile=percentile,
-                percentile_n=int(len(pct_values)),
-                trend_direction=trend_direction,
-                trend_n=trend_n,
-                trend_delta=trend_delta,
-                trend_delta_pct=trend_delta_pct,
-            )
+    for column in selected_columns:
+        stat, warning = _build_metric_stat(
+            data=data,
+            current=current,
+            column=column,
+            window=window,
+            trend_window=trend_window,
         )
-
+        if warning is not None:
+            warnings.append(warning)
+        metrics.append(stat)
     return DerivedStatsReport(
         symbol=symbol.upper(),
         as_of=as_of_date,
@@ -295,3 +237,98 @@ def compute_derived_stats(
         metrics=metrics,
         warnings=warnings,
     )
+
+
+def _prepare_derived_stats_inputs(
+    *,
+    df: pd.DataFrame,
+    as_of: str,
+) -> tuple[pd.DataFrame, str, pd.Series]:
+    if df is None or df.empty:
+        raise ValueError("empty derived data")
+    if "date" not in df.columns:
+        raise ValueError("derived data missing 'date' column")
+    data = df.copy()
+    data["date"] = data["date"].astype(str)
+    data = data.sort_values(["date"], ascending=True, na_position="last")
+    as_of_date = _resolve_derived_as_of_date(data=data, as_of=as_of)
+    if as_of_date not in set(data["date"].tolist()):
+        raise ValueError(f"date not found in derived data: {as_of_date}")
+    data = data[data["date"] <= as_of_date].copy()
+    data = data.sort_values(["date"], ascending=True, na_position="last")
+    current_rows = data[data["date"] == as_of_date]
+    if current_rows.empty:
+        raise ValueError(f"no row for date: {as_of_date}")
+    return data, as_of_date, current_rows.iloc[-1]
+
+
+def _resolve_derived_as_of_date(*, data: pd.DataFrame, as_of: str) -> str:
+    as_of_norm = as_of.strip().lower()
+    if as_of_norm == "latest":
+        return str(data["date"].iloc[-1])
+    return as_of.strip()
+
+
+def _build_metric_stat(
+    *,
+    data: pd.DataFrame,
+    current: pd.Series,
+    column: str,
+    window: int,
+    trend_window: int,
+) -> tuple[DerivedMetricStat, str | None]:
+    if column not in data.columns:
+        return DerivedMetricStat(name=column), f"missing_column:{column}"
+    series = pd.to_numeric(data[column], errors="coerce")
+    value = _to_float(current.get(column))
+    percentile_values = series.dropna().tail(window)
+    percentile = None if value is None else _percentile_rank_last(percentile_values)
+    trend = _compute_trend_stats(series=series, value=value, trend_window=trend_window)
+    return (
+        DerivedMetricStat(
+            name=column,
+            value=value,
+            percentile=percentile,
+            percentile_n=int(len(percentile_values)),
+            trend_direction=trend["trend_direction"],
+            trend_n=trend["trend_n"],
+            trend_delta=trend["trend_delta"],
+            trend_delta_pct=trend["trend_delta_pct"],
+        ),
+        None,
+    )
+
+
+def _validate_derived_stat_windows(*, window: int, trend_window: int) -> None:
+    if window < 1 or trend_window < 1:
+        raise ValueError("window and trend_window must be >= 1")
+
+
+def _compute_trend_stats(
+    *,
+    series: pd.Series,
+    value: float | None,
+    trend_window: int,
+) -> dict[str, TrendDirection | float | int | None]:
+    trend_values = series.dropna().tail(trend_window)
+    trend_n = int(len(trend_values))
+    trend_direction: TrendDirection | None = None
+    trend_delta = trend_delta_pct = None
+    if value is not None and trend_n >= 2:
+        start = float(trend_values.iloc[0])
+        end = float(trend_values.iloc[-1])
+        trend_delta = float(end - start)
+        if start != 0:
+            trend_delta_pct = float(trend_delta / abs(start) * 100.0)
+        if abs(trend_delta) <= 1e-12:
+            trend_direction = "flat"
+        elif trend_delta > 0:
+            trend_direction = "up"
+        else:
+            trend_direction = "down"
+    return {
+        "trend_direction": trend_direction,
+        "trend_n": trend_n,
+        "trend_delta": trend_delta,
+        "trend_delta_pct": trend_delta_pct,
+    }

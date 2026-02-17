@@ -91,23 +91,62 @@ def compute_strategy_features(
     frame = normalize_ohlc_frame(ohlc)
     if frame.empty:
         return _empty_strategy_features(index=frame.index)
+    index, close, high, low = _extract_ohlc_series(frame)
+    extension = _compute_extension_columns(close=close, high=high, low=low, cfg=cfg)
+    rsi_values, rsi_regime = _compute_rsi_columns(
+        close=close,
+        index=index,
+        cfg=cfg,
+        rsi_series=rsi_series,
+    )
+    divergence, bearish_divergence, bullish_divergence = _compute_divergence_columns(
+        close=close,
+        rsi_values=rsi_values,
+        cfg=cfg,
+    )
+    rv, rv_percentile, rv_regime = _compute_realized_vol_columns(close=close, index=index, cfg=cfg)
+    bars_since_swing_values, bars_since_swing_bucket = _resolve_bars_since_swing_columns(
+        bars_since_swing=bars_since_swing,
+        index=index,
+        cfg=cfg,
+    )
+    return _assemble_strategy_feature_output(
+        index=index,
+        extension=extension,
+        rsi_values=rsi_values,
+        rsi_regime=rsi_regime,
+        divergence=divergence,
+        bearish_divergence=bearish_divergence,
+        bullish_divergence=bullish_divergence,
+        realized_vol=rv,
+        realized_vol_percentile=rv_percentile,
+        realized_vol_regime=rv_regime,
+        bars_since_swing_values=bars_since_swing_values,
+        bars_since_swing_bucket=bars_since_swing_bucket,
+    )
 
+
+def _extract_ohlc_series(frame: pd.DataFrame) -> tuple[pd.Index, pd.Series, pd.Series, pd.Series]:
     index = frame.index
     close = pd.to_numeric(frame["Close"], errors="coerce").astype("float64")
     high = pd.to_numeric(frame["High"], errors="coerce").astype("float64")
     low = pd.to_numeric(frame["Low"], errors="coerce").astype("float64")
+    return index, close, high, low
 
+
+def _compute_extension_columns(
+    *,
+    close: pd.Series,
+    high: pd.Series,
+    low: pd.Series,
+    cfg: StrategyFeatureConfig,
+) -> dict[str, pd.Series]:
     atr = _atr_series(high=high, low=low, close=close, window=cfg.extension_atr_window)
     ema9 = _ema_series(close=close, span=9)
     ema9_slope = compute_ema_slope(ema9, lookback_bars=cfg.ema9_slope_lookback_bars)
     sma = close.rolling(window=cfg.extension_sma_window, min_periods=cfg.extension_sma_window).mean()
-    extension_atr = (close - sma) / atr.replace(0.0, np.nan)
-    extension_atr = extension_atr.astype("float64")
-
-    extension_percentile = _rolling_percentile_rank_clean(
-        extension_atr,
-        window=cfg.extension_percentile_window,
-    )
+    extension_atr = ((close - sma) / atr.replace(0.0, np.nan)).astype("float64")
+    extension_percentile = _rolling_percentile_rank_clean(extension_atr, window=cfg.extension_percentile_window)
     extension_bucket = _map_labels(
         extension_percentile,
         lambda value: label_percentile_bucket(
@@ -116,12 +155,27 @@ def compute_strategy_features(
             high=cfg.extension_bucket_high_pct,
         ),
     )
+    return {
+        "atr": atr,
+        "ema9": ema9,
+        "ema9_slope": ema9_slope,
+        "extension_atr": extension_atr,
+        "extension_percentile": extension_percentile,
+        "extension_bucket": extension_bucket,
+    }
 
+
+def _compute_rsi_columns(
+    *,
+    close: pd.Series,
+    index: pd.Index,
+    cfg: StrategyFeatureConfig,
+    rsi_series: pd.Series | None,
+) -> tuple[pd.Series, pd.Series]:
     if rsi_series is None:
         rsi_values = _rsi_series(close=close, window=cfg.rsi_window)
     else:
         rsi_values = pd.to_numeric(rsi_series.reindex(index), errors="coerce").astype("float64")
-
     rsi_regime = _map_labels(
         rsi_values,
         lambda value: rsi_regime_tag(
@@ -132,50 +186,76 @@ def compute_strategy_features(
         if value == value
         else None,
     )
+    return rsi_values, rsi_regime
 
-    divergence, bearish_divergence, bullish_divergence = _compute_divergence_columns(
-        close=close,
-        rsi_values=rsi_values,
-        cfg=cfg,
-    )
 
-    rv = realized_vol(close, window=cfg.realized_vol_window).reindex(index).astype("float64")
-    rv_percentile = _rolling_percentile_rank_clean(rv, window=cfg.realized_vol_percentile_window)
-    rv_regime = _map_labels(
-        rv_percentile,
+def _compute_realized_vol_columns(
+    *,
+    close: pd.Series,
+    index: pd.Index,
+    cfg: StrategyFeatureConfig,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    realized = realized_vol(close, window=cfg.realized_vol_window).reindex(index).astype("float64")
+    percentile = _rolling_percentile_rank_clean(realized, window=cfg.realized_vol_percentile_window)
+    regime = _map_labels(
+        percentile,
         lambda value: label_percentile_bucket(
             value,
             low=cfg.realized_vol_low_pct,
             high=cfg.realized_vol_high_pct,
         ),
     )
+    return realized, percentile, regime
 
+
+def _resolve_bars_since_swing_columns(
+    *,
+    bars_since_swing: pd.Series | None,
+    index: pd.Index,
+    cfg: StrategyFeatureConfig,
+) -> tuple[pd.Series, pd.Series]:
     if bars_since_swing is None:
-        bars_since_swing_values = pd.Series(np.nan, index=index, dtype="float64")
-        bars_since_swing_bucket = pd.Series([None] * len(index), index=index, dtype="object")
-    else:
-        bars_since_swing_values = pd.to_numeric(bars_since_swing.reindex(index), errors="coerce").astype("float64")
-        bars_since_swing_bucket = _map_labels(
-            bars_since_swing_values,
-            lambda value: label_bars_since_swing_bucket(value, boundaries=cfg.bars_since_swing_boundaries),
-        )
+        values = pd.Series(np.nan, index=index, dtype="float64")
+        return values, pd.Series([None] * len(index), index=index, dtype="object")
+    values = pd.to_numeric(bars_since_swing.reindex(index), errors="coerce").astype("float64")
+    bucket = _map_labels(
+        values,
+        lambda value: label_bars_since_swing_bucket(value, boundaries=cfg.bars_since_swing_boundaries),
+    )
+    return values, bucket
 
+
+def _assemble_strategy_feature_output(
+    *,
+    index: pd.Index,
+    extension: dict[str, pd.Series],
+    rsi_values: pd.Series,
+    rsi_regime: pd.Series,
+    divergence: pd.Series,
+    bearish_divergence: pd.Series,
+    bullish_divergence: pd.Series,
+    realized_vol: pd.Series,
+    realized_vol_percentile: pd.Series,
+    realized_vol_regime: pd.Series,
+    bars_since_swing_values: pd.Series,
+    bars_since_swing_bucket: pd.Series,
+) -> pd.DataFrame:
     out = pd.DataFrame(index=index)
-    out["atr"] = atr
-    out["ema9"] = ema9
-    out["ema9_slope"] = ema9_slope
-    out["extension_atr"] = extension_atr
-    out["extension_percentile"] = extension_percentile
-    out["extension_bucket"] = extension_bucket
+    out["atr"] = extension["atr"]
+    out["ema9"] = extension["ema9"]
+    out["ema9_slope"] = extension["ema9_slope"]
+    out["extension_atr"] = extension["extension_atr"]
+    out["extension_percentile"] = extension["extension_percentile"]
+    out["extension_bucket"] = extension["extension_bucket"]
     out["rsi"] = rsi_values
     out["rsi_regime"] = rsi_regime
     out["rsi_divergence"] = divergence
     out["bearish_rsi_divergence"] = bearish_divergence
     out["bullish_rsi_divergence"] = bullish_divergence
-    out["realized_vol"] = rv
-    out["realized_vol_percentile"] = rv_percentile
-    out["realized_vol_regime"] = rv_regime
-    out["volatility_regime"] = rv_regime.copy()
+    out["realized_vol"] = realized_vol
+    out["realized_vol_percentile"] = realized_vol_percentile
+    out["realized_vol_regime"] = realized_vol_regime
+    out["volatility_regime"] = realized_vol_regime.copy()
     out["bars_since_swing"] = bars_since_swing_values
     out["bars_since_swing_bucket"] = bars_since_swing_bucket
     return out
