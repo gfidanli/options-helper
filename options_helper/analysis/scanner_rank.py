@@ -164,6 +164,46 @@ def _normalize_divergence(value: object) -> DivergenceDirection | None:
     return None
 
 
+def _extension_component(
+    *,
+    weight: float,
+    value: float | None,
+    score: float | None,
+    reason: str,
+) -> ScannerRankComponent:
+    return ScannerRankComponent(
+        name="extension_tail",
+        weight=weight,
+        value=value,
+        score=score,
+        reason=reason,
+    )
+
+
+def _score_extension_tail_low(*, pct: float, tail_low: float, weight: float) -> ScannerRankComponent:
+    denom = tail_low if tail_low > 0 else 1.0
+    severity = _clamp((tail_low - pct) / denom, 0.0, 1.0)
+    score = weight * severity
+    return _extension_component(
+        weight=weight,
+        value=pct,
+        score=score,
+        reason=f"Extension tail low (pct={pct:.1f}).",
+    )
+
+
+def _score_extension_tail_high(*, pct: float, tail_high: float, weight: float) -> ScannerRankComponent:
+    denom = (100.0 - tail_high) if tail_high < 100.0 else 1.0
+    severity = _clamp((pct - tail_high) / denom, 0.0, 1.0)
+    score = weight * severity
+    return _extension_component(
+        weight=weight,
+        value=pct,
+        score=score,
+        reason=f"Extension tail high (pct={pct:.1f}).",
+    )
+
+
 def _score_extension(
     percentile: float | None,
     weight: float,
@@ -171,16 +211,14 @@ def _score_extension(
     warnings: list[str],
 ) -> ScannerRankComponent:
     if weight <= 0:
-        return ScannerRankComponent(
-            name="extension_tail",
+        return _extension_component(
             weight=0.0,
             value=percentile,
             score=None,
             reason="Extension component disabled.",
         )
     if percentile is None:
-        return ScannerRankComponent(
-            name="extension_tail",
+        return _extension_component(
             weight=weight,
             value=None,
             score=None,
@@ -189,8 +227,7 @@ def _score_extension(
     try:
         pct = float(percentile)
     except Exception:  # noqa: BLE001
-        return ScannerRankComponent(
-            name="extension_tail",
+        return _extension_component(
             weight=weight,
             value=None,
             score=None,
@@ -198,8 +235,7 @@ def _score_extension(
         )
     if pct < 0 or pct > 100:
         warnings.append("extension_percentile_out_of_range")
-        return ScannerRankComponent(
-            name="extension_tail",
+        return _extension_component(
             weight=weight,
             value=pct,
             score=None,
@@ -211,39 +247,17 @@ def _score_extension(
     tail_high = float(ext_cfg.get("tail_high", 95.0))
     if tail_low >= tail_high:
         warnings.append("extension_thresholds_invalid")
-        return ScannerRankComponent(
-            name="extension_tail",
+        return _extension_component(
             weight=weight,
             value=pct,
             score=None,
             reason="Extension thresholds invalid.",
         )
-
     if pct <= tail_low:
-        denom = tail_low if tail_low > 0 else 1.0
-        severity = _clamp((tail_low - pct) / denom, 0.0, 1.0)
-        score = weight * severity
-        return ScannerRankComponent(
-            name="extension_tail",
-            weight=weight,
-            value=pct,
-            score=score,
-            reason=f"Extension tail low (pct={pct:.1f}).",
-        )
+        return _score_extension_tail_low(pct=pct, tail_low=tail_low, weight=weight)
     if pct >= tail_high:
-        denom = (100.0 - tail_high) if tail_high < 100.0 else 1.0
-        severity = _clamp((pct - tail_high) / denom, 0.0, 1.0)
-        score = weight * severity
-        return ScannerRankComponent(
-            name="extension_tail",
-            weight=weight,
-            value=pct,
-            score=score,
-            reason=f"Extension tail high (pct={pct:.1f}).",
-        )
-
-    return ScannerRankComponent(
-        name="extension_tail",
+        return _score_extension_tail_high(pct=pct, tail_high=tail_high, weight=weight)
+    return _extension_component(
         weight=weight,
         value=pct,
         score=0.0,
