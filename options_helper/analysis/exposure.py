@@ -40,6 +40,23 @@ class ExposureSlice:
     top_abs_net_levels: list[NetExposureLevel]
 
 
+def _summarize_exposure_rows(
+    strike_rows: list[dict[str, Any]],
+    *,
+    can_compute_gex: bool,
+    top_n: int,
+) -> tuple[float | None, float | None, float | None, float | None, list[NetExposureLevel]]:
+    if not can_compute_gex:
+        return None, None, None, None, []
+    total_call_gex = sum(_as_float_or_zero(row.get("call_gex")) for row in strike_rows)
+    total_put_gex = sum(_as_float_or_zero(row.get("put_gex")) for row in strike_rows)
+    total_net_gex = sum(_as_float_or_zero(row.get("net_gex")) for row in strike_rows)
+    net_by_strike = aggregate_net_exposure_by_strike(strike_rows)
+    flip_strike = compute_flip_strike(net_by_strike)
+    top_abs_net_levels = rank_top_abs_net_levels(net_by_strike, top_n=top_n)
+    return total_call_gex, total_put_gex, total_net_gex, flip_strike, top_abs_net_levels
+
+
 def compute_exposure_slice(
     snapshot: pd.DataFrame,
     *,
@@ -53,16 +70,12 @@ def compute_exposure_slice(
 ) -> ExposureSlice:
     if mode not in {"near", "monthly", "all"}:
         raise ValueError(f"unsupported mode: {mode}")
-
     symbol_norm = symbol.strip().upper()
     as_of_str = _normalize_as_of(as_of)
-
     warnings: list[str] = []
     cleaned = _normalize_chain_rows(snapshot, warnings=warnings)
-
     available_dates = sorted(set(cleaned["expiry_date"].tolist())) if not cleaned.empty else []
     available_expiries = [exp.isoformat() for exp in available_dates]
-
     include_dates = _parse_include_expiries(include_expiries, warnings=warnings)
     if include_expiries is not None and include_dates == []:
         selected_dates: list[date] = []
@@ -73,20 +86,16 @@ def compute_exposure_slice(
             include=include_dates,
             near_n=near_n,
         )
-
     if not selected_dates:
         warnings.append("no_expiries_selected")
     included_expiries = [exp.isoformat() for exp in selected_dates]
-
     if cleaned.empty or not selected_dates:
         selected = cleaned.iloc[0:0].copy()
     else:
         selected = cleaned[cleaned["expiry_date"].isin(set(selected_dates))].copy()
-
     can_compute_gex = spot > 0
     if not can_compute_gex:
         warnings.append("non_positive_spot")
-
     strike_rows = _build_strike_rows(
         selected,
         symbol=symbol_norm,
@@ -94,21 +103,11 @@ def compute_exposure_slice(
         spot=spot,
         can_compute_gex=can_compute_gex,
     )
-
-    if can_compute_gex:
-        total_call_gex = sum(_as_float_or_zero(row.get("call_gex")) for row in strike_rows)
-        total_put_gex = sum(_as_float_or_zero(row.get("put_gex")) for row in strike_rows)
-        total_net_gex = sum(_as_float_or_zero(row.get("net_gex")) for row in strike_rows)
-        net_by_strike = aggregate_net_exposure_by_strike(strike_rows)
-        flip_strike = compute_flip_strike(net_by_strike)
-        top_abs_net_levels = rank_top_abs_net_levels(net_by_strike, top_n=top_n)
-    else:
-        total_call_gex = None
-        total_put_gex = None
-        total_net_gex = None
-        flip_strike = None
-        top_abs_net_levels = []
-
+    total_call_gex, total_put_gex, total_net_gex, flip_strike, top_abs_net_levels = _summarize_exposure_rows(
+        strike_rows,
+        can_compute_gex=can_compute_gex,
+        top_n=top_n,
+    )
     summary_values: dict[str, Any] = {
         "symbol": symbol_norm,
         "as_of": as_of_str,
@@ -120,7 +119,6 @@ def compute_exposure_slice(
         "warnings": _dedupe_preserve_order(warnings),
     }
     summary = {field: summary_values[field] for field in EXPOSURE_SUMMARY_FIELDS}
-
     return ExposureSlice(
         schema_version=1,
         signed_exposure_convention=SIGNED_EXPOSURE_CONVENTION,
