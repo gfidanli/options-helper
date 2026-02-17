@@ -168,86 +168,38 @@ def _compute_portfolio_metrics_from_parsed(
     starting_capital: float | None,
     annualization_periods: float | None,
 ) -> StrategyPortfolioMetrics:
-    if starting_capital is not None:
-        start_override = float(starting_capital)
-        if not math.isfinite(start_override) or start_override <= 0.0:
-            raise ValueError("starting_capital must be > 0 when provided")
-    else:
-        start_override = None
-
-    annualization = None
-    if annualization_periods is not None:
-        annualization = float(annualization_periods)
-        if not math.isfinite(annualization) or annualization <= 0.0:
-            raise ValueError("annualization_periods must be > 0 when provided")
-
+    start_override = _validated_positive_optional(starting_capital, field_name="starting_capital")
+    annualization = _validated_positive_optional(annualization_periods, field_name="annualization_periods")
     closed_trades = _closed_trades(parsed_trades)
     sorted_equity = sorted(parsed_equity, key=lambda row: _timestamp_sort_key(row.ts))
-
-    pnl_values = [_trade_pnl_per_unit(trade) for trade in closed_trades]
-    finite_pnl_values = [value for value in pnl_values if value is not None]
-    realized_r_values = [value for value in (_finite_float(trade.realized_r) for trade in closed_trades) if value is not None]
-    hold_values = [float(trade.holding_bars) for trade in closed_trades]
-
-    if sorted_equity:
-        start_equity = float(sorted_equity[0].equity)
-        end_equity = float(sorted_equity[-1].equity)
-    else:
-        start_equity = 0.0
-        end_equity = 0.0
-
-    if start_override is not None:
-        start_equity = start_override
-        if not sorted_equity:
-            end_equity = start_equity + sum(finite_pnl_values)
-
-    if not math.isfinite(start_equity):
-        start_equity = 0.0
-    if not math.isfinite(end_equity):
-        end_equity = start_equity
-
-    total_return_pct = 0.0
-    if start_equity > _EPSILON:
-        total_return_pct = (end_equity / start_equity) - 1.0
-
+    pnl_values, finite_pnl_values, realized_r_values, hold_values = _collect_trade_metric_vectors(closed_trades)
+    start_equity, end_equity = _resolve_equity_bounds(
+        sorted_equity=sorted_equity,
+        start_override=start_override,
+        finite_pnl_values=finite_pnl_values,
+    )
+    total_return_pct = _compute_total_return_pct(start_equity=start_equity, end_equity=end_equity)
     years = _years_covered(sorted_equity, closed_trades)
     cagr_pct = _compute_cagr(start_equity, end_equity, years)
-
     max_drawdown_pct = _max_drawdown_pct(sorted_equity)
     step_returns = _step_returns(sorted_equity)
-
     annualization_factor = annualization
     if annualization_factor is None and years is not None and years > _EPSILON and step_returns:
         annualization_factor = float(len(step_returns)) / years
-
     sharpe_ratio = _compute_sharpe(step_returns, annualization_factor)
     sortino_ratio = _compute_sortino(step_returns, annualization_factor)
-
     calmar_ratio = None
     if cagr_pct is not None and max_drawdown_pct is not None and max_drawdown_pct < -_EPSILON:
         calmar_ratio = cagr_pct / abs(max_drawdown_pct)
-
-    trade_count = len(closed_trades)
-    winners = sum(1 for value in pnl_values if value is not None and value > 0.0)
-    losers = sum(1 for value in pnl_values if value is not None and value < 0.0)
-
-    win_rate = (winners / trade_count) if trade_count > 0 else None
-    loss_rate = (losers / trade_count) if trade_count > 0 else None
-
-    gross_profit = sum(value for value in finite_pnl_values if value > 0.0)
-    gross_loss = abs(sum(value for value in finite_pnl_values if value < 0.0))
-    profit_factor = None
-    if finite_pnl_values and gross_loss > _EPSILON:
-        profit_factor = gross_profit / gross_loss
-
-    expectancy_r = mean(realized_r_values) if realized_r_values else None
-    avg_realized_r = expectancy_r
-    avg_hold_bars = mean(hold_values) if hold_values else None
-
+    trade_distribution = _compute_trade_distribution_metrics(
+        pnl_values=pnl_values,
+        finite_pnl_values=finite_pnl_values,
+        realized_r_values=realized_r_values,
+        hold_values=hold_values,
+    )
     exposure_pct = _exposure_from_equity(sorted_equity)
     if exposure_pct is None:
         exposure_pct = _exposure_from_trades(closed_trades)
-
     return StrategyPortfolioMetrics(
         starting_capital=start_equity,
         ending_capital=end_equity,
@@ -257,15 +209,96 @@ def _compute_portfolio_metrics_from_parsed(
         sharpe_ratio=sharpe_ratio,
         sortino_ratio=sortino_ratio,
         calmar_ratio=calmar_ratio,
-        profit_factor=profit_factor,
-        expectancy_r=expectancy_r,
-        avg_realized_r=avg_realized_r,
-        trade_count=trade_count,
-        win_rate=win_rate,
-        loss_rate=loss_rate,
-        avg_hold_bars=avg_hold_bars,
+        profit_factor=trade_distribution["profit_factor"],
+        expectancy_r=trade_distribution["expectancy_r"],
+        avg_realized_r=trade_distribution["avg_realized_r"],
+        trade_count=trade_distribution["trade_count"],
+        win_rate=trade_distribution["win_rate"],
+        loss_rate=trade_distribution["loss_rate"],
+        avg_hold_bars=trade_distribution["avg_hold_bars"],
         exposure_pct=exposure_pct,
     )
+
+
+def _validated_positive_optional(value: float | None, *, field_name: str) -> float | None:
+    if value is None:
+        return None
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed <= 0.0:
+        raise ValueError(f"{field_name} must be > 0 when provided")
+    return parsed
+
+
+def _collect_trade_metric_vectors(
+    closed_trades: list[StrategyTradeSimulation],
+) -> tuple[list[float | None], list[float], list[float], list[float]]:
+    pnl_values = [_trade_pnl_per_unit(trade) for trade in closed_trades]
+    finite_pnl_values = [value for value in pnl_values if value is not None]
+    realized_r_values = [
+        value
+        for value in (_finite_float(trade.realized_r) for trade in closed_trades)
+        if value is not None
+    ]
+    hold_values = [float(trade.holding_bars) for trade in closed_trades]
+    return pnl_values, finite_pnl_values, realized_r_values, hold_values
+
+
+def _resolve_equity_bounds(
+    *,
+    sorted_equity: list[StrategyEquityPoint],
+    start_override: float | None,
+    finite_pnl_values: list[float],
+) -> tuple[float, float]:
+    if sorted_equity:
+        start_equity = float(sorted_equity[0].equity)
+        end_equity = float(sorted_equity[-1].equity)
+    else:
+        start_equity = 0.0
+        end_equity = 0.0
+    if start_override is not None:
+        start_equity = start_override
+        if not sorted_equity:
+            end_equity = start_equity + sum(finite_pnl_values)
+    if not math.isfinite(start_equity):
+        start_equity = 0.0
+    if not math.isfinite(end_equity):
+        end_equity = start_equity
+    return start_equity, end_equity
+
+
+def _compute_total_return_pct(*, start_equity: float, end_equity: float) -> float:
+    if start_equity <= _EPSILON:
+        return 0.0
+    return (end_equity / start_equity) - 1.0
+
+
+def _compute_trade_distribution_metrics(
+    *,
+    pnl_values: list[float | None],
+    finite_pnl_values: list[float],
+    realized_r_values: list[float],
+    hold_values: list[float],
+) -> dict[str, float | int | None]:
+    trade_count = len(pnl_values)
+    winners = sum(1 for value in pnl_values if value is not None and value > 0.0)
+    losers = sum(1 for value in pnl_values if value is not None and value < 0.0)
+    win_rate = (winners / trade_count) if trade_count > 0 else None
+    loss_rate = (losers / trade_count) if trade_count > 0 else None
+    gross_profit = sum(value for value in finite_pnl_values if value > 0.0)
+    gross_loss = abs(sum(value for value in finite_pnl_values if value < 0.0))
+    profit_factor = None
+    if finite_pnl_values and gross_loss > _EPSILON:
+        profit_factor = gross_profit / gross_loss
+    expectancy_r = mean(realized_r_values) if realized_r_values else None
+    return {
+        "trade_count": trade_count,
+        "win_rate": win_rate,
+        "loss_rate": loss_rate,
+        "profit_factor": profit_factor,
+        "expectancy_r": expectancy_r,
+        "avg_realized_r": expectancy_r,
+        "avg_hold_bars": mean(hold_values) if hold_values else None,
+    }
 
 
 def _closed_trades(trades: list[StrategyTradeSimulation]) -> list[StrategyTradeSimulation]:
