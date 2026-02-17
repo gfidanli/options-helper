@@ -73,49 +73,57 @@ def _render_payload(console: Console, payload: dict[str, Any]) -> None:
     lookback = int(payload.get("days") or 0)
     db_path = str(payload.get("database_path") or _resolve_duckdb_path(None))
     as_of = payload.get("as_of_date") or "-"
+    _render_payload_header(console, symbol=symbol, db_path=db_path, lookback=lookback, as_of=as_of)
+    for note in payload.get("notes") or []:
+        console.print(f"[yellow]Note:[/yellow] {note}")
+    candles = dict(payload.get("candles") or {})
+    snapshots = dict(payload.get("snapshots") or {})
+    contracts_oi = dict(payload.get("contracts_oi") or {})
+    option_bars = dict(payload.get("option_bars") or {})
+    _render_candles_section(console, candles=candles, lookback=lookback)
+    _render_snapshot_section(console, snapshots=snapshots, lookback=lookback)
+    _render_contracts_oi_section(console, contracts_oi=contracts_oi)
+    _render_oi_delta_table(console, delta_rows=contracts_oi.get("oi_delta_coverage") or [])
+    _render_option_bars_section(console, option_bars=option_bars)
+    _render_option_bars_status_table(console, status_counts=option_bars.get("status_counts") or {})
+    _render_repair_suggestions(console, suggestions=payload.get("repair_suggestions") or [])
 
+
+def _render_payload_header(console: Console, *, symbol: str, db_path: str, lookback: int, as_of: Any) -> None:
     console.print(f"[bold]Coverage for {symbol}[/bold]")
     console.print("Informational and educational use only. Not financial advice.")
     console.print(f"DuckDB: {db_path}")
     console.print(f"Lookback: {lookback} business day(s), as_of={as_of}")
 
-    for note in payload.get("notes") or []:
-        console.print(f"[yellow]Note:[/yellow] {note}")
 
-    candles = dict(payload.get("candles") or {})
-    snapshots = dict(payload.get("snapshots") or {})
-    contracts_oi = dict(payload.get("contracts_oi") or {})
-    option_bars = dict(payload.get("option_bars") or {})
-
+def _render_candles_section(console: Console, *, candles: dict[str, Any], lookback: int) -> None:
     _render_section(
         console,
         title="Candles",
         rows=[
             ("Rows", _fmt_int(candles.get("rows_total"))),
             ("Range", _fmt_range(candles.get("start_date"), candles.get("end_date"))),
-            (
-                f"Missing business days (last {lookback})",
-                _fmt_int(candles.get("missing_business_days")),
-            ),
+            (f"Missing business days (last {lookback})", _fmt_int(candles.get("missing_business_days"))),
             ("Missing value cells", _fmt_int(candles.get("missing_value_cells"))),
         ],
     )
 
+
+def _render_snapshot_section(console: Console, *, snapshots: dict[str, Any], lookback: int) -> None:
     _render_section(
         console,
         title="Options Snapshot Headers",
         rows=[
             ("Days present", _fmt_int(snapshots.get("days_present_total"))),
             ("Range", _fmt_range(snapshots.get("start_date"), snapshots.get("end_date"))),
-            (
-                f"Missing business days (last {lookback})",
-                _fmt_int(snapshots.get("missing_business_days")),
-            ),
+            (f"Missing business days (last {lookback})", _fmt_int(snapshots.get("missing_business_days"))),
             ("Avg contracts/day", _fmt_float(snapshots.get("avg_contracts_per_day"))),
             ("Non-zero contract days", _fmt_int(snapshots.get("non_zero_contract_days"))),
         ],
     )
 
+
+def _render_contracts_oi_section(console: Console, *, contracts_oi: dict[str, Any]) -> None:
     _render_section(
         console,
         title="Contract + OI Snapshots",
@@ -129,25 +137,29 @@ def _render_payload(console: Console, payload: dict[str, Any]) -> None:
         ],
     )
 
-    delta_rows = contracts_oi.get("oi_delta_coverage") or []
-    if delta_rows:
-        table = Table(title="OI Delta Coverage", show_header=True)
-        table.add_column("Lag")
-        table.add_column("Contracts w/ OI")
-        table.add_column("Contracts w/ Delta")
-        table.add_column("Pairs")
-        table.add_column("Coverage")
-        for row in delta_rows:
-            lag = int((row or {}).get("lag_days") or 0)
-            table.add_row(
-                f"{lag}d",
-                _fmt_int((row or {}).get("contracts_with_oi")),
-                _fmt_int((row or {}).get("contracts_with_delta")),
-                _fmt_int((row or {}).get("pair_count")),
-                _fmt_pct((row or {}).get("coverage_ratio")),
-            )
-        console.print(table)
 
+def _render_oi_delta_table(console: Console, *, delta_rows: list[dict[str, Any]]) -> None:
+    if not delta_rows:
+        return
+    table = Table(title="OI Delta Coverage", show_header=True)
+    table.add_column("Lag")
+    table.add_column("Contracts w/ OI")
+    table.add_column("Contracts w/ Delta")
+    table.add_column("Pairs")
+    table.add_column("Coverage")
+    for row in delta_rows:
+        lag = int((row or {}).get("lag_days") or 0)
+        table.add_row(
+            f"{lag}d",
+            _fmt_int((row or {}).get("contracts_with_oi")),
+            _fmt_int((row or {}).get("contracts_with_delta")),
+            _fmt_int((row or {}).get("pair_count")),
+            _fmt_pct((row or {}).get("coverage_ratio")),
+        )
+    console.print(table)
+
+
+def _render_option_bars_section(console: Console, *, option_bars: dict[str, Any]) -> None:
     _render_section(
         console,
         title="Option Bars Meta",
@@ -155,28 +167,25 @@ def _render_payload(console: Console, payload: dict[str, Any]) -> None:
             ("Contracts", _fmt_int(option_bars.get("contracts_total"))),
             ("Contracts with rows", _fmt_int(option_bars.get("contracts_with_rows"))),
             ("Rows total", _fmt_int(option_bars.get("rows_total"))),
-            (
-                "Contracts covering lookback end",
-                _fmt_int(option_bars.get("contracts_covering_lookback_end")),
-            ),
-            (
-                "Coverage at lookback end",
-                _fmt_pct(option_bars.get("covering_lookback_end_ratio")),
-            ),
+            ("Contracts covering lookback end", _fmt_int(option_bars.get("contracts_covering_lookback_end"))),
+            ("Coverage at lookback end", _fmt_pct(option_bars.get("covering_lookback_end_ratio"))),
             ("Range", _fmt_range(option_bars.get("start_date"), option_bars.get("end_date"))),
         ],
     )
 
-    status_counts = option_bars.get("status_counts") or {}
-    if status_counts:
-        table = Table(title="Option Bars Status Counts", show_header=True)
-        table.add_column("Status")
-        table.add_column("Count")
-        for key in sorted(status_counts.keys()):
-            table.add_row(str(key), _fmt_int(status_counts.get(key)))
-        console.print(table)
 
-    suggestions = payload.get("repair_suggestions") or []
+def _render_option_bars_status_table(console: Console, *, status_counts: dict[str, Any]) -> None:
+    if not status_counts:
+        return
+    table = Table(title="Option Bars Status Counts", show_header=True)
+    table.add_column("Status")
+    table.add_column("Count")
+    for key in sorted(status_counts.keys()):
+        table.add_row(str(key), _fmt_int(status_counts.get(key)))
+    console.print(table)
+
+
+def _render_repair_suggestions(console: Console, *, suggestions: list[dict[str, Any]]) -> None:
     console.print("\n[bold]Repair Suggestions[/bold]")
     if not suggestions:
         console.print("No repair commands suggested.")
