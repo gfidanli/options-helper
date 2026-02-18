@@ -598,22 +598,73 @@ def select_option_candidate(
     earnings_avoid_days: int = 0,
     include_bad_quotes: bool = False,
 ) -> OptionCandidate | None:
+    prepared = _prepare_option_candidate_frame(df, spot=spot, window_pct=window_pct)
+    if prepared is None:
+        return None
+    today = as_of or date.today()
+    enriched, dte = _enrich_option_candidate_frame(
+        prepared,
+        option_type=option_type,
+        spot=spot,
+        expiry=expiry,
+        today=today,
+        min_open_interest=min_open_interest,
+        min_volume=min_volume,
+    )
+    liquid, spread_gate_fallback, quality_gate_fallback = _apply_option_candidate_filters(
+        enriched,
+        min_open_interest=min_open_interest,
+        min_volume=min_volume,
+        max_spread_pct=max_spread_pct,
+        include_bad_quotes=include_bad_quotes,
+    )
+    pick = _pick_option_candidate_row(liquid, target_delta=target_delta, spot=spot)
+    return _build_option_candidate_from_pick(
+        pick=pick,
+        symbol=symbol,
+        option_type=option_type,
+        expiry=expiry,
+        dte=dte,
+        target_delta=target_delta,
+        today=today,
+        next_earnings_date=next_earnings_date,
+        earnings_warn_days=earnings_warn_days,
+        earnings_avoid_days=earnings_avoid_days,
+        spread_gate_fallback=spread_gate_fallback,
+        quality_gate_fallback=quality_gate_fallback,
+    )
+
+
+def _prepare_option_candidate_frame(
+    df: pd.DataFrame,
+    *,
+    spot: float,
+    window_pct: float,
+) -> pd.DataFrame | None:
     if df is None or df.empty:
         return None
-
-    df = df.copy()
-    df = _filter_strike_window(df, spot=spot, window_pct=window_pct)
-    if df.empty:
+    prepared = _filter_strike_window(df.copy(), spot=spot, window_pct=window_pct)
+    if prepared.empty:
         return None
+    return prepared
 
-    # Normalize fields
+
+def _enrich_option_candidate_frame(
+    df: pd.DataFrame,
+    *,
+    option_type: OptionType,
+    spot: float,
+    expiry: date,
+    today: date,
+    min_open_interest: int,
+    min_volume: int,
+) -> tuple[pd.DataFrame, int]:
     df["bid_f"] = df.get("bid").map(_as_float) if "bid" in df.columns else None
     df["ask_f"] = df.get("ask").map(_as_float) if "ask" in df.columns else None
     df["last_f"] = df.get("lastPrice").map(_as_float) if "lastPrice" in df.columns else None
     df["iv_f"] = df.get("impliedVolatility").map(_as_float) if "impliedVolatility" in df.columns else None
     df["oi_i"] = df.get("openInterest").map(_as_int) if "openInterest" in df.columns else None
     df["vol_i"] = df.get("volume").map(_as_int) if "volume" in df.columns else None
-    today = as_of or date.today()
     quality = compute_quote_quality(df, min_volume=min_volume, min_open_interest=min_open_interest, as_of=today)
     df["spread"] = quality["spread"]
     df["spread_pct"] = quality["spread_pct"]
@@ -622,27 +673,46 @@ def select_option_candidate(
     df["quality_warnings"] = quality["quality_warnings"]
     df["last_trade_age_days"] = quality["last_trade_age_days"]
     df["exec_quality"] = df["spread_pct"].map(execution_quality)
+    df["mark"] = df.apply(lambda row: _mark_price(bid=row["bid_f"], ask=row["ask_f"], last=row["last_f"]), axis=1)
+
     dte = max((expiry - today).days, 0)
+    df["delta"] = _compute_candidate_deltas(
+        df=df,
+        option_type=option_type,
+        spot=spot,
+        dte=dte,
+    )
+    return df, dte
+
+
+def _compute_candidate_deltas(
+    *,
+    df: pd.DataFrame,
+    option_type: OptionType,
+    spot: float,
+    dte: int,
+) -> list[float | None]:
     t_years = dte / 365.0 if dte > 0 else None
-
-    def _row_mark(row) -> float | None:
-        return _mark_price(bid=row["bid_f"], ask=row["ask_f"], last=row["last_f"])
-
-    df["mark"] = df.apply(_row_mark, axis=1)
-
-    # Compute delta (best-effort)
     deltas: list[float | None] = []
     for _, row in df.iterrows():
-        sigma = row["iv_f"]
+        sigma = _as_float(row.get("iv_f"))
         strike = _as_float(row.get("strike"))
         if sigma is None or strike is None or t_years is None or t_years <= 0:
             deltas.append(None)
             continue
-        g = black_scholes_greeks(option_type=option_type, s=spot, k=strike, t_years=t_years, sigma=sigma)
-        deltas.append(g.delta if g else None)
-    df["delta"] = deltas
+        greeks = black_scholes_greeks(option_type=option_type, s=spot, k=strike, t_years=t_years, sigma=sigma)
+        deltas.append(greeks.delta if greeks else None)
+    return deltas
 
-    # Prefer liquid strikes, but fall back if needed.
+
+def _apply_option_candidate_filters(
+    df: pd.DataFrame,
+    *,
+    min_open_interest: int,
+    min_volume: int,
+    max_spread_pct: float,
+    include_bad_quotes: bool,
+) -> tuple[pd.DataFrame, bool, bool]:
     liquid = df
     if "oi_i" in df.columns and "vol_i" in df.columns:
         liquid = df[(df["oi_i"].fillna(0) >= min_open_interest) | (df["vol_i"].fillna(0) >= min_volume)]
@@ -666,46 +736,84 @@ def select_option_candidate(
             liquid = quality_filtered
         else:
             quality_gate_fallback = True
+    return liquid, spread_gate_fallback, quality_gate_fallback
 
-    # Choose by delta if available, otherwise by moneyness.
+
+def _pick_option_candidate_row(
+    liquid: pd.DataFrame,
+    *,
+    target_delta: float,
+    spot: float,
+) -> pd.Series:
     if liquid["delta"].notna().any():
-        liquid = liquid[liquid["delta"].notna()]
-        pick = liquid.iloc[(liquid["delta"] - target_delta).abs().argsort()].iloc[0]
-    else:
-        # Fallback: closest strike to spot (ATM)
-        pick = liquid.iloc[(liquid["strike"].astype(float) - spot).abs().argsort()].iloc[0]
+        filtered = liquid[liquid["delta"].notna()]
+        return filtered.iloc[(filtered["delta"] - target_delta).abs().argsort()].iloc[0]
+    return liquid.iloc[(liquid["strike"].astype(float) - spot).abs().argsort()].iloc[0]
 
-    strike = float(pick["strike"])
-    bid = pick["bid_f"]
-    ask = pick["ask_f"]
-    last = pick["last_f"]
-    mark = pick["mark"]
-    spread = _as_float(pick.get("spread"))
-    spread_pct = _as_float(pick.get("spread_pct"))
-    exec_quality = pick.get("exec_quality")
-    quality_score = _as_float(pick.get("quality_score"))
-    quality_label = pick.get("quality_label")
-    last_trade_age_days = _as_int(pick.get("last_trade_age_days"))
-    quality_warnings = pick.get("quality_warnings")
-    iv = pick["iv_f"]
-    oi = pick["oi_i"]
-    vol = pick["vol_i"]
-    delta = pick["delta"] if pick["delta"] is not None and not pd.isna(pick["delta"]) else None
 
+def _build_option_candidate_rationale(
+    *,
+    delta: float | None,
+    target_delta: float,
+    open_interest: int | None,
+    volume: int | None,
+    spread_pct: float | None,
+    execution_quality: object,
+    spread_gate_fallback: bool,
+    quality_gate_fallback: bool,
+) -> list[str]:
     rationale = [
-        f"Selected strike nearest target delta {target_delta:.2f} (best-effort BS delta)." if delta is not None else "Selected nearest ATM strike (delta unavailable)."
+        (
+            f"Selected strike nearest target delta {target_delta:.2f} (best-effort BS delta)."
+            if delta is not None
+            else "Selected nearest ATM strike (delta unavailable)."
+        )
     ]
-    if oi is not None or vol is not None:
-        rationale.append(f"Liquidity (OI={oi if oi is not None else 'n/a'}, Vol={vol if vol is not None else 'n/a'}).")
+    if open_interest is not None or volume is not None:
+        rationale.append(
+            f"Liquidity (OI={open_interest if open_interest is not None else 'n/a'}, Vol={volume if volume is not None else 'n/a'})."
+        )
     if spread_pct is not None:
-        rationale.append(f"Execution: {exec_quality} (spread {spread_pct:.1%}).")
+        rationale.append(f"Execution: {execution_quality} (spread {spread_pct:.1%}).")
     else:
-        rationale.append(f"Execution: {exec_quality}.")
+        rationale.append(f"Execution: {execution_quality}.")
     if spread_gate_fallback:
         rationale.append("Spread quality was poor across candidates; used best-effort pick.")
     if quality_gate_fallback:
         rationale.append("Quote quality was poor across candidates; used best-effort pick.")
+    return rationale
 
+
+def _build_option_candidate_from_pick(
+    *,
+    pick: pd.Series,
+    symbol: str,
+    option_type: OptionType,
+    expiry: date,
+    dte: int,
+    target_delta: float,
+    today: date,
+    next_earnings_date: date | None,
+    earnings_warn_days: int,
+    earnings_avoid_days: int,
+    spread_gate_fallback: bool,
+    quality_gate_fallback: bool,
+) -> OptionCandidate:
+    spread_pct = _as_float(pick.get("spread_pct"))
+    exec_quality = pick.get("exec_quality")
+    delta = _as_float(pick.get("delta"))
+    oi = _as_int(pick.get("oi_i"))
+    vol = _as_int(pick.get("vol_i"))
+    rationale = _build_option_candidate_rationale(
+        delta=delta,
+        target_delta=target_delta,
+        open_interest=oi,
+        volume=vol,
+        spread_pct=spread_pct,
+        execution_quality=exec_quality,
+        spread_gate_fallback=spread_gate_fallback,
+        quality_gate_fallback=quality_gate_fallback,
+    )
     risk = earnings_event_risk(
         today=today,
         expiry=expiry,
@@ -713,27 +821,28 @@ def select_option_candidate(
         warn_days=earnings_warn_days,
         avoid_days=earnings_avoid_days,
     )
-
+    quality_warnings = pick.get("quality_warnings")
+    quality_label = pick.get("quality_label")
     return OptionCandidate(
         symbol=symbol.upper(),
         option_type=option_type,
         expiry=expiry,
         dte=dte,
-        strike=strike,
-        mark=mark,
-        bid=bid,
-        ask=ask,
-        spread=spread,
+        strike=float(pick["strike"]),
+        mark=_as_float(pick.get("mark")),
+        bid=_as_float(pick.get("bid_f")),
+        ask=_as_float(pick.get("ask_f")),
+        spread=_as_float(pick.get("spread")),
         spread_pct=spread_pct,
         execution_quality=str(exec_quality) if exec_quality is not None else None,
-        last=last,
-        iv=iv,
+        last=_as_float(pick.get("last_f")),
+        iv=_as_float(pick.get("iv_f")),
         delta=delta,
         open_interest=oi,
         volume=vol,
-        quality_score=quality_score,
+        quality_score=_as_float(pick.get("quality_score")),
         quality_label=str(quality_label) if quality_label is not None else None,
-        last_trade_age_days=last_trade_age_days,
+        last_trade_age_days=_as_int(pick.get("last_trade_age_days")),
         quality_warnings=cast(list[str], quality_warnings) if quality_warnings is not None else [],
         rationale=rationale,
         warnings=cast(list[str], risk["warnings"]),
