@@ -105,128 +105,23 @@ def run_zero_dte_walk_forward(
         step_sessions=cfg.step_sessions,
     )
     if not splits:
-        empty = pd.DataFrame()
-        return ZeroDTEWalkForwardResult(
-            folds=[],
-            scored_rows=empty,
-            model_snapshots=empty,
-            calibration_summary=empty,
-            trade_rows=empty,
-            trade_summary=empty,
-        )
+        return _empty_walk_forward_result()
 
     strike_grid = _resolve_strike_grid(normalized, configured=cfg.strike_returns)
     tail_cfg = cfg.tail_model_config or ZeroDTETailModelConfig()
-
-    scored_parts: list[pd.DataFrame] = []
-    snapshot_rows: list[dict[str, object]] = []
-    folds: list[dict[str, object]] = []
-
-    session_to_idx = {value: idx for idx, value in enumerate(sessions)}
-
-    for fold_id, split in enumerate(splits, start=1):
-        fold_train_sessions = split["train_sessions"]
-        fold_test_sessions = split["test_sessions"]
-        fold_scored_parts: list[pd.DataFrame] = []
-
-        for test_session in fold_test_sessions:
-            test_idx = session_to_idx[test_session]
-            train_slice = sessions[max(0, test_idx - cfg.train_sessions) : test_idx]
-            if len(train_slice) < cfg.train_sessions:
-                continue
-            if any(train_day >= test_session for train_day in train_slice):
-                raise ValueError("Detected non-causal train/test split; training includes test/future day")
-
-            train_frame = normalized.loc[normalized["session_date"].isin(train_slice)].copy()
-            train_events = _training_event_rows(train_frame)
-            if len(train_events) < cfg.min_training_rows:
-                continue
-
-            model = fit_zero_dte_tail_model(
-                train_events,
-                strike_returns=strike_grid,
-                config=tail_cfg,
-            )
-
-            test_frame = normalized.loc[normalized["session_date"] == test_session].copy()
-            state_rows = _state_rows_for_scoring(test_frame)
-            if state_rows.empty:
-                continue
-            scored_state = score_zero_dte_tail_model(model, state_rows, strike_returns=strike_grid)
-            if scored_state.empty:
-                continue
-
-            joined = _join_predictions_with_candidates(test_frame, scored_state)
-            if joined.empty:
-                continue
-
-            trained_through = max(train_slice)
-            if trained_through >= test_session:
-                raise ValueError("trained_through_session must be strictly before test session")
-
-            model_version = f"wf_fold{fold_id}_{test_session.isoformat()}"
-            joined["fold_id"] = int(fold_id)
-            joined["model_version"] = model_version
-            joined["trained_through_session"] = trained_through
-            joined["breach_observed"] = (
-                pd.to_numeric(joined["close_return_from_entry"], errors="coerce")
-                <= pd.to_numeric(joined["strike_return"], errors="coerce")
-            ).astype("float64")
-            joined.loc[
-                pd.to_numeric(joined["close_return_from_entry"], errors="coerce").isna(),
-                "breach_observed",
-            ] = float("nan")
-
-            fold_scored_parts.append(joined.loc[:, list(_SCORED_COLUMNS)].copy())
-            snapshot_rows.append(
-                {
-                    "fold_id": int(fold_id),
-                    "model_version": model_version,
-                    "session_date": test_session,
-                    "trained_through_session": trained_through,
-                    "train_session_start": min(train_slice),
-                    "train_session_end": max(train_slice),
-                    "train_row_count": int(len(train_events)),
-                    "training_sample_size": int(model.training_sample_size),
-                }
-            )
-
-        fold_scored = _concat_or_empty(fold_scored_parts, columns=list(_SCORED_COLUMNS))
-        folds.append(
-            {
-                "fold_id": int(fold_id),
-                "train_sessions": fold_train_sessions,
-                "test_sessions": fold_test_sessions,
-                "scored_rows": int(len(fold_scored)),
-            }
-        )
-        if not fold_scored.empty:
-            scored_parts.append(fold_scored)
-
+    scored_parts, snapshot_rows, folds = _collect_walk_forward_folds(
+        normalized=normalized,
+        sessions=sessions,
+        splits=splits,
+        cfg=cfg,
+        strike_grid=strike_grid,
+        tail_cfg=tail_cfg,
+    )
     scored_rows = _concat_or_empty(scored_parts, columns=list(_SCORED_COLUMNS))
     if not scored_rows.empty:
         _assert_no_future_leakage(scored_rows)
 
-    snapshots = pd.DataFrame(snapshot_rows)
-    if snapshots.empty:
-        snapshots = pd.DataFrame(
-            columns=[
-                "fold_id",
-                "model_version",
-                "session_date",
-                "trained_through_session",
-                "train_session_start",
-                "train_session_end",
-                "train_row_count",
-                "training_sample_size",
-            ]
-        )
-    else:
-        snapshots = snapshots.sort_values(
-            by=["session_date", "fold_id"],
-            ascending=[True, True],
-            kind="mergesort",
-        ).reset_index(drop=True)
+    snapshots = _build_model_snapshots(snapshot_rows)
 
     calibration_summary = _summarize_calibration(scored_rows, bins=cfg.calibration_bins)
     simulator_cfg = cfg.simulator_config or ZeroDTEPutSimulatorConfig()
@@ -241,6 +136,249 @@ def run_zero_dte_walk_forward(
         trade_rows=trade_rows,
         trade_summary=trade_summary,
     )
+
+
+def _empty_walk_forward_result() -> ZeroDTEWalkForwardResult:
+    empty = pd.DataFrame()
+    return ZeroDTEWalkForwardResult(
+        folds=[],
+        scored_rows=empty,
+        model_snapshots=empty,
+        calibration_summary=empty,
+        trade_rows=empty,
+        trade_summary=empty,
+    )
+
+
+def _collect_walk_forward_folds(
+    *,
+    normalized: pd.DataFrame,
+    sessions: list[date],
+    splits: list[dict[str, list[date]]],
+    cfg: ZeroDTEWalkForwardConfig,
+    strike_grid: tuple[float, ...],
+    tail_cfg: ZeroDTETailModelConfig,
+) -> tuple[list[pd.DataFrame], list[dict[str, object]], list[dict[str, object]]]:
+    scored_parts: list[pd.DataFrame] = []
+    snapshot_rows: list[dict[str, object]] = []
+    folds: list[dict[str, object]] = []
+    session_to_idx = {value: idx for idx, value in enumerate(sessions)}
+
+    for fold_id, split in enumerate(splits, start=1):
+        fold_scored, fold_snapshots = _run_walk_forward_fold(
+            fold_id=fold_id,
+            split=split,
+            normalized=normalized,
+            sessions=sessions,
+            session_to_idx=session_to_idx,
+            cfg=cfg,
+            strike_grid=strike_grid,
+            tail_cfg=tail_cfg,
+        )
+        snapshot_rows.extend(fold_snapshots)
+        folds.append(
+            {
+                "fold_id": int(fold_id),
+                "train_sessions": split["train_sessions"],
+                "test_sessions": split["test_sessions"],
+                "scored_rows": int(len(fold_scored)),
+            }
+        )
+        if not fold_scored.empty:
+            scored_parts.append(fold_scored)
+    return scored_parts, snapshot_rows, folds
+
+
+def _run_walk_forward_fold(
+    *,
+    fold_id: int,
+    split: dict[str, list[date]],
+    normalized: pd.DataFrame,
+    sessions: list[date],
+    session_to_idx: dict[date, int],
+    cfg: ZeroDTEWalkForwardConfig,
+    strike_grid: tuple[float, ...],
+    tail_cfg: ZeroDTETailModelConfig,
+) -> tuple[pd.DataFrame, list[dict[str, object]]]:
+    fold_parts: list[pd.DataFrame] = []
+    snapshots: list[dict[str, object]] = []
+    for test_session in split["test_sessions"]:
+        joined, snapshot = _score_walk_forward_session(
+            fold_id=fold_id,
+            test_session=test_session,
+            normalized=normalized,
+            sessions=sessions,
+            session_to_idx=session_to_idx,
+            cfg=cfg,
+            strike_grid=strike_grid,
+            tail_cfg=tail_cfg,
+        )
+        if joined is None or snapshot is None:
+            continue
+        fold_parts.append(joined.loc[:, list(_SCORED_COLUMNS)].copy())
+        snapshots.append(snapshot)
+    fold_scored = _concat_or_empty(fold_parts, columns=list(_SCORED_COLUMNS))
+    return fold_scored, snapshots
+
+
+def _score_walk_forward_session(
+    *,
+    fold_id: int,
+    test_session: date,
+    normalized: pd.DataFrame,
+    sessions: list[date],
+    session_to_idx: dict[date, int],
+    cfg: ZeroDTEWalkForwardConfig,
+    strike_grid: tuple[float, ...],
+    tail_cfg: ZeroDTETailModelConfig,
+) -> tuple[pd.DataFrame | None, dict[str, object] | None]:
+    train_slice = _resolve_train_slice(
+        test_session=test_session,
+        sessions=sessions,
+        session_to_idx=session_to_idx,
+        train_sessions=cfg.train_sessions,
+    )
+    if train_slice is None:
+        return None, None
+
+    train_events = _load_train_events(normalized, train_slice)
+    if len(train_events) < cfg.min_training_rows:
+        return None, None
+    model = fit_zero_dte_tail_model(train_events, strike_returns=strike_grid, config=tail_cfg)
+
+    joined = _score_test_session_candidates(
+        normalized=normalized,
+        test_session=test_session,
+        model=model,
+        strike_grid=strike_grid,
+    )
+    if joined is None:
+        return None, None
+
+    trained_through = max(train_slice)
+    if trained_through >= test_session:
+        raise ValueError("trained_through_session must be strictly before test session")
+
+    model_version = f"wf_fold{fold_id}_{test_session.isoformat()}"
+    joined = _attach_scored_metadata(
+        joined,
+        fold_id=fold_id,
+        model_version=model_version,
+        trained_through=trained_through,
+    )
+    snapshot = _build_model_snapshot_row(
+        fold_id=fold_id,
+        model_version=model_version,
+        test_session=test_session,
+        trained_through=trained_through,
+        train_slice=train_slice,
+        train_events=train_events,
+        training_sample_size=int(model.training_sample_size),
+    )
+    return joined, snapshot
+
+
+def _resolve_train_slice(
+    *,
+    test_session: date,
+    sessions: list[date],
+    session_to_idx: dict[date, int],
+    train_sessions: int,
+) -> list[date] | None:
+    test_idx = session_to_idx[test_session]
+    train_slice = sessions[max(0, test_idx - train_sessions) : test_idx]
+    if len(train_slice) < train_sessions:
+        return None
+    if any(train_day >= test_session for train_day in train_slice):
+        raise ValueError("Detected non-causal train/test split; training includes test/future day")
+    return train_slice
+
+
+def _load_train_events(normalized: pd.DataFrame, train_slice: list[date]) -> pd.DataFrame:
+    train_frame = normalized.loc[normalized["session_date"].isin(train_slice)].copy()
+    return _training_event_rows(train_frame)
+
+
+def _score_test_session_candidates(
+    *,
+    normalized: pd.DataFrame,
+    test_session: date,
+    model: object,
+    strike_grid: tuple[float, ...],
+) -> pd.DataFrame | None:
+    test_frame = normalized.loc[normalized["session_date"] == test_session].copy()
+    state_rows = _state_rows_for_scoring(test_frame)
+    if state_rows.empty:
+        return None
+    scored_state = score_zero_dte_tail_model(model, state_rows, strike_returns=strike_grid)
+    if scored_state.empty:
+        return None
+    joined = _join_predictions_with_candidates(test_frame, scored_state)
+    if joined.empty:
+        return None
+    return joined
+
+
+def _attach_scored_metadata(
+    joined: pd.DataFrame,
+    *,
+    fold_id: int,
+    model_version: str,
+    trained_through: date,
+) -> pd.DataFrame:
+    out = joined.copy()
+    close_returns = pd.to_numeric(out["close_return_from_entry"], errors="coerce")
+    strike_returns = pd.to_numeric(out["strike_return"], errors="coerce")
+    out["fold_id"] = int(fold_id)
+    out["model_version"] = model_version
+    out["trained_through_session"] = trained_through
+    out["breach_observed"] = (close_returns <= strike_returns).astype("float64")
+    out.loc[close_returns.isna(), "breach_observed"] = float("nan")
+    return out
+
+
+def _build_model_snapshot_row(
+    *,
+    fold_id: int,
+    model_version: str,
+    test_session: date,
+    trained_through: date,
+    train_slice: list[date],
+    train_events: pd.DataFrame,
+    training_sample_size: int,
+) -> dict[str, object]:
+    return {
+        "fold_id": int(fold_id),
+        "model_version": model_version,
+        "session_date": test_session,
+        "trained_through_session": trained_through,
+        "train_session_start": min(train_slice),
+        "train_session_end": max(train_slice),
+        "train_row_count": int(len(train_events)),
+        "training_sample_size": training_sample_size,
+    }
+
+
+def _build_model_snapshots(snapshot_rows: list[dict[str, object]]) -> pd.DataFrame:
+    snapshots = pd.DataFrame(snapshot_rows)
+    if snapshots.empty:
+        return pd.DataFrame(
+            columns=[
+                "fold_id",
+                "model_version",
+                "session_date",
+                "trained_through_session",
+                "train_session_start",
+                "train_session_end",
+                "train_row_count",
+                "training_sample_size",
+            ]
+        )
+    return snapshots.sort_values(
+        by=["session_date", "fold_id"],
+        ascending=[True, True],
+        kind="mergesort",
+    ).reset_index(drop=True)
 
 
 def _summarize_calibration(scored_rows: pd.DataFrame, *, bins: int) -> pd.DataFrame:
