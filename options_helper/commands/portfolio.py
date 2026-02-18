@@ -22,6 +22,23 @@ from options_helper.schemas.scenarios import ScenarioGridRow, ScenarioSummaryRow
 from options_helper.storage import load_portfolio, save_portfolio, write_template
 
 _SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_SCENARIO_PORTFOLIO_PATH_ARG = typer.Argument(..., help="Path to portfolio JSON.")
+_SCENARIO_AS_OF_OPT = typer.Option("latest", "--as-of", help="Snapshot date (YYYY-MM-DD) or 'latest'.")
+_SCENARIO_CACHE_DIR_OPT = typer.Option(
+    Path("data/options_snapshots"),
+    "--cache-dir",
+    help="Directory containing options snapshot folders.",
+)
+_SCENARIO_OUT_OPT = typer.Option(
+    None,
+    "--out",
+    help="Output root for saved artifacts (writes under {out}/scenarios/{PORTFOLIO_DATE}/).",
+)
+_SCENARIO_STRICT_OPT = typer.Option(
+    False,
+    "--strict",
+    help="Validate JSON artifacts against schemas before writing.",
+)
 
 
 @dataclass(frozen=True)
@@ -172,27 +189,11 @@ def list_positions(
 
 
 def position_scenarios(
-    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
-    as_of: str = typer.Option(
-        "latest",
-        "--as-of",
-        help="Snapshot date (YYYY-MM-DD) or 'latest'.",
-    ),
-    cache_dir: Path = typer.Option(
-        Path("data/options_snapshots"),
-        "--cache-dir",
-        help="Directory containing options snapshot folders.",
-    ),
-    out: Path | None = typer.Option(
-        None,
-        "--out",
-        help="Output root for saved artifacts (writes under {out}/scenarios/{PORTFOLIO_DATE}/).",
-    ),
-    strict: bool = typer.Option(
-        False,
-        "--strict",
-        help="Validate JSON artifacts against schemas before writing.",
-    ),
+    portfolio_path: Path = _SCENARIO_PORTFOLIO_PATH_ARG,
+    as_of: str = _SCENARIO_AS_OF_OPT,
+    cache_dir: Path = _SCENARIO_CACHE_DIR_OPT,
+    out: Path | None = _SCENARIO_OUT_OPT,
+    strict: bool = _SCENARIO_STRICT_OPT,
 ) -> None:
     """Compute per-position scenario grids from local snapshot data (offline-first)."""
     portfolio = load_portfolio(portfolio_path)
@@ -206,93 +207,129 @@ def position_scenarios(
 
     explicit_as_of = _parse_explicit_as_of(as_of)
     fallback_as_of = explicit_as_of or date.today()
-    snapshot_store = cli_deps.build_snapshot_store(cache_dir)
+    contexts = _build_scenario_contexts(targets=targets, as_of_spec=as_of, fallback_as_of=fallback_as_of, cache_dir=cache_dir)
+    results = [_build_position_scenario_result(target=target, context=contexts[target.symbol]) for target in targets]
 
+    portfolio_date = _portfolio_date(results, fallback=fallback_as_of)
+    _render_scenario_console(console, results, portfolio_date=portfolio_date)
+    _write_scenario_artifacts(console, results=results, portfolio_date=portfolio_date, out=out, strict=strict)
+
+
+def _build_scenario_contexts(
+    *,
+    targets: list[_ScenarioTarget],
+    as_of_spec: str,
+    fallback_as_of: date,
+    cache_dir: Path,
+) -> dict[str, _SymbolScenarioContext]:
+    snapshot_store = cli_deps.build_snapshot_store(cache_dir)
     contexts: dict[str, _SymbolScenarioContext] = {}
     for symbol in sorted({target.symbol for target in targets}):
         contexts[symbol] = _resolve_symbol_context(
             store=snapshot_store,
             symbol=symbol,
-            as_of_spec=as_of,
+            as_of_spec=as_of_spec,
             fallback_as_of=fallback_as_of,
         )
+    return contexts
 
-    results: list[_ScenarioResult] = []
-    for target in targets:
-        context = contexts[target.symbol]
-        row = None
-        extra_warnings = list(context.warnings)
-        if not _is_empty_frame(context.day_df):
-            row = find_snapshot_row(
-                context.day_df,  # type: ignore[arg-type]
-                expiry=target.expiry,
-                strike=target.strike,
-                option_type=target.option_type,
-            )
-        if row is None:
-            extra_warnings.append("missing_snapshot_row")
 
-        spot = context.spot
-        if spot is None and row is not None:
-            spot = _row_float(row, "underlyingPrice", "underlying_price", "spot")
+def _build_position_scenario_result(*, target: _ScenarioTarget, context: _SymbolScenarioContext) -> _ScenarioResult:
+    row, extra_warnings = _resolve_target_snapshot_row(target=target, context=context)
+    spot = _resolve_scenario_spot(context=context, row=row)
+    contract_symbol = _resolve_scenario_contract_symbol(target=target, row=row)
+    mark = _resolve_scenario_mark(row=row)
+    iv = _row_float(row, "impliedVolatility", "implied_volatility")
+    computed = compute_position_scenarios(
+        symbol=target.symbol,
+        as_of=context.as_of,
+        contract_symbol=contract_symbol,
+        option_type=target.option_type,
+        side=target.side,
+        contracts=target.contracts,
+        spot=spot,
+        strike=target.strike,
+        expiry=target.expiry,
+        mark=mark,
+        iv=iv,
+        basis=target.basis,
+    )
+    summary_payload = dict(computed.summary)
+    summary_payload["warnings"] = _merge_warnings(base=summary_payload.get("warnings"), extra=extra_warnings)
+    artifact = ScenariosArtifact(
+        generated_at=utc_now(),
+        as_of=context.as_of.isoformat(),
+        symbol=target.symbol,
+        contract_symbol=contract_symbol,
+        summary=ScenarioSummaryRow.model_validate(summary_payload),
+        grid=[ScenarioGridRow.model_validate(item) for item in computed.grid],
+    )
+    return _ScenarioResult(target=target, artifact=artifact)
 
-        contract_symbol = _row_string(row, "contractSymbol", "contract_symbol")
-        if not contract_symbol:
-            contract_symbol = _fallback_contract_symbol(
-                symbol=target.symbol,
-                expiry=target.expiry,
-                option_type=target.option_type,
-                strike=target.strike,
-            )
 
-        bid = _row_float(row, "bid")
-        ask = _row_float(row, "ask")
-        last = _row_float(row, "lastPrice", "last_price")
-        mark = _mark_price(bid=bid, ask=ask, last=last)
-        iv = _row_float(row, "impliedVolatility", "implied_volatility")
-
-        computed = compute_position_scenarios(
-            symbol=target.symbol,
-            as_of=context.as_of,
-            contract_symbol=contract_symbol,
-            option_type=target.option_type,
-            side=target.side,
-            contracts=target.contracts,
-            spot=spot,
-            strike=target.strike,
+def _resolve_target_snapshot_row(
+    *,
+    target: _ScenarioTarget,
+    context: _SymbolScenarioContext,
+) -> tuple[dict[str, object] | None, list[str]]:
+    row = None
+    extra_warnings = list(context.warnings)
+    if not _is_empty_frame(context.day_df):
+        row = find_snapshot_row(
+            context.day_df,  # type: ignore[arg-type]
             expiry=target.expiry,
-            mark=mark,
-            iv=iv,
-            basis=target.basis,
+            strike=target.strike,
+            option_type=target.option_type,
         )
+    if row is None:
+        extra_warnings.append("missing_snapshot_row")
+    return row, extra_warnings
 
-        summary_payload = dict(computed.summary)
-        summary_payload["warnings"] = _merge_warnings(
-            base=summary_payload.get("warnings"),
-            extra=extra_warnings,
-        )
-        artifact = ScenariosArtifact(
-            generated_at=utc_now(),
-            as_of=context.as_of.isoformat(),
-            symbol=target.symbol,
-            contract_symbol=contract_symbol,
-            summary=ScenarioSummaryRow.model_validate(summary_payload),
-            grid=[ScenarioGridRow.model_validate(item) for item in computed.grid],
-        )
-        results.append(_ScenarioResult(target=target, artifact=artifact))
 
-    portfolio_date = _portfolio_date(results, fallback=fallback_as_of)
-    _render_scenario_console(console, results, portfolio_date=portfolio_date)
+def _resolve_scenario_spot(*, context: _SymbolScenarioContext, row: dict[str, object] | None) -> float | None:
+    spot = context.spot
+    if spot is None and row is not None:
+        spot = _row_float(row, "underlyingPrice", "underlying_price", "spot")
+    return spot
 
-    if out is not None:
-        out_dir = out / "scenarios" / portfolio_date.isoformat()
-        out_dir.mkdir(parents=True, exist_ok=True)
-        for result in results:
-            if strict:
-                ScenariosArtifact.model_validate(result.artifact.to_dict())
-            out_path = out_dir / _scenario_filename(result)
-            out_path.write_text(result.artifact.model_dump_json(indent=2), encoding="utf-8")
-            console.print(f"Saved: {out_path}")
+
+def _resolve_scenario_contract_symbol(*, target: _ScenarioTarget, row: dict[str, object] | None) -> str:
+    contract_symbol = _row_string(row, "contractSymbol", "contract_symbol")
+    if contract_symbol:
+        return contract_symbol
+    return _fallback_contract_symbol(
+        symbol=target.symbol,
+        expiry=target.expiry,
+        option_type=target.option_type,
+        strike=target.strike,
+    )
+
+
+def _resolve_scenario_mark(*, row: dict[str, object] | None) -> float | None:
+    bid = _row_float(row, "bid")
+    ask = _row_float(row, "ask")
+    last = _row_float(row, "lastPrice", "last_price")
+    return _mark_price(bid=bid, ask=ask, last=last)
+
+
+def _write_scenario_artifacts(
+    console: Console,
+    *,
+    results: list[_ScenarioResult],
+    portfolio_date: date,
+    out: Path | None,
+    strict: bool,
+) -> None:
+    if out is None:
+        return
+    out_dir = out / "scenarios" / portfolio_date.isoformat()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for result in results:
+        if strict:
+            ScenariosArtifact.model_validate(result.artifact.to_dict())
+        out_path = out_dir / _scenario_filename(result)
+        out_path.write_text(result.artifact.model_dump_json(indent=2), encoding="utf-8")
+        console.print(f"Saved: {out_path}")
 
 
 def add_position(
