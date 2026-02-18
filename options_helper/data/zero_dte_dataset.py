@@ -8,7 +8,6 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from options_helper.analysis.osi import infer_settlement_style, parse_contract_symbol
 from options_helper.data.intraday_store import IntradayStore
 from options_helper.data.zero_dte_dataset_helpers import (
     coerce_decision_timestamp as _coerce_decision_timestamp,
@@ -17,6 +16,9 @@ from options_helper.data.zero_dte_dataset_helpers import (
     normalize_symbol as _normalize_symbol,
     us_equity_half_days as _us_equity_half_days,
     us_equity_holidays as _us_equity_holidays,
+)
+from options_helper.data.zero_dte_snapshot_contracts import (
+    normalize_snapshot_contracts as _normalize_snapshot_contracts_impl,
 )
 from options_helper.db.warehouse import DuckDBWarehouse
 from options_helper.schemas.zero_dte_put_study import QuoteQualityStatus, SkipReason
@@ -460,123 +462,7 @@ def _normalize_snapshot_contracts(
     *,
     anchor_utc: pd.Timestamp,
 ) -> pd.DataFrame:
-    if option_snapshot is None or option_snapshot.empty:
-        return pd.DataFrame()
-
-    frame = option_snapshot.copy()
-    frame.columns = [str(col) for col in frame.columns]
-    contract_col = _first_present(frame.columns, "contract_symbol", "contractSymbol", "osi")
-    if contract_col is None:
-        return pd.DataFrame()
-
-    frame["contract_symbol"] = frame[contract_col].astype(str).str.strip().str.upper()
-    frame = frame.loc[frame["contract_symbol"] != ""].copy()
-    if frame.empty:
-        return pd.DataFrame()
-
-    parsed = frame["contract_symbol"].map(parse_contract_symbol)
-
-    option_type_col = _first_present(frame.columns, "option_type", "optionType")
-    if option_type_col is None:
-        frame["option_type"] = parsed.map(
-            lambda item: item.option_type if item is not None else None
-        )
-    else:
-        frame["option_type"] = frame[option_type_col].map(_normalize_option_type)
-        fallback = frame["option_type"].isna()
-        frame.loc[fallback, "option_type"] = parsed[fallback].map(
-            lambda item: item.option_type if item is not None else None
-        )
-
-    expiry_col = _first_present(frame.columns, "expiry", "expiration", "expirationDate")
-    if expiry_col is None:
-        frame["expiry"] = parsed.map(lambda item: item.expiry if item is not None else None)
-    else:
-        parsed_expiry = pd.to_datetime(frame[expiry_col], errors="coerce").dt.date
-        frame["expiry"] = parsed_expiry
-        missing_expiry = frame["expiry"].isna()
-        frame.loc[missing_expiry, "expiry"] = parsed[missing_expiry].map(
-            lambda item: item.expiry if item is not None else None
-        )
-
-    strike_col = _first_present(frame.columns, "strike", "strike_price")
-    if strike_col is None:
-        frame["strike"] = parsed.map(lambda item: item.strike if item is not None else float("nan"))
-    else:
-        frame["strike"] = pd.to_numeric(frame[strike_col], errors="coerce")
-        missing_strike = frame["strike"].isna()
-        frame.loc[missing_strike, "strike"] = parsed[missing_strike].map(
-            lambda item: item.strike if item is not None else float("nan")
-        )
-
-    settlement_col = _first_present(
-        frame.columns,
-        "settlement",
-        "settlement_style",
-        "settlementType",
-        "settleType",
-    )
-    if settlement_col is None:
-        frame["settlement"] = parsed.map(infer_settlement_style)
-    else:
-        frame["settlement"] = frame[settlement_col].map(_normalize_settlement)
-        missing_settlement = frame["settlement"].isna()
-        frame.loc[missing_settlement, "settlement"] = parsed[missing_settlement].map(
-            infer_settlement_style
-        )
-
-    underlying_col = _first_present(frame.columns, "underlying", "symbol", "root")
-    if underlying_col is None:
-        frame["underlying_norm"] = parsed.map(
-            lambda item: item.underlying_norm if item is not None else None
-        )
-    else:
-        frame["underlying_norm"] = frame[underlying_col].astype(str).str.strip().str.upper()
-        missing_underlying = frame["underlying_norm"].isin({"", "NAN", "NONE"})
-        frame.loc[missing_underlying, "underlying_norm"] = parsed[missing_underlying].map(
-            lambda item: item.underlying_norm if item is not None else None
-        )
-
-    quote_ts_col = _first_present(
-        frame.columns,
-        "quote_timestamp",
-        "quote_ts",
-        "timestamp",
-        "updated_at",
-        "lastTradeDate",
-    )
-    if quote_ts_col is None:
-        frame["quote_ts"] = pd.NaT
-    else:
-        frame["quote_ts"] = pd.to_datetime(frame[quote_ts_col], errors="coerce", utc=True)
-
-    bid_col = _first_present(frame.columns, "bid")
-    ask_col = _first_present(frame.columns, "ask")
-    frame["bid"] = pd.to_numeric(frame[bid_col], errors="coerce") if bid_col is not None else float("nan")
-    frame["ask"] = pd.to_numeric(frame[ask_col], errors="coerce") if ask_col is not None else float("nan")
-
-    if not frame["quote_ts"].isna().all():
-        after_anchor = frame["quote_ts"] >= anchor_utc
-        frame["quote_priority"] = 1
-        frame.loc[after_anchor, "quote_priority"] = 0
-        frame.loc[frame["quote_ts"].isna(), "quote_priority"] = 2
-        frame["quote_delta_seconds"] = (frame["quote_ts"] - anchor_utc).abs().dt.total_seconds()
-        frame["quote_delta_seconds"] = frame["quote_delta_seconds"].fillna(float("inf"))
-        frame = frame.sort_values(
-            by=[
-                "contract_symbol",
-                "quote_priority",
-                "quote_delta_seconds",
-                "quote_ts",
-            ],
-            ascending=[True, True, True, False],
-            kind="mergesort",
-        )
-    else:
-        frame = frame.sort_values(by=["contract_symbol"], kind="mergesort")
-
-    deduped = frame.drop_duplicates(subset=["contract_symbol"], keep="first").copy()
-    return deduped.reset_index(drop=True)
+    return _normalize_snapshot_contracts_impl(option_snapshot, anchor_utc=anchor_utc)
 
 
 def _apply_contract_eligibility(
@@ -803,24 +689,6 @@ def _evaluate_quote_quality(
         "quote_age_seconds": age_seconds,
         "quote_quality_status": status,
     }
-
-
-def _normalize_option_type(raw: object) -> str | None:
-    text = str(raw or "").strip().lower()
-    if text in {"put", "p"}:
-        return "put"
-    if text in {"call", "c"}:
-        return "call"
-    return None
-
-
-def _normalize_settlement(raw: object) -> str | None:
-    text = str(raw or "").strip().lower()
-    if text in {"pm", "p.m.", "p.m", "p"}:
-        return "pm"
-    if text in {"am", "a.m.", "a.m", "a"}:
-        return "am"
-    return None
 
 
 def _coerce_utc_timestamp(value: str | datetime | pd.Timestamp) -> pd.Timestamp:
