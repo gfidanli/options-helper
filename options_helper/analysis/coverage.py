@@ -243,117 +243,118 @@ def compute_contract_oi_coverage(
 ) -> ContractOICoverage:
     contract_symbols = _normalized_contract_symbols(contracts, symbol_col_candidates=("contract_symbol", "contractSymbol"))
     total_contracts = len(contract_symbols)
-
-    if snapshots is None or snapshots.empty:
-        lookback_end = as_of
-        expected_days = _expected_business_days(end_day=lookback_end, lookback_days=lookback_days)
+    frame = _prepare_contract_oi_frame(snapshots=snapshots, contract_symbols=contract_symbols)
+    if frame is None or frame.empty:
+        return _empty_contract_oi_for_window(
+            total_contracts=total_contracts,
+            lookback_days=lookback_days,
+            lookback_end=as_of,
+        )
+    lookback_end, expected_days, frame = _filter_contract_oi_frame(frame, as_of=as_of, lookback_days=lookback_days)
+    if frame.empty:
         return _empty_contract_oi_coverage(
             total_contracts=total_contracts,
             expected_days=expected_days,
             lookback_end=lookback_end,
         )
+    oi_frame = _contract_oi_frame_with_values(frame)
+    return _build_contract_oi_coverage(
+        frame=frame,
+        oi_frame=oi_frame,
+        total_contracts=total_contracts,
+        expected_days=expected_days,
+        lookback_end=lookback_end,
+    )
 
+
+def _empty_contract_oi_for_window(
+    *,
+    total_contracts: int,
+    lookback_days: int,
+    lookback_end: date | None,
+) -> ContractOICoverage:
+    expected_days = _expected_business_days(end_day=lookback_end, lookback_days=lookback_days)
+    return _empty_contract_oi_coverage(
+        total_contracts=total_contracts,
+        expected_days=expected_days,
+        lookback_end=lookback_end,
+    )
+
+
+def _prepare_contract_oi_frame(
+    *,
+    snapshots: pd.DataFrame | None,
+    contract_symbols: list[str],
+) -> pd.DataFrame | None:
+    if snapshots is None or snapshots.empty:
+        return None
     frame = snapshots.copy()
     symbol_col = _first_available_column(frame, ("contract_symbol", "contractSymbol"))
     day_col = _first_available_column(frame, ("as_of_date", "snapshot_date", "date"))
     if symbol_col is None or day_col is None:
-        lookback_end = as_of
-        expected_days = _expected_business_days(end_day=lookback_end, lookback_days=lookback_days)
-        return _empty_contract_oi_coverage(
-            total_contracts=total_contracts,
-            expected_days=expected_days,
-            lookback_end=lookback_end,
-        )
-
+        return None
     frame["_contract_symbol"] = frame[symbol_col].map(_normalize_symbol)
     frame["_as_of_date"] = _coerce_date_series(frame[day_col])
     frame = frame.dropna(subset=["_contract_symbol", "_as_of_date"]).copy()
-
     if contract_symbols:
         frame = frame[frame["_contract_symbol"].isin(set(contract_symbols))].copy()
-
     if frame.empty:
-        lookback_end = as_of
-        expected_days = _expected_business_days(end_day=lookback_end, lookback_days=lookback_days)
-        return _empty_contract_oi_coverage(
-            total_contracts=total_contracts,
-            expected_days=expected_days,
-            lookback_end=lookback_end,
-        )
-
+        return frame
     frame = frame.drop_duplicates(subset=["_contract_symbol", "_as_of_date"], keep="last")
-    frame = frame.sort_values(["_as_of_date", "_contract_symbol"], kind="stable")
+    return frame.sort_values(["_as_of_date", "_contract_symbol"], kind="stable")
 
-    observed_end = max(v for v in frame["_as_of_date"].tolist() if isinstance(v, date))
+
+def _filter_contract_oi_frame(
+    frame: pd.DataFrame,
+    *,
+    as_of: date | None,
+    lookback_days: int,
+) -> tuple[date | None, list[date], pd.DataFrame]:
+    observed_end = max(value for value in frame["_as_of_date"].tolist() if isinstance(value, date))
     lookback_end = as_of or observed_end
     expected_days = _expected_business_days(end_day=lookback_end, lookback_days=lookback_days)
     expected_set = set(expected_days)
-
     if expected_set:
         frame = frame[frame["_as_of_date"].isin(expected_set)].copy()
+    return lookback_end, expected_days, frame
 
-    if frame.empty:
-        return _empty_contract_oi_coverage(
-            total_contracts=total_contracts,
-            expected_days=expected_days,
-            lookback_end=lookback_end,
-        )
 
-    contracts_with_snapshots = int(frame["_contract_symbol"].nunique())
-
+def _contract_oi_frame_with_values(frame: pd.DataFrame) -> pd.DataFrame:
     if "open_interest" in frame.columns:
         oi_series = pd.to_numeric(frame["open_interest"], errors="coerce")
     elif "openInterest" in frame.columns:
         oi_series = pd.to_numeric(frame["openInterest"], errors="coerce")
     else:
         oi_series = pd.Series([float("nan")] * len(frame), index=frame.index, dtype="float64")
+    enriched = frame.copy()
+    enriched["_open_interest"] = oi_series
+    return enriched[enriched["_open_interest"].notna()].copy()
 
-    frame["_open_interest"] = oi_series
-    oi_frame = frame[frame["_open_interest"].notna()].copy()
 
+def _build_contract_oi_coverage(
+    *,
+    frame: pd.DataFrame,
+    oi_frame: pd.DataFrame,
+    total_contracts: int,
+    expected_days: list[date],
+    lookback_end: date | None,
+) -> ContractOICoverage:
+    contracts_with_snapshots = int(frame["_contract_symbol"].nunique())
     contracts_with_oi = int(oi_frame["_contract_symbol"].nunique()) if not oi_frame.empty else 0
-
     expected_contract_days = int(len(expected_days) * total_contracts) if total_contracts > 0 else 0
     observed_contract_days = int(len(frame))
     observed_oi_contract_days = int(len(oi_frame))
-
-    snapshot_ratio = (
-        float(observed_contract_days / expected_contract_days)
-        if expected_contract_days > 0
-        else 0.0
+    snapshot_ratio = float(observed_contract_days / expected_contract_days) if expected_contract_days > 0 else 0.0
+    oi_ratio = float(observed_oi_contract_days / expected_contract_days) if expected_contract_days > 0 else 0.0
+    observed_snapshot_days = sorted({value for value in frame["_as_of_date"].tolist() if isinstance(value, date)})
+    missing_snapshot_days = [day for day in expected_days if day not in set(observed_snapshot_days)]
+    per_contract_oi_days = (
+        oi_frame.groupby("_contract_symbol", sort=True)["_as_of_date"].nunique().astype("int64")
+        if not oi_frame.empty
+        else pd.Series(dtype="int64")
     )
-    oi_ratio = (
-        float(observed_oi_contract_days / expected_contract_days)
-        if expected_contract_days > 0
-        else 0.0
-    )
-
-    observed_snapshot_days = sorted(
-        {
-            v
-            for v in frame["_as_of_date"].tolist()
-            if isinstance(v, date)
-        }
-    )
-    missing_snapshot_days = [d for d in expected_days if d not in set(observed_snapshot_days)]
-
-    if not oi_frame.empty:
-        per_contract = (
-            oi_frame.groupby("_contract_symbol", sort=True)["_as_of_date"]
-            .nunique()
-            .astype("int64")
-        )
-        median_oi_days = float(per_contract.median()) if not per_contract.empty else None
-        p90_oi_days = float(per_contract.quantile(0.9)) if not per_contract.empty else None
-    else:
-        median_oi_days = None
-        p90_oi_days = None
-
-    delta_coverage = [
-        _compute_oi_delta_coverage(oi_frame, lag_days=lag, contracts_with_oi=contracts_with_oi)
-        for lag in DEFAULT_OI_DELTA_LAGS
-    ]
-
+    median_oi_days = float(per_contract_oi_days.median()) if not per_contract_oi_days.empty else None
+    p90_oi_days = float(per_contract_oi_days.quantile(0.9)) if not per_contract_oi_days.empty else None
     return ContractOICoverage(
         contracts_total=total_contracts,
         contracts_with_snapshots=contracts_with_snapshots,
@@ -367,10 +368,13 @@ def compute_contract_oi_coverage(
         lookback_end_date=lookback_end.isoformat() if lookback_end else None,
         snapshot_days_present=int(len(observed_snapshot_days)),
         snapshot_days_missing=int(len(missing_snapshot_days)),
-        snapshot_missing_dates=[d.isoformat() for d in missing_snapshot_days],
+        snapshot_missing_dates=[day.isoformat() for day in missing_snapshot_days],
         per_contract_oi_days_median=median_oi_days,
         per_contract_oi_days_p90=p90_oi_days,
-        oi_delta_coverage=delta_coverage,
+        oi_delta_coverage=[
+            _compute_oi_delta_coverage(oi_frame, lag_days=lag, contracts_with_oi=contracts_with_oi)
+            for lag in DEFAULT_OI_DELTA_LAGS
+        ],
     )
 
 
