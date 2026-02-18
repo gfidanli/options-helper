@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -9,175 +10,273 @@ from rich.console import Console
 import options_helper.cli_deps as cli_deps
 from options_helper.commands import reports_legacy as legacy
 
+_PORTFOLIO_PATH_ARG = typer.Argument(..., help="Path to portfolio JSON.")
+_WATCHLISTS_PATH_OPT = typer.Option(
+    Path("data/watchlists.json"),
+    "--watchlists-path",
+    help="Path to watchlists JSON store (used with --watchlist).",
+)
+_WATCHLIST_OPT = typer.Option(
+    [],
+    "--watchlist",
+    help="Watchlist name to include (repeatable). Adds to portfolio symbols.",
+)
+_SYMBOL_OPT = typer.Option(
+    None,
+    "--symbol",
+    help="Only include a single symbol (overrides portfolio/watchlists selection).",
+)
+_AS_OF_OPT = typer.Option("latest", "--as-of", help="Snapshot date (YYYY-MM-DD) or 'latest'.")
+_COMPARE_OPT = typer.Option(
+    "-1",
+    "--compare",
+    help="Compare spec: -1|-5|YYYY-MM-DD|none (relative offsets are per-symbol).",
+)
+_CACHE_DIR_OPT = typer.Option(
+    Path("data/options_snapshots"),
+    "--cache-dir",
+    help="Directory for options chain snapshots.",
+)
+_CANDLE_CACHE_DIR_OPT = typer.Option(
+    Path("data/candles"),
+    "--candle-cache-dir",
+    help="Directory for cached daily candles (used for technical context).",
+)
+_TECHNICALS_CONFIG_OPT = typer.Option(
+    Path("config/technical_backtesting.yaml"),
+    "--technicals-config",
+    help="Technical backtesting config (canonical indicator definitions).",
+)
+_OUT_OPT = typer.Option(
+    None,
+    "--out",
+    help="Output path (Markdown) or directory. Default: data/reports/daily/{ASOF}.md",
+)
+_PRINT_TO_CONSOLE_OPT = typer.Option(
+    False,
+    "--print/--no-print",
+    help="Print the briefing to the console (in addition to writing files).",
+)
+_WRITE_JSON_OPT = typer.Option(
+    True,
+    "--write-json/--no-write-json",
+    help="Write a JSON version of the briefing alongside the Markdown (LLM-friendly).",
+)
+_STRICT_OPT = typer.Option(False, "--strict", help="Validate JSON artifacts against schemas.")
+_UPDATE_DERIVED_OPT = typer.Option(
+    True,
+    "--update-derived/--no-update-derived",
+    help="Update derived metrics for included symbols (per-symbol CSV).",
+)
+_DERIVED_DIR_OPT = typer.Option(
+    Path("data/derived"),
+    "--derived-dir",
+    help="Directory for derived metric files (used when --update-derived).",
+)
+_TOP_OPT = typer.Option(3, "--top", min=1, max=10, help="Top rows to include in compare/flow sections.")
+
 
 def briefing(
-    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
-    watchlists_path: Path = typer.Option(
-        Path("data/watchlists.json"),
-        "--watchlists-path",
-        help="Path to watchlists JSON store (used with --watchlist).",
-    ),
-    watchlist: list[str] = typer.Option(
-        [],
-        "--watchlist",
-        help="Watchlist name to include (repeatable). Adds to portfolio symbols.",
-    ),
-    symbol: str | None = typer.Option(
-        None,
-        "--symbol",
-        help="Only include a single symbol (overrides portfolio/watchlists selection).",
-    ),
-    as_of: str = typer.Option("latest", "--as-of", help="Snapshot date (YYYY-MM-DD) or 'latest'."),
-    compare: str = typer.Option(
-        "-1",
-        "--compare",
-        help="Compare spec: -1|-5|YYYY-MM-DD|none (relative offsets are per-symbol).",
-    ),
-    cache_dir: Path = typer.Option(
-        Path("data/options_snapshots"),
-        "--cache-dir",
-        help="Directory for options chain snapshots.",
-    ),
-    candle_cache_dir: Path = typer.Option(
-        Path("data/candles"),
-        "--candle-cache-dir",
-        help="Directory for cached daily candles (used for technical context).",
-    ),
-    technicals_config: Path = typer.Option(
-        Path("config/technical_backtesting.yaml"),
-        "--technicals-config",
-        help="Technical backtesting config (canonical indicator definitions).",
-    ),
-    out: Path | None = typer.Option(
-        None,
-        "--out",
-        help="Output path (Markdown) or directory. Default: data/reports/daily/{ASOF}.md",
-    ),
-    print_to_console: bool = typer.Option(
-        False,
-        "--print/--no-print",
-        help="Print the briefing to the console (in addition to writing files).",
-    ),
-    write_json: bool = typer.Option(
-        True,
-        "--write-json/--no-write-json",
-        help="Write a JSON version of the briefing alongside the Markdown (LLM-friendly).",
-    ),
-    strict: bool = typer.Option(
-        False,
-        "--strict",
-        help="Validate JSON artifacts against schemas.",
-    ),
-    update_derived: bool = typer.Option(
-        True,
-        "--update-derived/--no-update-derived",
-        help="Update derived metrics for included symbols (per-symbol CSV).",
-    ),
-    derived_dir: Path = typer.Option(
-        Path("data/derived"),
-        "--derived-dir",
-        help="Directory for derived metric files (used when --update-derived).",
-    ),
-    top: int = typer.Option(3, "--top", min=1, max=10, help="Top rows to include in compare/flow sections."),
+    portfolio_path: Path = _PORTFOLIO_PATH_ARG,
+    watchlists_path: Path = _WATCHLISTS_PATH_OPT,
+    watchlist: list[str] = _WATCHLIST_OPT,
+    symbol: str | None = _SYMBOL_OPT,
+    as_of: str = _AS_OF_OPT,
+    compare: str = _COMPARE_OPT,
+    cache_dir: Path = _CACHE_DIR_OPT,
+    candle_cache_dir: Path = _CANDLE_CACHE_DIR_OPT,
+    technicals_config: Path = _TECHNICALS_CONFIG_OPT,
+    out: Path | None = _OUT_OPT,
+    print_to_console: bool = _PRINT_TO_CONSOLE_OPT,
+    write_json: bool = _WRITE_JSON_OPT,
+    strict: bool = _STRICT_OPT,
+    update_derived: bool = _UPDATE_DERIVED_OPT,
+    derived_dir: Path = _DERIVED_DIR_OPT,
+    top: int = _TOP_OPT,
 ) -> None:
     """Generate a daily Markdown briefing for portfolio + optional watchlists (offline-first)."""
     console = Console(width=200)
-
-    import options_helper.commands.reports as reports_pkg
-
     with legacy._observed_run(
         console=console,
         job_name=legacy.JOB_BUILD_BRIEFING,
-        args={
-            "portfolio_path": str(portfolio_path),
-            "watchlists_path": str(watchlists_path),
-            "watchlist": watchlist,
-            "symbol": symbol,
-            "as_of": as_of,
-            "compare": compare,
-            "cache_dir": str(cache_dir),
-            "candle_cache_dir": str(candle_cache_dir),
-            "technicals_config": str(technicals_config),
-            "out": None if out is None else str(out),
-            "print_to_console": print_to_console,
-            "write_json": write_json,
-            "strict": strict,
-            "update_derived": update_derived,
-            "derived_dir": str(derived_dir),
-            "top": top,
-        },
+        args=_briefing_run_args(
+            portfolio_path=portfolio_path,
+            watchlists_path=watchlists_path,
+            watchlist=watchlist,
+            symbol=symbol,
+            as_of=as_of,
+            compare=compare,
+            cache_dir=cache_dir,
+            candle_cache_dir=candle_cache_dir,
+            technicals_config=technicals_config,
+            out=out,
+            print_to_console=print_to_console,
+            write_json=write_json,
+            strict=strict,
+            update_derived=update_derived,
+            derived_dir=derived_dir,
+            top=top,
+        ),
     ) as run_logger:
-        try:
-            result = reports_pkg.run_briefing_job(
-                portfolio_path=portfolio_path,
-                watchlists_path=watchlists_path,
-                watchlist=watchlist,
-                symbol=symbol,
-                as_of=as_of,
-                compare=compare,
-                cache_dir=cache_dir,
-                candle_cache_dir=candle_cache_dir,
-                technicals_config=technicals_config,
-                out=out,
-                print_to_console=print_to_console,
-                write_json=write_json,
-                strict=strict,
-                update_derived=update_derived,
-                derived_dir=derived_dir,
-                top=top,
-                snapshot_store_builder=cli_deps.build_snapshot_store,
-                derived_store_builder=cli_deps.build_derived_store,
-                candle_store_builder=cli_deps.build_candle_store,
-                earnings_store_builder=cli_deps.build_earnings_store,
-                safe_next_earnings_date_fn=reports_pkg.safe_next_earnings_date,
-            )
-        except legacy.VisibilityJobExecutionError as exc:
-            console.print(f"[red]Error:[/red] {exc}")
-            raise typer.Exit(1) from exc
+        result = _run_briefing_job(
+            console=console,
+            portfolio_path=portfolio_path,
+            watchlists_path=watchlists_path,
+            watchlist=watchlist,
+            symbol=symbol,
+            as_of=as_of,
+            compare=compare,
+            cache_dir=cache_dir,
+            candle_cache_dir=candle_cache_dir,
+            technicals_config=technicals_config,
+            out=out,
+            print_to_console=print_to_console,
+            write_json=write_json,
+            strict=strict,
+            update_derived=update_derived,
+            derived_dir=derived_dir,
+            top=top,
+        )
+        _log_briefing_assets(run_logger, result)
+        _render_briefing_renderables(console, result)
 
-        report_day = legacy._coerce_iso_date(result.report_date)
-        md_bytes = result.markdown_path.stat().st_size if result.markdown_path.exists() else None
-        run_logger.log_asset_success(
+
+def _briefing_run_args(
+    *,
+    portfolio_path: Path,
+    watchlists_path: Path,
+    watchlist: list[str],
+    symbol: str | None,
+    as_of: str,
+    compare: str,
+    cache_dir: Path,
+    candle_cache_dir: Path,
+    technicals_config: Path,
+    out: Path | None,
+    print_to_console: bool,
+    write_json: bool,
+    strict: bool,
+    update_derived: bool,
+    derived_dir: Path,
+    top: int,
+) -> dict[str, object]:
+    return {
+        "portfolio_path": str(portfolio_path),
+        "watchlists_path": str(watchlists_path),
+        "watchlist": watchlist,
+        "symbol": symbol,
+        "as_of": as_of,
+        "compare": compare,
+        "cache_dir": str(cache_dir),
+        "candle_cache_dir": str(candle_cache_dir),
+        "technicals_config": str(technicals_config),
+        "out": None if out is None else str(out),
+        "print_to_console": print_to_console,
+        "write_json": write_json,
+        "strict": strict,
+        "update_derived": update_derived,
+        "derived_dir": str(derived_dir),
+        "top": top,
+    }
+
+
+def _run_briefing_job(
+    *,
+    console: Console,
+    portfolio_path: Path,
+    watchlists_path: Path,
+    watchlist: list[str],
+    symbol: str | None,
+    as_of: str,
+    compare: str,
+    cache_dir: Path,
+    candle_cache_dir: Path,
+    technicals_config: Path,
+    out: Path | None,
+    print_to_console: bool,
+    write_json: bool,
+    strict: bool,
+    update_derived: bool,
+    derived_dir: Path,
+    top: int,
+) -> Any:
+    import options_helper.commands.reports as reports_pkg
+
+    try:
+        return reports_pkg.run_briefing_job(
+            portfolio_path=portfolio_path,
+            watchlists_path=watchlists_path,
+            watchlist=watchlist,
+            symbol=symbol,
+            as_of=as_of,
+            compare=compare,
+            cache_dir=cache_dir,
+            candle_cache_dir=candle_cache_dir,
+            technicals_config=technicals_config,
+            out=out,
+            print_to_console=print_to_console,
+            write_json=write_json,
+            strict=strict,
+            update_derived=update_derived,
+            derived_dir=derived_dir,
+            top=top,
+            snapshot_store_builder=cli_deps.build_snapshot_store,
+            derived_store_builder=cli_deps.build_derived_store,
+            candle_store_builder=cli_deps.build_candle_store,
+            earnings_store_builder=cli_deps.build_earnings_store,
+            safe_next_earnings_date_fn=reports_pkg.safe_next_earnings_date,
+        )
+    except legacy.VisibilityJobExecutionError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
+def _log_briefing_assets(run_logger: Any, result: Any) -> None:
+    report_day = legacy._coerce_iso_date(result.report_date)
+    md_bytes = result.markdown_path.stat().st_size if result.markdown_path.exists() else None
+    run_logger.log_asset_success(
+        asset_key=legacy.ASSET_BRIEFING_MARKDOWN,
+        asset_kind="file",
+        partition_key=result.report_date,
+        bytes_written=md_bytes,
+        min_event_ts=report_day,
+        max_event_ts=report_day,
+    )
+    if report_day is not None:
+        run_logger.upsert_watermark(
             asset_key=legacy.ASSET_BRIEFING_MARKDOWN,
+            scope_key="ALL",
+            watermark_ts=report_day,
+        )
+
+    if result.json_path is not None:
+        json_bytes = result.json_path.stat().st_size if result.json_path.exists() else None
+        run_logger.log_asset_success(
+            asset_key=legacy.ASSET_BRIEFING_JSON,
             asset_kind="file",
             partition_key=result.report_date,
-            bytes_written=md_bytes,
+            bytes_written=json_bytes,
             min_event_ts=report_day,
             max_event_ts=report_day,
         )
         if report_day is not None:
             run_logger.upsert_watermark(
-                asset_key=legacy.ASSET_BRIEFING_MARKDOWN,
+                asset_key=legacy.ASSET_BRIEFING_JSON,
                 scope_key="ALL",
                 watermark_ts=report_day,
             )
+        return
+    run_logger.log_asset_skipped(
+        asset_key=legacy.ASSET_BRIEFING_JSON,
+        asset_kind="file",
+        partition_key=result.report_date,
+        extra={"reason": "write_json_disabled"},
+    )
 
-        if result.json_path is not None:
-            json_bytes = result.json_path.stat().st_size if result.json_path.exists() else None
-            run_logger.log_asset_success(
-                asset_key=legacy.ASSET_BRIEFING_JSON,
-                asset_kind="file",
-                partition_key=result.report_date,
-                bytes_written=json_bytes,
-                min_event_ts=report_day,
-                max_event_ts=report_day,
-            )
-            if report_day is not None:
-                run_logger.upsert_watermark(
-                    asset_key=legacy.ASSET_BRIEFING_JSON,
-                    scope_key="ALL",
-                    watermark_ts=report_day,
-                )
-        else:
-            run_logger.log_asset_skipped(
-                asset_key=legacy.ASSET_BRIEFING_JSON,
-                asset_kind="file",
-                partition_key=result.report_date,
-                extra={"reason": "write_json_disabled"},
-            )
 
-        for renderable in result.renderables:
-            console.print(renderable)
+def _render_briefing_renderables(console: Console, result: Any) -> None:
+    for renderable in result.renderables:
+        console.print(renderable)
 
 
 def _resolve_dashboard_report_day(report_date: str, artifact: object) -> date | None:
