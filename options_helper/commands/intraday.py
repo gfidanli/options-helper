@@ -177,59 +177,63 @@ def pull_stocks_bars(
         console.print(f"[yellow]{failures} symbol(s) failed.[/yellow]")
 
 
+_PULL_OPTIONS_UNDERLYING_OPT = typer.Option(
+    None,
+    "--underlying",
+    "-u",
+    help="Underlying symbol to pull (repeatable or comma-separated).",
+)
+_PULL_OPTIONS_UNDERLYINGS_OPT = typer.Option(
+    None,
+    "--underlyings",
+    help="Comma-separated underlyings to pull.",
+)
+_PULL_OPTIONS_EXPIRY_OPT = typer.Option(
+    None,
+    "--expiry",
+    help="Filter to expiry date(s) (repeatable or comma-separated).",
+)
+_PULL_OPTIONS_EXPIRIES_OPT = typer.Option(
+    None,
+    "--expiries",
+    help="Comma-separated expiries (YYYY-MM-DD).",
+)
+_PULL_OPTIONS_CONTRACTS_DIR_OPT = typer.Option(
+    Path("data/option_contracts"),
+    "--contracts-dir",
+    help="Directory containing option contracts cache.",
+)
+_PULL_OPTIONS_CONTRACTS_AS_OF_OPT = typer.Option(
+    "latest",
+    "--contracts-as-of",
+    help="Contract cache date to use (YYYY-MM-DD or 'latest').",
+)
+_PULL_OPTIONS_DAY_OPT = typer.Option(date.today().isoformat(), "--day", help="Trading day to pull (YYYY-MM-DD).")
+_PULL_OPTIONS_TIMEFRAME_OPT = typer.Option("1Min", "--timeframe", help="Intraday timeframe (1Min or 5Min).")
+_PULL_OPTIONS_FEED_OPT = typer.Option(
+    None,
+    "--feed",
+    help="Alpaca options feed override (defaults to OH_ALPACA_OPTIONS_FEED).",
+)
+_PULL_OPTIONS_OUT_DIR_OPT = typer.Option(
+    Path("data/intraday"),
+    "--out-dir",
+    help="Base directory for intraday partitions.",
+)
+
+
 @app.command("pull-options-bars")
 def pull_options_bars(
-    underlying: list[str] | None = typer.Option(
-        None,
-        "--underlying",
-        "-u",
-        help="Underlying symbol to pull (repeatable or comma-separated).",
-    ),
-    underlyings: str | None = typer.Option(
-        None,
-        "--underlyings",
-        help="Comma-separated underlyings to pull.",
-    ),
-    expiry: list[str] | None = typer.Option(
-        None,
-        "--expiry",
-        help="Filter to expiry date(s) (repeatable or comma-separated).",
-    ),
-    expiries: str | None = typer.Option(
-        None,
-        "--expiries",
-        help="Comma-separated expiries (YYYY-MM-DD).",
-    ),
-    contracts_dir: Path = typer.Option(
-        Path("data/option_contracts"),
-        "--contracts-dir",
-        help="Directory containing option contracts cache.",
-    ),
-    contracts_as_of: str = typer.Option(
-        "latest",
-        "--contracts-as-of",
-        help="Contract cache date to use (YYYY-MM-DD or 'latest').",
-    ),
-    day: str = typer.Option(
-        date.today().isoformat(),
-        "--day",
-        help="Trading day to pull (YYYY-MM-DD).",
-    ),
-    timeframe: str = typer.Option(
-        "1Min",
-        "--timeframe",
-        help="Intraday timeframe (1Min or 5Min).",
-    ),
-    feed: str | None = typer.Option(
-        None,
-        "--feed",
-        help="Alpaca options feed override (defaults to OH_ALPACA_OPTIONS_FEED).",
-    ),
-    out_dir: Path = typer.Option(
-        Path("data/intraday"),
-        "--out-dir",
-        help="Base directory for intraday partitions.",
-    ),
+    underlying: list[str] | None = _PULL_OPTIONS_UNDERLYING_OPT,
+    underlyings: str | None = _PULL_OPTIONS_UNDERLYINGS_OPT,
+    expiry: list[str] | None = _PULL_OPTIONS_EXPIRY_OPT,
+    expiries: str | None = _PULL_OPTIONS_EXPIRIES_OPT,
+    contracts_dir: Path = _PULL_OPTIONS_CONTRACTS_DIR_OPT,
+    contracts_as_of: str = _PULL_OPTIONS_CONTRACTS_AS_OF_OPT,
+    day: str = _PULL_OPTIONS_DAY_OPT,
+    timeframe: str = _PULL_OPTIONS_TIMEFRAME_OPT,
+    feed: str | None = _PULL_OPTIONS_FEED_OPT,
+    out_dir: Path = _PULL_OPTIONS_OUT_DIR_OPT,
 ) -> None:
     """Pull intraday option bars for cached contracts and persist CSV.gz partitions."""
     _require_alpaca_provider()
@@ -247,101 +251,178 @@ def pull_options_bars(
 
     failures = 0
     for sym in underlyings_list:
-        as_of = _resolve_contracts_as_of(contracts_dir, sym, contracts_as_of)
-        if as_of is None:
+        prepared = _prepare_option_contract_symbols(
+            console=console,
+            symbol=sym,
+            contracts_dir=contracts_dir,
+            contracts_as_of=contracts_as_of,
+            contracts_store=contracts_store,
+            expiry_dates=expiry_dates,
+        )
+        if prepared is None:
             failures += 1
-            console.print(f"[yellow]Warning:[/yellow] {sym}: no contracts cache found.")
+            continue
+        as_of, contract_symbols = prepared
+        bars_df = _fetch_intraday_option_bars(
+            console=console,
+            client=client,
+            symbol=sym,
+            contract_symbols=contract_symbols,
+            target_day=target_day,
+            timeframe=timeframe,
+            feed=feed,
+        )
+        if bars_df is None:
+            failures += 1
             continue
 
-        try:
-            contracts_df = contracts_store.load(sym, as_of)
-        except OptionContractsStoreError as exc:
-            failures += 1
-            console.print(f"[yellow]Warning:[/yellow] {sym}: {exc}")
-            continue
-
-        if contracts_df is None or contracts_df.empty:
-            failures += 1
-            console.print(f"[yellow]Warning:[/yellow] {sym}: contracts cache empty.")
-            continue
-
-        filtered = contracts_df
-        if expiry_dates and "expiry" in filtered.columns:
-            allowed = {exp.isoformat() for exp in expiry_dates}
-            filtered = filtered[filtered["expiry"].astype(str).isin(allowed)]
-
-        if filtered.empty:
-            failures += 1
-            console.print(f"[yellow]Warning:[/yellow] {sym}: no contracts for requested expiry.")
-            continue
-
-        contract_symbols = [
-            str(raw).strip()
-            for raw in filtered.get("contractSymbol", pd.Series(dtype=str)).dropna().tolist()
-            if str(raw).strip()
-        ]
-        if not contract_symbols:
-            failures += 1
-            console.print(f"[yellow]Warning:[/yellow] {sym}: missing contract symbols in cache.")
-            continue
-
-        try:
-            bars_df = client.get_option_bars_intraday(
-                contract_symbols,
-                day=target_day,
-                timeframe=timeframe,
-                feed=feed,
-            )
-        except DataFetchError as exc:
-            failures += 1
-            console.print(f"[yellow]Warning:[/yellow] {sym}: {exc}")
-            continue
-
-        if bars_df.empty:
-            failures += 1
-            console.print(f"[yellow]Warning:[/yellow] {sym}: no intraday bars returned.")
-            continue
-
-        groups: dict[str, pd.DataFrame] = {}
-        try:
-            for contract_symbol, sub in bars_df.groupby("contractSymbol", sort=False):
-                groups[str(contract_symbol)] = sub
-        except Exception:  # noqa: BLE001
-            groups = {}
-
-        written = 0
-        seen_contracts: set[str] = set()
-        for contract in contract_symbols:
-            if contract in seen_contracts:
-                continue
-            seen_contracts.add(contract)
-
-            sub = groups.get(contract)
-            if sub is None:
-                sub = bars_df[bars_df["contractSymbol"] == contract]
-            if sub.empty:
-                continue
-            meta = {
-                "provider": "alpaca",
-                "provider_version": client.provider_version,
-                "underlying": sym,
-                "contracts_as_of": as_of.isoformat(),
-                "request": {
-                    "day": target_day.isoformat(),
-                    "timeframe": timeframe,
-                    "feed": feed or client.options_feed,
-                },
-            }
-            path = store.save_partition("options", "bars", timeframe, contract, target_day, sub, meta)
-            written += 1
-            console.print(f"[green]Saved[/green] {contract} -> {path}")
-
+        written = _write_option_bar_partitions(
+            console=console,
+            store=store,
+            bars_df=bars_df,
+            contract_symbols=contract_symbols,
+            symbol=sym,
+            as_of=as_of,
+            target_day=target_day,
+            timeframe=timeframe,
+            feed=feed,
+            provider_version=client.provider_version,
+            options_feed=client.options_feed,
+        )
         if written == 0:
             failures += 1
             console.print(f"[yellow]Warning:[/yellow] {sym}: no matching intraday bars to save.")
 
     if failures:
         console.print(f"[yellow]{failures} warning(s) encountered.[/yellow]")
+
+
+def _prepare_option_contract_symbols(
+    *,
+    console: Console,
+    symbol: str,
+    contracts_dir: Path,
+    contracts_as_of: str,
+    contracts_store: OptionContractsStore,
+    expiry_dates: list[date],
+) -> tuple[date, list[str]] | None:
+    as_of = _resolve_contracts_as_of(contracts_dir, symbol, contracts_as_of)
+    if as_of is None:
+        console.print(f"[yellow]Warning:[/yellow] {symbol}: no contracts cache found.")
+        return None
+
+    try:
+        contracts_df = contracts_store.load(symbol, as_of)
+    except OptionContractsStoreError as exc:
+        console.print(f"[yellow]Warning:[/yellow] {symbol}: {exc}")
+        return None
+    if contracts_df is None or contracts_df.empty:
+        console.print(f"[yellow]Warning:[/yellow] {symbol}: contracts cache empty.")
+        return None
+
+    filtered = _filter_contracts_by_expiry(contracts_df, expiry_dates=expiry_dates)
+    if filtered.empty:
+        console.print(f"[yellow]Warning:[/yellow] {symbol}: no contracts for requested expiry.")
+        return None
+
+    contract_symbols = _extract_contract_symbols(filtered)
+    if not contract_symbols:
+        console.print(f"[yellow]Warning:[/yellow] {symbol}: missing contract symbols in cache.")
+        return None
+    return as_of, contract_symbols
+
+
+def _filter_contracts_by_expiry(contracts_df: pd.DataFrame, *, expiry_dates: list[date]) -> pd.DataFrame:
+    filtered = contracts_df
+    if expiry_dates and "expiry" in filtered.columns:
+        allowed = {exp.isoformat() for exp in expiry_dates}
+        filtered = filtered[filtered["expiry"].astype(str).isin(allowed)]
+    return filtered
+
+
+def _extract_contract_symbols(contracts_df: pd.DataFrame) -> list[str]:
+    return [
+        str(raw).strip()
+        for raw in contracts_df.get("contractSymbol", pd.Series(dtype=str)).dropna().tolist()
+        if str(raw).strip()
+    ]
+
+
+def _fetch_intraday_option_bars(
+    *,
+    console: Console,
+    client: AlpacaClient,
+    symbol: str,
+    contract_symbols: list[str],
+    target_day: date,
+    timeframe: str,
+    feed: str | None,
+) -> pd.DataFrame | None:
+    try:
+        bars_df = client.get_option_bars_intraday(
+            contract_symbols,
+            day=target_day,
+            timeframe=timeframe,
+            feed=feed,
+        )
+    except DataFetchError as exc:
+        console.print(f"[yellow]Warning:[/yellow] {symbol}: {exc}")
+        return None
+    if bars_df.empty:
+        console.print(f"[yellow]Warning:[/yellow] {symbol}: no intraday bars returned.")
+        return None
+    return bars_df
+
+
+def _write_option_bar_partitions(
+    *,
+    console: Console,
+    store: IntradayStore,
+    bars_df: pd.DataFrame,
+    contract_symbols: list[str],
+    symbol: str,
+    as_of: date,
+    target_day: date,
+    timeframe: str,
+    feed: str | None,
+    provider_version: str,
+    options_feed: str,
+) -> int:
+    groups = _group_option_bars_by_contract(bars_df)
+    written = 0
+    seen_contracts: set[str] = set()
+    for contract in contract_symbols:
+        if contract in seen_contracts:
+            continue
+        seen_contracts.add(contract)
+
+        sub = groups.get(contract)
+        if sub is None:
+            sub = bars_df[bars_df["contractSymbol"] == contract]
+        if sub.empty:
+            continue
+        meta = {
+            "provider": "alpaca",
+            "provider_version": provider_version,
+            "underlying": symbol,
+            "contracts_as_of": as_of.isoformat(),
+            "request": {
+                "day": target_day.isoformat(),
+                "timeframe": timeframe,
+                "feed": feed or options_feed,
+            },
+        }
+        path = store.save_partition("options", "bars", timeframe, contract, target_day, sub, meta)
+        written += 1
+        console.print(f"[green]Saved[/green] {contract} -> {path}")
+    return written
+
+
+def _group_option_bars_by_contract(bars_df: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    try:
+        return {str(contract_symbol): sub for contract_symbol, sub in bars_df.groupby("contractSymbol", sort=False)}
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 @app.command("flow")
