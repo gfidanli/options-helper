@@ -29,6 +29,7 @@ from options_helper.pipelines.visibility_jobs import (
 )
 from options_helper.storage import load_portfolio
 
+from . import assets_visibility_common
 from .resources import DagsterPaths, DagsterRuntimeConfig
 
 
@@ -314,135 +315,6 @@ def candles_daily(context) -> MaterializeResult:
         )
 
 
-def _options_bars_run_args(*, partition_key: str, paths: DagsterPaths) -> dict[str, str | list[str]]:
-    return {
-        "partition_key": partition_key,
-        "watchlists_path": str(paths.watchlists_path),
-        "watchlist": list(DEFAULT_WATCHLISTS),
-        "contracts_store_dir": str(paths.data_dir / "option_contracts"),
-        "bars_store_dir": str(paths.data_dir / "option_bars"),
-    }
-
-
-def _run_options_bars_job(
-    *,
-    paths: DagsterPaths,
-    partition_day: date,
-    partition_key: str,
-    run_logger: Any,
-):
-    try:
-        return run_ingest_options_bars_job(
-            watchlists_path=paths.watchlists_path,
-            watchlist=list(DEFAULT_WATCHLISTS),
-            symbol=[],
-            contracts_exp_start="2000-01-01",
-            contracts_exp_end=None,
-            lookback_years=10,
-            page_limit=200,
-            max_underlyings=None,
-            max_contracts=None,
-            max_expiries=None,
-            contracts_max_requests_per_second=2.5,
-            bars_concurrency=8,
-            bars_max_requests_per_second=30.0,
-            bars_write_batch_size=200,
-            resume=True,
-            dry_run=False,
-            fail_fast=False,
-            provider_builder=cli_deps.build_provider,
-            contracts_store_builder=cli_deps.build_option_contracts_store,
-            bars_store_builder=cli_deps.build_option_bars_store,
-            contracts_store_dir=paths.data_dir / "option_contracts",
-            bars_store_dir=paths.data_dir / "option_bars",
-            today=partition_day,
-            run_logger=run_logger,
-        )
-    except VisibilityJobParameterError as exc:
-        run_logger.log_asset_failure(
-            asset_key="options_bars",
-            asset_kind="table",
-            partition_key=partition_key,
-            extra={"error": str(exc)},
-        )
-        raise Failure(str(exc)) from exc
-
-
-def _options_bars_skip(
-    *,
-    run_logger: Any,
-    partition_key: str,
-    reason: str,
-) -> MaterializeResult:
-    run_logger.log_asset_skipped(
-        asset_key="options_bars",
-        asset_kind="table",
-        partition_key=partition_key,
-        extra={"reason": reason},
-    )
-    return MaterializeResult(
-        metadata={
-            "partition": partition_key,
-            "status": "skipped",
-            "reason": reason,
-        }
-    )
-
-
-def _finalize_options_bars_summary(
-    *,
-    summary: Any,
-    run_logger: Any,
-    partition_key: str,
-    partition_day: date,
-) -> None:
-    if summary.error_contracts > 0 and summary.ok_contracts == 0:
-        run_logger.log_asset_failure(
-            asset_key="options_bars",
-            asset_kind="table",
-            partition_key=partition_key,
-            rows_inserted=summary.bars_rows,
-            extra={
-                "ok_contracts": summary.ok_contracts,
-                "error_contracts": summary.error_contracts,
-                "skipped_contracts": summary.skipped_contracts,
-            },
-        )
-        raise Failure(f"options bars backfill failed for partition {partition_key}")
-
-    run_logger.log_asset_success(
-        asset_key="options_bars",
-        asset_kind="table",
-        partition_key=partition_key,
-        rows_inserted=summary.bars_rows,
-        min_event_ts=partition_day,
-        max_event_ts=partition_day,
-        extra={
-            "ok_contracts": summary.ok_contracts,
-            "error_contracts": summary.error_contracts,
-            "skipped_contracts": summary.skipped_contracts,
-            "requests_attempted": summary.requests_attempted,
-        },
-    )
-    if summary.ok_contracts > 0:
-        run_logger.upsert_watermark(
-            asset_key="options_bars",
-            scope_key="ALL",
-            watermark_ts=partition_day,
-        )
-
-
-def _options_bars_materialize_result(*, partition_key: str, summary: Any) -> MaterializeResult:
-    return MaterializeResult(
-        metadata={
-            "partition": partition_key,
-            "ok_contracts": summary.ok_contracts,
-            "error_contracts": summary.error_contracts,
-            "bars_rows": summary.bars_rows,
-        }
-    )
-
-
 @asset(
     partitions_def=DAILY_PARTITIONS,
     group_name="daily_visibility",
@@ -456,20 +328,32 @@ def options_bars(context) -> MaterializeResult:
     with _observed_asset_run(
         context,
         job_name="dagster_options_bars",
-        args=_options_bars_run_args(partition_key=partition_key, paths=paths),
+        args=assets_visibility_common.options_bars_run_args(
+            partition_key=partition_key,
+            paths=paths,
+        ),
     ) as run_logger:
-        result = _run_options_bars_job(
+        result = assets_visibility_common.run_options_bars_job(
             paths=paths,
             partition_day=partition_day,
             partition_key=partition_key,
             run_logger=run_logger,
+            run_job=run_ingest_options_bars_job,
         )
         if result.no_symbols:
-            return _options_bars_skip(run_logger=run_logger, partition_key=partition_key, reason="no_symbols")
+            return assets_visibility_common.options_bars_skip(
+                run_logger=run_logger,
+                partition_key=partition_key,
+                reason="no_symbols",
+            )
         if result.no_contracts:
-            return _options_bars_skip(run_logger=run_logger, partition_key=partition_key, reason="no_contracts")
+            return assets_visibility_common.options_bars_skip(
+                run_logger=run_logger,
+                partition_key=partition_key,
+                reason="no_contracts",
+            )
         if result.no_eligible_contracts:
-            return _options_bars_skip(
+            return assets_visibility_common.options_bars_skip(
                 run_logger=run_logger,
                 partition_key=partition_key,
                 reason="no_eligible_contracts",
@@ -477,15 +361,22 @@ def options_bars(context) -> MaterializeResult:
 
         summary = result.summary
         if summary is None:
-            return _options_bars_skip(run_logger=run_logger, partition_key=partition_key, reason="missing_summary")
+            return assets_visibility_common.options_bars_skip(
+                run_logger=run_logger,
+                partition_key=partition_key,
+                reason="missing_summary",
+            )
 
-        _finalize_options_bars_summary(
+        assets_visibility_common.finalize_options_bars_summary(
             summary=summary,
             run_logger=run_logger,
             partition_key=partition_key,
             partition_day=partition_day,
         )
-        return _options_bars_materialize_result(partition_key=partition_key, summary=summary)
+        return assets_visibility_common.options_bars_materialize_result(
+            partition_key=partition_key,
+            summary=summary,
+        )
 
 
 @asset(
@@ -498,7 +389,6 @@ def options_snapshot_file(context) -> MaterializeResult:
     partition_day = _partition_date(context)
     partition_key = partition_day.isoformat()
     paths: DagsterPaths = context.resources.paths
-
     with _observed_asset_run(
         context,
         job_name="dagster_options_snapshot_file",
@@ -510,112 +400,32 @@ def options_snapshot_file(context) -> MaterializeResult:
             "candle_cache_dir": str(paths.data_dir / "candles"),
         },
     ) as run_logger:
-        try:
-            result = run_snapshot_options_job(
-                portfolio_path=paths.portfolio_path,
-                cache_dir=paths.data_dir / "options_snapshots",
-                candle_cache_dir=paths.data_dir / "candles",
-                window_pct=1.0,
-                spot_period="10d",
-                require_data_date=partition_key,
-                require_data_tz="America/Chicago",
-                watchlists_path=paths.watchlists_path,
-                watchlist=[],
-                all_watchlists=False,
-                all_expiries=True,
-                full_chain=True,
-                max_expiries=None,
-                risk_free_rate=0.0,
-                provider_builder=cli_deps.build_provider,
-                snapshot_store_builder=cli_deps.build_snapshot_store,
-                candle_store_builder=cli_deps.build_candle_store,
-                portfolio_loader=load_portfolio,
-                run_logger=run_logger,
-            )
-        except VisibilityJobParameterError as exc:
-            run_logger.log_asset_failure(
-                asset_key="options_snapshot_file",
-                asset_kind="file",
-                partition_key=partition_key,
-                extra={"error": str(exc)},
-            )
-            raise Failure(str(exc)) from exc
-
+        result = assets_visibility_common.run_options_snapshot_file_job(
+            paths=paths,
+            partition_key=partition_key,
+            run_logger=run_logger,
+            run_job=run_snapshot_options_job,
+            portfolio_loader=load_portfolio,
+        )
         if result.no_symbols:
-            run_logger.log_asset_skipped(
-                asset_key="options_snapshot_file",
-                asset_kind="file",
+            return assets_visibility_common.options_snapshot_skip(
+                run_logger=run_logger,
                 partition_key=partition_key,
-                extra={"reason": "no_symbols"},
-            )
-            return MaterializeResult(
-                metadata={
-                    "partition": partition_key,
-                    "status": "skipped",
-                    "reason": "no_symbols",
-                }
+                reason="no_symbols",
             )
 
         status_by_symbol = _snapshot_status_by_symbol(symbols=result.symbols, messages=result.messages)
-        success_symbols = sorted(sym for sym, status in status_by_symbol.items() if status == "success")
-        failed_symbols = sorted(sym for sym, status in status_by_symbol.items() if status == "failed")
-        max_data_date = max(result.dates_used) if result.dates_used else None
-
-        if failed_symbols and not success_symbols:
-            run_logger.log_asset_failure(
-                asset_key="options_snapshot_file",
-                asset_kind="file",
-                partition_key=partition_key,
-                extra={
-                    "failed_symbols": failed_symbols,
-                    "warnings": [msg for msg in result.messages if "Warning" in msg],
-                },
-            )
-            raise Failure(f"snapshot stage failed for all symbols in partition {partition_key}")
-
-        if success_symbols:
-            run_logger.log_asset_success(
-                asset_key="options_snapshot_file",
-                asset_kind="file",
-                partition_key=partition_key,
-                rows_inserted=len(success_symbols),
-                min_event_ts=max_data_date,
-                max_event_ts=max_data_date,
-                extra={
-                    "success_symbols": success_symbols,
-                    "failed_symbols": failed_symbols,
-                },
-            )
-        else:
-            run_logger.log_asset_skipped(
-                asset_key="options_snapshot_file",
-                asset_kind="file",
-                partition_key=partition_key,
-                extra={"reason": "no_snapshots_saved"},
-            )
-
-        for sym in success_symbols:
-            if max_data_date is None:
-                continue
-            run_logger.upsert_watermark(
-                asset_key="options_snapshot_file",
-                scope_key=sym,
-                watermark_ts=max_data_date,
-            )
-        if max_data_date is not None:
-            run_logger.upsert_watermark(
-                asset_key="options_snapshot_file",
-                scope_key="ALL",
-                watermark_ts=max_data_date,
-            )
-
-        return MaterializeResult(
-            metadata={
-                "partition": partition_key,
-                "success_symbols": len(success_symbols),
-                "failed_symbols": len(failed_symbols),
-                "max_data_date": None if max_data_date is None else max_data_date.isoformat(),
-            }
+        success_symbols, failed_symbols, max_data_date = assets_visibility_common.resolve_options_snapshot_symbols(
+            status_by_symbol=status_by_symbol,
+            dates_used=result.dates_used,
+        )
+        return assets_visibility_common.record_options_snapshot_file_result(
+            run_logger=run_logger,
+            partition_key=partition_key,
+            result=result,
+            success_symbols=success_symbols,
+            failed_symbols=failed_symbols,
+            max_data_date=max_data_date,
         )
 
 
