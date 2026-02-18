@@ -89,6 +89,15 @@ class Advice:
     warnings: list[str]
 
 
+@dataclass(frozen=True)
+class _TrendSnapshot:
+    daily_trend: ThesisState | None
+    three_trend: ThesisState | None
+    weekly_trend: ThesisState | None
+    daily_mom: ThesisState | None
+    weekly_mom: ThesisState | None
+
+
 def _thesis_state(
     *,
     option_type: str,
@@ -169,22 +178,7 @@ def advise(metrics: PositionMetrics, portfolio: Portfolio) -> Advice:
         avoid_days=rp.earnings_avoid_days,
     )
     warnings.extend(event_risk["warnings"])
-
-    if metrics.mark is None:
-        warnings.append("Missing option mark price; advice is limited.")
-    if metrics.execution_quality == "unknown":
-        warnings.append("Missing bid/ask quotes; quote quality low.")
-    if metrics.execution_quality == "bad" and metrics.spread_pct is not None:
-        warnings.append(f"Wide spread ({metrics.spread_pct:.1%}); fills may be poor.")
-    if metrics.quality_warnings:
-        for w in metrics.quality_warnings:
-            if w not in warnings:
-                warnings.append(w)
-
-    if metrics.open_interest is not None and metrics.open_interest < rp.min_open_interest:
-        warnings.append(f"Low open interest ({metrics.open_interest} < {rp.min_open_interest}).")
-    if metrics.volume is not None and metrics.volume < rp.min_volume:
-        warnings.append(f"Low volume ({metrics.volume} < {rp.min_volume}).")
+    _append_advice_warnings(metrics=metrics, risk_profile=rp, warnings=warnings)
 
     capital, total_risk = _risk_budget(portfolio)
     pos_risk = metrics.position.premium_paid
@@ -192,138 +186,250 @@ def advise(metrics: PositionMetrics, portfolio: Portfolio) -> Advice:
     action = Action.HOLD
     confidence = Confidence.MEDIUM
 
-    # Risk gating
-    if capital > 0:
-        if rp.max_single_position_risk_pct is not None:
-            if pos_risk > rp.max_single_position_risk_pct * capital:
-                reasons.append("Premium at risk exceeds single-position risk limit.")
-                action = Action.CLOSE if metrics.position.contracts == 1 else Action.REDUCE
-                confidence = Confidence.HIGH
-        if rp.max_portfolio_risk_pct is not None:
-            if total_risk > rp.max_portfolio_risk_pct * capital:
-                warnings.append("Total premium at risk exceeds portfolio risk limit; avoid adding risk.")
-
-    option_type = metrics.position.option_type
-
-    daily_trend = _thesis_state(
-        option_type=option_type, close=metrics.underlying_price, ema20=metrics.ema20, ema50=metrics.ema50
-    )
-    three_trend = _thesis_state(
-        option_type=option_type, close=metrics.close_3d, ema20=metrics.ema20_3d, ema50=metrics.ema50_3d
-    )
-    weekly_trend = _thesis_state(
-        option_type=option_type, close=metrics.close_w, ema20=metrics.ema20_w, ema50=metrics.ema50_w
+    action, confidence = _apply_risk_gating(
+        metrics=metrics,
+        risk_profile=rp,
+        capital=capital,
+        total_risk=total_risk,
+        pos_risk=pos_risk,
+        reasons=reasons,
+        warnings=warnings,
+        action=action,
+        confidence=confidence,
     )
 
-    daily_mom = _momentum_state(option_type=option_type, rsi_val=metrics.rsi14)
-    weekly_mom = _momentum_state(option_type=option_type, rsi_val=metrics.rsi14_w)
-
-    tech_line = f"Technicals: W={weekly_trend.value if weekly_trend else 'n/a'}"
-    tech_line += f" (RSI {metrics.rsi14_w:.0f})" if metrics.rsi14_w is not None else " (RSI n/a)"
-    tech_line += f", 3D={three_trend.value if three_trend else 'n/a'}"
-    tech_line += f", D={daily_trend.value if daily_trend else 'n/a'}"
-    if metrics.near_support_w is True:
-        tech_line += ", W_support=yes"
-    if metrics.breakout_w is True:
-        tech_line += ", W_breakout=yes"
-    reasons.append(tech_line)
-
-    # Roll / close near expiry (time-based rule still matters for long options)
-    if metrics.dte is not None and metrics.dte <= rp.roll_dte_threshold:
-        if weekly_trend == ThesisState.SUPPORTIVE:
-            reasons.append(f"DTE is low ({metrics.dte} <= {rp.roll_dte_threshold}); trend still supports thesis.")
-            action = Action.ROLL
-            confidence = Confidence.MEDIUM if confidence != Confidence.HIGH else confidence
-        elif weekly_trend == ThesisState.ADVERSE:
-            reasons.append(f"DTE is low ({metrics.dte} <= {rp.roll_dte_threshold}); weekly trend is against thesis.")
-            action = Action.CLOSE
-            confidence = Confidence.HIGH
-        else:
-            reasons.append(f"DTE is low ({metrics.dte} <= {rp.roll_dte_threshold}); insufficient trend data.")
-            action = Action.ROLL
-            confidence = Confidence.LOW
-
-    # Multi-timeframe, long-term oriented guidance:
-    # - Weekly controls the thesis.
-    # - 3D/Daily confirm (or warn) on timing.
-    if action == Action.HOLD:
-        score = (3 * _state_score(weekly_trend)) + (2 * _state_score(three_trend)) + (1 * _state_score(daily_trend))
-
-        # PnL-based exits are only used when configured, and only when the thesis looks broken.
-        if rp.stop_loss_pct is not None and metrics.pnl_pct is not None and metrics.pnl_pct <= -rp.stop_loss_pct:
-            if weekly_trend == ThesisState.ADVERSE and three_trend == ThesisState.ADVERSE:
-                reasons.append(
-                    f"PnL breached stop-loss ({metrics.pnl_pct:.0%} <= -{rp.stop_loss_pct:.0%}) and trends broke down."
-                )
-                action = Action.CLOSE if metrics.position.contracts == 1 else Action.REDUCE
-                confidence = Confidence.HIGH
-
-        if action == Action.HOLD:
-            if weekly_trend == ThesisState.ADVERSE and (three_trend == ThesisState.ADVERSE or daily_trend == ThesisState.ADVERSE):
-                if metrics.near_support_w:
-                    reasons.append("Weekly trend is weak, but price is near a weekly MA support zone; monitor closely.")
-                    action = Action.HOLD
-                    confidence = Confidence.LOW
-                else:
-                    reasons.append("Weekly trend is against thesis and lower timeframes confirm weakness.")
-                    action = Action.CLOSE if metrics.position.contracts == 1 else Action.REDUCE
-                    confidence = Confidence.HIGH
-            elif weekly_trend == ThesisState.SUPPORTIVE:
-                strong_momentum = weekly_mom == ThesisState.SUPPORTIVE or daily_mom == ThesisState.SUPPORTIVE
-                if metrics.breakout_w is True and strong_momentum and score >= 3:
-                    reasons.append("Weekly breakout with momentum; adding risk is acceptable per settings.")
-                    action = Action.ADD
-                    confidence = Confidence.MEDIUM
-                else:
-                    reasons.append("Weekly trend supports thesis; prefer holding through drawdowns (add on breakout/momentum).")
-                    action = Action.HOLD
-                    confidence = Confidence.MEDIUM
-            else:
-                # Weekly neutral/unknown
-                if metrics.dte is not None and metrics.dte <= 120 and score <= -2:
-                    reasons.append("Shorter-dated contract and multi-timeframe weakness; consider trimming risk.")
-                    action = Action.CLOSE if metrics.position.contracts == 1 else Action.REDUCE
-                    confidence = Confidence.MEDIUM
-                else:
-                    reasons.append("Weekly thesis unclear; let higher timeframe decide, monitor daily/3D for deterioration.")
-                    action = Action.HOLD
-                    confidence = Confidence.LOW
-
-    # Take profit (optional) — primarily for shorter-term moves or momentum exhaustion.
-    if (
-        action == Action.HOLD
-        and rp.take_profit_pct is not None
-        and metrics.pnl_pct is not None
-        and metrics.pnl_pct >= rp.take_profit_pct
-    ):
-        if weekly_mom == ThesisState.ADVERSE or daily_mom == ThesisState.ADVERSE:
-            reasons.append(f"PnL exceeded take-profit ({metrics.pnl_pct:.0%} >= {rp.take_profit_pct:.0%}) with weakening momentum.")
-            action = Action.CLOSE if metrics.position.contracts == 1 else Action.REDUCE
-            confidence = Confidence.MEDIUM
-
-    # If we recommend adding, optionally enforce risk budgets (when configured).
-    if action == Action.ADD and capital > 0:
-        if rp.max_portfolio_risk_pct is not None and total_risk > rp.max_portfolio_risk_pct * capital:
-            warnings.append("Risk budgets are exceeded; suppressing ADD.")
-            action = Action.HOLD
-            confidence = Confidence.LOW
-        if rp.max_single_position_risk_pct is not None and pos_risk > rp.max_single_position_risk_pct * capital:
-            warnings.append("Single-position risk budget exceeded; suppressing ADD.")
-            action = Action.HOLD
-            confidence = Confidence.LOW
-
-    if metrics.quality_label in {"bad", "unknown"}:
-        if confidence == Confidence.HIGH:
-            confidence = Confidence.MEDIUM
-        elif confidence == Confidence.MEDIUM:
-            confidence = Confidence.LOW
-    elif metrics.execution_quality == "bad":
-        if confidence == Confidence.HIGH:
-            confidence = Confidence.MEDIUM
-        elif confidence == Confidence.MEDIUM:
-            confidence = Confidence.LOW
+    trends = _compute_trend_snapshot(metrics)
+    reasons.append(_technicals_reason(metrics=metrics, trends=trends))
+    action, confidence = _apply_dte_guidance(
+        metrics=metrics,
+        risk_profile=rp,
+        weekly_trend=trends.weekly_trend,
+        action=action,
+        confidence=confidence,
+        reasons=reasons,
+    )
+    action, confidence = _apply_hold_guidance(
+        metrics=metrics,
+        risk_profile=rp,
+        trends=trends,
+        action=action,
+        confidence=confidence,
+        reasons=reasons,
+    )
+    action, confidence = _apply_take_profit_guidance(
+        metrics=metrics,
+        risk_profile=rp,
+        trends=trends,
+        action=action,
+        confidence=confidence,
+        reasons=reasons,
+    )
+    action, confidence = _apply_add_risk_suppression(
+        risk_profile=rp,
+        capital=capital,
+        total_risk=total_risk,
+        pos_risk=pos_risk,
+        action=action,
+        confidence=confidence,
+        warnings=warnings,
+    )
+    confidence = _adjust_confidence_for_quote_quality(
+        quality_label=metrics.quality_label,
+        execution_quality=metrics.execution_quality,
+        confidence=confidence,
+    )
 
     if not reasons:
         reasons.append("No strong triggers; continue monitoring.")
 
     return Advice(action=action, confidence=confidence, reasons=reasons, warnings=warnings)
+
+
+def _append_advice_warnings(
+    *,
+    metrics: PositionMetrics,
+    risk_profile: RiskProfile,
+    warnings: list[str],
+) -> None:
+    if metrics.mark is None:
+        warnings.append("Missing option mark price; advice is limited.")
+    if metrics.execution_quality == "unknown":
+        warnings.append("Missing bid/ask quotes; quote quality low.")
+    if metrics.execution_quality == "bad" and metrics.spread_pct is not None:
+        warnings.append(f"Wide spread ({metrics.spread_pct:.1%}); fills may be poor.")
+    for warning in metrics.quality_warnings:
+        if warning not in warnings:
+            warnings.append(warning)
+    if metrics.open_interest is not None and metrics.open_interest < risk_profile.min_open_interest:
+        warnings.append(f"Low open interest ({metrics.open_interest} < {risk_profile.min_open_interest}).")
+    if metrics.volume is not None and metrics.volume < risk_profile.min_volume:
+        warnings.append(f"Low volume ({metrics.volume} < {risk_profile.min_volume}).")
+
+
+def _apply_risk_gating(
+    *,
+    metrics: PositionMetrics,
+    risk_profile: RiskProfile,
+    capital: float,
+    total_risk: float,
+    pos_risk: float,
+    reasons: list[str],
+    warnings: list[str],
+    action: Action,
+    confidence: Confidence,
+) -> tuple[Action, Confidence]:
+    if capital <= 0:
+        return action, confidence
+    if risk_profile.max_single_position_risk_pct is not None and pos_risk > risk_profile.max_single_position_risk_pct * capital:
+        reasons.append("Premium at risk exceeds single-position risk limit.")
+        action = Action.CLOSE if metrics.position.contracts == 1 else Action.REDUCE
+        confidence = Confidence.HIGH
+    if risk_profile.max_portfolio_risk_pct is not None and total_risk > risk_profile.max_portfolio_risk_pct * capital:
+        warnings.append("Total premium at risk exceeds portfolio risk limit; avoid adding risk.")
+    return action, confidence
+
+
+def _compute_trend_snapshot(metrics: PositionMetrics) -> _TrendSnapshot:
+    option_type = metrics.position.option_type
+    return _TrendSnapshot(
+        daily_trend=_thesis_state(option_type=option_type, close=metrics.underlying_price, ema20=metrics.ema20, ema50=metrics.ema50),
+        three_trend=_thesis_state(option_type=option_type, close=metrics.close_3d, ema20=metrics.ema20_3d, ema50=metrics.ema50_3d),
+        weekly_trend=_thesis_state(option_type=option_type, close=metrics.close_w, ema20=metrics.ema20_w, ema50=metrics.ema50_w),
+        daily_mom=_momentum_state(option_type=option_type, rsi_val=metrics.rsi14),
+        weekly_mom=_momentum_state(option_type=option_type, rsi_val=metrics.rsi14_w),
+    )
+
+
+def _technicals_reason(*, metrics: PositionMetrics, trends: _TrendSnapshot) -> str:
+    line = f"Technicals: W={trends.weekly_trend.value if trends.weekly_trend else 'n/a'}"
+    line += f" (RSI {metrics.rsi14_w:.0f})" if metrics.rsi14_w is not None else " (RSI n/a)"
+    line += f", 3D={trends.three_trend.value if trends.three_trend else 'n/a'}"
+    line += f", D={trends.daily_trend.value if trends.daily_trend else 'n/a'}"
+    if metrics.near_support_w is True:
+        line += ", W_support=yes"
+    if metrics.breakout_w is True:
+        line += ", W_breakout=yes"
+    return line
+
+
+def _apply_dte_guidance(
+    *,
+    metrics: PositionMetrics,
+    risk_profile: RiskProfile,
+    weekly_trend: ThesisState | None,
+    action: Action,
+    confidence: Confidence,
+    reasons: list[str],
+) -> tuple[Action, Confidence]:
+    if metrics.dte is None or metrics.dte > risk_profile.roll_dte_threshold:
+        return action, confidence
+    if weekly_trend == ThesisState.SUPPORTIVE:
+        reasons.append(f"DTE is low ({metrics.dte} <= {risk_profile.roll_dte_threshold}); trend still supports thesis.")
+        return Action.ROLL, (Confidence.MEDIUM if confidence != Confidence.HIGH else confidence)
+    if weekly_trend == ThesisState.ADVERSE:
+        reasons.append(f"DTE is low ({metrics.dte} <= {risk_profile.roll_dte_threshold}); weekly trend is against thesis.")
+        return Action.CLOSE, Confidence.HIGH
+    reasons.append(f"DTE is low ({metrics.dte} <= {risk_profile.roll_dte_threshold}); insufficient trend data.")
+    return Action.ROLL, Confidence.LOW
+
+
+def _apply_hold_guidance(
+    *,
+    metrics: PositionMetrics,
+    risk_profile: RiskProfile,
+    trends: _TrendSnapshot,
+    action: Action,
+    confidence: Confidence,
+    reasons: list[str],
+) -> tuple[Action, Confidence]:
+    if action != Action.HOLD:
+        return action, confidence
+    score = (3 * _state_score(trends.weekly_trend)) + (2 * _state_score(trends.three_trend)) + (1 * _state_score(trends.daily_trend))
+    if (
+        risk_profile.stop_loss_pct is not None
+        and metrics.pnl_pct is not None
+        and metrics.pnl_pct <= -risk_profile.stop_loss_pct
+        and trends.weekly_trend == ThesisState.ADVERSE
+        and trends.three_trend == ThesisState.ADVERSE
+    ):
+        reasons.append(f"PnL breached stop-loss ({metrics.pnl_pct:.0%} <= -{risk_profile.stop_loss_pct:.0%}) and trends broke down.")
+        return (Action.CLOSE if metrics.position.contracts == 1 else Action.REDUCE), Confidence.HIGH
+    if trends.weekly_trend == ThesisState.ADVERSE and (
+        trends.three_trend == ThesisState.ADVERSE or trends.daily_trend == ThesisState.ADVERSE
+    ):
+        if metrics.near_support_w:
+            reasons.append("Weekly trend is weak, but price is near a weekly MA support zone; monitor closely.")
+            return Action.HOLD, Confidence.LOW
+        reasons.append("Weekly trend is against thesis and lower timeframes confirm weakness.")
+        return (Action.CLOSE if metrics.position.contracts == 1 else Action.REDUCE), Confidence.HIGH
+    if trends.weekly_trend == ThesisState.SUPPORTIVE:
+        strong_momentum = trends.weekly_mom == ThesisState.SUPPORTIVE or trends.daily_mom == ThesisState.SUPPORTIVE
+        if metrics.breakout_w is True and strong_momentum and score >= 3:
+            reasons.append("Weekly breakout with momentum; adding risk is acceptable per settings.")
+            return Action.ADD, Confidence.MEDIUM
+        reasons.append("Weekly trend supports thesis; prefer holding through drawdowns (add on breakout/momentum).")
+        return Action.HOLD, Confidence.MEDIUM
+    if metrics.dte is not None and metrics.dte <= 120 and score <= -2:
+        reasons.append("Shorter-dated contract and multi-timeframe weakness; consider trimming risk.")
+        return (Action.CLOSE if metrics.position.contracts == 1 else Action.REDUCE), Confidence.MEDIUM
+    reasons.append("Weekly thesis unclear; let higher timeframe decide, monitor daily/3D for deterioration.")
+    return Action.HOLD, Confidence.LOW
+
+
+def _apply_take_profit_guidance(
+    *,
+    metrics: PositionMetrics,
+    risk_profile: RiskProfile,
+    trends: _TrendSnapshot,
+    action: Action,
+    confidence: Confidence,
+    reasons: list[str],
+) -> tuple[Action, Confidence]:
+    if (
+        action != Action.HOLD
+        or risk_profile.take_profit_pct is None
+        or metrics.pnl_pct is None
+        or metrics.pnl_pct < risk_profile.take_profit_pct
+    ):
+        return action, confidence
+    if trends.weekly_mom == ThesisState.ADVERSE or trends.daily_mom == ThesisState.ADVERSE:
+        reasons.append(f"PnL exceeded take-profit ({metrics.pnl_pct:.0%} >= {risk_profile.take_profit_pct:.0%}) with weakening momentum.")
+        return (Action.CLOSE if metrics.position.contracts == 1 else Action.REDUCE), Confidence.MEDIUM
+    return action, confidence
+
+
+def _apply_add_risk_suppression(
+    *,
+    risk_profile: RiskProfile,
+    capital: float,
+    total_risk: float,
+    pos_risk: float,
+    action: Action,
+    confidence: Confidence,
+    warnings: list[str],
+) -> tuple[Action, Confidence]:
+    if action != Action.ADD or capital <= 0:
+        return action, confidence
+    if risk_profile.max_portfolio_risk_pct is not None and total_risk > risk_profile.max_portfolio_risk_pct * capital:
+        warnings.append("Risk budgets are exceeded; suppressing ADD.")
+        action = Action.HOLD
+        confidence = Confidence.LOW
+    if risk_profile.max_single_position_risk_pct is not None and pos_risk > risk_profile.max_single_position_risk_pct * capital:
+        warnings.append("Single-position risk budget exceeded; suppressing ADD.")
+        action = Action.HOLD
+        confidence = Confidence.LOW
+    return action, confidence
+
+
+def _adjust_confidence_for_quote_quality(
+    *,
+    quality_label: str | None,
+    execution_quality: str | None,
+    confidence: Confidence,
+) -> Confidence:
+    if quality_label in {"bad", "unknown"} or execution_quality == "bad":
+        if confidence == Confidence.HIGH:
+            return Confidence.MEDIUM
+        if confidence == Confidence.MEDIUM:
+            return Confidence.LOW
+    return confidence
