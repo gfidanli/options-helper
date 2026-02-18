@@ -55,6 +55,27 @@ class _ShortSetup:
     scan_start_idx: int | None = None
 
 
+@dataclass
+class _FibRuntime:
+    out: pd.DataFrame
+    index_values: list[object]
+    high: np.ndarray
+    low: np.ndarray
+    swing_high: np.ndarray
+    swing_low: np.ndarray
+    bullish_msb: np.ndarray
+    bearish_msb: np.ndarray
+    broken_high_level: np.ndarray
+    broken_low_level: np.ndarray
+    broken_high_ts: list[object]
+    broken_low_ts: list[object]
+    last_confirmed_high_idx: np.ndarray
+    last_confirmed_low_idx: np.ndarray
+    swing_right_bars: int
+    fib_ratio: float
+    fib_percent: float
+
+
 def compute_fib_retracement_signals(
     ohlc: pd.DataFrame,
     *,
@@ -83,7 +104,33 @@ def compute_fib_retracement_signals(
     if n == 0:
         return out
 
-    index_values = list(out.index)
+    runtime = _build_fib_runtime(
+        out=out,
+        n=n,
+        swing_right_bars=swing_right_bars,
+        fib_ratio=fib_ratio,
+        fib_percent=fib_percent,
+    )
+    long_setup: _LongSetup | None = None
+    short_setup: _ShortSetup | None = None
+
+    for i in range(n):
+        long_setup = _advance_long_setup(runtime=runtime, row=i, setup=long_setup)
+        short_setup = _advance_short_setup(runtime=runtime, row=i, setup=short_setup)
+        long_setup = _emit_long_signal_if_triggered(runtime=runtime, row=i, setup=long_setup)
+        short_setup = _emit_short_signal_if_triggered(runtime=runtime, row=i, setup=short_setup)
+
+    return out
+
+
+def _build_fib_runtime(
+    *,
+    out: pd.DataFrame,
+    n: int,
+    swing_right_bars: int,
+    fib_ratio: float,
+    fib_percent: float,
+) -> _FibRuntime:
     high = pd.to_numeric(out["High"], errors="coerce").to_numpy(dtype=float)
     low = pd.to_numeric(out["Low"], errors="coerce").to_numpy(dtype=float)
     swing_high = out["swing_high"].fillna(False).to_numpy(dtype=bool)
@@ -94,7 +141,40 @@ def compute_fib_retracement_signals(
     broken_low_level = pd.to_numeric(out["broken_swing_low_level"], errors="coerce").to_numpy(dtype=float)
     broken_high_ts = out["broken_swing_high_timestamp"].tolist()
     broken_low_ts = out["broken_swing_low_timestamp"].tolist()
+    last_high_idx, last_low_idx = _last_confirmed_swing_indices(
+        n=n,
+        swing_high=swing_high,
+        swing_low=swing_low,
+        swing_right_bars=swing_right_bars,
+    )
+    return _FibRuntime(
+        out=out,
+        index_values=list(out.index),
+        high=high,
+        low=low,
+        swing_high=swing_high,
+        swing_low=swing_low,
+        bullish_msb=bullish_msb,
+        bearish_msb=bearish_msb,
+        broken_high_level=broken_high_level,
+        broken_low_level=broken_low_level,
+        broken_high_ts=broken_high_ts,
+        broken_low_ts=broken_low_ts,
+        last_confirmed_high_idx=last_high_idx,
+        last_confirmed_low_idx=last_low_idx,
+        swing_right_bars=swing_right_bars,
+        fib_ratio=fib_ratio,
+        fib_percent=fib_percent,
+    )
 
+
+def _last_confirmed_swing_indices(
+    *,
+    n: int,
+    swing_high: np.ndarray,
+    swing_low: np.ndarray,
+    swing_right_bars: int,
+) -> tuple[np.ndarray, np.ndarray]:
     last_confirmed_high_idx = np.full(n, -1, dtype=int)
     last_confirmed_low_idx = np.full(n, -1, dtype=int)
     current_high_idx = -1
@@ -108,144 +188,160 @@ def compute_fib_retracement_signals(
                 current_low_idx = confirm_idx
         last_confirmed_high_idx[i] = current_high_idx
         last_confirmed_low_idx[i] = current_low_idx
+    return last_confirmed_high_idx, last_confirmed_low_idx
 
-    def _start_long_setup(msb_idx: int) -> _LongSetup | None:
-        range_low_idx = int(last_confirmed_low_idx[msb_idx])
-        if range_low_idx < 0:
-            return None
-        range_low_level = float(low[range_low_idx])
-        if not np.isfinite(range_low_level):
-            return None
-        return _LongSetup(
-            msb_idx=msb_idx,
-            msb_timestamp=_timestamp_label(index_values[msb_idx]),
-            range_low_idx=range_low_idx,
-            range_low_level=range_low_level,
-            broken_swing_level=float(broken_high_level[msb_idx]),
-            broken_swing_timestamp=_optional_timestamp_label(broken_high_ts[msb_idx]),
+
+def _start_long_setup(runtime: _FibRuntime, msb_idx: int) -> _LongSetup | None:
+    range_low_idx = int(runtime.last_confirmed_low_idx[msb_idx])
+    if range_low_idx < 0:
+        return None
+    range_low_level = float(runtime.low[range_low_idx])
+    if not np.isfinite(range_low_level):
+        return None
+    return _LongSetup(
+        msb_idx=msb_idx,
+        msb_timestamp=_timestamp_label(runtime.index_values[msb_idx]),
+        range_low_idx=range_low_idx,
+        range_low_level=range_low_level,
+        broken_swing_level=float(runtime.broken_high_level[msb_idx]),
+        broken_swing_timestamp=_optional_timestamp_label(runtime.broken_high_ts[msb_idx]),
+    )
+
+
+def _start_short_setup(runtime: _FibRuntime, msb_idx: int) -> _ShortSetup | None:
+    range_high_idx = int(runtime.last_confirmed_high_idx[msb_idx])
+    if range_high_idx < 0:
+        return None
+    range_high_level = float(runtime.high[range_high_idx])
+    if not np.isfinite(range_high_level):
+        return None
+    return _ShortSetup(
+        msb_idx=msb_idx,
+        msb_timestamp=_timestamp_label(runtime.index_values[msb_idx]),
+        range_high_idx=range_high_idx,
+        range_high_level=range_high_level,
+        broken_swing_level=float(runtime.broken_low_level[msb_idx]),
+        broken_swing_timestamp=_optional_timestamp_label(runtime.broken_low_ts[msb_idx]),
+    )
+
+
+def _advance_long_setup(*, runtime: _FibRuntime, row: int, setup: _LongSetup | None) -> _LongSetup | None:
+    if runtime.bullish_msb[row]:
+        next_setup = _start_long_setup(runtime, row)
+        if setup is None or setup.range_high_idx is None:
+            # While waiting for the next swing high, latest bullish MSB wins.
+            setup = next_setup
+    if setup is None or setup.range_high_idx is not None:
+        return setup
+
+    confirm_idx = row - runtime.swing_right_bars
+    if not (confirm_idx > setup.msb_idx and confirm_idx >= 0 and runtime.swing_high[confirm_idx]):
+        return setup
+
+    range_high_level = float(runtime.high[confirm_idx])
+    if not np.isfinite(range_high_level) or not (range_high_level > setup.range_low_level):
+        return None
+    if np.isfinite(setup.broken_swing_level) and not (range_high_level > setup.broken_swing_level):
+        return None
+    setup.range_high_idx = confirm_idx
+    setup.range_high_level = range_high_level
+    setup.entry_level = range_high_level - ((range_high_level - setup.range_low_level) * runtime.fib_ratio)
+    setup.scan_start_idx = confirm_idx + runtime.swing_right_bars + 1
+    return setup
+
+
+def _advance_short_setup(*, runtime: _FibRuntime, row: int, setup: _ShortSetup | None) -> _ShortSetup | None:
+    if runtime.bearish_msb[row]:
+        next_setup = _start_short_setup(runtime, row)
+        if setup is None or setup.range_low_idx is None:
+            # While waiting for the next swing low, latest bearish MSB wins.
+            setup = next_setup
+    if setup is None or setup.range_low_idx is not None:
+        return setup
+
+    confirm_idx = row - runtime.swing_right_bars
+    if not (confirm_idx > setup.msb_idx and confirm_idx >= 0 and runtime.swing_low[confirm_idx]):
+        return setup
+
+    range_low_level = float(runtime.low[confirm_idx])
+    if not np.isfinite(range_low_level) or not (setup.range_high_level > range_low_level):
+        return None
+    if np.isfinite(setup.broken_swing_level) and not (range_low_level < setup.broken_swing_level):
+        return None
+    setup.range_low_idx = confirm_idx
+    setup.range_low_level = range_low_level
+    setup.entry_level = range_low_level + ((setup.range_high_level - range_low_level) * runtime.fib_ratio)
+    setup.scan_start_idx = confirm_idx + runtime.swing_right_bars + 1
+    return setup
+
+
+def _emit_long_signal_if_triggered(*, runtime: _FibRuntime, row: int, setup: _LongSetup | None) -> _LongSetup | None:
+    if (
+        setup is None
+        or setup.range_high_idx is None
+        or setup.scan_start_idx is None
+        or row < setup.scan_start_idx
+    ):
+        return setup
+    if not (
+        np.isfinite(runtime.low[row])
+        and np.isfinite(runtime.high[row])
+        and runtime.low[row] <= setup.entry_level <= runtime.high[row]
+    ):
+        return setup
+    if row + 1 < len(runtime.high):
+        _write_signal_row(
+            out=runtime.out,
+            row=row,
+            is_long=True,
+            entry_level=setup.entry_level,
+            fib_percent=runtime.fib_percent,
+            range_high_level=setup.range_high_level,
+            range_low_level=setup.range_low_level,
+            range_high_timestamp=_timestamp_label(runtime.index_values[setup.range_high_idx]),
+            range_low_timestamp=_timestamp_label(runtime.index_values[setup.range_low_idx]),
+            msb_timestamp=setup.msb_timestamp,
+            broken_swing_level=setup.broken_swing_level,
+            broken_swing_timestamp=setup.broken_swing_timestamp,
         )
+    return None
 
-    def _start_short_setup(msb_idx: int) -> _ShortSetup | None:
-        range_high_idx = int(last_confirmed_high_idx[msb_idx])
-        if range_high_idx < 0:
-            return None
-        range_high_level = float(high[range_high_idx])
-        if not np.isfinite(range_high_level):
-            return None
-        return _ShortSetup(
-            msb_idx=msb_idx,
-            msb_timestamp=_timestamp_label(index_values[msb_idx]),
-            range_high_idx=range_high_idx,
-            range_high_level=range_high_level,
-            broken_swing_level=float(broken_low_level[msb_idx]),
-            broken_swing_timestamp=_optional_timestamp_label(broken_low_ts[msb_idx]),
+
+def _emit_short_signal_if_triggered(
+    *,
+    runtime: _FibRuntime,
+    row: int,
+    setup: _ShortSetup | None,
+) -> _ShortSetup | None:
+    if (
+        setup is None
+        or setup.range_low_idx is None
+        or setup.scan_start_idx is None
+        or row < setup.scan_start_idx
+    ):
+        return setup
+    if not (
+        np.isfinite(runtime.low[row])
+        and np.isfinite(runtime.high[row])
+        and runtime.low[row] <= setup.entry_level <= runtime.high[row]
+    ):
+        return setup
+    if row + 1 < len(runtime.high):
+        _write_signal_row(
+            out=runtime.out,
+            row=row,
+            is_long=False,
+            entry_level=setup.entry_level,
+            fib_percent=runtime.fib_percent,
+            range_high_level=setup.range_high_level,
+            range_low_level=setup.range_low_level,
+            range_high_timestamp=_timestamp_label(runtime.index_values[setup.range_high_idx]),
+            range_low_timestamp=_timestamp_label(runtime.index_values[setup.range_low_idx]),
+            msb_timestamp=setup.msb_timestamp,
+            broken_swing_level=setup.broken_swing_level,
+            broken_swing_timestamp=setup.broken_swing_timestamp,
         )
-
-    long_setup: _LongSetup | None = None
-    short_setup: _ShortSetup | None = None
-
-    for i in range(n):
-        if bullish_msb[i]:
-            next_long_setup = _start_long_setup(i)
-            if long_setup is None:
-                long_setup = next_long_setup
-            elif long_setup.range_high_idx is None:
-                # While waiting for the next swing high, latest bullish MSB wins.
-                long_setup = next_long_setup
-
-        if bearish_msb[i]:
-            next_short_setup = _start_short_setup(i)
-            if short_setup is None:
-                short_setup = next_short_setup
-            elif short_setup.range_low_idx is None:
-                # While waiting for the next swing low, latest bearish MSB wins.
-                short_setup = next_short_setup
-
-        if long_setup is not None and long_setup.range_high_idx is None:
-            confirm_idx = i - swing_right_bars
-            if confirm_idx > long_setup.msb_idx and confirm_idx >= 0 and swing_high[confirm_idx]:
-                range_high_level = float(high[confirm_idx])
-                if not np.isfinite(range_high_level) or not (range_high_level > long_setup.range_low_level):
-                    long_setup = None
-                elif np.isfinite(long_setup.broken_swing_level) and not (
-                    range_high_level > long_setup.broken_swing_level
-                ):
-                    long_setup = None
-                else:
-                    long_setup.range_high_idx = confirm_idx
-                    long_setup.range_high_level = range_high_level
-                    long_setup.entry_level = range_high_level - (
-                        (range_high_level - long_setup.range_low_level) * fib_ratio
-                    )
-                    long_setup.scan_start_idx = confirm_idx + swing_right_bars + 1
-
-        if short_setup is not None and short_setup.range_low_idx is None:
-            confirm_idx = i - swing_right_bars
-            if confirm_idx > short_setup.msb_idx and confirm_idx >= 0 and swing_low[confirm_idx]:
-                range_low_level = float(low[confirm_idx])
-                if not np.isfinite(range_low_level) or not (short_setup.range_high_level > range_low_level):
-                    short_setup = None
-                elif np.isfinite(short_setup.broken_swing_level) and not (
-                    range_low_level < short_setup.broken_swing_level
-                ):
-                    short_setup = None
-                else:
-                    short_setup.range_low_idx = confirm_idx
-                    short_setup.range_low_level = range_low_level
-                    short_setup.entry_level = range_low_level + (
-                        (short_setup.range_high_level - range_low_level) * fib_ratio
-                    )
-                    short_setup.scan_start_idx = confirm_idx + swing_right_bars + 1
-
-        if (
-            long_setup is not None
-            and long_setup.range_high_idx is not None
-            and long_setup.scan_start_idx is not None
-            and i >= long_setup.scan_start_idx
-        ):
-            if np.isfinite(low[i]) and np.isfinite(high[i]) and low[i] <= long_setup.entry_level <= high[i]:
-                if i + 1 < n:
-                    _write_signal_row(
-                        out=out,
-                        row=i,
-                        is_long=True,
-                        entry_level=long_setup.entry_level,
-                        fib_percent=fib_percent,
-                        range_high_level=long_setup.range_high_level,
-                        range_low_level=long_setup.range_low_level,
-                        range_high_timestamp=_timestamp_label(index_values[long_setup.range_high_idx]),
-                        range_low_timestamp=_timestamp_label(index_values[long_setup.range_low_idx]),
-                        msb_timestamp=long_setup.msb_timestamp,
-                        broken_swing_level=long_setup.broken_swing_level,
-                        broken_swing_timestamp=long_setup.broken_swing_timestamp,
-                    )
-                long_setup = None
-
-        if (
-            short_setup is not None
-            and short_setup.range_low_idx is not None
-            and short_setup.scan_start_idx is not None
-            and i >= short_setup.scan_start_idx
-        ):
-            if np.isfinite(low[i]) and np.isfinite(high[i]) and low[i] <= short_setup.entry_level <= high[i]:
-                if i + 1 < n:
-                    _write_signal_row(
-                        out=out,
-                        row=i,
-                        is_long=False,
-                        entry_level=short_setup.entry_level,
-                        fib_percent=fib_percent,
-                        range_high_level=short_setup.range_high_level,
-                        range_low_level=short_setup.range_low_level,
-                        range_high_timestamp=_timestamp_label(index_values[short_setup.range_high_idx]),
-                        range_low_timestamp=_timestamp_label(index_values[short_setup.range_low_idx]),
-                        msb_timestamp=short_setup.msb_timestamp,
-                        broken_swing_level=short_setup.broken_swing_level,
-                        broken_swing_timestamp=short_setup.broken_swing_timestamp,
-                    )
-                short_setup = None
-
-    return out
+    return None
 
 
 def _write_signal_row(
