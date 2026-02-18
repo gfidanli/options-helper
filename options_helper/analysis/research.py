@@ -400,110 +400,176 @@ def suggest_trade_levels(
         return TradeLevels(entry=None, pullback_entry=None, stop=None, notes=["No candle history available."])
 
     entry = float(setup.spot)
-    buffer_pct = float(risk_profile.support_proximity_pct)
-    lookback_weeks = int(risk_profile.breakout_lookback_weeks)
-    notes: list[str] = []
-
     close = history.get("Close")
     if close is None:
         return TradeLevels(entry=entry, pullback_entry=None, stop=None, notes=["No close prices available."])
     close = close.dropna()
     if close.empty:
         return TradeLevels(entry=entry, pullback_entry=None, stop=None, notes=["No close prices available."])
-
-    low = history.get("Low", close).dropna()
-    high = history.get("High", close).dropna()
-
-    ema20_d = ema(close, 20)
-    ema50_d = ema(close, 50)
-
-    close_w = close.resample("W-FRI").last().dropna()
-    ema20_w = ema(close_w, 20) if not close_w.empty else None
-    ema50_w = ema(close_w, 50) if not close_w.empty else None
-
-    swing_low = None
-    swing_high = None
-    if not low.empty:
-        swing_low = float(low.iloc[-swing_lookback_days:].min())
-    if not high.empty:
-        swing_high = float(high.iloc[-swing_lookback_days:].max())
-
+    inputs = _trade_level_inputs(
+        history=history,
+        close=close,
+        swing_lookback_days=swing_lookback_days,
+    )
     pullback_entry: float | None = None
     stop: float | None = None
-
+    notes: list[str] = []
     if setup.direction == Direction.BULLISH:
-        breakout_level = _breakout_up_level(close_w, lookback_weeks)
-        breakout_now = breakout_up(close_w, lookback_weeks) is True
-
-        if breakout_now and breakout_level is not None:
-            pullback_entry = breakout_level
-            stop = breakout_level * (1.0 - buffer_pct)
-            notes.append(f"Stop below weekly breakout level (~{breakout_level:.2f}) with {buffer_pct:.0%} buffer.")
-        else:
-            pullback_entry = ema20_d or ema20_w
-
-            supports: list[tuple[str, float]] = []
-            for label, value in (
-                ("weekly EMA50", ema50_w),
-                ("weekly EMA20", ema20_w),
-                ("daily EMA50", ema50_d),
-                ("daily EMA20", ema20_d),
-                (f"{swing_lookback_days}d swing low", swing_low),
-            ):
-                if value is None:
-                    continue
-                supports.append((label, float(value)))
-
-            below = [(label, value) for label, value in supports if value < entry]
-            candidates = below if below else supports
-
-            if candidates:
-                if risk_profile.tolerance == "high":
-                    stop_label, stop_base = min(candidates, key=lambda t: t[1])
-                elif risk_profile.tolerance == "low":
-                    stop_label, stop_base = max(candidates, key=lambda t: t[1])
-                else:
-                    stop_label, stop_base = max(candidates, key=lambda t: t[1])
-                stop = stop_base * (1.0 - buffer_pct)
-                notes.append(f"Stop below {stop_label} (~{stop_base:.2f}) with {buffer_pct:.0%} buffer.")
-
+        pullback_entry, stop, notes = _suggest_bullish_trade_levels(
+            entry=entry,
+            risk_profile=risk_profile,
+            swing_lookback_days=swing_lookback_days,
+            inputs=inputs,
+        )
     elif setup.direction == Direction.BEARISH:
-        breakdown_level = _breakout_down_level(close_w, lookback_weeks)
-        breakdown_now = breakout_down(close_w, lookback_weeks) is True
-
-        if breakdown_now and breakdown_level is not None:
-            pullback_entry = breakdown_level
-            stop = breakdown_level * (1.0 + buffer_pct)
-            notes.append(f"Stop above weekly breakdown level (~{breakdown_level:.2f}) with {buffer_pct:.0%} buffer.")
-        else:
-            pullback_entry = ema20_d or ema20_w
-
-            resistances: list[tuple[str, float]] = []
-            for label, value in (
-                ("weekly EMA50", ema50_w),
-                ("weekly EMA20", ema20_w),
-                ("daily EMA50", ema50_d),
-                ("daily EMA20", ema20_d),
-                (f"{swing_lookback_days}d swing high", swing_high),
-            ):
-                if value is None:
-                    continue
-                resistances.append((label, float(value)))
-
-            above = [(label, value) for label, value in resistances if value > entry]
-            candidates = above if above else resistances
-
-            if candidates:
-                if risk_profile.tolerance == "high":
-                    stop_label, stop_base = max(candidates, key=lambda t: t[1])
-                elif risk_profile.tolerance == "low":
-                    stop_label, stop_base = min(candidates, key=lambda t: t[1])
-                else:
-                    stop_label, stop_base = min(candidates, key=lambda t: t[1])
-                stop = stop_base * (1.0 + buffer_pct)
-                notes.append(f"Stop above {stop_label} (~{stop_base:.2f}) with {buffer_pct:.0%} buffer.")
-
+        pullback_entry, stop, notes = _suggest_bearish_trade_levels(
+            entry=entry,
+            risk_profile=risk_profile,
+            swing_lookback_days=swing_lookback_days,
+            inputs=inputs,
+        )
     return TradeLevels(entry=entry, pullback_entry=pullback_entry, stop=stop, notes=notes)
+
+
+def _trade_level_inputs(
+    *,
+    history: pd.DataFrame,
+    close: pd.Series,
+    swing_lookback_days: int,
+) -> dict[str, float | pd.Series | None]:
+    low = history.get("Low", close).dropna()
+    high = history.get("High", close).dropna()
+    close_w = close.resample("W-FRI").last().dropna()
+    return {
+        "close_w": close_w,
+        "ema20_d": ema(close, 20),
+        "ema50_d": ema(close, 50),
+        "ema20_w": ema(close_w, 20) if not close_w.empty else None,
+        "ema50_w": ema(close_w, 50) if not close_w.empty else None,
+        "swing_low": float(low.iloc[-swing_lookback_days:].min()) if not low.empty else None,
+        "swing_high": float(high.iloc[-swing_lookback_days:].max()) if not high.empty else None,
+    }
+
+
+def _suggest_bullish_trade_levels(
+    *,
+    entry: float,
+    risk_profile: RiskProfile,
+    swing_lookback_days: int,
+    inputs: dict[str, float | pd.Series | None],
+) -> tuple[float | None, float | None, list[str]]:
+    buffer_pct = float(risk_profile.support_proximity_pct)
+    lookback_weeks = int(risk_profile.breakout_lookback_weeks)
+    close_w = cast(pd.Series, inputs["close_w"])
+    breakout_level = _breakout_up_level(close_w, lookback_weeks)
+    breakout_now = breakout_up(close_w, lookback_weeks) is True
+    if breakout_now and breakout_level is not None:
+        return (
+            breakout_level,
+            breakout_level * (1.0 - buffer_pct),
+            [f"Stop below weekly breakout level (~{breakout_level:.2f}) with {buffer_pct:.0%} buffer."],
+        )
+    pullback_entry = cast(float | None, inputs["ema20_d"]) or cast(float | None, inputs["ema20_w"])
+    supports = _collect_trade_levels(
+        (
+            ("weekly EMA50", cast(float | None, inputs["ema50_w"])),
+            ("weekly EMA20", cast(float | None, inputs["ema20_w"])),
+            ("daily EMA50", cast(float | None, inputs["ema50_d"])),
+            ("daily EMA20", cast(float | None, inputs["ema20_d"])),
+            (f"{swing_lookback_days}d swing low", cast(float | None, inputs["swing_low"])),
+        )
+    )
+    stop_base = _select_stop_level(
+        levels=supports,
+        entry=entry,
+        tolerance=risk_profile.tolerance,
+        bullish=True,
+    )
+    if stop_base is None:
+        return pullback_entry, None, []
+    stop_label, stop_value = stop_base
+    return (
+        pullback_entry,
+        stop_value * (1.0 - buffer_pct),
+        [f"Stop below {stop_label} (~{stop_value:.2f}) with {buffer_pct:.0%} buffer."],
+    )
+
+
+def _suggest_bearish_trade_levels(
+    *,
+    entry: float,
+    risk_profile: RiskProfile,
+    swing_lookback_days: int,
+    inputs: dict[str, float | pd.Series | None],
+) -> tuple[float | None, float | None, list[str]]:
+    buffer_pct = float(risk_profile.support_proximity_pct)
+    lookback_weeks = int(risk_profile.breakout_lookback_weeks)
+    close_w = cast(pd.Series, inputs["close_w"])
+    breakdown_level = _breakout_down_level(close_w, lookback_weeks)
+    breakdown_now = breakout_down(close_w, lookback_weeks) is True
+    if breakdown_now and breakdown_level is not None:
+        return (
+            breakdown_level,
+            breakdown_level * (1.0 + buffer_pct),
+            [f"Stop above weekly breakdown level (~{breakdown_level:.2f}) with {buffer_pct:.0%} buffer."],
+        )
+    pullback_entry = cast(float | None, inputs["ema20_d"]) or cast(float | None, inputs["ema20_w"])
+    resistances = _collect_trade_levels(
+        (
+            ("weekly EMA50", cast(float | None, inputs["ema50_w"])),
+            ("weekly EMA20", cast(float | None, inputs["ema20_w"])),
+            ("daily EMA50", cast(float | None, inputs["ema50_d"])),
+            ("daily EMA20", cast(float | None, inputs["ema20_d"])),
+            (f"{swing_lookback_days}d swing high", cast(float | None, inputs["swing_high"])),
+        )
+    )
+    stop_base = _select_stop_level(
+        levels=resistances,
+        entry=entry,
+        tolerance=risk_profile.tolerance,
+        bullish=False,
+    )
+    if stop_base is None:
+        return pullback_entry, None, []
+    stop_label, stop_value = stop_base
+    return (
+        pullback_entry,
+        stop_value * (1.0 + buffer_pct),
+        [f"Stop above {stop_label} (~{stop_value:.2f}) with {buffer_pct:.0%} buffer."],
+    )
+
+
+def _collect_trade_levels(items: tuple[tuple[str, float | None], ...]) -> list[tuple[str, float]]:
+    levels: list[tuple[str, float]] = []
+    for label, value in items:
+        if value is None:
+            continue
+        levels.append((label, float(value)))
+    return levels
+
+
+def _select_stop_level(
+    *,
+    levels: list[tuple[str, float]],
+    entry: float,
+    tolerance: str,
+    bullish: bool,
+) -> tuple[str, float] | None:
+    if not levels:
+        return None
+    side_levels = (
+        [(label, value) for label, value in levels if value < entry]
+        if bullish
+        else [(label, value) for label, value in levels if value > entry]
+    )
+    candidates = side_levels if side_levels else levels
+    if bullish:
+        if tolerance == "high":
+            return min(candidates, key=lambda item: item[1])
+        return max(candidates, key=lambda item: item[1])
+    if tolerance == "high":
+        return max(candidates, key=lambda item: item[1])
+    return min(candidates, key=lambda item: item[1])
 
 
 def _filter_strike_window(df: pd.DataFrame, *, spot: float, window_pct: float) -> pd.DataFrame:
