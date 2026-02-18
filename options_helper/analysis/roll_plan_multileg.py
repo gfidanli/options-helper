@@ -7,7 +7,7 @@ import re
 import pandas as pd
 
 from options_helper.analysis.chain_metrics import execution_quality
-from options_helper.models import LegSide, MultiLegPosition, OptionType
+from options_helper.models import Leg, LegSide, MultiLegPosition, OptionType
 
 
 @dataclass(frozen=True)
@@ -249,6 +249,211 @@ def _find_snapshot_row(
     return None
 
 
+@dataclass(frozen=True)
+class _VerticalStructure:
+    option_type: OptionType
+    current_expiry: date
+    long_leg: Leg
+    short_leg: Leg
+    width: float
+
+
+def _validate_vertical_structure(position: MultiLegPosition) -> _VerticalStructure:
+    if len(position.legs) != 2:
+        raise ValueError("Multi-leg roll planner currently supports 2-leg verticals only.")
+    leg_sides = {leg.side for leg in position.legs}
+    if leg_sides != {"long", "short"}:
+        raise ValueError("Multi-leg roll planner requires one long leg and one short leg.")
+    option_types = {leg.option_type for leg in position.legs}
+    if len(option_types) != 1:
+        raise ValueError("Multi-leg roll planner requires legs with the same option type.")
+    expiries = {leg.expiry for leg in position.legs}
+    if len(expiries) != 1:
+        raise ValueError("Multi-leg roll planner currently supports same-expiry verticals only.")
+
+    option_type = next(iter(option_types))
+    current_expiry = next(iter(expiries))
+    long_leg = next(leg for leg in position.legs if leg.side == "long")
+    short_leg = next(leg for leg in position.legs if leg.side == "short")
+    width = short_leg.strike - long_leg.strike
+    if abs(width) < 1e-6:
+        raise ValueError("Multi-leg roll planner requires distinct strikes.")
+    return _VerticalStructure(
+        option_type=option_type,
+        current_expiry=current_expiry,
+        long_leg=long_leg,
+        short_leg=short_leg,
+        width=width,
+    )
+
+
+def _build_current_multileg_state(
+    df: pd.DataFrame,
+    *,
+    position: MultiLegPosition,
+    as_of: date,
+) -> tuple[list[MultiLegRollLeg], float | None, list[str]]:
+    current_legs: list[MultiLegRollLeg] = []
+    current_net_mark = 0.0
+    current_mark_ready = True
+    for leg in position.legs:
+        row = _find_snapshot_row(df, expiry=leg.expiry, strike=leg.strike, option_type=leg.option_type)
+        leg_metrics = _row_to_leg(
+            side=leg.side,
+            option_type=leg.option_type,
+            expiry=leg.expiry,
+            as_of=as_of,
+            strike=leg.strike,
+            contracts=leg.contracts,
+            row=row,
+        )
+        current_legs.append(leg_metrics)
+        if leg_metrics.mark is None:
+            current_mark_ready = False
+            continue
+        signed_contracts = leg_metrics.contracts if leg.side == "long" else -leg_metrics.contracts
+        current_net_mark += leg_metrics.mark * float(signed_contracts) * 100.0
+
+    warnings: list[str] = []
+    current_net = current_net_mark if current_mark_ready else None
+    if current_net is None:
+        warnings.append("missing_current_mark")
+    return current_legs, current_net, warnings
+
+
+def _candidate_legs_for_expiry(
+    df: pd.DataFrame,
+    *,
+    structure: _VerticalStructure,
+    expiry: date,
+    as_of: date,
+) -> list[MultiLegRollLeg] | None:
+    strike_long = structure.long_leg.strike
+    strike_short = strike_long + structure.width
+    row_long = _find_snapshot_row(df, expiry=expiry, strike=strike_long, option_type=structure.option_type)
+    row_short = _find_snapshot_row(df, expiry=expiry, strike=strike_short, option_type=structure.option_type)
+    if row_long is None or row_short is None:
+        return None
+    leg_long = _row_to_leg(
+        side=structure.long_leg.side,
+        option_type=structure.option_type,
+        expiry=expiry,
+        as_of=as_of,
+        strike=strike_long,
+        contracts=structure.long_leg.contracts,
+        row=row_long,
+    )
+    leg_short = _row_to_leg(
+        side=structure.short_leg.side,
+        option_type=structure.option_type,
+        expiry=expiry,
+        as_of=as_of,
+        strike=strike_short,
+        contracts=structure.short_leg.contracts,
+        row=row_short,
+    )
+    return [leg_long, leg_short]
+
+
+def _evaluate_candidate_legs(
+    leg_list: list[MultiLegRollLeg],
+    *,
+    min_open_interest: int,
+    min_volume: int,
+    include_bad_quotes: bool,
+    max_spread_pct: float,
+) -> tuple[float | None, bool, list[str]]:
+    net_mark_ready = True
+    net_mark = 0.0
+    warnings: list[str] = []
+    liquidity_ok = True
+    for leg_metrics in leg_list:
+        if leg_metrics.mark is None:
+            net_mark_ready = False
+        else:
+            signed_contracts = leg_metrics.contracts if leg_metrics.side == "long" else -leg_metrics.contracts
+            net_mark += leg_metrics.mark * float(signed_contracts) * 100.0
+        if leg_metrics.open_interest is None or leg_metrics.open_interest < min_open_interest:
+            liquidity_ok = False
+            warnings.append("low_open_interest")
+        if leg_metrics.volume is None or leg_metrics.volume < min_volume:
+            liquidity_ok = False
+            warnings.append("low_volume")
+        if not include_bad_quotes and leg_metrics.spread_pct is not None and leg_metrics.spread_pct > max_spread_pct:
+            liquidity_ok = False
+            warnings.append("wide_spread")
+    return (net_mark if net_mark_ready else None), liquidity_ok, warnings
+
+
+def _roll_debit_within_limits(
+    *,
+    net_mark: float,
+    current_net: float | None,
+    max_debit: float | None,
+    min_credit: float | None,
+) -> tuple[bool, float | None]:
+    roll_debit = None if current_net is None else (net_mark - current_net)
+    if roll_debit is None:
+        return True, None
+    if max_debit is not None and roll_debit > max_debit:
+        return False, None
+    if min_credit is not None and roll_debit > -abs(min_credit):
+        return False, None
+    return True, roll_debit
+
+
+def _build_multileg_candidate(
+    df: pd.DataFrame,
+    *,
+    structure: _VerticalStructure,
+    expiry: date,
+    dte: int,
+    as_of: date,
+    target_dte: int,
+    current_net: float | None,
+    min_open_interest: int,
+    min_volume: int,
+    include_bad_quotes: bool,
+    max_spread_pct: float,
+    max_debit: float | None,
+    min_credit: float | None,
+) -> MultiLegRollCandidate | None:
+    leg_list = _candidate_legs_for_expiry(df, structure=structure, expiry=expiry, as_of=as_of)
+    if leg_list is None:
+        return None
+    net_mark, liquidity_ok, warnings = _evaluate_candidate_legs(
+        leg_list,
+        min_open_interest=min_open_interest,
+        min_volume=min_volume,
+        include_bad_quotes=include_bad_quotes,
+        max_spread_pct=max_spread_pct,
+    )
+    if net_mark is None:
+        return None
+    allowed, roll_debit = _roll_debit_within_limits(
+        net_mark=net_mark,
+        current_net=current_net,
+        max_debit=max_debit,
+        min_credit=min_credit,
+    )
+    if not allowed:
+        return None
+
+    rank_score = -abs(dte - target_dte) + (1000.0 if liquidity_ok else 0.0)
+    return MultiLegRollCandidate(
+        rank_score=rank_score,
+        legs=leg_list,
+        net_mark=net_mark,
+        roll_debit=roll_debit,
+        liquidity_ok=liquidity_ok,
+        warnings=sorted(set(warnings)),
+        rationale=[
+            f"Expiry {dte} DTE vs target {target_dte}.",
+            "Kept strikes to preserve width.",
+        ],
+    )
+
+
 def compute_roll_plan_multileg(
     df: pd.DataFrame,
     *,
@@ -265,159 +470,36 @@ def compute_roll_plan_multileg(
     max_debit: float | None = None,
     min_credit: float | None = None,
 ) -> MultiLegRollPlanReport:
-    warnings: list[str] = []
-
-    if len(position.legs) != 2:
-        raise ValueError("Multi-leg roll planner currently supports 2-leg verticals only.")
-
-    leg_sides = {leg.side for leg in position.legs}
-    if leg_sides != {"long", "short"}:
-        raise ValueError("Multi-leg roll planner requires one long leg and one short leg.")
-
-    option_types = {leg.option_type for leg in position.legs}
-    if len(option_types) != 1:
-        raise ValueError("Multi-leg roll planner requires legs with the same option type.")
-
-    expiries = {leg.expiry for leg in position.legs}
-    if len(expiries) != 1:
-        raise ValueError("Multi-leg roll planner currently supports same-expiry verticals only.")
-
-    option_type = next(iter(option_types))
-    current_expiry = next(iter(expiries))
-    long_leg = next(leg for leg in position.legs if leg.side == "long")
-    short_leg = next(leg for leg in position.legs if leg.side == "short")
-
-    width = short_leg.strike - long_leg.strike
-    if abs(width) < 1e-6:
-        raise ValueError("Multi-leg roll planner requires distinct strikes.")
-
-    current_legs: list[MultiLegRollLeg] = []
-    current_net_mark = 0.0
-    current_mark_ready = True
-
-    for leg in position.legs:
-        row = _find_snapshot_row(df, expiry=leg.expiry, strike=leg.strike, option_type=leg.option_type)
-        leg_metrics = _row_to_leg(
-            side=leg.side,
-            option_type=leg.option_type,
-            expiry=leg.expiry,
-            as_of=as_of,
-            strike=leg.strike,
-            contracts=leg.contracts,
-            row=row,
-        )
-        current_legs.append(leg_metrics)
-        if leg_metrics.mark is None:
-            current_mark_ready = False
-        else:
-            signed_contracts = leg_metrics.contracts if leg.side == "long" else -leg_metrics.contracts
-            current_net_mark += leg_metrics.mark * float(signed_contracts) * 100.0
-
-    current_net = current_net_mark if current_mark_ready else None
-    if current_net is None:
-        warnings.append("missing_current_mark")
-
+    structure = _validate_vertical_structure(position)
+    current_legs, current_net, warnings = _build_current_multileg_state(df, position=position, as_of=as_of)
     target_dte = _months_to_target_dte(horizon_months)
     expiry_candidates = _candidate_expiries(
         df,
         as_of=as_of,
-        option_type=option_type,
+        option_type=structure.option_type,
         target_dte=target_dte,
-        current_expiry=current_expiry,
+        current_expiry=structure.current_expiry,
         top=top * 3,
     )
-
     candidates: list[MultiLegRollCandidate] = []
-
     for expiry, dte in expiry_candidates:
-        strike_long = long_leg.strike
-        strike_short = strike_long + width
-
-        row_long = _find_snapshot_row(df, expiry=expiry, strike=strike_long, option_type=option_type)
-        row_short = _find_snapshot_row(df, expiry=expiry, strike=strike_short, option_type=option_type)
-        if row_long is None or row_short is None:
-            continue
-
-        leg_long = _row_to_leg(
-            side=long_leg.side,
-            option_type=option_type,
+        candidate = _build_multileg_candidate(
+            df,
+            structure=structure,
             expiry=expiry,
+            dte=dte,
             as_of=as_of,
-            strike=strike_long,
-            contracts=long_leg.contracts,
-            row=row_long,
+            target_dte=target_dte,
+            current_net=current_net,
+            min_open_interest=min_open_interest,
+            min_volume=min_volume,
+            include_bad_quotes=include_bad_quotes,
+            max_spread_pct=max_spread_pct,
+            max_debit=max_debit,
+            min_credit=min_credit,
         )
-        leg_short = _row_to_leg(
-            side=short_leg.side,
-            option_type=option_type,
-            expiry=expiry,
-            as_of=as_of,
-            strike=strike_short,
-            contracts=short_leg.contracts,
-            row=row_short,
-        )
-
-        leg_list = [leg_long, leg_short]
-        net_mark_ready = True
-        net_mark = 0.0
-        warn: list[str] = []
-        liquid = True
-
-        for leg_metrics in leg_list:
-            if leg_metrics.mark is None:
-                net_mark_ready = False
-            else:
-                signed_contracts = leg_metrics.contracts if leg_metrics.side == "long" else -leg_metrics.contracts
-                net_mark += leg_metrics.mark * float(signed_contracts) * 100.0
-
-            if leg_metrics.open_interest is None or leg_metrics.open_interest < min_open_interest:
-                liquid = False
-                warn.append("low_open_interest")
-            if leg_metrics.volume is None or leg_metrics.volume < min_volume:
-                liquid = False
-                warn.append("low_volume")
-
-            if (
-                not include_bad_quotes
-                and leg_metrics.spread_pct is not None
-                and leg_metrics.spread_pct > max_spread_pct
-            ):
-                liquid = False
-                warn.append("wide_spread")
-
-        net_mark_val = net_mark if net_mark_ready else None
-        if net_mark_val is None:
-            continue
-        roll_debit = None
-        if net_mark_val is not None and current_net is not None:
-            roll_debit = net_mark_val - current_net
-
-        if roll_debit is not None:
-            if max_debit is not None and roll_debit > max_debit:
-                continue
-            if min_credit is not None and roll_debit > -abs(min_credit):
-                continue
-
-        rank_score = -abs(dte - target_dte)
-        if liquid:
-            rank_score += 1000.0
-
-        rationale = [
-            f"Expiry {dte} DTE vs target {target_dte}.",
-            "Kept strikes to preserve width.",
-        ]
-
-        candidates.append(
-            MultiLegRollCandidate(
-                rank_score=rank_score,
-                legs=leg_list,
-                net_mark=net_mark_val,
-                roll_debit=roll_debit,
-                liquidity_ok=liquid,
-                warnings=sorted(set(warn)),
-                rationale=rationale,
-            )
-        )
+        if candidate is not None:
+            candidates.append(candidate)
 
     if not candidates:
         warnings.append("no_candidates_found")
