@@ -21,6 +21,20 @@ class PositionScenarioResult:
     grid: list[dict[str, object]]
 
 
+@dataclass(frozen=True)
+class _ScenarioContext:
+    strike_value: float | None
+    spot_value: float | None
+    mark_value: float | None
+    basis_value: float | None
+    iv_value: float | None
+    contracts_value: int
+    signed_contracts: int
+    dte_days: int
+    intrinsic: float | None
+    extrinsic: float | None
+
+
 def compute_position_scenarios(
     *,
     symbol: str,
@@ -41,109 +55,37 @@ def compute_position_scenarios(
     days_forward: Sequence[int] = DEFAULT_DAYS_FORWARD,
     iv_min: float = 1e-4,
 ) -> PositionScenarioResult:
-    warnings: list[str] = []
-
-    strike_value = _positive_float(strike)
-    if strike_value is None:
-        warnings.append("missing_strike")
-
-    spot_value = _positive_float(spot)
-    if spot_value is None:
-        warnings.append("missing_spot")
-
-    mark_value = _positive_float(mark)
-    if mark_value is None:
-        warnings.append("missing_mark")
-
-    basis_value = _positive_float(basis)
-
-    iv_value = _coerce_float(iv)
-    if iv_value is None or iv_value <= max(0.0, float(iv_min)):
-        iv_value = None
-        warnings.append("missing_iv")
-
-    dte_days = int((expiry - as_of).days)
-
-    intrinsic: float | None = None
-    if strike_value is not None and spot_value is not None:
-        intrinsic = _intrinsic(option_type=option_type, spot=spot_value, strike=strike_value)
-
-    extrinsic: float | None = None
-    if intrinsic is not None and mark_value is not None:
-        extrinsic = max(0.0, mark_value - intrinsic)
-
-    contracts_value = _coerce_int(contracts, default=0)
-    signed_contracts = contracts_value * _side_sign(side)
-
-    theta_burn_dollars_day: float | None = None
-    if dte_days == 0:
-        theta_burn_dollars_day = 0.0
-    elif dte_days > 0 and strike_value is not None and spot_value is not None and iv_value is not None:
-        greeks = black_scholes_greeks(
-            option_type=option_type,
-            s=spot_value,
-            k=strike_value,
-            t_years=dte_days / 365.0,
-            sigma=iv_value,
-            r=r,
-        )
-        if greeks is not None:
-            theta_burn_dollars_day = -greeks.theta_per_day * float(signed_contracts) * 100.0
-
-    theta_burn_pct_premium_day: float | None = None
-    premium_ref = mark_value if mark_value is not None else basis_value
-    if theta_burn_dollars_day is not None and premium_ref is not None and contracts_value > 0:
-        premium_position = premium_ref * float(contracts_value) * 100.0
-        if premium_position > 0.0:
-            theta_burn_pct_premium_day = theta_burn_dollars_day / premium_position
-
-    grid: list[dict[str, object]] = []
-    if dte_days < 0:
+    context, warnings = _build_scenario_context(
+        as_of=as_of,
+        expiry=expiry,
+        side=side,
+        contracts=contracts,
+        option_type=option_type,
+        strike=strike,
+        spot=spot,
+        mark=mark,
+        iv=iv,
+        basis=basis,
+        iv_min=iv_min,
+    )
+    theta_burn_dollars_day, theta_burn_pct_premium_day = _compute_theta_burn_metrics(
+        context=context,
+        option_type=option_type,
+        r=r,
+    )
+    grid = _build_scenario_grid(
+        symbol=symbol,
+        as_of=as_of,
+        contract_symbol=contract_symbol,
+        option_type=option_type,
+        context=context,
+        r=r,
+        spot_moves_pct=spot_moves_pct,
+        iv_moves_pp=iv_moves_pp,
+        days_forward=days_forward,
+    )
+    if context.dte_days < 0:
         warnings.append("past_expiry")
-    elif strike_value is not None and spot_value is not None and iv_value is not None:
-        spot_axis = _normalize_spot_moves_pct(spot_moves_pct)
-        iv_axis = _normalize_iv_moves_pp(iv_moves_pp)
-        day_axis = _normalize_days_forward(days_forward)
-        pnl_reference = mark_value if mark_value is not None else basis_value
-
-        for spot_change_pct in spot_axis:
-            scenario_spot = spot_value * (1.0 + spot_change_pct)
-            for iv_change_pp in iv_axis:
-                scenario_iv = iv_value + (iv_change_pp / 100.0)
-                for forward_days in day_axis:
-                    days_to_expiry = max(dte_days - forward_days, 0)
-                    theoretical = _scenario_theoretical_price(
-                        option_type=option_type,
-                        spot=scenario_spot,
-                        strike=strike_value,
-                        iv=scenario_iv,
-                        dte_days=days_to_expiry,
-                        r=r,
-                    )
-                    pnl_per_contract = None if (theoretical is None or pnl_reference is None) else theoretical - pnl_reference
-                    pnl_position = (
-                        None
-                        if pnl_per_contract is None
-                        else pnl_per_contract * float(signed_contracts) * 100.0
-                    )
-                    row = _project_fields(
-                        SCENARIO_GRID_FIELDS,
-                        {
-                            "symbol": symbol,
-                            "as_of": as_of.isoformat(),
-                            "contract_symbol": contract_symbol,
-                            "spot_change_pct": spot_change_pct,
-                            "iv_change_pp": iv_change_pp,
-                            "days_forward": forward_days,
-                            "scenario_spot": scenario_spot,
-                            "scenario_iv": scenario_iv,
-                            "days_to_expiry": days_to_expiry,
-                            "theoretical_price": theoretical,
-                            "pnl_per_contract": pnl_per_contract,
-                            "pnl_position": pnl_position,
-                        },
-                    )
-                    grid.append(row)
 
     summary = _project_fields(
         SCENARIO_SUMMARY_FIELDS,
@@ -153,14 +95,14 @@ def compute_position_scenarios(
             "contract_symbol": contract_symbol,
             "option_type": option_type,
             "side": side,
-            "contracts": contracts_value,
-            "spot": spot_value,
-            "strike": strike_value,
+            "contracts": context.contracts_value,
+            "spot": context.spot_value,
+            "strike": context.strike_value,
             "expiry": expiry.isoformat(),
-            "mark": mark_value,
-            "iv": iv_value,
-            "intrinsic": intrinsic,
-            "extrinsic": extrinsic,
+            "mark": context.mark_value,
+            "iv": context.iv_value,
+            "intrinsic": context.intrinsic,
+            "extrinsic": context.extrinsic,
             "theta_burn_dollars_day": theta_burn_dollars_day,
             "theta_burn_pct_premium_day": theta_burn_pct_premium_day,
             "warnings": _dedupe_preserve_order(warnings),
@@ -168,6 +110,189 @@ def compute_position_scenarios(
     )
 
     return PositionScenarioResult(summary=summary, grid=grid)
+
+
+def _build_scenario_context(
+    *,
+    as_of: date,
+    expiry: date,
+    side: str,
+    contracts: int,
+    option_type: OptionType,
+    strike: float,
+    spot: float | None,
+    mark: float | None,
+    iv: float | None,
+    basis: float | None,
+    iv_min: float,
+) -> tuple[_ScenarioContext, list[str]]:
+    warnings: list[str] = []
+    strike_value = _positive_float(strike)
+    if strike_value is None:
+        warnings.append("missing_strike")
+    spot_value = _positive_float(spot)
+    if spot_value is None:
+        warnings.append("missing_spot")
+    mark_value = _positive_float(mark)
+    if mark_value is None:
+        warnings.append("missing_mark")
+    basis_value = _positive_float(basis)
+    iv_value = _coerce_float(iv)
+    if iv_value is None or iv_value <= max(0.0, float(iv_min)):
+        iv_value = None
+        warnings.append("missing_iv")
+
+    intrinsic = (
+        _intrinsic(option_type=option_type, spot=spot_value, strike=strike_value)
+        if strike_value is not None and spot_value is not None
+        else None
+    )
+    extrinsic = max(0.0, mark_value - intrinsic) if intrinsic is not None and mark_value is not None else None
+    contracts_value = _coerce_int(contracts, default=0)
+    signed_contracts = contracts_value * _side_sign(side)
+    context = _ScenarioContext(
+        strike_value=strike_value,
+        spot_value=spot_value,
+        mark_value=mark_value,
+        basis_value=basis_value,
+        iv_value=iv_value,
+        contracts_value=contracts_value,
+        signed_contracts=signed_contracts,
+        dte_days=int((expiry - as_of).days),
+        intrinsic=intrinsic,
+        extrinsic=extrinsic,
+    )
+    return context, warnings
+
+
+def _compute_theta_burn_metrics(
+    *,
+    context: _ScenarioContext,
+    option_type: OptionType,
+    r: float,
+) -> tuple[float | None, float | None]:
+    theta_burn_dollars_day: float | None = None
+    if context.dte_days == 0:
+        theta_burn_dollars_day = 0.0
+    elif (
+        context.dte_days > 0
+        and context.strike_value is not None
+        and context.spot_value is not None
+        and context.iv_value is not None
+    ):
+        greeks = black_scholes_greeks(
+            option_type=option_type,
+            s=context.spot_value,
+            k=context.strike_value,
+            t_years=context.dte_days / 365.0,
+            sigma=context.iv_value,
+            r=r,
+        )
+        if greeks is not None:
+            theta_burn_dollars_day = -greeks.theta_per_day * float(context.signed_contracts) * 100.0
+
+    theta_burn_pct_premium_day: float | None = None
+    premium_ref = context.mark_value if context.mark_value is not None else context.basis_value
+    if theta_burn_dollars_day is not None and premium_ref is not None and context.contracts_value > 0:
+        premium_position = premium_ref * float(context.contracts_value) * 100.0
+        if premium_position > 0.0:
+            theta_burn_pct_premium_day = theta_burn_dollars_day / premium_position
+    return theta_burn_dollars_day, theta_burn_pct_premium_day
+
+
+def _build_scenario_grid(
+    *,
+    symbol: str,
+    as_of: date,
+    contract_symbol: str,
+    option_type: OptionType,
+    context: _ScenarioContext,
+    r: float,
+    spot_moves_pct: Sequence[float],
+    iv_moves_pp: Sequence[float],
+    days_forward: Sequence[int],
+) -> list[dict[str, object]]:
+    if context.dte_days < 0:
+        return []
+    if context.strike_value is None or context.spot_value is None or context.iv_value is None:
+        return []
+
+    spot_axis = _normalize_spot_moves_pct(spot_moves_pct)
+    iv_axis = _normalize_iv_moves_pp(iv_moves_pp)
+    day_axis = _normalize_days_forward(days_forward)
+    pnl_reference = context.mark_value if context.mark_value is not None else context.basis_value
+    rows: list[dict[str, object]] = []
+    for spot_change_pct in spot_axis:
+        scenario_spot = context.spot_value * (1.0 + spot_change_pct)
+        for iv_change_pp in iv_axis:
+            scenario_iv = context.iv_value + (iv_change_pp / 100.0)
+            for forward_days in day_axis:
+                rows.append(
+                    _scenario_grid_row(
+                        symbol=symbol,
+                        as_of=as_of,
+                        contract_symbol=contract_symbol,
+                        option_type=option_type,
+                        context=context,
+                        r=r,
+                        scenario_spot=scenario_spot,
+                        spot_change_pct=spot_change_pct,
+                        scenario_iv=scenario_iv,
+                        iv_change_pp=iv_change_pp,
+                        forward_days=forward_days,
+                        pnl_reference=pnl_reference,
+                    )
+                )
+    return rows
+
+
+def _scenario_grid_row(
+    *,
+    symbol: str,
+    as_of: date,
+    contract_symbol: str,
+    option_type: OptionType,
+    context: _ScenarioContext,
+    r: float,
+    scenario_spot: float,
+    spot_change_pct: float,
+    scenario_iv: float,
+    iv_change_pp: float,
+    forward_days: int,
+    pnl_reference: float | None,
+) -> dict[str, object]:
+    days_to_expiry = max(context.dte_days - forward_days, 0)
+    theoretical = _scenario_theoretical_price(
+        option_type=option_type,
+        spot=scenario_spot,
+        strike=context.strike_value or 0.0,
+        iv=scenario_iv,
+        dte_days=days_to_expiry,
+        r=r,
+    )
+    pnl_per_contract = None if (theoretical is None or pnl_reference is None) else theoretical - pnl_reference
+    pnl_position = (
+        None
+        if pnl_per_contract is None
+        else pnl_per_contract * float(context.signed_contracts) * 100.0
+    )
+    return _project_fields(
+        SCENARIO_GRID_FIELDS,
+        {
+            "symbol": symbol,
+            "as_of": as_of.isoformat(),
+            "contract_symbol": contract_symbol,
+            "spot_change_pct": spot_change_pct,
+            "iv_change_pp": iv_change_pp,
+            "days_forward": forward_days,
+            "scenario_spot": scenario_spot,
+            "scenario_iv": scenario_iv,
+            "days_to_expiry": days_to_expiry,
+            "theoretical_price": theoretical,
+            "pnl_per_contract": pnl_per_contract,
+            "pnl_position": pnl_position,
+        },
+    )
 
 
 def _scenario_theoretical_price(
