@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date, timezone
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -44,6 +45,86 @@ def _daily_pnl_style(daily_pnl: float | None) -> str | None:
     if daily_pnl < 0:
         return "red"
     return None
+
+
+_SNAPSHOT_PORTFOLIO_PATH_ARG = typer.Argument(..., help="Path to portfolio JSON.")
+_SNAPSHOT_CACHE_DIR_OPT = typer.Option(
+    Path("data/options_snapshots"),
+    "--cache-dir",
+    help="Directory for options chain snapshots.",
+)
+_SNAPSHOT_CANDLE_CACHE_DIR_OPT = typer.Option(
+    Path("data/candles"),
+    "--candle-cache-dir",
+    help="Directory for cached daily candles (used to estimate spot).",
+)
+_SNAPSHOT_WINDOW_PCT_OPT = typer.Option(
+    1.0,
+    "--window-pct",
+    min=0.0,
+    max=2.0,
+    help="Strike window around spot in --windowed mode (e.g. 1.0 = +/-100%).",
+)
+_SNAPSHOT_SPOT_PERIOD_OPT = typer.Option(
+    "10d",
+    "--spot-period",
+    help="Candle period used to estimate spot price from daily candles.",
+)
+_SNAPSHOT_REQUIRE_DATA_DATE_OPT = typer.Option(
+    None,
+    "--require-data-date",
+    help=(
+        "Require each symbol's latest daily candle date to match this before snapshotting "
+        "(YYYY-MM-DD or 'today'). If not met, the symbol is skipped to avoid mis-dated overwrites."
+    ),
+)
+_SNAPSHOT_REQUIRE_DATA_TZ_OPT = typer.Option(
+    "America/Chicago",
+    "--require-data-tz",
+    help="Timezone used to interpret 'today' for --require-data-date (default: America/Chicago).",
+)
+_SNAPSHOT_WATCHLISTS_PATH_OPT = typer.Option(
+    Path("data/watchlists.json"),
+    "--watchlists-path",
+    help="Path to watchlists JSON store (used with --watchlist/--all-watchlists).",
+)
+_SNAPSHOT_WATCHLIST_OPT = typer.Option(
+    [],
+    "--watchlist",
+    help="Watchlist name to snapshot (repeatable). When provided, snapshots those watchlists instead of portfolio positions.",
+)
+_SNAPSHOT_ALL_WATCHLISTS_OPT = typer.Option(
+    False,
+    "--all-watchlists",
+    help="Snapshot all watchlists in the watchlists store (instead of portfolio positions).",
+)
+_SNAPSHOT_ALL_EXPIRIES_OPT = typer.Option(
+    True,
+    "--all-expiries/--position-expiries",
+    help=(
+        "Snapshot all expiries per symbol (default). Use --position-expiries to restrict "
+        "(portfolio: expiries in positions; watchlists: nearest expiries unless --max-expiries)."
+    ),
+)
+_SNAPSHOT_FULL_CHAIN_OPT = typer.Option(
+    True,
+    "--full-chain/--windowed",
+    help=(
+        "Snapshot the full Yahoo options payload per expiry (writes .raw.json + a full CSV). "
+        "Disables strike-window filtering. Use --windowed for smaller flow-focused snapshots."
+    ),
+)
+_SNAPSHOT_MAX_EXPIRIES_OPT = typer.Option(
+    None,
+    "--max-expiries",
+    min=1,
+    help="Optional cap on expiries per symbol (nearest first). Useful for watchlists or --full-chain.",
+)
+_SNAPSHOT_RISK_FREE_RATE_OPT = typer.Option(
+    0.0,
+    "--risk-free-rate",
+    help="Risk-free rate used for best-effort Black-Scholes Greeks (e.g. 0.05 = 5%).",
+)
 
 
 def daily_performance(
@@ -115,189 +196,214 @@ def daily_performance(
 
 
 def snapshot_options(
-    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
-    cache_dir: Path = typer.Option(
-        Path("data/options_snapshots"),
-        "--cache-dir",
-        help="Directory for options chain snapshots.",
-    ),
-    candle_cache_dir: Path = typer.Option(
-        Path("data/candles"),
-        "--candle-cache-dir",
-        help="Directory for cached daily candles (used to estimate spot).",
-    ),
-    window_pct: float = typer.Option(
-        1.0,
-        "--window-pct",
-        min=0.0,
-        max=2.0,
-        help="Strike window around spot in --windowed mode (e.g. 1.0 = +/-100%).",
-    ),
-    spot_period: str = typer.Option(
-        "10d",
-        "--spot-period",
-        help="Candle period used to estimate spot price from daily candles.",
-    ),
-    require_data_date: str | None = typer.Option(
-        None,
-        "--require-data-date",
-        help=(
-            "Require each symbol's latest daily candle date to match this before snapshotting "
-            "(YYYY-MM-DD or 'today'). If not met, the symbol is skipped to avoid mis-dated overwrites."
-        ),
-    ),
-    require_data_tz: str = typer.Option(
-        "America/Chicago",
-        "--require-data-tz",
-        help="Timezone used to interpret 'today' for --require-data-date (default: America/Chicago).",
-    ),
-    watchlists_path: Path = typer.Option(
-        Path("data/watchlists.json"),
-        "--watchlists-path",
-        help="Path to watchlists JSON store (used with --watchlist/--all-watchlists).",
-    ),
-    watchlist: list[str] = typer.Option(
-        [],
-        "--watchlist",
-        help="Watchlist name to snapshot (repeatable). When provided, snapshots those watchlists instead of portfolio positions.",
-    ),
-    all_watchlists: bool = typer.Option(
-        False,
-        "--all-watchlists",
-        help="Snapshot all watchlists in the watchlists store (instead of portfolio positions).",
-    ),
-    all_expiries: bool = typer.Option(
-        True,
-        "--all-expiries/--position-expiries",
-        help=(
-            "Snapshot all expiries per symbol (default). Use --position-expiries to restrict "
-            "(portfolio: expiries in positions; watchlists: nearest expiries unless --max-expiries)."
-        ),
-    ),
-    full_chain: bool = typer.Option(
-        True,
-        "--full-chain/--windowed",
-        help=(
-            "Snapshot the full Yahoo options payload per expiry (writes .raw.json + a full CSV). "
-            "Disables strike-window filtering. Use --windowed for smaller flow-focused snapshots."
-        ),
-    ),
-    max_expiries: int | None = typer.Option(
-        None,
-        "--max-expiries",
-        min=1,
-        help="Optional cap on expiries per symbol (nearest first). Useful for watchlists or --full-chain.",
-    ),
-    risk_free_rate: float = typer.Option(
-        0.0,
-        "--risk-free-rate",
-        help="Risk-free rate used for best-effort Black-Scholes Greeks (e.g. 0.05 = 5%).",
-    ),
+    portfolio_path: Path = _SNAPSHOT_PORTFOLIO_PATH_ARG,
+    cache_dir: Path = _SNAPSHOT_CACHE_DIR_OPT,
+    candle_cache_dir: Path = _SNAPSHOT_CANDLE_CACHE_DIR_OPT,
+    window_pct: float = _SNAPSHOT_WINDOW_PCT_OPT,
+    spot_period: str = _SNAPSHOT_SPOT_PERIOD_OPT,
+    require_data_date: str | None = _SNAPSHOT_REQUIRE_DATA_DATE_OPT,
+    require_data_tz: str = _SNAPSHOT_REQUIRE_DATA_TZ_OPT,
+    watchlists_path: Path = _SNAPSHOT_WATCHLISTS_PATH_OPT,
+    watchlist: list[str] = _SNAPSHOT_WATCHLIST_OPT,
+    all_watchlists: bool = _SNAPSHOT_ALL_WATCHLISTS_OPT,
+    all_expiries: bool = _SNAPSHOT_ALL_EXPIRIES_OPT,
+    full_chain: bool = _SNAPSHOT_FULL_CHAIN_OPT,
+    max_expiries: int | None = _SNAPSHOT_MAX_EXPIRIES_OPT,
+    risk_free_rate: float = _SNAPSHOT_RISK_FREE_RATE_OPT,
 ) -> None:
     """Save a once-daily options chain snapshot (full-chain + all expiries by default)."""
     console = Console()
-
-    import options_helper.commands.workflows as workflows_pkg
-
     with legacy._observed_run(
         console=console,
         job_name=legacy.JOB_SNAPSHOT_OPTIONS,
-        args={
-            "portfolio_path": str(portfolio_path),
-            "cache_dir": str(cache_dir),
-            "candle_cache_dir": str(candle_cache_dir),
-            "window_pct": window_pct,
-            "spot_period": spot_period,
-            "require_data_date": require_data_date,
-            "require_data_tz": require_data_tz,
-            "watchlists_path": str(watchlists_path),
-            "watchlist": watchlist,
-            "all_watchlists": all_watchlists,
-            "all_expiries": all_expiries,
-            "full_chain": full_chain,
-            "max_expiries": max_expiries,
-            "risk_free_rate": risk_free_rate,
-        },
+        args=_snapshot_run_args(
+            portfolio_path=portfolio_path,
+            cache_dir=cache_dir,
+            candle_cache_dir=candle_cache_dir,
+            window_pct=window_pct,
+            spot_period=spot_period,
+            require_data_date=require_data_date,
+            require_data_tz=require_data_tz,
+            watchlists_path=watchlists_path,
+            watchlist=watchlist,
+            all_watchlists=all_watchlists,
+            all_expiries=all_expiries,
+            full_chain=full_chain,
+            max_expiries=max_expiries,
+            risk_free_rate=risk_free_rate,
+        ),
     ) as run_logger:
-        try:
-            result = workflows_pkg.run_snapshot_options_job(
-                portfolio_path=portfolio_path,
-                cache_dir=cache_dir,
-                candle_cache_dir=candle_cache_dir,
-                window_pct=window_pct,
-                spot_period=spot_period,
-                require_data_date=require_data_date,
-                require_data_tz=require_data_tz,
-                watchlists_path=watchlists_path,
-                watchlist=watchlist,
-                all_watchlists=all_watchlists,
-                all_expiries=all_expiries,
-                full_chain=full_chain,
-                max_expiries=max_expiries,
-                risk_free_rate=risk_free_rate,
-                provider_builder=cli_deps.build_provider,
-                snapshot_store_builder=cli_deps.build_snapshot_store,
-                candle_store_builder=cli_deps.build_candle_store,
-                portfolio_loader=load_portfolio,
-                watchlists_loader=load_watchlists,
-            )
-        except legacy.VisibilityJobParameterError as exc:
-            if exc.param_hint:
-                raise typer.BadParameter(str(exc), param_hint=exc.param_hint) from exc
-            raise typer.BadParameter(str(exc)) from exc
+        result = _run_snapshot_options_job(
+            portfolio_path=portfolio_path,
+            cache_dir=cache_dir,
+            candle_cache_dir=candle_cache_dir,
+            window_pct=window_pct,
+            spot_period=spot_period,
+            require_data_date=require_data_date,
+            require_data_tz=require_data_tz,
+            watchlists_path=watchlists_path,
+            watchlist=watchlist,
+            all_watchlists=all_watchlists,
+            all_expiries=all_expiries,
+            full_chain=full_chain,
+            max_expiries=max_expiries,
+            risk_free_rate=risk_free_rate,
+        )
+        _render_snapshot_messages(console, result)
+        _log_snapshot_assets(run_logger, result)
 
-        for message in result.messages:
-            console.print(message)
 
-        if result.no_symbols:
-            run_logger.log_asset_skipped(
-                asset_key=legacy.ASSET_OPTIONS_SNAPSHOTS,
-                asset_kind="file",
-                partition_key="ALL",
-                extra={"reason": "no_symbols"},
-            )
-            raise typer.Exit(0)
+def _snapshot_run_args(
+    *,
+    portfolio_path: Path,
+    cache_dir: Path,
+    candle_cache_dir: Path,
+    window_pct: float,
+    spot_period: str,
+    require_data_date: str | None,
+    require_data_tz: str,
+    watchlists_path: Path,
+    watchlist: list[str],
+    all_watchlists: bool,
+    all_expiries: bool,
+    full_chain: bool,
+    max_expiries: int | None,
+    risk_free_rate: float,
+) -> dict[str, object]:
+    return {
+        "portfolio_path": str(portfolio_path),
+        "cache_dir": str(cache_dir),
+        "candle_cache_dir": str(candle_cache_dir),
+        "window_pct": window_pct,
+        "spot_period": spot_period,
+        "require_data_date": require_data_date,
+        "require_data_tz": require_data_tz,
+        "watchlists_path": str(watchlists_path),
+        "watchlist": watchlist,
+        "all_watchlists": all_watchlists,
+        "all_expiries": all_expiries,
+        "full_chain": full_chain,
+        "max_expiries": max_expiries,
+        "risk_free_rate": risk_free_rate,
+    }
 
-        max_data_date = max(result.dates_used) if result.dates_used else None
-        status_by_symbol = legacy._snapshot_status_by_symbol(symbols=result.symbols, messages=result.messages)
 
-        for sym in result.symbols:
-            status = status_by_symbol.get(sym.upper(), "skipped")
-            if status == "success":
-                run_logger.log_asset_success(
-                    asset_key=legacy.ASSET_OPTIONS_SNAPSHOTS,
-                    asset_kind="file",
-                    partition_key=sym.upper(),
-                    min_event_ts=max_data_date,
-                    max_event_ts=max_data_date,
-                )
-                if max_data_date is not None:
-                    run_logger.upsert_watermark(
-                        asset_key=legacy.ASSET_OPTIONS_SNAPSHOTS,
-                        scope_key=sym.upper(),
-                        watermark_ts=max_data_date,
-                    )
-            elif status == "failed":
-                run_logger.log_asset_failure(
-                    asset_key=legacy.ASSET_OPTIONS_SNAPSHOTS,
-                    asset_kind="file",
-                    partition_key=sym.upper(),
-                    extra={"reason": "snapshot_failed"},
-                )
-            else:
-                run_logger.log_asset_skipped(
-                    asset_key=legacy.ASSET_OPTIONS_SNAPSHOTS,
-                    asset_kind="file",
-                    partition_key=sym.upper(),
-                    extra={"reason": "snapshot_skipped"},
-                )
+def _run_snapshot_options_job(
+    *,
+    portfolio_path: Path,
+    cache_dir: Path,
+    candle_cache_dir: Path,
+    window_pct: float,
+    spot_period: str,
+    require_data_date: str | None,
+    require_data_tz: str,
+    watchlists_path: Path,
+    watchlist: list[str],
+    all_watchlists: bool,
+    all_expiries: bool,
+    full_chain: bool,
+    max_expiries: int | None,
+    risk_free_rate: float,
+) -> Any:
+    import options_helper.commands.workflows as workflows_pkg
 
+    try:
+        return workflows_pkg.run_snapshot_options_job(
+            portfolio_path=portfolio_path,
+            cache_dir=cache_dir,
+            candle_cache_dir=candle_cache_dir,
+            window_pct=window_pct,
+            spot_period=spot_period,
+            require_data_date=require_data_date,
+            require_data_tz=require_data_tz,
+            watchlists_path=watchlists_path,
+            watchlist=watchlist,
+            all_watchlists=all_watchlists,
+            all_expiries=all_expiries,
+            full_chain=full_chain,
+            max_expiries=max_expiries,
+            risk_free_rate=risk_free_rate,
+            provider_builder=cli_deps.build_provider,
+            snapshot_store_builder=cli_deps.build_snapshot_store,
+            candle_store_builder=cli_deps.build_candle_store,
+            portfolio_loader=load_portfolio,
+            watchlists_loader=load_watchlists,
+        )
+    except legacy.VisibilityJobParameterError as exc:
+        if exc.param_hint:
+            raise typer.BadParameter(str(exc), param_hint=exc.param_hint) from exc
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def _render_snapshot_messages(console: Console, result: Any) -> None:
+    for message in result.messages:
+        console.print(message)
+
+
+def _log_snapshot_assets(run_logger: Any, result: Any) -> None:
+    if result.no_symbols:
+        run_logger.log_asset_skipped(
+            asset_key=legacy.ASSET_OPTIONS_SNAPSHOTS,
+            asset_kind="file",
+            partition_key="ALL",
+            extra={"reason": "no_symbols"},
+        )
+        raise typer.Exit(0)
+
+    max_data_date = max(result.dates_used) if result.dates_used else None
+    status_by_symbol = legacy._snapshot_status_by_symbol(symbols=result.symbols, messages=result.messages)
+    for sym in result.symbols:
+        _log_snapshot_symbol_status(
+            run_logger,
+            symbol=sym.upper(),
+            status=status_by_symbol.get(sym.upper(), "skipped"),
+            max_data_date=max_data_date,
+        )
+
+    if max_data_date is not None:
+        run_logger.upsert_watermark(
+            asset_key=legacy.ASSET_OPTIONS_SNAPSHOTS,
+            scope_key="ALL",
+            watermark_ts=max_data_date,
+        )
+
+
+def _log_snapshot_symbol_status(
+    run_logger: Any,
+    *,
+    symbol: str,
+    status: str,
+    max_data_date: date | None,
+) -> None:
+    if status == "success":
+        run_logger.log_asset_success(
+            asset_key=legacy.ASSET_OPTIONS_SNAPSHOTS,
+            asset_kind="file",
+            partition_key=symbol,
+            min_event_ts=max_data_date,
+            max_event_ts=max_data_date,
+        )
         if max_data_date is not None:
             run_logger.upsert_watermark(
                 asset_key=legacy.ASSET_OPTIONS_SNAPSHOTS,
-                scope_key="ALL",
+                scope_key=symbol,
                 watermark_ts=max_data_date,
             )
+        return
+    if status == "failed":
+        run_logger.log_asset_failure(
+            asset_key=legacy.ASSET_OPTIONS_SNAPSHOTS,
+            asset_kind="file",
+            partition_key=symbol,
+            extra={"reason": "snapshot_failed"},
+        )
+        return
+    run_logger.log_asset_skipped(
+        asset_key=legacy.ASSET_OPTIONS_SNAPSHOTS,
+        asset_kind="file",
+        partition_key=symbol,
+        extra={"reason": "snapshot_skipped"},
+    )
 
 
 def earnings(
