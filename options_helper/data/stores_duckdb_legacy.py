@@ -351,33 +351,21 @@ class DuckDBCandleStore(CandleStore):
         df = df[~df.index.duplicated(keep="last")].sort_index()
         return df
 
-    def _save_duckdb(
-        self,
-        symbol: str,
-        history: pd.DataFrame,
-        *,
-        max_backfill_complete: bool | None = None,
-    ) -> None:
-        sym = str(symbol).strip().upper()
-        if not sym:
-            raise CandleCacheError("symbol required")
+    def _normalize_history_for_save(self, history: pd.DataFrame) -> pd.DataFrame:
         if history is None or history.empty:
-            return
-
-        df = history.copy()
-        if not isinstance(df.index, pd.DatetimeIndex):
+            return pd.DataFrame()
+        if not isinstance(history.index, pd.DatetimeIndex):
             raise CandleCacheError("history index must be DatetimeIndex")
 
-        df = df.copy()
-        df.index = pd.to_datetime(df.index, errors="coerce")
-        df = df.loc[~df.index.isna()].copy()
-        df = df[~df.index.duplicated(keep="last")].sort_index()
+        out = history.copy()
+        out.index = pd.to_datetime(out.index, errors="coerce")
+        out = out.loc[~out.index.isna()].copy()
+        out = out[~out.index.duplicated(keep="last")].sort_index()
 
-        out = df.reset_index().rename(columns={df.index.name or "index": "ts"})
+        out = out.reset_index().rename(columns={out.index.name or "index": "ts"})
         out["ts"] = pd.to_datetime(out["ts"], errors="coerce")
         out = out.loc[~out["ts"].isna()].copy()
 
-        # Map columns.
         mapping = {
             "Open": "open",
             "High": "high",
@@ -395,76 +383,112 @@ class DuckDBCandleStore(CandleStore):
                 out[dst] = pd.to_numeric(out[src], errors="coerce")
             else:
                 out[dst] = pd.Series([None] * len(out))
-        out = out[["ts"] + list(mapping.values())]
+        return out[["ts"] + list(mapping.values())]
+
+    def _resolve_max_backfill_complete(self, symbol: str, max_backfill_complete: bool | None) -> bool:
+        if max_backfill_complete is not None:
+            return bool(max_backfill_complete)
+        existing_meta = self._load_meta_duckdb(symbol)
+        return bool((existing_meta or {}).get("max_backfill_complete"))
+
+    def _upsert_candle_rows(self, tx: Any, rows: pd.DataFrame, symbol: str) -> None:
+        rows["symbol"] = symbol
+        rows["interval"] = self.interval
+        rows["auto_adjust"] = bool(self.auto_adjust)
+        rows["back_adjust"] = bool(self.back_adjust)
+        tx.register("tmp_candles", rows)
+        tx.execute(
+            """
+            INSERT INTO candles_daily(
+              symbol, interval, auto_adjust, back_adjust, ts,
+              open, high, low, close, volume, vwap, trade_count, dividends, splits, capital_gains
+            )
+            SELECT symbol, interval, auto_adjust, back_adjust, ts,
+                   open, high, low, close, volume, vwap, trade_count, dividends, splits, capital_gains
+            FROM tmp_candles
+            ON CONFLICT(symbol, interval, auto_adjust, back_adjust, ts)
+            DO UPDATE SET
+              open = EXCLUDED.open,
+              high = EXCLUDED.high,
+              low = EXCLUDED.low,
+              close = EXCLUDED.close,
+              volume = EXCLUDED.volume,
+              vwap = EXCLUDED.vwap,
+              trade_count = EXCLUDED.trade_count,
+              dividends = EXCLUDED.dividends,
+              splits = EXCLUDED.splits,
+              capital_gains = EXCLUDED.capital_gains
+            """
+        )
+        tx.unregister("tmp_candles")
+
+    def _upsert_candle_meta(
+        self,
+        tx: Any,
+        *,
+        symbol: str,
+        updated_at: datetime,
+        rows: pd.DataFrame,
+        start_ts: pd.Timestamp | None,
+        end_ts: pd.Timestamp | None,
+        max_backfill_complete: bool,
+    ) -> None:
+        tx.execute(
+            """
+            INSERT INTO candles_meta(
+              symbol, interval, auto_adjust, back_adjust, updated_at, rows, start_ts, end_ts, max_backfill_complete
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, interval, auto_adjust, back_adjust)
+            DO UPDATE SET
+              updated_at = EXCLUDED.updated_at,
+              rows = EXCLUDED.rows,
+              start_ts = EXCLUDED.start_ts,
+              end_ts = EXCLUDED.end_ts,
+              max_backfill_complete = EXCLUDED.max_backfill_complete
+            """,
+            [
+                symbol,
+                self.interval,
+                bool(self.auto_adjust),
+                bool(self.back_adjust),
+                updated_at,
+                int(len(rows)),
+                start_ts,
+                end_ts,
+                max_backfill_complete,
+            ],
+        )
+
+    def _save_duckdb(
+        self,
+        symbol: str,
+        history: pd.DataFrame,
+        *,
+        max_backfill_complete: bool | None = None,
+    ) -> None:
+        sym = str(symbol).strip().upper()
+        if not sym:
+            raise CandleCacheError("symbol required")
+        out = self._normalize_history_for_save(history)
+        if out.empty:
+            return
 
         now = datetime.now(timezone.utc)
         start_ts = out["ts"].min()
         end_ts = out["ts"].max()
-        if max_backfill_complete is None:
-            existing_meta = self._load_meta_duckdb(sym)
-            effective_max_backfill_complete = bool(
-                (existing_meta or {}).get("max_backfill_complete")
-            )
-        else:
-            effective_max_backfill_complete = bool(max_backfill_complete)
+        effective_max_backfill_complete = self._resolve_max_backfill_complete(sym, max_backfill_complete)
 
         with self.warehouse.transaction() as tx:
-            out["symbol"] = sym
-            out["interval"] = self.interval
-            out["auto_adjust"] = bool(self.auto_adjust)
-            out["back_adjust"] = bool(self.back_adjust)
-
-            tx.register("tmp_candles", out)
-            tx.execute(
-                """
-                INSERT INTO candles_daily(
-                  symbol, interval, auto_adjust, back_adjust, ts,
-                  open, high, low, close, volume, vwap, trade_count, dividends, splits, capital_gains
-                )
-                SELECT symbol, interval, auto_adjust, back_adjust, ts,
-                       open, high, low, close, volume, vwap, trade_count, dividends, splits, capital_gains
-                FROM tmp_candles
-                ON CONFLICT(symbol, interval, auto_adjust, back_adjust, ts)
-                DO UPDATE SET
-                  open = EXCLUDED.open,
-                  high = EXCLUDED.high,
-                  low = EXCLUDED.low,
-                  close = EXCLUDED.close,
-                  volume = EXCLUDED.volume,
-                  vwap = EXCLUDED.vwap,
-                  trade_count = EXCLUDED.trade_count,
-                  dividends = EXCLUDED.dividends,
-                  splits = EXCLUDED.splits,
-                  capital_gains = EXCLUDED.capital_gains
-                """
-            )
-            tx.unregister("tmp_candles")
-
-            tx.execute(
-                """
-                INSERT INTO candles_meta(
-                  symbol, interval, auto_adjust, back_adjust, updated_at, rows, start_ts, end_ts, max_backfill_complete
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(symbol, interval, auto_adjust, back_adjust)
-                DO UPDATE SET
-                  updated_at = EXCLUDED.updated_at,
-                  rows = EXCLUDED.rows,
-                  start_ts = EXCLUDED.start_ts,
-                  end_ts = EXCLUDED.end_ts,
-                  max_backfill_complete = EXCLUDED.max_backfill_complete
-                """,
-                [
-                    sym,
-                    self.interval,
-                    bool(self.auto_adjust),
-                    bool(self.back_adjust),
-                    now,
-                    int(len(out)),
-                    start_ts,
-                    end_ts,
-                    effective_max_backfill_complete,
-                ],
+            self._upsert_candle_rows(tx, out, sym)
+            self._upsert_candle_meta(
+                tx,
+                symbol=sym,
+                updated_at=now,
+                rows=out,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                max_backfill_complete=effective_max_backfill_complete,
             )
 
 
@@ -474,6 +498,164 @@ class DuckDBOptionContractsStore:
 
     root_dir: Path
     warehouse: DuckDBWarehouse
+
+    @staticmethod
+    def _column_or_empty(df: pd.DataFrame, *names: str) -> pd.Series:
+        for name in names:
+            if name in df.columns:
+                return df[name]
+        return pd.Series([None] * len(df), index=df.index)
+
+    @staticmethod
+    def _clean_optional_text(value: Any) -> str | None:
+        if value is None:
+            return None
+        try:
+            if pd.isna(value):
+                return None
+        except Exception:  # noqa: BLE001
+            pass
+        text = str(value).strip()
+        return text or None
+
+    def _normalize_contract_rows(self, df_contracts: pd.DataFrame) -> pd.DataFrame:
+        df = df_contracts.copy()
+        if df.empty:
+            return df
+        df.columns = [str(c) for c in df.columns]
+
+        contract_symbol = self._column_or_empty(df, "contractSymbol", "contract_symbol", "symbol", "contract")
+        underlying = self._column_or_empty(df, "underlying", "underlyingSymbol", "underlying_symbol", "root_symbol")
+        expiry = self._column_or_empty(df, "expiry", "expiration_date", "expiration", "exp")
+        option_type = self._column_or_empty(df, "optionType", "option_type", "type")
+        strike = self._column_or_empty(df, "strike", "strike_price")
+        multiplier = self._column_or_empty(df, "multiplier")
+        open_interest = self._column_or_empty(df, "openInterest", "open_interest")
+        open_interest_date = self._column_or_empty(df, "openInterestDate", "open_interest_date")
+        close_price = self._column_or_empty(df, "closePrice", "close_price")
+        close_price_date = self._column_or_empty(df, "closePriceDate", "close_price_date")
+
+        normalized = pd.DataFrame(
+            {
+                "contract_symbol": contract_symbol.map(self._clean_optional_text),
+                "underlying": underlying.map(self._clean_optional_text).map(lambda value: value.upper() if value else None),
+                "expiry": pd.to_datetime(expiry, errors="coerce").dt.date,
+                "option_type": option_type.map(self._clean_optional_text).map(lambda value: value.lower() if value else None),
+                "strike": pd.to_numeric(strike, errors="coerce"),
+                "multiplier": pd.to_numeric(multiplier, errors="coerce").astype("Int64"),
+                "open_interest": pd.to_numeric(open_interest, errors="coerce").astype("Int64"),
+                "open_interest_date": pd.to_datetime(open_interest_date, errors="coerce").dt.date,
+                "close_price": pd.to_numeric(close_price, errors="coerce"),
+                "close_price_date": pd.to_datetime(close_price_date, errors="coerce").dt.date,
+            }
+        )
+        normalized = normalized.dropna(subset=["contract_symbol"])
+        return normalized[normalized["contract_symbol"].map(lambda value: bool(str(value).strip()))]
+
+    @staticmethod
+    def _contract_raw_json(
+        symbol: Any,
+        raw_by_contract_symbol: dict[str, Any] | None,
+    ) -> str | None:
+        if raw_by_contract_symbol is None or symbol is None:
+            return None
+        raw = raw_by_contract_symbol.get(symbol)
+        if raw is None:
+            raw = raw_by_contract_symbol.get(str(symbol).upper())
+        if raw is None:
+            return None
+        try:
+            return json.dumps(raw, default=str)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _build_contract_dimension_rows(
+        self,
+        normalized: pd.DataFrame,
+        *,
+        provider_name: str,
+        updated_at: datetime,
+    ) -> pd.DataFrame:
+        contracts_df = normalized[
+            ["contract_symbol", "underlying", "expiry", "option_type", "strike", "multiplier"]
+        ].copy()
+        contracts_df["provider"] = provider_name
+        contracts_df["updated_at"] = updated_at
+        return contracts_df
+
+    def _build_contract_snapshot_rows(
+        self,
+        normalized: pd.DataFrame,
+        *,
+        provider_name: str,
+        as_of: date,
+        updated_at: datetime,
+        raw_by_contract_symbol: dict[str, Any] | None,
+    ) -> pd.DataFrame:
+        snapshots_df = normalized[
+            ["contract_symbol", "open_interest", "open_interest_date", "close_price", "close_price_date"]
+        ].copy()
+        snapshots_df["as_of_date"] = as_of
+        snapshots_df["provider"] = provider_name
+        snapshots_df["updated_at"] = updated_at
+        snapshots_df["raw_json"] = snapshots_df["contract_symbol"].map(
+            lambda symbol: self._contract_raw_json(symbol, raw_by_contract_symbol)
+        )
+        mask = (
+            ~snapshots_df["open_interest"].isna()
+            | ~snapshots_df["open_interest_date"].isna()
+            | ~snapshots_df["close_price"].isna()
+            | ~snapshots_df["close_price_date"].isna()
+            | ~snapshots_df["raw_json"].isna()
+        )
+        return snapshots_df.loc[mask].copy()
+
+    def _upsert_contract_dimension(self, tx: Any, contracts_df: pd.DataFrame) -> None:
+        tx.register("tmp_contracts", contracts_df)
+        tx.execute(
+            """
+            INSERT INTO option_contracts(
+              contract_symbol, underlying, expiry, option_type, strike, multiplier, provider, updated_at
+            )
+            SELECT contract_symbol, underlying, expiry, option_type, strike, multiplier, provider, updated_at
+            FROM tmp_contracts
+            ON CONFLICT(contract_symbol)
+            DO UPDATE SET
+              underlying = EXCLUDED.underlying,
+              expiry = EXCLUDED.expiry,
+              option_type = EXCLUDED.option_type,
+              strike = EXCLUDED.strike,
+              multiplier = EXCLUDED.multiplier,
+              provider = EXCLUDED.provider,
+              updated_at = EXCLUDED.updated_at
+            """
+        )
+        tx.unregister("tmp_contracts")
+
+    def _upsert_contract_snapshots(self, tx: Any, snapshots_df: pd.DataFrame) -> None:
+        if snapshots_df.empty:
+            return
+        tx.register("tmp_contract_snapshots", snapshots_df)
+        tx.execute(
+            """
+            INSERT INTO option_contract_snapshots(
+              contract_symbol, as_of_date, open_interest, open_interest_date,
+              close_price, close_price_date, provider, updated_at, raw_json
+            )
+            SELECT contract_symbol, as_of_date, open_interest, open_interest_date,
+                   close_price, close_price_date, provider, updated_at, raw_json
+            FROM tmp_contract_snapshots
+            ON CONFLICT(contract_symbol, as_of_date, provider)
+            DO UPDATE SET
+              open_interest = EXCLUDED.open_interest,
+              open_interest_date = EXCLUDED.open_interest_date,
+              close_price = EXCLUDED.close_price,
+              close_price_date = EXCLUDED.close_price_date,
+              updated_at = EXCLUDED.updated_at,
+              raw_json = EXCLUDED.raw_json
+            """
+        )
+        tx.unregister("tmp_contract_snapshots")
 
     def upsert_contracts(
         self,
@@ -486,6 +668,7 @@ class DuckDBOptionContractsStore:
     ) -> None:
         if df_contracts is None or df_contracts.empty:
             return
+        _ = meta
 
         provider_name = str(provider or "").strip().lower()
         if not provider_name:
@@ -495,157 +678,27 @@ class DuckDBOptionContractsStore:
         if as_of is None:
             raise OptionContractsStoreError("as_of_date required")
 
-        df = df_contracts.copy()
-        if df.empty:
-            return
-        df.columns = [str(c) for c in df.columns]
-
-        def _get_column(*names: str) -> pd.Series:
-            for name in names:
-                if name in df.columns:
-                    return df[name]
-            return pd.Series([None] * len(df), index=df.index)
-
-        def _clean_str(value: Any) -> str | None:
-            if value is None:
-                return None
-            try:
-                if pd.isna(value):
-                    return None
-            except Exception:  # noqa: BLE001
-                pass
-            text = str(value).strip()
-            return text or None
-
-        contract_symbol = _get_column("contractSymbol", "contract_symbol", "symbol", "contract")
-        underlying = _get_column("underlying", "underlyingSymbol", "underlying_symbol", "root_symbol")
-        expiry = _get_column("expiry", "expiration_date", "expiration", "exp")
-        option_type = _get_column("optionType", "option_type", "type")
-        strike = _get_column("strike", "strike_price")
-        multiplier = _get_column("multiplier")
-        open_interest = _get_column("openInterest", "open_interest")
-        open_interest_date = _get_column("openInterestDate", "open_interest_date")
-        close_price = _get_column("closePrice", "close_price")
-        close_price_date = _get_column("closePriceDate", "close_price_date")
-
-        contract_symbol = contract_symbol.map(_clean_str)
-        underlying = underlying.map(_clean_str).map(lambda v: v.upper() if v else None)
-        option_type = option_type.map(_clean_str).map(lambda v: v.lower() if v else None)
-
-        expiry = pd.to_datetime(expiry, errors="coerce").dt.date
-        open_interest_date = pd.to_datetime(open_interest_date, errors="coerce").dt.date
-        close_price_date = pd.to_datetime(close_price_date, errors="coerce").dt.date
-
-        strike = pd.to_numeric(strike, errors="coerce")
-        close_price = pd.to_numeric(close_price, errors="coerce")
-        open_interest = pd.to_numeric(open_interest, errors="coerce").astype("Int64")
-        multiplier = pd.to_numeric(multiplier, errors="coerce").astype("Int64")
-
-        normalized = pd.DataFrame(
-            {
-                "contract_symbol": contract_symbol,
-                "underlying": underlying,
-                "expiry": expiry,
-                "option_type": option_type,
-                "strike": strike,
-                "multiplier": multiplier,
-                "open_interest": open_interest,
-                "open_interest_date": open_interest_date,
-                "close_price": close_price,
-                "close_price_date": close_price_date,
-            }
-        )
-        normalized = normalized.dropna(subset=["contract_symbol"])
-        normalized = normalized[normalized["contract_symbol"].map(lambda v: bool(str(v).strip()))]
+        normalized = self._normalize_contract_rows(df_contracts)
         if normalized.empty:
             return
 
         now = datetime.now(timezone.utc)
-
-        contracts_df = normalized[
-            ["contract_symbol", "underlying", "expiry", "option_type", "strike", "multiplier"]
-        ].copy()
-        contracts_df["provider"] = provider_name
-        contracts_df["updated_at"] = now
-
-        snapshots_df = normalized[
-            ["contract_symbol", "open_interest", "open_interest_date", "close_price", "close_price_date"]
-        ].copy()
-        snapshots_df["as_of_date"] = as_of
-        snapshots_df["provider"] = provider_name
-        snapshots_df["updated_at"] = now
-
-        if raw_by_contract_symbol:
-            def _raw_payload(symbol: Any) -> str | None:
-                if symbol is None:
-                    return None
-                raw = raw_by_contract_symbol.get(symbol)
-                if raw is None:
-                    raw = raw_by_contract_symbol.get(str(symbol).upper())
-                if raw is None:
-                    return None
-                try:
-                    return json.dumps(raw, default=str)
-                except Exception:  # noqa: BLE001
-                    return None
-
-            snapshots_df["raw_json"] = snapshots_df["contract_symbol"].map(_raw_payload)
-        else:
-            snapshots_df["raw_json"] = None
-
-        mask = (
-            ~snapshots_df["open_interest"].isna()
-            | ~snapshots_df["open_interest_date"].isna()
-            | ~snapshots_df["close_price"].isna()
-            | ~snapshots_df["close_price_date"].isna()
-            | ~snapshots_df["raw_json"].isna()
+        contracts_df = self._build_contract_dimension_rows(
+            normalized,
+            provider_name=provider_name,
+            updated_at=now,
         )
-        snapshots_df = snapshots_df.loc[mask].copy()
+        snapshots_df = self._build_contract_snapshot_rows(
+            normalized,
+            provider_name=provider_name,
+            as_of=as_of,
+            updated_at=now,
+            raw_by_contract_symbol=raw_by_contract_symbol,
+        )
 
         with self.warehouse.transaction() as tx:
-            tx.register("tmp_contracts", contracts_df)
-            tx.execute(
-                """
-                INSERT INTO option_contracts(
-                  contract_symbol, underlying, expiry, option_type, strike, multiplier, provider, updated_at
-                )
-                SELECT contract_symbol, underlying, expiry, option_type, strike, multiplier, provider, updated_at
-                FROM tmp_contracts
-                ON CONFLICT(contract_symbol)
-                DO UPDATE SET
-                  underlying = EXCLUDED.underlying,
-                  expiry = EXCLUDED.expiry,
-                  option_type = EXCLUDED.option_type,
-                  strike = EXCLUDED.strike,
-                  multiplier = EXCLUDED.multiplier,
-                  provider = EXCLUDED.provider,
-                  updated_at = EXCLUDED.updated_at
-                """
-            )
-            tx.unregister("tmp_contracts")
-
-            if not snapshots_df.empty:
-                tx.register("tmp_contract_snapshots", snapshots_df)
-                tx.execute(
-                    """
-                    INSERT INTO option_contract_snapshots(
-                      contract_symbol, as_of_date, open_interest, open_interest_date,
-                      close_price, close_price_date, provider, updated_at, raw_json
-                    )
-                    SELECT contract_symbol, as_of_date, open_interest, open_interest_date,
-                           close_price, close_price_date, provider, updated_at, raw_json
-                    FROM tmp_contract_snapshots
-                    ON CONFLICT(contract_symbol, as_of_date, provider)
-                    DO UPDATE SET
-                      open_interest = EXCLUDED.open_interest,
-                      open_interest_date = EXCLUDED.open_interest_date,
-                      close_price = EXCLUDED.close_price,
-                      close_price_date = EXCLUDED.close_price_date,
-                      updated_at = EXCLUDED.updated_at,
-                      raw_json = EXCLUDED.raw_json
-                    """
-                )
-                tx.unregister("tmp_contract_snapshots")
+            self._upsert_contract_dimension(tx, contracts_df)
+            self._upsert_contract_snapshots(tx, snapshots_df)
 
     def list_contracts(
         self,
