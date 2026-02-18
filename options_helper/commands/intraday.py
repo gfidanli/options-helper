@@ -425,159 +425,272 @@ def _group_option_bars_by_contract(bars_df: pd.DataFrame) -> dict[str, pd.DataFr
         return {}
 
 
+_FLOW_UNDERLYING_OPT = typer.Option(
+    None,
+    "--underlying",
+    "-u",
+    help="Underlying symbol to summarize (repeatable or comma-separated).",
+)
+_FLOW_UNDERLYINGS_OPT = typer.Option(None, "--underlyings", help="Comma-separated underlyings to summarize.")
+_FLOW_CONTRACT_OPT = typer.Option(
+    None,
+    "--contract",
+    "-c",
+    help="Contract symbol to summarize (repeatable or comma-separated).",
+)
+_FLOW_CONTRACTS_OPT = typer.Option(None, "--contracts", help="Comma-separated contract symbols to summarize.")
+_FLOW_DAY_OPT = typer.Option(
+    "latest",
+    "--day",
+    help="Market day to summarize (YYYY-MM-DD) or 'latest' from local partitions.",
+)
+_FLOW_TIMEFRAME_OPT = typer.Option("tick", "--timeframe", help="Intraday partition timeframe (default: tick).")
+_FLOW_BUCKET_MINUTES_OPT = typer.Option(5, "--bucket-minutes", help="UTC time bucket size in minutes (5 or 15).")
+_FLOW_SOURCE_OPT = typer.Option("offline_intraday", "--source", help="Source label stored in output rows.")
+_FLOW_OUT_DIR_OPT = typer.Option(
+    Path("data/intraday"),
+    "--out-dir",
+    help="Directory containing captured intraday partitions.",
+)
+_FLOW_RESEARCH_DIR_OPT = typer.Option(
+    Path("data/research_metrics"),
+    "--research-dir",
+    help="Research metrics root used for DuckDB persistence wiring.",
+)
+_FLOW_PERSIST_OPT = typer.Option(
+    True,
+    "--persist/--no-persist",
+    help="Persist contract-flow rows to DuckDB table when --storage duckdb.",
+)
+_FLOW_FORMAT_OPT = typer.Option("console", "--format", help="Output format: console|json")
+_FLOW_OUT_OPT = typer.Option(
+    None,
+    "--out",
+    help="Output root for artifacts (writes under {out}/intraday_flow/{SYMBOL}/).",
+)
+
+
 @app.command("flow")
 def flow(
-    underlying: list[str] | None = typer.Option(
-        None,
-        "--underlying",
-        "-u",
-        help="Underlying symbol to summarize (repeatable or comma-separated).",
-    ),
-    underlyings: str | None = typer.Option(
-        None,
-        "--underlyings",
-        help="Comma-separated underlyings to summarize.",
-    ),
-    contract: list[str] | None = typer.Option(
-        None,
-        "--contract",
-        "-c",
-        help="Contract symbol to summarize (repeatable or comma-separated).",
-    ),
-    contracts: str | None = typer.Option(
-        None,
-        "--contracts",
-        help="Comma-separated contract symbols to summarize.",
-    ),
-    day: str = typer.Option(
-        "latest",
-        "--day",
-        help="Market day to summarize (YYYY-MM-DD) or 'latest' from local partitions.",
-    ),
-    timeframe: str = typer.Option(
-        "tick",
-        "--timeframe",
-        help="Intraday partition timeframe (default: tick).",
-    ),
-    bucket_minutes: int = typer.Option(
-        5,
-        "--bucket-minutes",
-        help="UTC time bucket size in minutes (5 or 15).",
-    ),
-    source: str = typer.Option(
-        "offline_intraday",
-        "--source",
-        help="Source label stored in output rows.",
-    ),
-    out_dir: Path = typer.Option(
-        Path("data/intraday"),
-        "--out-dir",
-        help="Directory containing captured intraday partitions.",
-    ),
-    research_dir: Path = typer.Option(
-        Path("data/research_metrics"),
-        "--research-dir",
-        help="Research metrics root used for DuckDB persistence wiring.",
-    ),
-    persist: bool = typer.Option(
-        True,
-        "--persist/--no-persist",
-        help="Persist contract-flow rows to DuckDB table when --storage duckdb.",
-    ),
-    format: str = typer.Option("console", "--format", help="Output format: console|json"),
-    out: Path | None = typer.Option(
-        None,
-        "--out",
-        help="Output root for artifacts (writes under {out}/intraday_flow/{SYMBOL}/).",
-    ),
+    underlying: list[str] | None = _FLOW_UNDERLYING_OPT,
+    underlyings: str | None = _FLOW_UNDERLYINGS_OPT,
+    contract: list[str] | None = _FLOW_CONTRACT_OPT,
+    contracts: str | None = _FLOW_CONTRACTS_OPT,
+    day: str = _FLOW_DAY_OPT,
+    timeframe: str = _FLOW_TIMEFRAME_OPT,
+    bucket_minutes: int = _FLOW_BUCKET_MINUTES_OPT,
+    source: str = _FLOW_SOURCE_OPT,
+    out_dir: Path = _FLOW_OUT_DIR_OPT,
+    research_dir: Path = _FLOW_RESEARCH_DIR_OPT,
+    persist: bool = _FLOW_PERSIST_OPT,
+    format: str = _FLOW_FORMAT_OPT,
+    out: Path | None = _FLOW_OUT_OPT,
 ) -> None:
     """Summarize captured options trades/quotes into intraday flow artifacts (offline-only)."""
     console = Console(width=200)
     output_fmt = _normalize_output_format(format)
 
+    underlying_filter, contract_filter = _resolve_flow_filters(
+        underlying=underlying,
+        underlyings=underlyings,
+        contract=contract,
+        contracts=contracts,
+    )
+    store = IntradayStore(out_dir)
+    try:
+        contracts_to_read, target_day = _resolve_flow_contracts(
+            store,
+            underlying_filter=underlying_filter,
+            contract_filter=contract_filter,
+            day_spec=day,
+            timeframe=timeframe,
+        )
+        trades_df, quotes_df, missing_contracts = _load_flow_frames(
+            store,
+            contracts_to_read=contracts_to_read,
+            timeframe=timeframe,
+            target_day=target_day,
+        )
+    except ValueError as exc:
+        console.print(str(exc))
+        raise typer.Exit(1) from exc
+    classified = classify_intraday_trades(trades_df, quotes_df)
+    contract_flow_df = summarize_intraday_contract_flow(classified, source=source)
+    time_bucket_df = summarize_intraday_time_buckets(classified, bucket_minutes=bucket_minutes)
+    artifact = _build_intraday_flow_artifact(
+        target_day=target_day,
+        source=source,
+        bucket_minutes=bucket_minutes,
+        underlying_filter=underlying_filter,
+        contracts_to_read=contracts_to_read,
+        missing_contracts=missing_contracts,
+        contract_flow_df=contract_flow_df,
+        time_bucket_df=time_bucket_df,
+    )
+    _render_intraday_flow_output(console, artifact=artifact, output_fmt=output_fmt)
+    _persist_intraday_flow_outputs(
+        console,
+        artifact=artifact,
+        output_fmt=output_fmt,
+        out=out,
+        persist=persist,
+        contract_flow_df=contract_flow_df,
+        research_dir=research_dir,
+    )
+
+
+def _resolve_flow_filters(
+    *,
+    underlying: list[str] | None,
+    underlyings: str | None,
+    contract: list[str] | None,
+    contracts: str | None,
+) -> tuple[list[str], list[str]]:
     underlying_filter = _parse_symbols(underlying, underlyings)
     contract_filter = _parse_contracts(contract, contracts)
     if not underlying_filter and not contract_filter:
         raise typer.BadParameter("Provide at least one --underlying/--underlyings or --contract/--contracts.")
+    return underlying_filter, contract_filter
 
-    store = IntradayStore(out_dir)
-    candidate_contracts: set[str] = set(contract_filter)
-    if underlying_filter:
-        candidate_contracts.update(
-            _contracts_for_underlyings(store, underlyings=underlying_filter, timeframe=timeframe)
-        )
 
+def _resolve_flow_contracts(
+    store: IntradayStore,
+    *,
+    underlying_filter: list[str],
+    contract_filter: list[str],
+    day_spec: str,
+    timeframe: str,
+) -> tuple[list[str], date]:
+    candidate_contracts = _collect_candidate_contracts(
+        store,
+        underlying_filter=underlying_filter,
+        contract_filter=contract_filter,
+        timeframe=timeframe,
+    )
     if not candidate_contracts:
-        console.print("No matching option contract partitions found in local intraday data.")
-        raise typer.Exit(1)
-
+        raise ValueError("No matching option contract partitions found in local intraday data.")
     target_day = _resolve_flow_day(
         store,
-        day_spec=day,
+        day_spec=day_spec,
         timeframe=timeframe,
         contract_symbols=sorted(candidate_contracts),
     )
-
     if underlying_filter:
-        filtered_for_day = set(
-            _contracts_for_underlyings(
-                store,
-                underlyings=underlying_filter,
-                timeframe=timeframe,
-                day=target_day,
-            )
+        candidate_contracts = _filter_flow_contracts_for_day(
+            store,
+            underlying_filter=underlying_filter,
+            contract_filter=contract_filter,
+            timeframe=timeframe,
+            target_day=target_day,
         )
-        if contract_filter:
-            filtered_for_day.update(contract_filter)
-        candidate_contracts = filtered_for_day
-
     contracts_to_read = sorted(candidate_contracts)
     if not contracts_to_read:
-        console.print(f"No matching contracts found for day {target_day.isoformat()}.")
-        raise typer.Exit(1)
+        raise ValueError(f"No matching contracts found for day {target_day.isoformat()}.")
+    return contracts_to_read, target_day
 
+
+def _collect_candidate_contracts(
+    store: IntradayStore,
+    *,
+    underlying_filter: list[str],
+    contract_filter: list[str],
+    timeframe: str,
+) -> set[str]:
+    candidate_contracts: set[str] = set(contract_filter)
+    if underlying_filter:
+        candidate_contracts.update(_contracts_for_underlyings(store, underlyings=underlying_filter, timeframe=timeframe))
+    return candidate_contracts
+
+
+def _filter_flow_contracts_for_day(
+    store: IntradayStore,
+    *,
+    underlying_filter: list[str],
+    contract_filter: list[str],
+    timeframe: str,
+    target_day: date,
+) -> set[str]:
+    filtered_for_day = set(
+        _contracts_for_underlyings(
+            store,
+            underlyings=underlying_filter,
+            timeframe=timeframe,
+            day=target_day,
+        )
+    )
+    if contract_filter:
+        filtered_for_day.update(contract_filter)
+    return filtered_for_day
+
+
+def _load_flow_frames(
+    store: IntradayStore,
+    *,
+    contracts_to_read: list[str],
+    timeframe: str,
+    target_day: date,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
     trade_frames: list[pd.DataFrame] = []
     quote_frames: list[pd.DataFrame] = []
     missing_contracts: list[str] = []
-
     for contract_symbol in contracts_to_read:
         parsed = parse_contract_symbol(contract_symbol)
         trades = store.load_partition("options", "trades", timeframe, contract_symbol, target_day)
         quotes = store.load_partition("options", "quotes", timeframe, contract_symbol, target_day)
-
         if trades.empty and quotes.empty:
             missing_contracts.append(contract_symbol)
             continue
-
         if not trades.empty:
-            trade_frames.append(
-                _prepare_option_partition_rows(
-                    trades,
-                    contract_symbol=contract_symbol,
-                    parsed_contract=parsed,
-                )
-            )
+            trade_frames.append(_prepare_option_partition_rows(trades, contract_symbol=contract_symbol, parsed_contract=parsed))
         if not quotes.empty:
-            quote_frames.append(
-                _prepare_option_partition_rows(
-                    quotes,
-                    contract_symbol=contract_symbol,
-                    parsed_contract=parsed,
-                )
-            )
-
+            quote_frames.append(_prepare_option_partition_rows(quotes, contract_symbol=contract_symbol, parsed_contract=parsed))
     trades_df = pd.concat(trade_frames, ignore_index=True) if trade_frames else pd.DataFrame()
     quotes_df = pd.concat(quote_frames, ignore_index=True) if quote_frames else pd.DataFrame()
-
     if trades_df.empty and quotes_df.empty:
-        console.print("No trade/quote rows available for the requested filters/day.")
-        raise typer.Exit(1)
+        raise ValueError("No trade/quote rows available for the requested filters/day.")
+    return trades_df, quotes_df, missing_contracts
 
-    classified = classify_intraday_trades(trades_df, quotes_df)
-    contract_flow_df = summarize_intraday_contract_flow(classified, source=source)
-    time_bucket_df = summarize_intraday_time_buckets(classified, bucket_minutes=bucket_minutes)
 
+def _build_intraday_flow_artifact(
+    *,
+    target_day: date,
+    source: str,
+    bucket_minutes: int,
+    underlying_filter: list[str],
+    contracts_to_read: list[str],
+    missing_contracts: list[str],
+    contract_flow_df: pd.DataFrame,
+    time_bucket_df: pd.DataFrame,
+) -> IntradayFlowArtifact:
     symbol_value, symbol_warning = _resolve_flow_symbol(underlying_filter, contracts_to_read)
+    warnings = _build_intraday_flow_warnings(
+        symbol_warning=symbol_warning,
+        missing_contracts=missing_contracts,
+        contract_flow_df=contract_flow_df,
+        time_bucket_df=time_bucket_df,
+    )
+    return IntradayFlowArtifact(
+        schema_version=1,
+        generated_at=utc_now(),
+        as_of=target_day.isoformat(),
+        symbol=symbol_value,
+        market_date=target_day.isoformat(),
+        source=source,
+        bucket_minutes=bucket_minutes,
+        disclaimer="Not financial advice.",
+        contract_flow=[IntradayFlowContractRow.model_validate(row) for row in _records(contract_flow_df)],
+        time_buckets=[IntradayFlowTimeBucketRow.model_validate(row) for row in _records(time_bucket_df)],
+        warnings=warnings,
+    )
+
+
+def _build_intraday_flow_warnings(
+    *,
+    symbol_warning: str | None,
+    missing_contracts: list[str],
+    contract_flow_df: pd.DataFrame,
+    time_bucket_df: pd.DataFrame,
+) -> list[str]:
     warnings: list[str] = []
     if symbol_warning:
         warnings.append(symbol_warning)
@@ -587,36 +700,30 @@ def flow(
         warnings.append("empty_contract_flow")
     if time_bucket_df.empty:
         warnings.append("empty_time_buckets")
-    warnings = _dedupe(warnings)
+    return _dedupe(warnings)
 
-    artifact = IntradayFlowArtifact(
-        schema_version=1,
-        generated_at=utc_now(),
-        as_of=target_day.isoformat(),
-        symbol=symbol_value,
-        market_date=target_day.isoformat(),
-        source=source,
-        bucket_minutes=bucket_minutes,
-        disclaimer="Not financial advice.",
-        contract_flow=[
-            IntradayFlowContractRow.model_validate(row) for row in _records(contract_flow_df)
-        ],
-        time_buckets=[
-            IntradayFlowTimeBucketRow.model_validate(row) for row in _records(time_bucket_df)
-        ],
-        warnings=warnings,
-    )
 
+def _render_intraday_flow_output(console: Console, *, artifact: IntradayFlowArtifact, output_fmt: str) -> None:
     if output_fmt == "json":
         console.print(artifact.model_dump_json(indent=2))
-    else:
-        _render_flow_console(console, artifact)
+        return
+    _render_flow_console(console, artifact)
 
+
+def _persist_intraday_flow_outputs(
+    console: Console,
+    *,
+    artifact: IntradayFlowArtifact,
+    output_fmt: str,
+    out: Path | None,
+    persist: bool,
+    contract_flow_df: pd.DataFrame,
+    research_dir: Path,
+) -> None:
     if out is not None:
         saved = _save_flow_artifact(out, artifact)
         if output_fmt != "json":
             console.print(f"Saved: {saved}")
-
     if persist and get_storage_runtime_config().backend == "duckdb":
         persisted = _persist_intraday_flow(contract_flow_df, research_dir)
         if output_fmt != "json":
