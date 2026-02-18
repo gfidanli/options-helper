@@ -5,17 +5,22 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 import threading
 import time as time_mod
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping, Sequence
 
 import pandas as pd
 
 from options_helper.analysis.osi import normalize_underlying
 from options_helper.data.alpaca_client import AlpacaClient, contracts_to_df
 from options_helper.data.ingestion.common import shift_years
+from options_helper.data.ingestion.options_bars_discovery_helpers import (
+    DiscoveryScanResult,
+    build_scan_targets as _build_scan_targets,
+    merge_discovered_contracts as _merge_discovered_contracts,
+    scan_discovery_target as _scan_discovery_target,
+)
 from options_helper.data.ingestion.options_bars_helpers import (
     coerce_expiry as _coerce_expiry,
     coerce_meta_dt as _coerce_meta_dt,
-    contract_symbol_from_raw as _contract_symbol_from_raw,
     coverage_satisfies as _coverage_satisfies,
     error_status as _error_status,
     expiry_from_contract_symbol as _expiry_from_contract_symbol,
@@ -23,7 +28,6 @@ from options_helper.data.ingestion.options_bars_helpers import (
     looks_like_timeout as _looks_like_timeout,
     normalize_contract_status as _normalize_contract_status,
     normalize_contracts_frame as _normalize_contracts_frame,
-    supports_kw as _supports_kw,
     supports_max_rps_kw as _supports_max_rps_kw,
     year_windows as _year_windows,
 )
@@ -120,38 +124,6 @@ class _RequestRateLimiter:
             time_mod.sleep(remaining)
 
 
-def _list_option_contracts(
-    client: AlpacaClient,
-    *,
-    underlying: str | None = None,
-    root_symbol: str | None = None,
-    exp_gte: date,
-    exp_lte: date,
-    limit: int | None,
-    page_limit: int | None,
-    max_requests_per_second: float | None,
-    supports_max_rps_kw: bool,
-    contract_status: str | None,
-) -> list[dict[str, Any]]:
-    method = getattr(client, "list_option_contracts")
-    kwargs: dict[str, Any] = {
-        "exp_gte": exp_gte,
-        "exp_lte": exp_lte,
-        "limit": limit,
-        "page_limit": page_limit,
-    }
-    if contract_status:
-        if _supports_kw(method, "contract_status"):
-            kwargs["contract_status"] = contract_status
-        elif _supports_kw(method, "status"):
-            kwargs["status"] = contract_status
-    if root_symbol:
-        kwargs["root_symbol"] = root_symbol
-    if supports_max_rps_kw and max_requests_per_second is not None:
-        kwargs["max_requests_per_second"] = max_requests_per_second
-    return method(underlying, **kwargs)
-
-
 def discover_option_contracts(
     client: AlpacaClient,
     *,
@@ -180,15 +152,11 @@ def discover_option_contracts(
     rate_limit_429 = 0
     latencies_ms: list[float] = []
 
-    total_contracts = 0
-    today = date.today()
-    windows = _year_windows(exp_start, exp_end)
-
     prefix = str(contract_symbol_prefix or "").strip().upper() or None
-    scan_targets: list[tuple[str, str]] = []
-    scan_targets.extend([("underlying", sym) for sym in underlyings])
-    if root_symbols is not None:
-        scan_targets.extend([("root_symbol", sym) for sym in root_symbols])
+    windows = _year_windows(exp_start, exp_end)
+    today = date.today()
+    scan_targets = _build_scan_targets(underlyings=underlyings, root_symbols=root_symbols)
+    total_contracts = 0
 
     for kind, raw_symbol in scan_targets:
         if max_contracts is not None and total_contracts >= max_contracts:
@@ -196,106 +164,87 @@ def discover_option_contracts(
         token = normalize_underlying(raw_symbol)
         if not token:
             continue
-
-        raw_contracts: list[dict[str, Any]] = []
-        empty_years = 0
-        years_scanned = 0
-        error: str | None = None
-        status = "ok"
-
-        for _, window_start, window_end in windows:
-            if max_contracts is not None and total_contracts >= max_contracts:
-                break
-            years_scanned += 1
-            started = time_mod.perf_counter()
-            try:
-                contracts_rate_limiter.wait_turn()
-                calls += 1
-                contracts = _list_option_contracts(
-                    client,
-                    underlying=token if kind == "underlying" else None,
-                    root_symbol=token if kind == "root_symbol" else None,
-                    exp_gte=window_start,
-                    exp_lte=window_end,
-                    limit=limit,
-                    page_limit=page_limit,
-                    max_requests_per_second=max_requests_per_second,
-                    supports_max_rps_kw=supports_max_rps_kw,
-                    contract_status=resolved_contract_status,
-                )
-            except Exception as exc:  # noqa: BLE001
-                latencies_ms.append((time_mod.perf_counter() - started) * 1000.0)
-                error = str(exc)
-                status = "error"
-                error_count += 1
-                if _looks_like_timeout(exc):
-                    timeout_count += 1
-                if _looks_like_429(exc):
-                    rate_limit_429 += 1
-                if fail_fast:
-                    raise
-                break
-            latencies_ms.append((time_mod.perf_counter() - started) * 1000.0)
-
-            if prefix and contracts:
-                contracts = [raw for raw in contracts if (_contract_symbol_from_raw(raw) or "").startswith(prefix)]
-
-            if not contracts:
-                # Alpaca may not list far-dated expiries; don't let empty *future* windows
-                # stop the scan before reaching current/past years.
-                if window_start <= today:
-                    empty_years += 1
-                    if empty_years >= 3:
-                        break
-                continue
-            empty_years = 0
-            raw_contracts.extend(contracts)
-
-            if max_contracts is not None and (total_contracts + len(raw_contracts)) >= max_contracts:
-                break
-
-        if raw_contracts:
-            df = contracts_to_df(raw_contracts)
-            df = _normalize_contracts_frame(df)
-            if not df.empty:
-                for row in df.to_dict("records"):
-                    symbol = _contract_symbol_from_raw(row)
-                    if not symbol:
-                        continue
-                    payload = dict(row)
-                    payload["contractSymbol"] = symbol
-                    contracts_by_symbol[symbol] = payload
-            for raw in raw_contracts:
-                symbol = _contract_symbol_from_raw(raw)
-                if symbol:
-                    raw_by_symbol[symbol] = raw
-            total_contracts = len(raw_by_symbol)
-
-        summaries.append(
-            UnderlyingDiscoverySummary(
-                underlying=token,
-                contracts=len(raw_contracts),
-                years_scanned=years_scanned,
-                empty_years=empty_years,
-                status=status,
-                error=error,
-            )
+        scan_result = _scan_discovery_target(
+            client=client,
+            kind=kind,
+            token=token,
+            windows=windows,
+            max_contracts=max_contracts,
+            total_contracts=total_contracts,
+            limit=limit,
+            page_limit=page_limit,
+            max_requests_per_second=max_requests_per_second,
+            supports_max_rps_kw=supports_max_rps_kw,
+            resolved_contract_status=resolved_contract_status,
+            contracts_rate_limiter=contracts_rate_limiter,
+            fail_fast=fail_fast,
+            prefix=prefix,
+            today=today,
         )
-
-    if not contracts_by_symbol:
-        empty = contracts_to_df([])
-        endpoint_stats = build_endpoint_stats(
-            calls=calls,
-            retries=0,
-            rate_limit_429=rate_limit_429,
-            timeout_count=timeout_count,
-            error_count=error_count,
-            latencies_ms=latencies_ms,
-        )
-        return ContractDiscoveryOutput(
-            contracts=empty,
+        calls += scan_result.calls
+        error_count += scan_result.error_count
+        timeout_count += scan_result.timeout_count
+        rate_limit_429 += scan_result.rate_limit_429
+        latencies_ms.extend(scan_result.latencies_ms)
+        summaries.append(_summary_from_scan_result(token=token, scan_result=scan_result))
+        _merge_discovered_contracts(
+            raw_contracts=scan_result.raw_contracts,
+            contracts_by_symbol=contracts_by_symbol,
             raw_by_symbol=raw_by_symbol,
-            summaries=summaries,
+        )
+        total_contracts = len(raw_by_symbol)
+
+    return _build_discovery_output(
+        contracts_by_symbol=contracts_by_symbol,
+        raw_by_symbol=raw_by_symbol,
+        summaries=summaries,
+        calls=calls,
+        error_count=error_count,
+        timeout_count=timeout_count,
+        rate_limit_429=rate_limit_429,
+        latencies_ms=latencies_ms,
+    )
+
+
+def _summary_from_scan_result(
+    *,
+    token: str,
+    scan_result: DiscoveryScanResult,
+) -> UnderlyingDiscoverySummary:
+    return UnderlyingDiscoverySummary(
+        underlying=token,
+        contracts=len(scan_result.raw_contracts),
+        years_scanned=scan_result.years_scanned,
+        empty_years=scan_result.empty_years,
+        status=scan_result.status,
+        error=scan_result.error,
+    )
+
+
+def _build_discovery_output(
+    *,
+    contracts_by_symbol: Mapping[str, Mapping[str, Any]],
+    raw_by_symbol: Mapping[str, Mapping[str, Any]],
+    summaries: Sequence[UnderlyingDiscoverySummary],
+    calls: int,
+    error_count: int,
+    timeout_count: int,
+    rate_limit_429: int,
+    latencies_ms: Sequence[float],
+) -> ContractDiscoveryOutput:
+    endpoint_stats = build_endpoint_stats(
+        calls=calls,
+        retries=0,
+        rate_limit_429=rate_limit_429,
+        timeout_count=timeout_count,
+        error_count=error_count,
+        latencies_ms=latencies_ms,
+    )
+    if not contracts_by_symbol:
+        return ContractDiscoveryOutput(
+            contracts=contracts_to_df([]),
+            raw_by_symbol={key: dict(value) for key, value in raw_by_symbol.items()},
+            summaries=list(summaries),
             endpoint_stats=ContractDiscoveryStats(endpoint_stats=endpoint_stats),
         )
 
@@ -305,19 +254,10 @@ def discover_option_contracts(
         combined = combined.dropna(subset=["contractSymbol"])
         combined = combined.drop_duplicates(subset=["contractSymbol"], keep="last")
         combined = combined.sort_values(by=["contractSymbol"], kind="stable")
-
-    endpoint_stats = build_endpoint_stats(
-        calls=calls,
-        retries=0,
-        rate_limit_429=rate_limit_429,
-        timeout_count=timeout_count,
-        error_count=error_count,
-        latencies_ms=latencies_ms,
-    )
     return ContractDiscoveryOutput(
         contracts=combined,
-        raw_by_symbol=raw_by_symbol,
-        summaries=summaries,
+        raw_by_symbol={key: dict(value) for key, value in raw_by_symbol.items()},
+        summaries=list(summaries),
         endpoint_stats=ContractDiscoveryStats(endpoint_stats=endpoint_stats),
     )
 
