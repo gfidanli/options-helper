@@ -258,6 +258,348 @@ def _build_position_context(pos: PositionState, *, as_of: date, mark: float | No
     )
 
 
+@dataclass
+class _ContractState:
+    position_id: str
+    contract_symbol: str | None
+    expiry: date | None
+    strike: float | None
+    option_type: str | None
+
+
+def _apply_row_contract_updates(state: _ContractState, row_dict: dict | None) -> None:
+    if row_dict is None:
+        return
+    if state.expiry is None:
+        state.expiry = _parse_iso_date(row_dict.get("expiry"))
+    if state.strike is None:
+        state.strike = _as_float(row_dict.get("strike"))
+    if state.option_type is None:
+        opt = row_dict.get("optionType") or row_dict.get("option_type")
+        if opt is not None:
+            state.option_type = str(opt).strip().lower()
+
+
+def _fill_from_quote(
+    *,
+    side: str,
+    quote: _Quote,
+    fill_mode: FillMode,
+    slippage_factor: float,
+    allow_worst_case_mark_fallback: bool,
+):
+    return fill_price(
+        side=side,
+        fill_mode=fill_mode,
+        bid=quote.bid,
+        ask=quote.ask,
+        last=quote.last,
+        mark=quote.mark,
+        spread_pct=quote.spread_pct,
+        slippage_factor=slippage_factor,
+        allow_worst_case_mark_fallback=allow_worst_case_mark_fallback,
+    )
+
+
+def _process_entry(
+    *,
+    ledger: BacktestLedger,
+    skips: list[SkipEvent],
+    state: _ContractState,
+    strategy: Strategy,
+    day_ctx: DayContext,
+    quote: _Quote | None,
+    symbol: str,
+    as_of: date,
+    fill_mode: FillMode,
+    slippage_factor: float,
+    allow_worst_case_mark_fallback: bool,
+    quantity: int,
+) -> None:
+    if not strategy.should_enter(day_ctx):
+        return
+    if quote is None:
+        skips.append(SkipEvent(as_of=as_of, action="entry", reason="missing_contract"))
+        return
+    fill = _fill_from_quote(
+        side="buy",
+        quote=quote,
+        fill_mode=fill_mode,
+        slippage_factor=slippage_factor,
+        allow_worst_case_mark_fallback=allow_worst_case_mark_fallback,
+    )
+    if fill.price is None:
+        skips.append(SkipEvent(as_of=as_of, action="entry", reason=fill.reason))
+        return
+    ledger.open_long(
+        state.position_id,
+        symbol=symbol,
+        contract_symbol=state.contract_symbol,
+        expiry=state.expiry or date.min,
+        strike=float(state.strike or 0.0),
+        option_type=str(state.option_type or "call"),
+        quantity=quantity,
+        entry_date=as_of,
+        entry_price=fill.price,
+    )
+
+
+def _maybe_roll_position(
+    *,
+    ledger: BacktestLedger,
+    state: _ContractState,
+    position: PositionState,
+    strategy: Strategy,
+    day_ctx: DayContext,
+    quote: _Quote | None,
+    skips: list[SkipEvent],
+    rolls: list[RollEvent],
+    roll_policy: RollPolicy | None,
+    data_source: BacktestDataSource,
+    symbol: str,
+    as_of: date,
+    fill_mode: FillMode,
+    slippage_factor: float,
+    allow_worst_case_mark_fallback: bool,
+) -> bool:
+    if roll_policy is None:
+        return False
+    thesis_ok = strategy.should_enter(day_ctx)
+    if not should_roll(as_of=as_of, expiry=position.expiry, dte_threshold=roll_policy.dte_threshold, thesis_ok=thesis_ok):
+        return False
+    if day_ctx.spot is None:
+        skips.append(SkipEvent(as_of=as_of, action="roll", reason="missing_spot"))
+        return False
+    roll_decision = select_roll_candidate(
+        data_source.snapshot_store,
+        symbol=symbol,
+        as_of=as_of,
+        spot=day_ctx.spot,
+        position=Position(
+            id=state.position_id,
+            symbol=symbol,
+            option_type=str(position.option_type),
+            expiry=position.expiry,
+            strike=position.strike,
+            contracts=position.quantity,
+            cost_basis=position.entry_price,
+            opened_at=position.entry_date,
+        ),
+        policy=roll_policy,
+    )
+    if roll_decision.candidate is None:
+        skips.append(SkipEvent(as_of=as_of, action="roll", reason=roll_decision.reason or "no_candidate"))
+        return False
+    return _execute_roll(
+        ledger=ledger,
+        state=state,
+        position=position,
+        quote=quote,
+        skips=skips,
+        rolls=rolls,
+        roll_decision=roll_decision,
+        as_of=as_of,
+        symbol=symbol,
+        fill_mode=fill_mode,
+        slippage_factor=slippage_factor,
+        allow_worst_case_mark_fallback=allow_worst_case_mark_fallback,
+    )
+
+
+def _execute_roll(
+    *,
+    ledger: BacktestLedger,
+    state: _ContractState,
+    position: PositionState,
+    quote: _Quote | None,
+    skips: list[SkipEvent],
+    rolls: list[RollEvent],
+    roll_decision,
+    as_of: date,
+    symbol: str,
+    fill_mode: FillMode,
+    slippage_factor: float,
+    allow_worst_case_mark_fallback: bool,
+) -> bool:
+    if quote is None:
+        skips.append(SkipEvent(as_of=as_of, action="roll", reason="missing_contract"))
+        return False
+    exit_fill = _fill_from_quote(
+        side="sell",
+        quote=quote,
+        fill_mode=fill_mode,
+        slippage_factor=slippage_factor,
+        allow_worst_case_mark_fallback=allow_worst_case_mark_fallback,
+    )
+    candidate = roll_decision.candidate.contract
+    candidate_expiry = _parse_iso_date(candidate.expiry)
+    entry_fill = fill_price(
+        side="buy",
+        fill_mode=fill_mode,
+        bid=candidate.bid,
+        ask=candidate.ask,
+        last=None,
+        mark=candidate.mark,
+        spread_pct=candidate.spread_pct,
+        slippage_factor=slippage_factor,
+        allow_worst_case_mark_fallback=allow_worst_case_mark_fallback,
+    )
+    if candidate_expiry is None:
+        skips.append(SkipEvent(as_of=as_of, action="roll", reason="invalid_candidate_expiry"))
+        return False
+    if exit_fill.price is None:
+        skips.append(SkipEvent(as_of=as_of, action="roll", reason=exit_fill.reason))
+        return False
+    if entry_fill.price is None:
+        skips.append(SkipEvent(as_of=as_of, action="roll", reason=entry_fill.reason))
+        return False
+    ledger.close(state.position_id, exit_date=as_of, exit_price=exit_fill.price)
+    state.contract_symbol = candidate.contract_symbol
+    state.expiry = candidate_expiry
+    state.strike = candidate.strike
+    state.option_type = candidate.option_type
+    state.position_id = _position_id_from_contract(
+        symbol,
+        contract_symbol=state.contract_symbol,
+        expiry=state.expiry,
+        strike=state.strike,
+        option_type=state.option_type,
+    )
+    ledger.open_long(
+        state.position_id,
+        symbol=symbol,
+        contract_symbol=state.contract_symbol,
+        expiry=candidate_expiry,
+        strike=float(candidate.strike),
+        option_type=str(candidate.option_type),
+        quantity=position.quantity,
+        entry_date=as_of,
+        entry_price=entry_fill.price,
+    )
+    rolls.append(
+        RollEvent(
+            as_of=as_of,
+            from_contract_symbol=position.contract_symbol,
+            to_contract_symbol=state.contract_symbol,
+            reason=roll_decision.reason,
+        )
+    )
+    return True
+
+
+def _process_exit(
+    *,
+    ledger: BacktestLedger,
+    skips: list[SkipEvent],
+    position_id: str,
+    strategy: Strategy,
+    pos_ctx: PositionContext,
+    quote: _Quote | None,
+    as_of: date,
+    fill_mode: FillMode,
+    slippage_factor: float,
+    allow_worst_case_mark_fallback: bool,
+) -> None:
+    if not strategy.should_exit(pos_ctx):
+        return
+    if quote is None:
+        skips.append(SkipEvent(as_of=as_of, action="exit", reason="missing_contract"))
+        return
+    fill = _fill_from_quote(
+        side="sell",
+        quote=quote,
+        fill_mode=fill_mode,
+        slippage_factor=slippage_factor,
+        allow_worst_case_mark_fallback=allow_worst_case_mark_fallback,
+    )
+    if fill.price is None:
+        skips.append(SkipEvent(as_of=as_of, action="exit", reason=fill.reason))
+        return
+    ledger.close(position_id, exit_date=as_of, exit_price=fill.price)
+
+
+def _run_backtest_days(
+    *,
+    data_source: BacktestDataSource,
+    symbol: str,
+    start: date | None,
+    end: date | None,
+    state: _ContractState,
+    ledger: BacktestLedger,
+    candles: pd.DataFrame,
+    ctx_builder: Callable[[pd.DataFrame, date], DayContext],
+    strategy: Strategy,
+    skips: list[SkipEvent],
+    rolls: list[RollEvent],
+    fill_mode: FillMode,
+    slippage_factor: float,
+    allow_worst_case_mark_fallback: bool,
+    quantity: int,
+    roll_policy: RollPolicy | None,
+) -> None:
+    for as_of, day_df in data_source.iter_snapshot_days(symbol, start=start, end=end):
+        day_ctx = ctx_builder(candles, as_of)
+        row = find_snapshot_row(
+            day_df,
+            expiry=state.expiry or date.min,
+            strike=state.strike or 0.0,
+            option_type=state.option_type or "call",
+            contract_symbol=state.contract_symbol,
+        )
+        row_dict = row.to_dict() if row is not None else None
+        _apply_row_contract_updates(state, row_dict)
+        quote = _quote_from_row(row_dict)
+        if state.position_id not in ledger.positions:
+            _process_entry(
+                ledger=ledger,
+                skips=skips,
+                state=state,
+                strategy=strategy,
+                day_ctx=day_ctx,
+                quote=quote,
+                symbol=symbol,
+                as_of=as_of,
+                fill_mode=fill_mode,
+                slippage_factor=slippage_factor,
+                allow_worst_case_mark_fallback=allow_worst_case_mark_fallback,
+                quantity=quantity,
+            )
+            continue
+        position = ledger.positions[state.position_id]
+        ledger.update_mark(state.position_id, mark=quote.mark if quote is not None else None)
+        pos_ctx = _build_position_context(position, as_of=as_of, mark=quote.mark if quote else None)
+        if _maybe_roll_position(
+            ledger=ledger,
+            state=state,
+            position=position,
+            strategy=strategy,
+            day_ctx=day_ctx,
+            quote=quote,
+            skips=skips,
+            rolls=rolls,
+            roll_policy=roll_policy,
+            data_source=data_source,
+            symbol=symbol,
+            as_of=as_of,
+            fill_mode=fill_mode,
+            slippage_factor=slippage_factor,
+            allow_worst_case_mark_fallback=allow_worst_case_mark_fallback,
+        ):
+            continue
+        _process_exit(
+            ledger=ledger,
+            skips=skips,
+            position_id=state.position_id,
+            strategy=strategy,
+            pos_ctx=pos_ctx,
+            quote=quote,
+            as_of=as_of,
+            fill_mode=fill_mode,
+            slippage_factor=slippage_factor,
+            allow_worst_case_mark_fallback=allow_worst_case_mark_fallback,
+        )
+
+
 def run_backtest(
     data_source: BacktestDataSource,
     *,
@@ -287,200 +629,39 @@ def run_backtest(
     skips: list[SkipEvent] = []
     rolls: list[RollEvent] = []
 
-    current_contract_symbol = contract_symbol
-    current_expiry = expiry
-    current_strike = strike
-    current_option_type = option_type
-
-    position_id = _position_id_from_contract(
-        symbol,
-        contract_symbol=current_contract_symbol,
-        expiry=current_expiry,
-        strike=current_strike,
-        option_type=current_option_type,
+    state = _ContractState(
+        position_id=_position_id_from_contract(
+            symbol,
+            contract_symbol=contract_symbol,
+            expiry=expiry,
+            strike=strike,
+            option_type=option_type,
+        ),
+        contract_symbol=contract_symbol,
+        expiry=expiry,
+        strike=strike,
+        option_type=option_type,
+    )
+    _run_backtest_days(
+        data_source=data_source,
+        symbol=symbol,
+        start=start,
+        end=end,
+        state=state,
+        ledger=ledger,
+        candles=candles,
+        ctx_builder=ctx_builder,
+        strategy=strategy,
+        skips=skips,
+        rolls=rolls,
+        fill_mode=fill_mode,
+        slippage_factor=slippage_factor,
+        allow_worst_case_mark_fallback=allow_worst_case_mark_fallback,
+        quantity=quantity,
+        roll_policy=roll_policy,
     )
 
-    for as_of, day_df in data_source.iter_snapshot_days(symbol, start=start, end=end):
-        day_ctx = ctx_builder(candles, as_of)
-
-        row = find_snapshot_row(
-            day_df,
-            expiry=current_expiry or date.min,
-            strike=current_strike or 0.0,
-            option_type=current_option_type or "call",
-            contract_symbol=current_contract_symbol,
-        )
-        row_dict = row.to_dict() if row is not None else None
-        if row_dict is not None:
-            if current_expiry is None:
-                current_expiry = _parse_iso_date(row_dict.get("expiry"))
-            if current_strike is None:
-                current_strike = _as_float(row_dict.get("strike"))
-            if current_option_type is None:
-                opt = row_dict.get("optionType") or row_dict.get("option_type")
-                if opt is not None:
-                    current_option_type = str(opt).strip().lower()
-
-        quote = _quote_from_row(row_dict)
-
-        if position_id not in ledger.positions:
-            if not strategy.should_enter(day_ctx):
-                continue
-            if quote is None:
-                skips.append(SkipEvent(as_of=as_of, action="entry", reason="missing_contract"))
-                continue
-            fill = fill_price(
-                side="buy",
-                fill_mode=fill_mode,
-                bid=quote.bid,
-                ask=quote.ask,
-                last=quote.last,
-                mark=quote.mark,
-                spread_pct=quote.spread_pct,
-                slippage_factor=slippage_factor,
-                allow_worst_case_mark_fallback=allow_worst_case_mark_fallback,
-            )
-            if fill.price is None:
-                skips.append(SkipEvent(as_of=as_of, action="entry", reason=fill.reason))
-                continue
-            ledger.open_long(
-                position_id,
-                symbol=symbol,
-                contract_symbol=current_contract_symbol,
-                expiry=current_expiry or date.min,
-                strike=float(current_strike or 0.0),
-                option_type=str(current_option_type or "call"),
-                quantity=quantity,
-                entry_date=as_of,
-                entry_price=fill.price,
-            )
-            continue
-
-        position = ledger.positions[position_id]
-        ledger.update_mark(position_id, mark=quote.mark if quote is not None else None)
-        pos_ctx = _build_position_context(position, as_of=as_of, mark=quote.mark if quote else None)
-
-        if roll_policy is not None:
-            thesis_ok = strategy.should_enter(day_ctx)
-            if should_roll(
-                as_of=as_of,
-                expiry=position.expiry,
-                dte_threshold=roll_policy.dte_threshold,
-                thesis_ok=thesis_ok,
-            ):
-                if day_ctx.spot is None:
-                    skips.append(SkipEvent(as_of=as_of, action="roll", reason="missing_spot"))
-                else:
-                    roll_decision = select_roll_candidate(
-                        data_source.snapshot_store,
-                        symbol=symbol,
-                        as_of=as_of,
-                        spot=day_ctx.spot,
-                        position=Position(
-                            id=position_id,
-                            symbol=symbol,
-                            option_type=str(position.option_type),
-                            expiry=position.expiry,
-                            strike=position.strike,
-                            contracts=position.quantity,
-                            cost_basis=position.entry_price,
-                            opened_at=position.entry_date,
-                        ),
-                        policy=roll_policy,
-                    )
-                    if roll_decision.candidate is None:
-                        skips.append(SkipEvent(as_of=as_of, action="roll", reason=roll_decision.reason or "no_candidate"))
-                    else:
-                        if quote is None:
-                            skips.append(SkipEvent(as_of=as_of, action="roll", reason="missing_contract"))
-                        else:
-                            exit_fill = fill_price(
-                                side="sell",
-                                fill_mode=fill_mode,
-                                bid=quote.bid,
-                                ask=quote.ask,
-                                last=quote.last,
-                                mark=quote.mark,
-                                spread_pct=quote.spread_pct,
-                                slippage_factor=slippage_factor,
-                                allow_worst_case_mark_fallback=allow_worst_case_mark_fallback,
-                            )
-                            candidate = roll_decision.candidate.contract
-                            candidate_expiry = _parse_iso_date(candidate.expiry)
-                            entry_fill = fill_price(
-                                side="buy",
-                                fill_mode=fill_mode,
-                                bid=candidate.bid,
-                                ask=candidate.ask,
-                                last=None,
-                                mark=candidate.mark,
-                                spread_pct=candidate.spread_pct,
-                                slippage_factor=slippage_factor,
-                                allow_worst_case_mark_fallback=allow_worst_case_mark_fallback,
-                            )
-                            if candidate_expiry is None:
-                                skips.append(SkipEvent(as_of=as_of, action="roll", reason="invalid_candidate_expiry"))
-                            elif exit_fill.price is None:
-                                skips.append(SkipEvent(as_of=as_of, action="roll", reason=exit_fill.reason))
-                            elif entry_fill.price is None:
-                                skips.append(SkipEvent(as_of=as_of, action="roll", reason=entry_fill.reason))
-                            else:
-                                ledger.close(position_id, exit_date=as_of, exit_price=exit_fill.price)
-                                current_contract_symbol = candidate.contract_symbol
-                                current_expiry = candidate_expiry
-                                current_strike = candidate.strike
-                                current_option_type = candidate.option_type
-                                position_id = _position_id_from_contract(
-                                    symbol,
-                                    contract_symbol=current_contract_symbol,
-                                    expiry=current_expiry,
-                                    strike=current_strike,
-                                    option_type=current_option_type,
-                                )
-                                ledger.open_long(
-                                    position_id,
-                                    symbol=symbol,
-                                    contract_symbol=current_contract_symbol,
-                                    expiry=candidate_expiry,
-                                    strike=float(candidate.strike),
-                                    option_type=str(candidate.option_type),
-                                    quantity=position.quantity,
-                                    entry_date=as_of,
-                                    entry_price=entry_fill.price,
-                                )
-                                rolls.append(
-                                    RollEvent(
-                                        as_of=as_of,
-                                        from_contract_symbol=position.contract_symbol,
-                                        to_contract_symbol=current_contract_symbol,
-                                        reason=roll_decision.reason,
-                                    )
-                                )
-                                continue
-
-        if not strategy.should_exit(pos_ctx):
-            continue
-
-        if quote is None:
-            skips.append(SkipEvent(as_of=as_of, action="exit", reason="missing_contract"))
-            continue
-        fill = fill_price(
-            side="sell",
-            fill_mode=fill_mode,
-            bid=quote.bid,
-            ask=quote.ask,
-            last=quote.last,
-            mark=quote.mark,
-            spread_pct=quote.spread_pct,
-            slippage_factor=slippage_factor,
-            allow_worst_case_mark_fallback=allow_worst_case_mark_fallback,
-        )
-        if fill.price is None:
-            skips.append(SkipEvent(as_of=as_of, action="exit", reason=fill.reason))
-            continue
-        ledger.close(position_id, exit_date=as_of, exit_price=fill.price)
-
-    open_position = ledger.positions.get(position_id)
+    open_position = ledger.positions.get(state.position_id)
     return BacktestRun(
         symbol=symbol,
         contract_symbol=contract_symbol,
