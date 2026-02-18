@@ -26,6 +26,20 @@ class Greeks:
     vega: float
 
 
+@dataclass(frozen=True)
+class _ChainGreeksConfig:
+    spot: float
+    expiry: date
+    as_of: date | None
+    r: float
+    option_type_col: str
+    strike_col: str
+    iv_col: str
+    prefix: str
+    iv_placeholder_threshold: float
+    fill_iv_from_mark: bool
+
+
 def black_scholes_price(
     *,
     option_type: OptionType,
@@ -170,6 +184,124 @@ def black_scholes_greeks(
     )
 
 
+def _chain_as_float(val: object) -> float | None:
+    try:
+        if val is None or (isinstance(val, float) and pd.isna(val)) or pd.isna(val):
+            return None
+        return float(val)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _chain_source(val: object) -> str | None:
+    if val is None:
+        return None
+    try:
+        if pd.isna(val):
+            return None
+    except Exception:  # noqa: BLE001
+        pass
+    raw = str(val).strip()
+    return raw or None
+
+
+def _chain_mark_price(bid: float | None, ask: float | None, last: float | None) -> tuple[float | None, str]:
+    if bid is not None and bid > 0 and ask is not None and ask > 0:
+        return (bid + ask) / 2.0, "mid"
+    if last is not None and last > 0:
+        return last, "last"
+    if ask is not None and ask > 0:
+        return ask, "ask"
+    if bid is not None and bid > 0:
+        return bid, "bid"
+    return None, "none"
+
+
+def _empty_chain_greeks_columns(prefix: str) -> dict[str, list[float | None]]:
+    return {
+        f"{prefix}price": [],
+        f"{prefix}delta": [],
+        f"{prefix}gamma": [],
+        f"{prefix}theta_per_day": [],
+        f"{prefix}vega": [],
+    }
+
+
+def _append_chain_greek_values(
+    cols: dict[str, list[float | None]],
+    *,
+    prefix: str,
+    greeks: Greeks | None,
+) -> None:
+    if greeks is None:
+        for key in cols:
+            cols[key].append(None)
+        return
+    cols[f"{prefix}price"].append(greeks.price)
+    cols[f"{prefix}delta"].append(greeks.delta)
+    cols[f"{prefix}gamma"].append(greeks.gamma)
+    cols[f"{prefix}theta_per_day"].append(greeks.theta_per_day)
+    cols[f"{prefix}vega"].append(greeks.vega)
+
+
+def _compute_chain_row_greeks(
+    *,
+    option_type: object,
+    strike: object,
+    sigma: object,
+    bid_value: object,
+    ask_value: object,
+    last_value: object,
+    volume_value: object,
+    source_in: object,
+    spot: float,
+    t_years: float,
+    r: float,
+    iv_placeholder_threshold: float,
+    fill_iv_from_mark: bool,
+) -> tuple[float | None, str | None, Greeks | None]:
+    opt = str(option_type).lower().strip() if option_type is not None else ""
+    k = _chain_as_float(strike)
+    iv = _chain_as_float(sigma)
+    source = _chain_source(source_in)
+    if iv is not None and iv <= iv_placeholder_threshold:
+        iv = None
+
+    inferred_iv = False
+    if iv is None and fill_iv_from_mark:
+        bid = _chain_as_float(bid_value)
+        ask = _chain_as_float(ask_value)
+        last = _chain_as_float(last_value)
+        volume = _chain_as_float(volume_value)
+        mark, mark_src = _chain_mark_price(bid, ask, last)
+        ok_for_iv = mark is not None and mark > 0 and (
+            mark_src == "mid" or (mark_src == "last" and volume is not None and volume > 0)
+        )
+        if ok_for_iv and opt in {"call", "put"} and k is not None:
+            iv_calc = implied_volatility_from_price(
+                option_type=opt,
+                s=spot,
+                k=k,
+                t_years=t_years,
+                price=float(mark),
+                r=r,
+            )
+            if iv_calc is not None and iv_calc > iv_placeholder_threshold:
+                iv = iv_calc
+                inferred_iv = True
+
+    if opt not in {"call", "put"} or k is None or iv is None:
+        final_source = "bs_inferred" if inferred_iv else ("missing" if iv is None else source)
+        return iv, final_source, None
+
+    greeks = black_scholes_greeks(option_type=opt, s=spot, k=k, t_years=t_years, sigma=iv, r=r)
+    if greeks is None:
+        final_source = "bs_inferred" if inferred_iv else ("missing" if iv is None else source)
+        return iv, final_source, None
+    final_source = "bs_inferred" if inferred_iv else ("missing" if iv is None else source)
+    return iv, final_source, greeks
+
+
 def add_black_scholes_greeks_to_chain(
     df: pd.DataFrame,
     *,
@@ -184,171 +316,81 @@ def add_black_scholes_greeks_to_chain(
     iv_placeholder_threshold: float = 1e-4,
     fill_iv_from_mark: bool = True,
 ) -> pd.DataFrame:
-    """
-    Add best-effort Black-Scholes Greeks to an options chain DataFrame.
+    config = _ChainGreeksConfig(
+        spot=spot,
+        expiry=expiry,
+        as_of=as_of,
+        r=r,
+        option_type_col=option_type_col,
+        strike_col=strike_col,
+        iv_col=iv_col,
+        prefix=prefix,
+        iv_placeholder_threshold=iv_placeholder_threshold,
+        fill_iv_from_mark=fill_iv_from_mark,
+    )
+    return _add_black_scholes_greeks_to_chain_impl(df=df, config=config)
 
-    Greeks are computed from:
-    - spot (s)
-    - strike (k)
-    - time to expiry in years (t_years)
-    - implied volatility (sigma)
-    - risk-free rate (r)
 
-    This is model-based and should be treated as an approximation.
-    """
+def _add_black_scholes_greeks_to_chain_impl(
+    *,
+    df: pd.DataFrame,
+    config: _ChainGreeksConfig,
+) -> pd.DataFrame:
     if df is None or df.empty:
         return df
-
     out = df.copy()
-
-    as_of = as_of or date.today()
-    dte = (expiry - as_of).days
+    as_of = config.as_of or date.today()
+    dte = (config.expiry - as_of).days
     t_years = dte / 365.0 if dte > 0 else None
-
-    cols = {
-        f"{prefix}price": [],
-        f"{prefix}delta": [],
-        f"{prefix}gamma": [],
-        f"{prefix}theta_per_day": [],
-        f"{prefix}vega": [],
-    }
-
-    # Always add the columns (stable schema), even if we can't compute.
+    cols = _empty_chain_greeks_columns(config.prefix)
     if (
         t_years is None
         or t_years <= 0
-        or option_type_col not in out.columns
-        or strike_col not in out.columns
-        or iv_col not in out.columns
+        or config.option_type_col not in out.columns
+        or config.strike_col not in out.columns
+        or config.iv_col not in out.columns
     ):
         for key in cols:
             out[key] = None
         return out
 
-    def _as_float(val) -> float | None:
-        try:
-            if val is None or (isinstance(val, float) and pd.isna(val)) or pd.isna(val):
-                return None
-            return float(val)
-        except Exception:  # noqa: BLE001
-            return None
-
-    def _as_source(val: object) -> str | None:
-        if val is None:
-            return None
-        try:
-            if pd.isna(val):
-                return None
-        except Exception:  # noqa: BLE001
-            pass
-        raw = str(val).strip()
-        return raw or None
-
-    def _mark_price(bid: float | None, ask: float | None, last: float | None) -> tuple[float | None, str]:
-        if bid is not None and bid > 0 and ask is not None and ask > 0:
-            return (bid + ask) / 2.0, "mid"
-        if last is not None and last > 0:
-            return last, "last"
-        if ask is not None and ask > 0:
-            return ask, "ask"
-        if bid is not None and bid > 0:
-            return bid, "bid"
-        return None, "none"
-
     bids = out["bid"].tolist() if "bid" in out.columns else [None] * len(out)
     asks = out["ask"].tolist() if "ask" in out.columns else [None] * len(out)
     lasts = out["lastPrice"].tolist() if "lastPrice" in out.columns else [None] * len(out)
     volumes = out["volume"].tolist() if "volume" in out.columns else [None] * len(out)
-
     iv_out: list[float | None] = []
     iv_source_out: list[str | None] = []
     iv_source_in = out["iv_source"].tolist() if "iv_source" in out.columns else [None] * len(out)
-
     for opt_type, strike, sigma, bid_v, ask_v, last_v, vol_v, source_in in zip(
-        out[option_type_col].tolist(),
-        out[strike_col].tolist(),
-        out[iv_col].tolist(),
+        out[config.option_type_col].tolist(),
+        out[config.strike_col].tolist(),
+        out[config.iv_col].tolist(),
         bids,
         asks,
         lasts,
         volumes,
         iv_source_in,
     ):
-        opt = str(opt_type).lower().strip() if opt_type is not None else ""
-        k = _as_float(strike)
-        iv = _as_float(sigma)
-        source = _as_source(source_in)
-
-        # Yahoo sometimes returns placeholder/sentinel IV values (commonly 1e-05) when quote data is missing.
-        if iv is not None and iv <= iv_placeholder_threshold:
-            iv = None
-
-        inferred_iv = False
-        if iv is None and fill_iv_from_mark:
-            bid = _as_float(bid_v)
-            ask = _as_float(ask_v)
-            last = _as_float(last_v)
-            volume = _as_float(vol_v)
-            mark, mark_src = _mark_price(bid, ask, last)
-
-            # Only infer IV from last price if the contract traded today (volume > 0). Mid is preferred.
-            ok_for_iv = mark is not None and mark > 0 and (
-                mark_src == "mid" or (mark_src == "last" and volume is not None and volume > 0)
-            )
-            if ok_for_iv and opt in {"call", "put"} and k is not None:
-                iv_calc = implied_volatility_from_price(
-                    option_type=opt,
-                    s=spot,
-                    k=k,
-                    t_years=t_years,
-                    price=float(mark),
-                    r=r,
-                )
-                if iv_calc is not None and iv_calc > iv_placeholder_threshold:
-                    iv = iv_calc
-                    inferred_iv = True
-
+        iv, source, greeks = _compute_chain_row_greeks(
+            option_type=opt_type,
+            strike=strike,
+            sigma=sigma,
+            bid_value=bid_v,
+            ask_value=ask_v,
+            last_value=last_v,
+            volume_value=vol_v,
+            source_in=source_in,
+            spot=config.spot,
+            t_years=t_years,
+            r=config.r,
+            iv_placeholder_threshold=config.iv_placeholder_threshold,
+            fill_iv_from_mark=config.fill_iv_from_mark,
+        )
         iv_out.append(iv)
-
-        if opt not in {"call", "put"} or k is None or iv is None:
-            if inferred_iv:
-                source = "bs_inferred"
-            elif iv is None:
-                source = "missing"
-            iv_source_out.append(source)
-            for key in cols:
-                cols[key].append(None)
-            continue
-
-        g = black_scholes_greeks(option_type=opt, s=spot, k=k, t_years=t_years, sigma=iv, r=r)
-        if g is None:
-            if inferred_iv:
-                source = "bs_inferred"
-            elif iv is None:
-                source = "missing"
-            iv_source_out.append(source)
-            for key in cols:
-                cols[key].append(None)
-            continue
-
-        if inferred_iv:
-            source = "bs_inferred"
-        elif iv is None:
-            source = "missing"
         iv_source_out.append(source)
-
-        cols[f"{prefix}price"].append(g.price)
-        cols[f"{prefix}delta"].append(g.delta)
-        cols[f"{prefix}gamma"].append(g.gamma)
-        cols[f"{prefix}theta_per_day"].append(g.theta_per_day)
-        cols[f"{prefix}vega"].append(g.vega)
-
+        _append_chain_greek_values(cols, prefix=config.prefix, greeks=greeks)
     for key, values in cols.items():
         out[key] = values
-
-    # Replace placeholder IV with our best-effort inferred value (or None) so downstream reports don't treat
-    # sentinel IV values as real.
-    out[iv_col] = iv_out
+    out[config.iv_col] = iv_out
     out["iv_source"] = iv_source_out
-
     return out
