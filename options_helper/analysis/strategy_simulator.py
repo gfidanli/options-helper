@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 import math
 from typing import Any, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
@@ -10,16 +9,19 @@ import numpy as np
 import pandas as pd
 
 from options_helper.analysis.strategy_modeling_contracts import parse_strategy_signal_events
+from options_helper.analysis.strategy_simulator_trade_paths import (
+    simulate_one_target as _simulate_one_target,
+)
+from options_helper.analysis.strategy_simulator_trade_utils import (
+    normalize_symbol as _normalize_symbol,
+    timestamp_from_ns as _timestamp_from_ns,
+)
 from options_helper.schemas.strategy_modeling_contracts import (
     StrategySignalEvent,
     StrategyTradeSimulation,
-    TradeExitReason,
     TradeRejectCode,
 )
 from options_helper.schemas.strategy_modeling_policy import (
-    GapFillPolicy,
-    MaxHoldUnit,
-    StopMoveRule,
     StrategyModelingPolicyConfig,
     parse_max_hold_timeframe,
 )
@@ -149,247 +151,6 @@ def simulate_strategy_trade_paths(
     return trades
 
 
-def _simulate_one_target(
-    *,
-    event: StrategySignalEvent,
-    prepared: _PreparedIntraday | None,
-    entry_decision: _EntryDecision,
-    target: StrategyRTarget,
-    max_hold_bars: int | None,
-    max_hold_timeframe: tuple[MaxHoldUnit, int],
-    gap_fill_policy: GapFillPolicy,
-    stop_move_rules: tuple[StopMoveRule, ...],
-) -> StrategyTradeSimulation:
-    if entry_decision.reject_code is not None:
-        return _rejected_trade(
-            event=event,
-            target=target,
-            reject_code=entry_decision.reject_code,
-            entry_ts=entry_decision.entry_ts,
-            entry_price=entry_decision.entry_price,
-            stop_price=entry_decision.stop_price,
-            initial_risk=entry_decision.initial_risk,
-        )
-
-    direction = entry_decision.direction
-    initial_stop_price = entry_decision.stop_price
-    entry_row_index = entry_decision.entry_row_index
-    entry_ts = entry_decision.entry_ts
-    entry_price = entry_decision.entry_price
-    initial_risk = entry_decision.initial_risk
-    if (
-        direction is None
-        or initial_stop_price is None
-        or entry_row_index is None
-        or entry_ts is None
-        or entry_price is None
-        or initial_risk is None
-        or prepared is None
-    ):
-        return _rejected_trade(
-            event=event,
-            target=target,
-            reject_code="invalid_signal",
-        )
-
-    target_price = _target_price(
-        direction=direction,
-        entry_price=entry_price,
-        risk=initial_risk,
-        target_r=target.target_r,
-    )
-
-    eval_start = int(entry_row_index)
-    eval_end, has_full_hold_coverage = _evaluation_end_index(
-        prepared=prepared,
-        entry_row_index=entry_row_index,
-        entry_ts=entry_ts,
-        max_hold_bars=max_hold_bars,
-        max_hold_timeframe=max_hold_timeframe,
-    )
-    eval_len = int(eval_end - eval_start)
-    if eval_len <= 0:
-        return _rejected_trade(
-            event=event,
-            target=target,
-            reject_code="insufficient_future_bars",
-            entry_ts=entry_ts,
-            entry_price=entry_price,
-            stop_price=initial_stop_price,
-            target_price=target_price,
-            initial_risk=initial_risk,
-        )
-
-    stop_price = float(initial_stop_price)
-    stop_move_index = 0
-
-    mae_r = 0.0
-    mfe_r = 0.0
-    gap_fill_applied = False
-    exit_ts: pd.Timestamp | None = None
-    exit_price: float | None = None
-    exit_reason: TradeExitReason | None = None
-    holding_bars = 0
-
-    for offset, row_index in enumerate(range(eval_start, eval_end), start=1):
-        holding_bars = offset
-        open_price = float(prepared.open_values[row_index])
-        high_price = float(prepared.high_values[row_index])
-        low_price = float(prepared.low_values[row_index])
-        close_price = float(prepared.close_values[row_index])
-
-        stop_at_open = _open_hits_stop(direction=direction, open_price=open_price, stop_price=stop_price)
-        target_at_open = _open_hits_target(direction=direction, open_price=open_price, target_price=target_price)
-        if stop_at_open or target_at_open:
-            bar_ts = _timestamp_from_ns(int(prepared.timestamp_ns[row_index]))
-            if stop_at_open:
-                exit_reason = "stop_hit"
-                exit_price = open_price
-                gap_fill_applied = gap_fill_policy == "fill_at_open" and abs(open_price - stop_price) > _EPSILON
-            else:
-                exit_reason = "target_hit"
-                exit_price = open_price
-                gap_fill_applied = gap_fill_policy == "fill_at_open" and abs(open_price - target_price) > _EPSILON
-            exit_ts = bar_ts
-            mae_r, mfe_r = _update_excursions(
-                prices=(open_price, exit_price),
-                direction=direction,
-                entry_price=entry_price,
-                initial_risk=initial_risk,
-                current_mae_r=mae_r,
-                current_mfe_r=mfe_r,
-            )
-            break
-
-        stop_touched = _intrabar_hits_stop(direction=direction, low_price=low_price, high_price=high_price, stop_price=stop_price)
-        target_touched = _intrabar_hits_target(
-            direction=direction,
-            low_price=low_price,
-            high_price=high_price,
-            target_price=target_price,
-        )
-        if stop_touched and target_touched:
-            # Conservative tie-break: treat stop as hit first.
-            bar_ts = _timestamp_from_ns(int(prepared.timestamp_ns[row_index]))
-            exit_reason = "stop_hit"
-            exit_price = stop_price
-            exit_ts = bar_ts
-            mae_r, mfe_r = _update_excursions(
-                prices=(open_price, stop_price),
-                direction=direction,
-                entry_price=entry_price,
-                initial_risk=initial_risk,
-                current_mae_r=mae_r,
-                current_mfe_r=mfe_r,
-            )
-            break
-        if stop_touched:
-            bar_ts = _timestamp_from_ns(int(prepared.timestamp_ns[row_index]))
-            exit_reason = "stop_hit"
-            exit_price = stop_price
-            exit_ts = bar_ts
-            mae_r, mfe_r = _update_excursions(
-                prices=(open_price, stop_price),
-                direction=direction,
-                entry_price=entry_price,
-                initial_risk=initial_risk,
-                current_mae_r=mae_r,
-                current_mfe_r=mfe_r,
-            )
-            break
-        if target_touched:
-            bar_ts = _timestamp_from_ns(int(prepared.timestamp_ns[row_index]))
-            exit_reason = "target_hit"
-            exit_price = target_price
-            exit_ts = bar_ts
-            mae_r, mfe_r = _update_excursions(
-                prices=(open_price, target_price),
-                direction=direction,
-                entry_price=entry_price,
-                initial_risk=initial_risk,
-                current_mae_r=mae_r,
-                current_mfe_r=mfe_r,
-            )
-            break
-
-        mae_r, mfe_r = _update_excursions(
-            prices=(open_price, high_price, low_price, close_price),
-            direction=direction,
-            entry_price=entry_price,
-            initial_risk=initial_risk,
-            current_mae_r=mae_r,
-            current_mfe_r=mfe_r,
-        )
-
-        if stop_move_rules and row_index + 1 < eval_end and stop_move_index < len(stop_move_rules):
-            stop_price, stop_move_index = _apply_stop_move_rules(
-                stop_move_rules=stop_move_rules,
-                stop_move_index=stop_move_index,
-                direction=direction,
-                entry_price=entry_price,
-                initial_risk=initial_risk,
-                close_price=close_price,
-                stop_price=stop_price,
-            )
-
-    if exit_reason is None or exit_price is None or exit_ts is None:
-        if max_hold_bars is not None and not has_full_hold_coverage:
-            return _rejected_trade(
-                event=event,
-                target=target,
-                reject_code="insufficient_future_bars",
-                entry_ts=entry_ts,
-                entry_price=entry_price,
-                stop_price=initial_stop_price,
-                target_price=target_price,
-                initial_risk=initial_risk,
-                mae_r=mae_r,
-                mfe_r=mfe_r,
-            )
-
-        final_row_index = int(eval_end - 1)
-        final_ts = _timestamp_from_ns(int(prepared.timestamp_ns[final_row_index]))
-        final_close = float(prepared.close_values[final_row_index])
-        exit_reason = "time_stop"
-        exit_ts = final_ts
-        exit_price = final_close
-        holding_bars = eval_len
-
-    realized_r = _price_to_r(
-        direction=direction,
-        entry_price=entry_price,
-        initial_risk=initial_risk,
-        price=exit_price,
-    )
-
-    return StrategyTradeSimulation(
-        trade_id=_trade_id(event=event, target=target),
-        event_id=event.event_id,
-        strategy=event.strategy,
-        symbol=_normalize_symbol(event.symbol),
-        direction=direction,  # type: ignore[arg-type]
-        signal_ts=event.signal_ts,
-        signal_confirmed_ts=event.signal_confirmed_ts,
-        entry_ts=_timestamp_to_datetime(entry_ts),
-        entry_price_source=event.entry_price_source,
-        entry_price=entry_price,
-        stop_price=float(initial_stop_price),
-        stop_price_final=float(stop_price),
-        target_price=target_price,
-        exit_ts=_timestamp_to_datetime(exit_ts),
-        exit_price=exit_price,
-        status="closed",
-        exit_reason=exit_reason,
-        reject_code=None,
-        initial_risk=initial_risk,
-        realized_r=realized_r,
-        mae_r=mae_r,
-        mfe_r=mfe_r,
-        holding_bars=int(holding_bars),
-        gap_fill_applied=gap_fill_applied,
-    )
-
-
 def _normalize_intraday_by_symbol(
     intraday_bars_by_symbol: Mapping[str, pd.DataFrame],
 ) -> dict[str, pd.DataFrame]:
@@ -492,158 +253,6 @@ def _timestamp_sort_key(value: object) -> int:
     if ts is None:
         return -1
     return int(ts.value)
-
-
-def _trade_id(*, event: StrategySignalEvent, target: StrategyRTarget) -> str:
-    return f"{event.event_id}:{target.label}"
-
-
-def _target_price(*, direction: str, entry_price: float, risk: float, target_r: float) -> float:
-    if direction == "long":
-        return entry_price + (risk * target_r)
-    return entry_price - (risk * target_r)
-
-
-def _open_hits_stop(*, direction: str, open_price: float, stop_price: float) -> bool:
-    if direction == "long":
-        return open_price <= stop_price + _EPSILON
-    return open_price >= stop_price - _EPSILON
-
-
-def _open_hits_target(*, direction: str, open_price: float, target_price: float) -> bool:
-    if direction == "long":
-        return open_price >= target_price - _EPSILON
-    return open_price <= target_price + _EPSILON
-
-
-def _intrabar_hits_stop(*, direction: str, low_price: float, high_price: float, stop_price: float) -> bool:
-    if direction == "long":
-        return low_price <= stop_price + _EPSILON
-    return high_price >= stop_price - _EPSILON
-
-
-def _intrabar_hits_target(*, direction: str, low_price: float, high_price: float, target_price: float) -> bool:
-    if direction == "long":
-        return high_price >= target_price - _EPSILON
-    return low_price <= target_price + _EPSILON
-
-
-def _update_excursions(
-    *,
-    prices: Sequence[float],
-    direction: str,
-    entry_price: float,
-    initial_risk: float,
-    current_mae_r: float,
-    current_mfe_r: float,
-) -> tuple[float, float]:
-    mae_r = current_mae_r
-    mfe_r = current_mfe_r
-    for price in prices:
-        r_value = _price_to_r(
-            direction=direction,
-            entry_price=entry_price,
-            initial_risk=initial_risk,
-            price=price,
-        )
-        mae_r = min(mae_r, r_value)
-        mfe_r = max(mfe_r, r_value)
-    return mae_r, mfe_r
-
-
-def _price_to_r(*, direction: str, entry_price: float, initial_risk: float, price: float) -> float:
-    if direction == "long":
-        return (price - entry_price) / initial_risk
-    return (entry_price - price) / initial_risk
-
-
-def _rejected_trade(
-    *,
-    event: StrategySignalEvent,
-    target: StrategyRTarget,
-    reject_code: TradeRejectCode,
-    entry_ts: pd.Timestamp | None = None,
-    entry_price: float | None = None,
-    stop_price: float | None = None,
-    target_price: float | None = None,
-    initial_risk: float | None = None,
-    mae_r: float | None = None,
-    mfe_r: float | None = None,
-) -> StrategyTradeSimulation:
-    safe_entry_price = 0.0 if entry_price is None else float(entry_price)
-    safe_initial_risk = 0.0 if initial_risk is None else float(initial_risk)
-
-    return StrategyTradeSimulation(
-        trade_id=_trade_id(event=event, target=target),
-        event_id=event.event_id,
-        strategy=event.strategy,
-        symbol=_normalize_symbol(event.symbol),
-        direction=event.direction,
-        signal_ts=event.signal_ts,
-        signal_confirmed_ts=event.signal_confirmed_ts,
-        entry_ts=event.entry_ts if entry_ts is None else _timestamp_to_datetime(entry_ts),
-        entry_price_source=event.entry_price_source,
-        entry_price=safe_entry_price,
-        stop_price=stop_price,
-        stop_price_final=stop_price,
-        target_price=target_price,
-        exit_ts=None,
-        exit_price=None,
-        status="rejected",
-        exit_reason=None,
-        reject_code=reject_code,
-        initial_risk=safe_initial_risk,
-        realized_r=None,
-        mae_r=mae_r,
-        mfe_r=mfe_r,
-        holding_bars=0,
-        gap_fill_applied=False,
-    )
-
-
-def _stop_price_from_r(*, direction: str, entry_price: float, initial_risk: float, stop_r: float) -> float:
-    if direction == "long":
-        return entry_price + (initial_risk * stop_r)
-    return entry_price - (initial_risk * stop_r)
-
-
-def _apply_stop_move_rules(
-    *,
-    stop_move_rules: tuple[StopMoveRule, ...],
-    stop_move_index: int,
-    direction: str,
-    entry_price: float,
-    initial_risk: float,
-    close_price: float,
-    stop_price: float,
-) -> tuple[float, int]:
-    close_r = _price_to_r(
-        direction=direction,
-        entry_price=entry_price,
-        initial_risk=initial_risk,
-        price=close_price,
-    )
-
-    updated_stop = float(stop_price)
-    idx = int(stop_move_index)
-    while idx < len(stop_move_rules) and close_r + _EPSILON >= float(stop_move_rules[idx].trigger_r):
-        candidate_stop = _stop_price_from_r(
-            direction=direction,
-            entry_price=entry_price,
-            initial_risk=initial_risk,
-            stop_r=float(stop_move_rules[idx].stop_r),
-        )
-        if direction == "long":
-            candidate_stop = min(candidate_stop, close_price)
-            if candidate_stop > updated_stop + _EPSILON:
-                updated_stop = candidate_stop
-        else:
-            candidate_stop = max(candidate_stop, close_price)
-            if candidate_stop < updated_stop - _EPSILON:
-                updated_stop = candidate_stop
-        idx += 1
-
-    return updated_stop, idx
 
 
 def _to_utc_timestamp(value: object) -> pd.Timestamp | None:
@@ -760,89 +369,6 @@ def _select_entry_row_index(
     return int(eligible_start)
 
 
-def _evaluation_end_index(
-    *,
-    prepared: _PreparedIntraday,
-    entry_row_index: int,
-    entry_ts: pd.Timestamp,
-    max_hold_bars: int | None,
-    max_hold_timeframe: tuple[MaxHoldUnit, int],
-) -> tuple[int, bool]:
-    if max_hold_bars is not None:
-        unit, unit_size = max_hold_timeframe
-        if unit == "entry":
-            end = min(prepared.row_count, int(entry_row_index + max_hold_bars))
-            return end, int(end - entry_row_index) >= int(max_hold_bars)
-
-        if unit in {"min", "h"}:
-            horizon_minutes = int(max_hold_bars * unit_size)
-            if unit == "h":
-                horizon_minutes *= 60
-            cutoff = entry_ts + pd.Timedelta(minutes=horizon_minutes)
-            cutoff_ns = int(cutoff.value)
-            end = int(np.searchsorted(prepared.timestamp_ns, cutoff_ns, side="left"))
-            end = min(prepared.row_count, end)
-            has_boundary = (
-                end < prepared.row_count
-                or (
-                    prepared.row_count > 0
-                    and int(prepared.timestamp_ns[prepared.row_count - 1]) >= cutoff_ns
-                )
-            )
-            return end, has_boundary
-
-        required_sessions = int(max_hold_bars * unit_size)
-        if unit == "w":
-            required_sessions *= 5
-        entry_session_day = _session_day_value(
-            prepared.session_days[entry_row_index],
-            fallback=entry_ts.tz_convert(_MARKET_TZ).date(),
-        )
-        sessions_seen = 1
-        end = int(entry_row_index + 1)
-        while end < prepared.row_count:
-            session_day = _session_day_value(prepared.session_days[end], fallback=entry_session_day)
-            if session_day != entry_session_day:
-                entry_session_day = session_day
-                sessions_seen += 1
-                if sessions_seen > required_sessions:
-                    break
-            end += 1
-        return end, sessions_seen >= required_sessions
-
-    entry_session_date = prepared.session_days[entry_row_index]
-    if entry_session_date is None or pd.isna(entry_session_date):
-        entry_session_date = entry_ts.tz_convert(_MARKET_TZ).date()
-
-    end = int(entry_row_index + 1)
-    while end < prepared.row_count:
-        session_day = prepared.session_days[end]
-        if session_day != entry_session_date:
-            break
-        end += 1
-    return end, True
-
-
-def _session_day_value(value: object, *, fallback: object) -> object:
-    if value is None or pd.isna(value):
-        return fallback
-    if isinstance(value, pd.Timestamp):
-        if pd.isna(value):
-            return fallback
-        return value.date()
-    if isinstance(value, datetime):
-        return value.date()
-    return value
-
-
-def _timestamp_from_ns(value: int) -> pd.Timestamp:
-    return pd.Timestamp(value, unit="ns", tz="UTC")
-
-
-def _timestamp_to_datetime(value: pd.Timestamp) -> datetime:
-    return value.to_pydatetime()
-
-
 def _finite_float(value: object) -> float | None:
     try:
         number = float(value)
@@ -851,11 +377,6 @@ def _finite_float(value: object) -> float | None:
     if not pd.notna(number) or not math.isfinite(number):
         return None
     return number
-
-
-def _normalize_symbol(value: object) -> str:
-    return str(value or "").strip().upper()
-
 
 __all__ = [
     "StrategyRTarget",
