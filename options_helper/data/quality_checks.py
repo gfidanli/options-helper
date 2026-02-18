@@ -36,6 +36,48 @@ class QualityCheckResult:
     message: str | None = None
 
 
+@dataclass(frozen=True)
+class _CandleDateStats:
+    valid_dates: pd.DatetimeIndex
+    invalid_date_rows: int
+    duplicate_day_rows: int
+    out_of_order_pairs: int
+
+
+@dataclass(frozen=True)
+class _GapDayStats:
+    status: str
+    message: str
+    latest_date: date | None
+    gap_days: int
+    missing_business_days_sample: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _NegativePriceStats:
+    status: str
+    message: str
+    negative_rows: int
+    negative_cells: int
+    price_columns: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _OptionsBarsMonotonicStats:
+    status: str
+    message: str
+    invalid_ts_rows: int
+    non_monotonic_groups: int
+
+
+@dataclass(frozen=True)
+class _OptionsBarsDuplicatePkStats:
+    status: str
+    message: str
+    duplicate_pk_rows: int
+    duplicate_pk_keys: int
+
+
 def _normalize_scope_key(value: object) -> str:
     text = str(value or "").strip()
     return text if text else "ALL"
@@ -120,6 +162,20 @@ def evaluate_candle_checks_for_symbol(
             metrics={"rows_checked": 0},
         )
 
+    row_count = int(len(history))
+    date_stats = _evaluate_candle_date_stats(history)
+    negative_stats = _evaluate_negative_price_stats(history)
+    gap_stats = _evaluate_candle_gap_stats(date_stats.valid_dates, gap_lookback_days=gap_lookback_days)
+    return _build_candle_quality_results(
+        symbol=sym,
+        row_count=row_count,
+        date_stats=date_stats,
+        negative_stats=negative_stats,
+        gap_stats=gap_stats,
+    )
+
+
+def _evaluate_candle_date_stats(history: pd.DataFrame) -> _CandleDateStats:
     index_raw = pd.to_datetime(pd.Index(history.index), errors="coerce", utc=True)
     invalid_date_rows = int(pd.isna(index_raw).sum())
     valid_dates = index_raw[~pd.isna(index_raw)]
@@ -130,69 +186,107 @@ def evaluate_candle_checks_for_symbol(
     out_of_order_pairs = (
         int((date_series.diff().dropna() < pd.Timedelta(0)).sum()) if len(date_series) > 1 else 0
     )
+    return _CandleDateStats(
+        valid_dates=valid_dates,
+        invalid_date_rows=invalid_date_rows,
+        duplicate_day_rows=duplicate_day_rows,
+        out_of_order_pairs=out_of_order_pairs,
+    )
 
-    price_columns = [
-        col
-        for col in history.columns
-        if str(col).strip().lower() in {"open", "high", "low", "close"}
-    ]
-    if price_columns:
-        prices = history[price_columns].apply(pd.to_numeric, errors="coerce")
-        negative_mask = prices < 0
-        negative_cells = int(negative_mask.sum().sum())
-        negative_rows = int(negative_mask.any(axis=1).sum())
-        negative_status = "fail" if negative_cells > 0 else "pass"
-        negative_message = (
-            f"{negative_cells} negative price value(s) across {negative_rows} row(s)."
-            if negative_cells > 0
-            else "no negative price values found"
+
+def _price_columns(frame: pd.DataFrame) -> list[str]:
+    return [col for col in frame.columns if str(col).strip().lower() in {"open", "high", "low", "close"}]
+
+
+def _evaluate_negative_price_stats(frame: pd.DataFrame) -> _NegativePriceStats:
+    price_columns = _price_columns(frame)
+    if not price_columns:
+        return _NegativePriceStats(
+            status="skip",
+            message="price columns unavailable",
+            negative_rows=0,
+            negative_cells=0,
+            price_columns=(),
         )
-    else:
-        negative_cells = 0
-        negative_rows = 0
-        negative_status = "skip"
-        negative_message = "price columns unavailable"
 
+    prices = frame[price_columns].apply(pd.to_numeric, errors="coerce")
+    negative_mask = prices < 0
+    negative_cells = int(negative_mask.sum().sum())
+    negative_rows = int(negative_mask.any(axis=1).sum())
+    status = "fail" if negative_cells > 0 else "pass"
+    message = (
+        f"{negative_cells} negative price value(s) across {negative_rows} row(s)."
+        if negative_cells > 0
+        else "no negative price values found"
+    )
+    return _NegativePriceStats(
+        status=status,
+        message=message,
+        negative_rows=negative_rows,
+        negative_cells=negative_cells,
+        price_columns=tuple(str(col) for col in price_columns),
+    )
+
+
+def _evaluate_candle_gap_stats(valid_dates: pd.DatetimeIndex, *, gap_lookback_days: int) -> _GapDayStats:
     if len(valid_dates) == 0:
-        gap_status = "skip"
-        gap_days = 0
-        missing_business_days: list[str] = []
-        latest_date = None
-        gap_message = "no valid candle dates"
-    else:
-        latest_date = valid_dates.max().date()
-        window_days = max(int(gap_lookback_days), 1)
-        window_start = latest_date - timedelta(days=window_days - 1)
-        expected_days = [d.date() for d in pd.bdate_range(start=window_start, end=latest_date)]
-        observed_days = {
-            d.date()
-            for d in valid_dates
-            if window_start <= d.date() <= latest_date and d.weekday() < 5
-        }
-        missing = [day for day in expected_days if day not in observed_days]
-        missing_business_days = [day.isoformat() for day in missing[:10]]
-        gap_days = len(missing)
-        gap_status = "fail" if gap_days > 0 else "pass"
-        gap_message = (
-            f"{gap_days} missing business day(s) in trailing {window_days}-day window."
-            if gap_days > 0
-            else f"no missing business days in trailing {window_days}-day window"
+        return _GapDayStats(
+            status="skip",
+            message="no valid candle dates",
+            latest_date=None,
+            gap_days=0,
+            missing_business_days_sample=(),
         )
 
-    uniqueness_status = "fail" if duplicate_day_rows > 0 or invalid_date_rows > 0 else "pass"
-    monotonic_status = "fail" if out_of_order_pairs > 0 or invalid_date_rows > 0 else "pass"
+    latest_date = valid_dates.max().date()
+    window_days = max(int(gap_lookback_days), 1)
+    window_start = latest_date - timedelta(days=window_days - 1)
+    expected_days = [d.date() for d in pd.bdate_range(start=window_start, end=latest_date)]
+    observed_days = {
+        d.date()
+        for d in valid_dates
+        if window_start <= d.date() <= latest_date and d.weekday() < 5
+    }
+    missing_days = [day for day in expected_days if day not in observed_days]
+    gap_days = len(missing_days)
+    status = "fail" if gap_days > 0 else "pass"
+    message = (
+        f"{gap_days} missing business day(s) in trailing {window_days}-day window."
+        if gap_days > 0
+        else f"no missing business days in trailing {window_days}-day window"
+    )
+    return _GapDayStats(
+        status=status,
+        message=message,
+        latest_date=latest_date,
+        gap_days=gap_days,
+        missing_business_days_sample=tuple(day.isoformat() for day in missing_days[:10]),
+    )
 
+
+def _build_candle_quality_results(
+    *,
+    symbol: str,
+    row_count: int,
+    date_stats: _CandleDateStats,
+    negative_stats: _NegativePriceStats,
+    gap_stats: _GapDayStats,
+) -> list[QualityCheckResult]:
+    uniqueness_status = (
+        "fail" if date_stats.duplicate_day_rows > 0 or date_stats.invalid_date_rows > 0 else "pass"
+    )
+    monotonic_status = "fail" if date_stats.out_of_order_pairs > 0 or date_stats.invalid_date_rows > 0 else "pass"
     return [
         QualityCheckResult(
             asset_key="candles_daily",
             check_name="candles_unique_symbol_date",
             severity="error",
             status=uniqueness_status,
-            scope_key=sym,
+            scope_key=symbol,
             metrics={
-                "rows_checked": int(len(history)),
-                "duplicate_date_rows": duplicate_day_rows,
-                "invalid_date_rows": invalid_date_rows,
+                "rows_checked": row_count,
+                "duplicate_date_rows": date_stats.duplicate_day_rows,
+                "invalid_date_rows": date_stats.invalid_date_rows,
             },
             message=(
                 "duplicate or invalid candle dates found"
@@ -205,45 +299,41 @@ def evaluate_candle_checks_for_symbol(
             check_name="candles_monotonic_date",
             severity="error",
             status=monotonic_status,
-            scope_key=sym,
+            scope_key=symbol,
             metrics={
-                "rows_checked": int(len(history)),
-                "out_of_order_pairs": out_of_order_pairs,
-                "invalid_date_rows": invalid_date_rows,
+                "rows_checked": row_count,
+                "out_of_order_pairs": date_stats.out_of_order_pairs,
+                "invalid_date_rows": date_stats.invalid_date_rows,
             },
-            message=(
-                "candle dates are not monotonic"
-                if monotonic_status == "fail"
-                else "candle dates are monotonic"
-            ),
+            message="candle dates are not monotonic" if monotonic_status == "fail" else "candle dates are monotonic",
         ),
         QualityCheckResult(
             asset_key="candles_daily",
             check_name="candles_no_negative_prices",
             severity="error",
-            status=negative_status,
-            scope_key=sym,
+            status=negative_stats.status,
+            scope_key=symbol,
             metrics={
-                "rows_checked": int(len(history)),
-                "negative_rows": negative_rows,
-                "negative_cells": negative_cells,
-                "price_columns": [str(col) for col in price_columns],
+                "rows_checked": row_count,
+                "negative_rows": negative_stats.negative_rows,
+                "negative_cells": negative_stats.negative_cells,
+                "price_columns": list(negative_stats.price_columns),
             },
-            message=negative_message,
+            message=negative_stats.message,
         ),
         QualityCheckResult(
             asset_key="candles_daily",
             check_name="candles_gap_days_last_30",
             severity="warn",
-            status=gap_status,
-            scope_key=sym,
+            status=gap_stats.status,
+            scope_key=symbol,
             metrics={
-                "rows_checked": int(len(history)),
-                "latest_date": None if latest_date is None else latest_date.isoformat(),
-                "gap_days": gap_days,
-                "missing_business_days_sample": missing_business_days,
+                "rows_checked": row_count,
+                "latest_date": None if gap_stats.latest_date is None else gap_stats.latest_date.isoformat(),
+                "gap_days": gap_stats.gap_days,
+                "missing_business_days_sample": list(gap_stats.missing_business_days_sample),
             },
-            message=gap_message,
+            message=gap_stats.message,
         ),
     ]
 
@@ -287,140 +377,149 @@ def evaluate_options_bars_checks_from_frame(
 ) -> list[QualityCheckResult]:
     frame = bars_frame if bars_frame is not None else pd.DataFrame()
     scope = _normalize_scope_key(scope_key)
-
-    contract_col = "contract_symbol" if "contract_symbol" in frame.columns else "contractSymbol"
-    interval_col = "interval"
-    provider_col = "provider"
-    ts_col = "ts"
-
-    has_group_cols = all(
-        col in frame.columns for col in {contract_col, interval_col, provider_col, ts_col}
+    group_frame, has_group_cols = _build_options_bars_group_frame(frame)
+    monotonic_stats = _evaluate_options_bars_monotonic_stats(
+        group_frame=group_frame,
+        has_group_cols=has_group_cols,
     )
-
-    if has_group_cols:
-        work = pd.DataFrame(
-            {
-                "contract_symbol": frame[contract_col].map(_clean_text),
-                "interval": frame[interval_col].map(_clean_text),
-                "provider": frame[provider_col].map(_clean_text),
-                "ts": pd.to_datetime(frame[ts_col], errors="coerce", utc=True),
-            }
-        )
-        invalid_ts_rows = int(work["ts"].isna().sum())
-        monotonic_groups = 0
-        valid = work.dropna(subset=["contract_symbol", "interval", "provider", "ts"]).copy()
-        if not valid.empty:
-            valid["ts"] = valid["ts"].dt.tz_convert(None)
-            for _, group in valid.groupby(["contract_symbol", "interval", "provider"], sort=False):
-                if not group["ts"].is_monotonic_increasing:
-                    monotonic_groups += 1
-        monotonic_status = "fail" if invalid_ts_rows > 0 or monotonic_groups > 0 else "pass"
-        monotonic_message = (
-            "non-monotonic or invalid option bar timestamps found"
-            if monotonic_status == "fail"
-            else "option bar timestamps are monotonic"
-        )
-    else:
-        invalid_ts_rows = 0
-        monotonic_groups = 0
-        monotonic_status = "skip"
-        monotonic_message = "required grouping/timestamp columns unavailable"
-
-    price_columns = [
-        col
-        for col in frame.columns
-        if str(col).strip().lower() in {"open", "high", "low", "close"}
-    ]
-    if price_columns:
-        prices = frame[price_columns].apply(pd.to_numeric, errors="coerce")
-        negative_mask = prices < 0
-        negative_cells = int(negative_mask.sum().sum())
-        negative_rows = int(negative_mask.any(axis=1).sum())
-        negative_status = "fail" if negative_cells > 0 else "pass"
-        negative_message = (
-            f"{negative_cells} negative price value(s) across {negative_rows} row(s)."
-            if negative_cells > 0
-            else "no negative price values found"
-        )
-    else:
-        negative_cells = 0
-        negative_rows = 0
-        negative_status = "skip"
-        negative_message = "price columns unavailable"
-
-    if has_group_cols:
-        pk_df = pd.DataFrame(
-            {
-                "contract_symbol": frame[contract_col].map(_clean_text),
-                "interval": frame[interval_col].map(_clean_text),
-                "provider": frame[provider_col].map(_clean_text),
-                "ts": pd.to_datetime(frame[ts_col], errors="coerce", utc=True).dt.tz_convert(None),
-            }
-        )
-        duplicate_mask = pk_df.duplicated(
-            subset=["contract_symbol", "interval", "provider", "ts"],
-            keep=False,
-        )
-        duplicate_pk_rows = int(duplicate_mask.sum())
-        duplicate_pk_keys = int(
-            pk_df.loc[duplicate_mask, ["contract_symbol", "interval", "provider", "ts"]]
-            .drop_duplicates()
-            .shape[0]
-        )
-        duplicate_status = "fail" if duplicate_pk_rows > 0 else "pass"
-        duplicate_message = (
-            "duplicate option_bars primary keys found"
-            if duplicate_status == "fail"
-            else "no duplicate option_bars primary keys found"
-        )
-    else:
-        duplicate_pk_rows = 0
-        duplicate_pk_keys = 0
-        duplicate_status = "skip"
-        duplicate_message = "required primary key columns unavailable"
-
+    negative_stats = _evaluate_negative_price_stats(frame)
+    duplicate_stats = _evaluate_options_bars_duplicate_pk_stats(
+        group_frame=group_frame,
+        has_group_cols=has_group_cols,
+    )
     row_count = int(len(frame))
     return [
         QualityCheckResult(
             asset_key="options_bars",
             check_name="options_bars_monotonic_ts",
             severity="error",
-            status=monotonic_status,
+            status=monotonic_stats.status,
             scope_key=scope,
             metrics={
                 "rows_checked": row_count,
-                "invalid_ts_rows": invalid_ts_rows,
-                "non_monotonic_groups": monotonic_groups,
+                "invalid_ts_rows": monotonic_stats.invalid_ts_rows,
+                "non_monotonic_groups": monotonic_stats.non_monotonic_groups,
             },
-            message=monotonic_message,
+            message=monotonic_stats.message,
         ),
         QualityCheckResult(
             asset_key="options_bars",
             check_name="options_bars_no_negative_prices",
             severity="error",
-            status=negative_status,
+            status=negative_stats.status,
             scope_key=scope,
             metrics={
                 "rows_checked": row_count,
-                "negative_rows": negative_rows,
-                "negative_cells": negative_cells,
+                "negative_rows": negative_stats.negative_rows,
+                "negative_cells": negative_stats.negative_cells,
             },
-            message=negative_message,
+            message=negative_stats.message,
         ),
         QualityCheckResult(
             asset_key="options_bars",
             check_name="options_bars_duplicate_pk",
             severity="error",
-            status=duplicate_status,
+            status=duplicate_stats.status,
             scope_key=scope,
             metrics={
                 "rows_checked": row_count,
-                "duplicate_pk_rows": duplicate_pk_rows,
-                "duplicate_pk_keys": duplicate_pk_keys,
+                "duplicate_pk_rows": duplicate_stats.duplicate_pk_rows,
+                "duplicate_pk_keys": duplicate_stats.duplicate_pk_keys,
             },
-            message=duplicate_message,
+            message=duplicate_stats.message,
         ),
     ]
+
+
+def _build_options_bars_group_frame(frame: pd.DataFrame) -> tuple[pd.DataFrame, bool]:
+    contract_col = "contract_symbol" if "contract_symbol" in frame.columns else "contractSymbol"
+    required = {contract_col, "interval", "provider", "ts"}
+    has_group_cols = all(col in frame.columns for col in required)
+    if not has_group_cols:
+        empty = pd.DataFrame(columns=["contract_symbol", "interval", "provider", "ts"])
+        return empty, False
+    group_frame = pd.DataFrame(
+        {
+            "contract_symbol": frame[contract_col].map(_clean_text),
+            "interval": frame["interval"].map(_clean_text),
+            "provider": frame["provider"].map(_clean_text),
+            "ts": pd.to_datetime(frame["ts"], errors="coerce", utc=True),
+        }
+    )
+    return group_frame, True
+
+
+def _evaluate_options_bars_monotonic_stats(
+    *,
+    group_frame: pd.DataFrame,
+    has_group_cols: bool,
+) -> _OptionsBarsMonotonicStats:
+    if not has_group_cols:
+        return _OptionsBarsMonotonicStats(
+            status="skip",
+            message="required grouping/timestamp columns unavailable",
+            invalid_ts_rows=0,
+            non_monotonic_groups=0,
+        )
+    invalid_ts_rows = int(group_frame["ts"].isna().sum())
+    non_monotonic_groups = 0
+    valid = group_frame.dropna(subset=["contract_symbol", "interval", "provider", "ts"]).copy()
+    if not valid.empty:
+        valid["ts"] = valid["ts"].dt.tz_convert(None)
+        for _, group in valid.groupby(["contract_symbol", "interval", "provider"], sort=False):
+            if not group["ts"].is_monotonic_increasing:
+                non_monotonic_groups += 1
+    status = "fail" if invalid_ts_rows > 0 or non_monotonic_groups > 0 else "pass"
+    message = (
+        "non-monotonic or invalid option bar timestamps found"
+        if status == "fail"
+        else "option bar timestamps are monotonic"
+    )
+    return _OptionsBarsMonotonicStats(
+        status=status,
+        message=message,
+        invalid_ts_rows=invalid_ts_rows,
+        non_monotonic_groups=non_monotonic_groups,
+    )
+
+
+def _evaluate_options_bars_duplicate_pk_stats(
+    *,
+    group_frame: pd.DataFrame,
+    has_group_cols: bool,
+) -> _OptionsBarsDuplicatePkStats:
+    if not has_group_cols:
+        return _OptionsBarsDuplicatePkStats(
+            status="skip",
+            message="required primary key columns unavailable",
+            duplicate_pk_rows=0,
+            duplicate_pk_keys=0,
+        )
+
+    pk_df = group_frame.copy()
+    pk_df["ts"] = pk_df["ts"].dt.tz_convert(None)
+    duplicate_mask = pk_df.duplicated(
+        subset=["contract_symbol", "interval", "provider", "ts"],
+        keep=False,
+    )
+    duplicate_pk_rows = int(duplicate_mask.sum())
+    duplicate_pk_keys = int(
+        pk_df.loc[duplicate_mask, ["contract_symbol", "interval", "provider", "ts"]]
+        .drop_duplicates()
+        .shape[0]
+    )
+    status = "fail" if duplicate_pk_rows > 0 else "pass"
+    message = (
+        "duplicate option_bars primary keys found"
+        if status == "fail"
+        else "no duplicate option_bars primary keys found"
+    )
+    return _OptionsBarsDuplicatePkStats(
+        status=status,
+        message=message,
+        duplicate_pk_rows=duplicate_pk_rows,
+        duplicate_pk_keys=duplicate_pk_keys,
+    )
 
 
 def _warehouse_from_store(store: Any | None) -> Any | None:
