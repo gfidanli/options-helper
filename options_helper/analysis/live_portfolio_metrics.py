@@ -12,6 +12,43 @@ from options_helper.models import MultiLegPosition, Portfolio, Position
 
 _WIDE_SPREAD_PCT = 0.35
 _TIMESTAMP_FIELDS = ("timestamp", "ts", "t", "time", "updated_at")
+_LIVE_MULTILEG_STRUCTURE_COLUMNS = [
+    "id",
+    "symbol",
+    "structure",
+    "legs",
+    "net_debit",
+    "net_mark",
+    "net_pnl_abs",
+    "net_pnl_pct",
+    "quote_age_seconds_max",
+    "missing_legs",
+    "warnings",
+    "as_of",
+]
+_LIVE_MULTILEG_LEGS_COLUMNS = [
+    "position_id",
+    "symbol",
+    "leg_index",
+    "side",
+    "option_type",
+    "expiry",
+    "dte",
+    "strike",
+    "contracts",
+    "signed_contracts",
+    "contract_symbol",
+    "live_symbol",
+    "bid",
+    "ask",
+    "last",
+    "mark",
+    "spread_pct",
+    "quote_age_seconds",
+    "leg_value",
+    "warnings",
+    "as_of",
+]
 
 
 @dataclass(frozen=True)
@@ -32,6 +69,15 @@ class _ContractMetrics:
     spread_pct: float | None
     quote_age_seconds: float | None
     warnings: list[str]
+
+
+@dataclass(frozen=True)
+class _MultiLegLegComputation:
+    row: dict[str, Any]
+    leg_value: float | None
+    quote_age_seconds: float | None
+    warnings: list[str]
+    mark_missing: bool
 
 
 def _coerce_float(value: Any) -> float | None:
@@ -435,43 +481,6 @@ def compute_live_multileg_rows(
     *,
     stale_after_seconds: float,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    structure_columns = [
-        "id",
-        "symbol",
-        "structure",
-        "legs",
-        "net_debit",
-        "net_mark",
-        "net_pnl_abs",
-        "net_pnl_pct",
-        "quote_age_seconds_max",
-        "missing_legs",
-        "warnings",
-        "as_of",
-    ]
-    legs_columns = [
-        "position_id",
-        "symbol",
-        "leg_index",
-        "side",
-        "option_type",
-        "expiry",
-        "dte",
-        "strike",
-        "contracts",
-        "signed_contracts",
-        "contract_symbol",
-        "live_symbol",
-        "bid",
-        "ask",
-        "last",
-        "mark",
-        "spread_pct",
-        "quote_age_seconds",
-        "leg_value",
-        "warnings",
-        "as_of",
-    ]
     stale_limit = _sanitize_stale_after_seconds(stale_after_seconds)
     caches = _build_live_caches(live)
 
@@ -481,132 +490,149 @@ def compute_live_multileg_rows(
     for position in portfolio.positions:
         if not isinstance(position, MultiLegPosition):
             continue
-
-        net_mark_value = 0.0
-        net_mark_ready = True
-        missing_legs = 0
-        quote_age_max: float | None = None
-        structure_warnings: list[str] = []
-
-        for leg_index, leg in enumerate(position.legs, start=1):
-            parsed = ParsedContract(
-                underlying=position.symbol,
-                underlying_norm=normalize_underlying(position.symbol),
-                expiry=leg.expiry,
-                option_type=leg.option_type,
-                strike=float(leg.strike),
-            )
-            metrics = _contract_metrics(
-                parsed=parsed,
-                option_quotes=caches.option_quotes,
-                option_trades=caches.option_trades,
-                as_of=caches.as_of,
+        leg_results = [
+            _compute_multileg_leg_row(
+                position=position,
+                leg=leg,
+                leg_index=leg_index,
+                caches=caches,
                 stale_after_seconds=stale_limit,
             )
-
-            dte: int | None = None
-            if caches.as_of is not None:
-                dte = max(0, (leg.expiry - caches.as_of.date()).days)
-
-            signed_contracts = int(leg.signed_contracts)
-            leg_value = None
-            if metrics.mark is not None:
-                leg_value = metrics.mark * float(signed_contracts) * 100.0
-                net_mark_value += leg_value
-            else:
-                net_mark_ready = False
-                missing_legs += 1
-
-            if metrics.quote_age_seconds is not None:
-                if quote_age_max is None or metrics.quote_age_seconds > quote_age_max:
-                    quote_age_max = metrics.quote_age_seconds
-
-            structure_warnings.extend(metrics.warnings)
-            leg_rows.append(
-                {
-                    "position_id": position.id,
-                    "symbol": normalize_underlying(position.symbol),
-                    "leg_index": leg_index,
-                    "side": leg.side,
-                    "option_type": leg.option_type,
-                    "expiry": leg.expiry.isoformat(),
-                    "dte": dte,
-                    "strike": float(leg.strike),
-                    "contracts": int(leg.contracts),
-                    "signed_contracts": signed_contracts,
-                    "contract_symbol": metrics.contract_symbol,
-                    "live_symbol": metrics.live_symbol,
-                    "bid": metrics.bid,
-                    "ask": metrics.ask,
-                    "last": metrics.last,
-                    "mark": metrics.mark,
-                    "spread_pct": metrics.spread_pct,
-                    "quote_age_seconds": metrics.quote_age_seconds,
-                    "leg_value": leg_value,
-                    "warnings": metrics.warnings,
-                    "as_of": None if caches.as_of is None else caches.as_of.isoformat(),
-                }
-            )
-
-        net_mark = net_mark_value if net_mark_ready else None
-        net_debit = None if position.net_debit is None else float(position.net_debit)
-        net_pnl_abs = None
-        if net_mark is not None and net_debit is not None:
-            net_pnl_abs = net_mark - net_debit
-
-        net_pnl_pct = None
-        if net_pnl_abs is not None and net_debit is not None and abs(net_debit) > 0.0:
-            net_pnl_pct = net_pnl_abs / abs(net_debit)
-
-        if missing_legs > 0:
-            structure_warnings.insert(0, "missing_legs")
-        if net_debit is None:
-            structure_warnings.append("missing_net_debit")
-
+            for leg_index, leg in enumerate(position.legs, start=1)
+        ]
+        leg_rows.extend(result.row for result in leg_results)
         structure_rows.append(
-            {
-                "id": position.id,
-                "symbol": normalize_underlying(position.symbol),
-                "structure": "multi-leg",
-                "legs": len(position.legs),
-                "net_debit": net_debit,
-                "net_mark": net_mark,
-                "net_pnl_abs": net_pnl_abs,
-                "net_pnl_pct": net_pnl_pct,
-                "quote_age_seconds_max": quote_age_max,
-                "missing_legs": missing_legs,
-                "warnings": _dedupe(structure_warnings),
-                "as_of": None if caches.as_of is None else caches.as_of.isoformat(),
-            }
+            _compute_multileg_structure_row(
+                position=position,
+                leg_results=leg_results,
+                as_of=caches.as_of,
+            )
         )
 
-    if not structure_rows:
-        structure_df = pd.DataFrame(columns=structure_columns)
-    else:
-        structure_df = pd.DataFrame(structure_rows)
-        for column in structure_columns:
-            if column not in structure_df.columns:
-                structure_df[column] = None
-        structure_df = (
-            structure_df[structure_columns]
-            .sort_values(by=["symbol", "id"], kind="stable")
-            .reset_index(drop=True)
-        )
-
-    if not leg_rows:
-        legs_df = pd.DataFrame(columns=legs_columns)
-    else:
-        legs_df = pd.DataFrame(leg_rows)
-        for column in legs_columns:
-            if column not in legs_df.columns:
-                legs_df[column] = None
-        legs_df = (
-            legs_df[legs_columns]
-            .sort_values(by=["position_id", "leg_index"], kind="stable")
-            .reset_index(drop=True)
-        )
-
+    structure_df = _finalize_live_rows(
+        rows=structure_rows,
+        columns=_LIVE_MULTILEG_STRUCTURE_COLUMNS,
+        sort_by=["symbol", "id"],
+    )
+    legs_df = _finalize_live_rows(
+        rows=leg_rows,
+        columns=_LIVE_MULTILEG_LEGS_COLUMNS,
+        sort_by=["position_id", "leg_index"],
+    )
     return structure_df, legs_df
+
+
+def _compute_multileg_leg_row(
+    *,
+    position: MultiLegPosition,
+    leg: Any,
+    leg_index: int,
+    caches: _LiveCaches,
+    stale_after_seconds: float,
+) -> _MultiLegLegComputation:
+    parsed = ParsedContract(
+        underlying=position.symbol,
+        underlying_norm=normalize_underlying(position.symbol),
+        expiry=leg.expiry,
+        option_type=leg.option_type,
+        strike=float(leg.strike),
+    )
+    metrics = _contract_metrics(
+        parsed=parsed,
+        option_quotes=caches.option_quotes,
+        option_trades=caches.option_trades,
+        as_of=caches.as_of,
+        stale_after_seconds=stale_after_seconds,
+    )
+    dte: int | None = None
+    if caches.as_of is not None:
+        dte = max(0, (leg.expiry - caches.as_of.date()).days)
+    signed_contracts = int(leg.signed_contracts)
+    leg_value = metrics.mark * float(signed_contracts) * 100.0 if metrics.mark is not None else None
+    row = {
+        "position_id": position.id,
+        "symbol": normalize_underlying(position.symbol),
+        "leg_index": leg_index,
+        "side": leg.side,
+        "option_type": leg.option_type,
+        "expiry": leg.expiry.isoformat(),
+        "dte": dte,
+        "strike": float(leg.strike),
+        "contracts": int(leg.contracts),
+        "signed_contracts": signed_contracts,
+        "contract_symbol": metrics.contract_symbol,
+        "live_symbol": metrics.live_symbol,
+        "bid": metrics.bid,
+        "ask": metrics.ask,
+        "last": metrics.last,
+        "mark": metrics.mark,
+        "spread_pct": metrics.spread_pct,
+        "quote_age_seconds": metrics.quote_age_seconds,
+        "leg_value": leg_value,
+        "warnings": metrics.warnings,
+        "as_of": None if caches.as_of is None else caches.as_of.isoformat(),
+    }
+    return _MultiLegLegComputation(
+        row=row,
+        leg_value=leg_value,
+        quote_age_seconds=metrics.quote_age_seconds,
+        warnings=metrics.warnings,
+        mark_missing=metrics.mark is None,
+    )
+
+
+def _compute_multileg_structure_row(
+    *,
+    position: MultiLegPosition,
+    leg_results: list[_MultiLegLegComputation],
+    as_of: datetime | None,
+) -> dict[str, Any]:
+    net_mark_ready = all(not result.mark_missing for result in leg_results)
+    net_mark = None if not net_mark_ready else float(sum(result.leg_value or 0.0 for result in leg_results))
+    net_debit = None if position.net_debit is None else float(position.net_debit)
+    net_pnl_abs = None if (net_mark is None or net_debit is None) else net_mark - net_debit
+    net_pnl_pct = None
+    if net_pnl_abs is not None and net_debit is not None and abs(net_debit) > 0.0:
+        net_pnl_pct = net_pnl_abs / abs(net_debit)
+
+    missing_legs = sum(1 for result in leg_results if result.mark_missing)
+    quote_age_values = [result.quote_age_seconds for result in leg_results if result.quote_age_seconds is not None]
+    quote_age_max = max(quote_age_values) if quote_age_values else None
+    structure_warnings: list[str] = [warning for result in leg_results for warning in result.warnings]
+    if missing_legs > 0:
+        structure_warnings.insert(0, "missing_legs")
+    if net_debit is None:
+        structure_warnings.append("missing_net_debit")
+
+    return {
+        "id": position.id,
+        "symbol": normalize_underlying(position.symbol),
+        "structure": "multi-leg",
+        "legs": len(position.legs),
+        "net_debit": net_debit,
+        "net_mark": net_mark,
+        "net_pnl_abs": net_pnl_abs,
+        "net_pnl_pct": net_pnl_pct,
+        "quote_age_seconds_max": quote_age_max,
+        "missing_legs": missing_legs,
+        "warnings": _dedupe(structure_warnings),
+        "as_of": None if as_of is None else as_of.isoformat(),
+    }
+
+
+def _finalize_live_rows(
+    *,
+    rows: list[dict[str, Any]],
+    columns: list[str],
+    sort_by: list[str],
+) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    out = pd.DataFrame(rows)
+    for column in columns:
+        if column not in out.columns:
+            out[column] = None
+    return out[columns].sort_values(by=sort_by, kind="stable").reset_index(drop=True)
 
 
 __all__ = [
