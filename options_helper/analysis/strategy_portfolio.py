@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 import math
 import re
@@ -112,6 +112,18 @@ class StrategyPortfolioEquityPoint:
     closed_trade_count: int = 0
 
 
+@dataclass
+class _PortfolioLedgerState:
+    cash: float
+    closed_trade_count: int = 0
+    open_positions: dict[str, _OpenPosition] = field(default_factory=dict)
+    accepted_trade_ids: list[str] = field(default_factory=list)
+    skipped_trade_ids: list[str] = field(default_factory=list)
+    ledger: list[StrategyPortfolioLedgerRow] = field(default_factory=list)
+    equity_curve: list[Any] = field(default_factory=list)
+    equity_peak: float = 0.0
+
+
 def build_strategy_portfolio_ledger(
     trades: Iterable[Mapping[str, Any] | object],
     *,
@@ -120,7 +132,32 @@ def build_strategy_portfolio_ledger(
     max_concurrent_positions: int | None = None,
 ) -> StrategyPortfolioLedgerResult:
     """Construct deterministic portfolio ledger/equity curve from simulated trades."""
+    capital, cfg, max_positions = _resolve_portfolio_config(
+        starting_capital=starting_capital,
+        policy=policy,
+        max_concurrent_positions=max_concurrent_positions,
+    )
+    sorted_trades = sorted(_parse_trade_simulations(trades), key=_trade_sort_key)
+    state = _PortfolioLedgerState(cash=capital, equity_peak=capital)
+    risk_fraction = float(cfg.risk_per_trade_pct) / 100.0
+    for trade in sorted_trades:
+        _process_portfolio_trade(
+            trade=trade,
+            state=state,
+            cfg=cfg,
+            max_positions=max_positions,
+            risk_fraction=risk_fraction,
+        )
+    _close_positions_through(state, ts=_FAR_FUTURE_TS)
+    return _build_portfolio_ledger_result(state=state, capital=capital)
 
+
+def _resolve_portfolio_config(
+    *,
+    starting_capital: float,
+    policy: StrategyModelingPolicyConfig | None,
+    max_concurrent_positions: int | None,
+) -> tuple[float, StrategyModelingPolicyConfig, int | None]:
     capital = float(starting_capital)
     if not math.isfinite(capital) or capital <= 0.0:
         raise ValueError("starting_capital must be > 0")
@@ -134,247 +171,261 @@ def build_strategy_portfolio_ledger(
         max_positions = int(max_concurrent_positions)
         if max_positions < 1:
             raise ValueError("max_concurrent_positions must be >= 1")
+    return capital, cfg, max_positions
 
-    sorted_trades = sorted(_parse_trade_simulations(trades), key=_trade_sort_key)
 
-    cash = capital
-    closed_trade_count = 0
-    open_positions: dict[str, _OpenPosition] = {}
-    accepted_trade_ids: list[str] = []
-    skipped_trade_ids: list[str] = []
-    ledger: list[StrategyPortfolioLedgerRow] = []
-    equity_curve: list[Any] = []
-    equity_peak = capital
+def _state_current_equity(state: _PortfolioLedgerState) -> float:
+    return state.cash + sum(position.reserved_notional for position in state.open_positions.values())
 
-    def current_equity() -> float:
-        return cash + sum(position.reserved_notional for position in open_positions.values())
 
-    def append_state_point(ts: pd.Timestamp) -> None:
-        nonlocal equity_peak
-        equity_value = current_equity()
-        equity_peak = max(equity_peak, equity_value)
-        drawdown_pct = 0.0
-        if equity_peak > _EPSILON:
-            drawdown_pct = (equity_value / equity_peak) - 1.0
+def _append_state_point(state: _PortfolioLedgerState, ts: pd.Timestamp) -> None:
+    equity_value = _state_current_equity(state)
+    state.equity_peak = max(state.equity_peak, equity_value)
+    drawdown_pct = 0.0
+    if state.equity_peak > _EPSILON:
+        drawdown_pct = (equity_value / state.equity_peak) - 1.0
 
-        equity_curve.append(
-            _build_equity_point(
-                ts=ts.to_pydatetime(),
-                equity=equity_value,
-                cash=cash,
-                drawdown_pct=drawdown_pct,
-                open_trade_count=len(open_positions),
-                closed_trade_count=closed_trade_count,
-            )
+    state.equity_curve.append(
+        _build_equity_point(
+            ts=ts.to_pydatetime(),
+            equity=equity_value,
+            cash=state.cash,
+            drawdown_pct=drawdown_pct,
+            open_trade_count=len(state.open_positions),
+            closed_trade_count=state.closed_trade_count,
         )
+    )
 
-    def append_ledger_row(
-        *,
-        ts: pd.Timestamp,
-        trade_id: str,
-        symbol: str,
-        event: PortfolioLedgerEvent,
-        quantity: int,
-        price: float | None,
-        risk_budget: float | None = None,
-        risk_amount: float | None = None,
-        realized_pnl: float | None = None,
-        skip_reason: PortfolioSkipReason | None = None,
-    ) -> None:
-        ledger.append(
-            StrategyPortfolioLedgerRow(
-                ts=ts.to_pydatetime(),
-                trade_id=trade_id,
-                symbol=symbol,
-                event=event,
-                quantity=int(quantity),
-                price=price,
-                cash_after=cash,
-                equity_after=current_equity(),
-                open_trade_count=len(open_positions),
-                closed_trade_count=closed_trade_count,
-                risk_budget=risk_budget,
-                risk_amount=risk_amount,
-                realized_pnl=realized_pnl,
-                skip_reason=skip_reason,
-            )
-        )
-        append_state_point(ts)
 
-    def close_positions_through(*, ts: pd.Timestamp) -> None:
-        nonlocal cash
-        nonlocal closed_trade_count
-
-        to_close = sorted(
-            (position for position in open_positions.values() if position.exit_ts <= ts),
-            key=lambda position: (position.exit_ts.value, position.entry_ts.value, position.symbol, position.trade_id),
-        )
-
-        for position in to_close:
-            open_positions.pop(position.trade_id, None)
-            cash += position.reserved_notional + position.pnl
-            closed_trade_count += 1
-            append_ledger_row(
-                ts=position.exit_ts,
-                trade_id=position.trade_id,
-                symbol=position.symbol,
-                event="exit",
-                quantity=position.quantity,
-                price=position.exit_price,
-                realized_pnl=position.pnl,
-            )
-
-    risk_fraction = float(cfg.risk_per_trade_pct) / 100.0
-
-    for trade in sorted_trades:
-        entry_ts = _to_utc_timestamp(trade.entry_ts)
-        if entry_ts is None:
-            continue
-
-        close_positions_through(ts=entry_ts)
-
-        skip_reason = _skip_reason_for_trade(trade)
-        if skip_reason is not None:
-            skipped_trade_ids.append(trade.trade_id)
-            append_ledger_row(
-                ts=entry_ts,
-                trade_id=trade.trade_id,
-                symbol=_normalize_symbol(trade.symbol),
-                event="skip",
-                quantity=0,
-                price=None,
-                skip_reason=skip_reason,
-            )
-            continue
-
-        symbol = _normalize_symbol(trade.symbol)
-        if cfg.one_open_per_symbol and any(position.symbol == symbol for position in open_positions.values()):
-            skipped_trade_ids.append(trade.trade_id)
-            append_ledger_row(
-                ts=entry_ts,
-                trade_id=trade.trade_id,
-                symbol=symbol,
-                event="skip",
-                quantity=0,
-                price=None,
-                skip_reason="one_open_per_symbol",
-            )
-            continue
-
-        if max_positions is not None and len(open_positions) >= max_positions:
-            skipped_trade_ids.append(trade.trade_id)
-            append_ledger_row(
-                ts=entry_ts,
-                trade_id=trade.trade_id,
-                symbol=symbol,
-                event="skip",
-                quantity=0,
-                price=None,
-                skip_reason="max_concurrent_positions",
-            )
-            continue
-
-        entry_price = float(trade.entry_price)
-        assert trade.initial_risk is not None
-        risk_per_unit = float(trade.initial_risk)
-
-        equity_for_sizing = current_equity()
-        risk_budget = equity_for_sizing * risk_fraction
-        quantity_by_risk = int(math.floor((risk_budget + _EPSILON) / risk_per_unit))
-        quantity_by_cash = int(math.floor((cash + _EPSILON) / entry_price))
-
-        if quantity_by_risk <= 0:
-            skipped_trade_ids.append(trade.trade_id)
-            append_ledger_row(
-                ts=entry_ts,
-                trade_id=trade.trade_id,
-                symbol=symbol,
-                event="skip",
-                quantity=0,
-                price=None,
-                risk_budget=risk_budget,
-                skip_reason="risk_budget_too_small",
-            )
-            continue
-
-        if quantity_by_cash <= 0:
-            skipped_trade_ids.append(trade.trade_id)
-            append_ledger_row(
-                ts=entry_ts,
-                trade_id=trade.trade_id,
-                symbol=symbol,
-                event="skip",
-                quantity=0,
-                price=None,
-                risk_budget=risk_budget,
-                skip_reason="insufficient_cash",
-            )
-            continue
-
-        quantity = min(quantity_by_risk, quantity_by_cash)
-        reserved_notional = float(quantity) * entry_price
-        if reserved_notional > cash + _EPSILON:
-            skipped_trade_ids.append(trade.trade_id)
-            append_ledger_row(
-                ts=entry_ts,
-                trade_id=trade.trade_id,
-                symbol=symbol,
-                event="skip",
-                quantity=0,
-                price=None,
-                risk_budget=risk_budget,
-                skip_reason="insufficient_cash",
-            )
-            continue
-
-        assert trade.exit_price is not None
-        assert trade.exit_ts is not None
-        exit_ts = _to_utc_timestamp(trade.exit_ts)
-        assert exit_ts is not None
-        exit_price = float(trade.exit_price)
-
-        cash -= reserved_notional
-        risk_amount = float(quantity) * risk_per_unit
-        pnl = float(quantity) * _per_unit_pnl(
-            direction=trade.direction,
-            entry_price=entry_price,
-            exit_price=exit_price,
-        )
-
-        open_positions[trade.trade_id] = _OpenPosition(
-            trade_id=trade.trade_id,
+def _append_ledger_row(
+    state: _PortfolioLedgerState,
+    *,
+    ts: pd.Timestamp,
+    trade_id: str,
+    symbol: str,
+    event: PortfolioLedgerEvent,
+    quantity: int,
+    price: float | None,
+    risk_budget: float | None = None,
+    risk_amount: float | None = None,
+    realized_pnl: float | None = None,
+    skip_reason: PortfolioSkipReason | None = None,
+) -> None:
+    state.ledger.append(
+        StrategyPortfolioLedgerRow(
+            ts=ts.to_pydatetime(),
+            trade_id=trade_id,
             symbol=symbol,
-            entry_ts=entry_ts,
-            exit_ts=exit_ts,
-            quantity=quantity,
-            entry_price=entry_price,
-            exit_price=exit_price,
-            reserved_notional=reserved_notional,
-            pnl=pnl,
-        )
-        accepted_trade_ids.append(trade.trade_id)
-
-        append_ledger_row(
-            ts=entry_ts,
-            trade_id=trade.trade_id,
-            symbol=symbol,
-            event="entry",
-            quantity=quantity,
-            price=entry_price,
+            event=event,
+            quantity=int(quantity),
+            price=price,
+            cash_after=state.cash,
+            equity_after=_state_current_equity(state),
+            open_trade_count=len(state.open_positions),
+            closed_trade_count=state.closed_trade_count,
             risk_budget=risk_budget,
             risk_amount=risk_amount,
+            realized_pnl=realized_pnl,
+            skip_reason=skip_reason,
+        )
+    )
+    _append_state_point(state, ts)
+
+
+def _append_skip_row(
+    state: _PortfolioLedgerState,
+    *,
+    ts: pd.Timestamp,
+    trade: _TradeRecord,
+    symbol: str,
+    skip_reason: PortfolioSkipReason,
+    risk_budget: float | None = None,
+) -> None:
+    state.skipped_trade_ids.append(trade.trade_id)
+    _append_ledger_row(
+        state,
+        ts=ts,
+        trade_id=trade.trade_id,
+        symbol=symbol,
+        event="skip",
+        quantity=0,
+        price=None,
+        risk_budget=risk_budget,
+        skip_reason=skip_reason,
+    )
+
+
+def _close_positions_through(state: _PortfolioLedgerState, *, ts: pd.Timestamp) -> None:
+    to_close = sorted(
+        (position for position in state.open_positions.values() if position.exit_ts <= ts),
+        key=lambda position: (position.exit_ts.value, position.entry_ts.value, position.symbol, position.trade_id),
+    )
+    for position in to_close:
+        state.open_positions.pop(position.trade_id, None)
+        state.cash += position.reserved_notional + position.pnl
+        state.closed_trade_count += 1
+        _append_ledger_row(
+            state,
+            ts=position.exit_ts,
+            trade_id=position.trade_id,
+            symbol=position.symbol,
+            event="exit",
+            quantity=position.quantity,
+            price=position.exit_price,
+            realized_pnl=position.pnl,
         )
 
-    close_positions_through(ts=_FAR_FUTURE_TS)
 
+def _process_portfolio_trade(
+    *,
+    trade: _TradeRecord,
+    state: _PortfolioLedgerState,
+    cfg: StrategyModelingPolicyConfig,
+    max_positions: int | None,
+    risk_fraction: float,
+) -> None:
+    precheck = _precheck_trade_for_entry(
+        trade=trade,
+        state=state,
+        cfg=cfg,
+        max_positions=max_positions,
+    )
+    if precheck is None:
+        return
+    entry_ts, symbol, skip_reason = precheck
+    if skip_reason is not None:
+        _append_skip_row(state, ts=entry_ts, trade=trade, symbol=symbol, skip_reason=skip_reason)
+        return
+
+    entry_price, risk_per_unit, risk_budget, quantity_by_risk, quantity_by_cash = _trade_sizing_inputs(
+        trade=trade,
+        state=state,
+        risk_fraction=risk_fraction,
+    )
+    if quantity_by_risk <= 0:
+        _append_skip_row(state, ts=entry_ts, trade=trade, symbol=symbol, skip_reason="risk_budget_too_small", risk_budget=risk_budget)
+        return
+    if quantity_by_cash <= 0:
+        _append_skip_row(state, ts=entry_ts, trade=trade, symbol=symbol, skip_reason="insufficient_cash", risk_budget=risk_budget)
+        return
+
+    quantity = min(quantity_by_risk, quantity_by_cash)
+    reserved_notional = float(quantity) * entry_price
+    if reserved_notional > state.cash + _EPSILON:
+        _append_skip_row(state, ts=entry_ts, trade=trade, symbol=symbol, skip_reason="insufficient_cash", risk_budget=risk_budget)
+        return
+    _open_trade_position(
+        trade=trade,
+        state=state,
+        entry_ts=entry_ts,
+        symbol=symbol,
+        quantity=quantity,
+        entry_price=entry_price,
+        risk_per_unit=risk_per_unit,
+        risk_budget=risk_budget,
+        reserved_notional=reserved_notional,
+    )
+
+
+def _precheck_trade_for_entry(
+    *,
+    trade: _TradeRecord,
+    state: _PortfolioLedgerState,
+    cfg: StrategyModelingPolicyConfig,
+    max_positions: int | None,
+) -> tuple[pd.Timestamp, str, PortfolioSkipReason | None] | None:
+    entry_ts = _to_utc_timestamp(trade.entry_ts)
+    if entry_ts is None:
+        return None
+    _close_positions_through(state, ts=entry_ts)
+    symbol = _normalize_symbol(trade.symbol)
+    skip_reason = _skip_reason_for_trade(trade)
+    if skip_reason is not None:
+        return entry_ts, symbol, skip_reason
+    if cfg.one_open_per_symbol and any(position.symbol == symbol for position in state.open_positions.values()):
+        return entry_ts, symbol, "one_open_per_symbol"
+    if max_positions is not None and len(state.open_positions) >= max_positions:
+        return entry_ts, symbol, "max_concurrent_positions"
+    return entry_ts, symbol, None
+
+
+def _trade_sizing_inputs(
+    *,
+    trade: _TradeRecord,
+    state: _PortfolioLedgerState,
+    risk_fraction: float,
+) -> tuple[float, float, float, int, int]:
+    entry_price = float(trade.entry_price)
+    assert trade.initial_risk is not None
+    risk_per_unit = float(trade.initial_risk)
+    risk_budget = _state_current_equity(state) * risk_fraction
+    quantity_by_risk = int(math.floor((risk_budget + _EPSILON) / risk_per_unit))
+    quantity_by_cash = int(math.floor((state.cash + _EPSILON) / entry_price))
+    return entry_price, risk_per_unit, risk_budget, quantity_by_risk, quantity_by_cash
+
+
+def _open_trade_position(
+    *,
+    trade: _TradeRecord,
+    state: _PortfolioLedgerState,
+    entry_ts: pd.Timestamp,
+    symbol: str,
+    quantity: int,
+    entry_price: float,
+    risk_per_unit: float,
+    risk_budget: float,
+    reserved_notional: float,
+) -> None:
+    assert trade.exit_price is not None
+    assert trade.exit_ts is not None
+    exit_ts = _to_utc_timestamp(trade.exit_ts)
+    assert exit_ts is not None
+    exit_price = float(trade.exit_price)
+    state.cash -= reserved_notional
+    risk_amount = float(quantity) * risk_per_unit
+    pnl = float(quantity) * _per_unit_pnl(
+        direction=trade.direction,
+        entry_price=entry_price,
+        exit_price=exit_price,
+    )
+    state.open_positions[trade.trade_id] = _OpenPosition(
+        trade_id=trade.trade_id,
+        symbol=symbol,
+        entry_ts=entry_ts,
+        exit_ts=exit_ts,
+        quantity=quantity,
+        entry_price=entry_price,
+        exit_price=exit_price,
+        reserved_notional=reserved_notional,
+        pnl=pnl,
+    )
+    state.accepted_trade_ids.append(trade.trade_id)
+    _append_ledger_row(
+        state,
+        ts=entry_ts,
+        trade_id=trade.trade_id,
+        symbol=symbol,
+        event="entry",
+        quantity=quantity,
+        price=entry_price,
+        risk_budget=risk_budget,
+        risk_amount=risk_amount,
+    )
+
+
+def _build_portfolio_ledger_result(
+    *,
+    state: _PortfolioLedgerState,
+    capital: float,
+) -> StrategyPortfolioLedgerResult:
     return StrategyPortfolioLedgerResult(
         starting_capital=capital,
-        ending_cash=cash,
-        ending_equity=current_equity(),
-        ledger=tuple(ledger),
-        equity_curve=tuple(equity_curve),
-        accepted_trade_ids=tuple(accepted_trade_ids),
-        skipped_trade_ids=tuple(skipped_trade_ids),
+        ending_cash=state.cash,
+        ending_equity=_state_current_equity(state),
+        ledger=tuple(state.ledger),
+        equity_curve=tuple(state.equity_curve),
+        accepted_trade_ids=tuple(state.accepted_trade_ids),
+        skipped_trade_ids=tuple(state.skipped_trade_ids),
     )
 
 
