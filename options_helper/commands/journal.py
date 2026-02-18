@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import csv
-import json
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -10,6 +9,7 @@ import typer
 from rich.console import Console
 
 import options_helper.cli_deps as cli_deps
+import options_helper.commands.journal_eval_common as journal_eval_common
 from options_helper.analysis.advice import Advice, PositionMetrics, advise
 from options_helper.analysis.confluence import ConfluenceScore, score_confluence
 from options_helper.analysis.extension_scan import compute_current_extension_percentile
@@ -865,126 +865,48 @@ def journal_log(
 
 @app.command("evaluate")
 def journal_evaluate(
-    journal_dir: Path = typer.Option(
-        Path("data/journal"),
-        "--journal-dir",
-        help="Directory containing signal_events.jsonl.",
-    ),
-    cache_dir: Path = typer.Option(
-        Path("data/candles"),
-        "--cache-dir",
-        help="Directory for cached daily candles (used for outcomes).",
-    ),
-    snapshots_dir: Path = typer.Option(
-        Path("data/options_snapshots"),
-        "--snapshots-dir",
-        help="Directory for options snapshot history (used for option mark outcomes).",
-    ),
-    horizons: str = typer.Option(
-        "1,5,20",
-        "--horizons",
-        help="Comma-separated trading-day horizons (e.g. 1,5,20).",
-    ),
-    window: int = typer.Option(
-        252,
-        "--window",
-        min=1,
-        max=5000,
-        help="Lookback window in calendar days.",
-    ),
-    as_of: str | None = typer.Option(
-        None,
-        "--as-of",
-        help="As-of date (YYYY-MM-DD). Defaults to today.",
-    ),
-    out_dir: Path = typer.Option(
-        Path("data/reports/journal"),
-        "--out-dir",
-        help="Output directory for journal evaluation reports.",
-    ),
-    top: int = typer.Option(
-        5,
-        "--top",
-        min=1,
-        max=50,
-        help="Top/bottom events to include in summaries.",
-    ),
+    journal_dir: Path = journal_eval_common._JOURNAL_EVALUATE_JOURNAL_DIR_OPT,
+    cache_dir: Path = journal_eval_common._JOURNAL_EVALUATE_CACHE_DIR_OPT,
+    snapshots_dir: Path = journal_eval_common._JOURNAL_EVALUATE_SNAPSHOTS_DIR_OPT,
+    horizons: str = journal_eval_common._JOURNAL_EVALUATE_HORIZONS_OPT,
+    window: int = journal_eval_common._JOURNAL_EVALUATE_WINDOW_OPT,
+    as_of: str | None = journal_eval_common._JOURNAL_EVALUATE_AS_OF_OPT,
+    out_dir: Path = journal_eval_common._JOURNAL_EVALUATE_OUT_DIR_OPT,
+    top: int = journal_eval_common._JOURNAL_EVALUATE_TOP_OPT,
 ) -> None:
     """Evaluate journal outcomes across horizons (offline, deterministic)."""
     _ensure_pandas()
     console = Console()
     store = cli_deps.build_journal_store(journal_dir)
-    result = store.read_events()
-    if result.errors:
-        console.print(f"[yellow]Warning:[/yellow] skipped {len(result.errors)} invalid journal lines.")
-
-    events = result.events
-    if not events:
-        console.print("No journal events found.")
-        raise typer.Exit(0)
-
-    as_of_date = _parse_date(as_of) if as_of else date.today()
-    start_date = as_of_date - timedelta(days=int(window))
-    events = [e for e in events if start_date <= e.date <= as_of_date]
-    if not events:
-        console.print("No journal events within the window.")
-        raise typer.Exit(0)
-
-    horizon_vals: list[int] = []
-    for part in horizons.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        try:
-            val = int(part)
-        except ValueError as exc:
-            raise typer.BadParameter(f"Invalid horizon value: {part}") from exc
-        if val <= 0:
-            raise typer.BadParameter("Horizons must be positive integers.")
-        horizon_vals.append(val)
-    if not horizon_vals:
-        raise typer.BadParameter("Provide at least one horizon.")
-
+    events, as_of_date = journal_eval_common.load_filtered_events(
+        store=store,
+        console=console,
+        as_of=as_of,
+        window=window,
+        parse_date=_parse_date,
+    )
+    horizon_vals = journal_eval_common.parse_horizon_values(horizons)
     symbols = {e.symbol for e in events if e.symbol}
     candle_store = cli_deps.build_candle_store(cache_dir)
-    history_by_symbol: dict[str, pd.DataFrame] = {}
-    for sym in symbols:
-        try:
-            history_by_symbol[sym] = candle_store.load(sym)
-        except Exception as exc:  # noqa: BLE001
-            console.print(f"[yellow]Warning:[/yellow] candle cache read failed for {sym}: {exc}")
-            history_by_symbol[sym] = pd.DataFrame()
-
+    history_by_symbol = journal_eval_common.load_history_by_symbol(
+        symbols=symbols,
+        candle_store=candle_store,
+        console=console,
+    )
     snapshot_store = cli_deps.build_snapshot_store(snapshots_dir)
-    snapshot_cache: dict[tuple[str, date], pd.DataFrame] = {}
-
-    def _snapshot_loader(symbol: str, snapshot_date: date) -> pd.DataFrame | None:
-        key = (symbol.upper(), snapshot_date)
-        if key in snapshot_cache:
-            return snapshot_cache[key]
-        try:
-            df = snapshot_store.load_day(symbol, snapshot_date)
-        except Exception:  # noqa: BLE001
-            df = pd.DataFrame()
-        snapshot_cache[key] = df
-        return df
-
+    snapshot_loader = journal_eval_common.make_snapshot_loader(snapshot_store)
     report = build_journal_report(
         events,
         history_by_symbol=history_by_symbol,
         horizons=horizon_vals,
-        snapshot_loader=_snapshot_loader,
+        snapshot_loader=snapshot_loader,
         top_n=top,
     )
-    report["generated_at"] = datetime.now(timezone.utc).isoformat()
-    report["as_of"] = as_of_date.isoformat()
-    report["window_days"] = int(window)
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    json_path = out_dir / f"{as_of_date.isoformat()}.json"
-    json_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
-    md_path = out_dir / f"{as_of_date.isoformat()}.md"
-    md_path.write_text(render_journal_report_markdown(report), encoding="utf-8")
-
-    console.print(f"Saved: {json_path}")
-    console.print(f"Saved: {md_path}")
+    journal_eval_common.persist_report(
+        report=report,
+        as_of_date=as_of_date,
+        window=window,
+        out_dir=out_dir,
+        console=console,
+        render_markdown=render_journal_report_markdown,
+    )

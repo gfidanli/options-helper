@@ -9,9 +9,11 @@ import pytest
 from typer.testing import CliRunner
 
 import options_helper.cli as cli
+from options_helper.data.candles import CandleStore
 from options_helper.data.technical_backtesting_config import ConfigError as TechnicalConfigError
-from options_helper.data.journal import JournalStore, SignalContext
+from options_helper.data.journal import JournalStore, SignalContext, SignalEvent
 from options_helper.data.market_types import OptionsChain
+from options_helper.data.options_snapshots import OptionsSnapshotStore
 
 
 def _write_offline_fixtures(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -244,3 +246,118 @@ def test_journal_log_research_uses_stubbed_client(tmp_path: Path, monkeypatch) -
     assert event.symbol == "AAA"
     payload = event.payload
     assert payload["confluence"] is not None
+
+
+def test_journal_evaluate_writes_reports(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    journal_dir = tmp_path / "journal"
+    candle_dir = tmp_path / "candles"
+    snapshots_dir = tmp_path / "snapshots"
+    out_dir = tmp_path / "reports"
+    monkeypatch.setattr("options_helper.cli_deps.build_journal_store", lambda root: JournalStore(root))
+    monkeypatch.setattr("options_helper.cli_deps.build_candle_store", lambda root: CandleStore(root))
+    monkeypatch.setattr("options_helper.cli_deps.build_snapshot_store", lambda root: OptionsSnapshotStore(root))
+
+    store = JournalStore(journal_dir)
+    store.append_event(
+        SignalEvent(
+            date=date(2026, 2, 2),
+            symbol="AAA",
+            context=SignalContext.POSITION,
+            payload={"advice": {"action": "HOLD"}},
+            snapshot_date=date(2026, 2, 2),
+            contract_symbol="AAA260417C00005000",
+        )
+    )
+
+    candle_dir.mkdir(parents=True, exist_ok=True)
+    candles = pd.DataFrame(
+        {"Close": [10.0, 12.0], "Volume": [1000, 1200]},
+        index=pd.to_datetime(["2026-02-02", "2026-02-03"]),
+    )
+    candles.to_csv(candle_dir / "AAA.csv")
+
+    start_day = snapshots_dir / "AAA" / "2026-02-02"
+    start_day.mkdir(parents=True)
+    pd.DataFrame(
+        [{"contractSymbol": "AAA260417C00005000", "bid": 1.0, "ask": 1.0, "lastPrice": 1.0}]
+    ).to_csv(start_day / "2026-04-17.csv", index=False)
+
+    end_day = snapshots_dir / "AAA" / "2026-02-03"
+    end_day.mkdir(parents=True)
+    pd.DataFrame(
+        [{"contractSymbol": "AAA260417C00005000", "bid": 1.5, "ask": 1.5, "lastPrice": 1.5}]
+    ).to_csv(end_day / "2026-04-17.csv", index=False)
+
+    runner = CliRunner()
+    res = runner.invoke(
+        cli.app,
+        [
+            "journal",
+            "evaluate",
+            "--journal-dir",
+            str(journal_dir),
+            "--cache-dir",
+            str(candle_dir),
+            "--snapshots-dir",
+            str(snapshots_dir),
+            "--as-of",
+            "2026-02-03",
+            "--window",
+            "10",
+            "--horizons",
+            "1",
+            "--out-dir",
+            str(out_dir),
+            "--top",
+            "2",
+        ],
+    )
+
+    assert res.exit_code == 0, res.output
+    report_path = out_dir / "2026-02-03.json"
+    md_path = out_dir / "2026-02-03.md"
+    assert report_path.exists()
+    assert md_path.exists()
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["as_of"] == "2026-02-03"
+    assert report["window_days"] == 10
+    event_outcomes = report["events"][0]["outcomes"]["1"]
+    assert event_outcomes["underlying_return"] == pytest.approx(0.2)
+    assert event_outcomes["option_return"] == pytest.approx(0.5)
+
+
+def test_journal_evaluate_exits_when_window_has_no_events(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    journal_dir = tmp_path / "journal"
+    monkeypatch.setattr("options_helper.cli_deps.build_journal_store", lambda root: JournalStore(root))
+    monkeypatch.setattr("options_helper.cli_deps.build_candle_store", lambda root: CandleStore(root))
+    monkeypatch.setattr("options_helper.cli_deps.build_snapshot_store", lambda root: OptionsSnapshotStore(root))
+    store = JournalStore(journal_dir)
+    store.append_event(
+        SignalEvent(
+            date=date(2026, 1, 1),
+            symbol="AAA",
+            context=SignalContext.SCANNER,
+            payload={},
+        )
+    )
+
+    runner = CliRunner()
+    res = runner.invoke(
+        cli.app,
+        [
+            "journal",
+            "evaluate",
+            "--journal-dir",
+            str(journal_dir),
+            "--as-of",
+            "2026-02-01",
+            "--window",
+            "5",
+            "--out-dir",
+            str(tmp_path / "reports"),
+        ],
+    )
+
+    assert res.exit_code == 0, res.output
+    assert "No journal events within the window." in res.output
