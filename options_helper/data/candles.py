@@ -308,13 +308,41 @@ class CandleStore:
         period_norm = period.strip().lower()
         desired_start = _parse_period_to_start(period_norm, today=today)
         wants_max = period_norm == "max"
-
         cached = self.load(symbol)
         cached_meta = self.load_meta(symbol) if not cached.empty else None
         max_backfill_complete = bool((cached_meta or {}).get("max_backfill_complete"))
+        cached, cached_meta = self._maybe_upgrade_adjusted_cache(symbol, cached, cached_meta)
+        if not cached.empty and not self._meta_matches_settings(cached_meta):
+            cached = pd.DataFrame()
+            max_backfill_complete = False
+        merged = cached
+        merged, did_full_fetch, max_backfill_complete = self._backfill_period_history(
+            symbol=symbol,
+            merged=merged,
+            desired_start=desired_start,
+            wants_max=wants_max,
+            max_backfill_complete=max_backfill_complete,
+        )
+        merged, did_full_fetch, max_backfill_complete = self._refresh_recent_tail(
+            symbol=symbol,
+            merged=merged,
+            desired_start=desired_start,
+            wants_max=wants_max,
+            did_full_fetch=did_full_fetch,
+            max_backfill_complete=max_backfill_complete,
+        )
+        if merged is None:
+            merged = pd.DataFrame()
+        if not merged.empty:
+            self.save(symbol, merged, max_backfill_complete=max_backfill_complete)
+        return merged
 
-        # If a legacy/unversioned cache exists but we now want adjusted candles, upgrade it
-        # locally (no network) using Adj Close ratio.
+    def _maybe_upgrade_adjusted_cache(
+        self,
+        symbol: str,
+        cached: pd.DataFrame,
+        cached_meta: dict | None,
+    ) -> tuple[pd.DataFrame, dict | None]:
         if (
             not cached.empty
             and not self._meta_matches_settings(cached_meta)
@@ -326,93 +354,92 @@ class CandleStore:
             and "Adj Close" in cached.columns
         ):
             try:
-                cached = _normalize_history(_auto_adjust_from_adj_close(cached))
-                self.save(symbol, cached)
-                cached_meta = self.load_meta(symbol)
+                upgraded = _normalize_history(_auto_adjust_from_adj_close(cached))
+                self.save(symbol, upgraded)
+                return upgraded, self.load_meta(symbol)
             except Exception:  # noqa: BLE001
-                # Fall back to a re-fetch below.
-                cached = pd.DataFrame()
-                cached_meta = None
+                return pd.DataFrame(), None
+        return cached, cached_meta
 
-        # If cache settings don't match, ignore cached data to avoid mixing adjusted/unadjusted series.
-        if not cached.empty and not self._meta_matches_settings(cached_meta):
-            cached = pd.DataFrame()
-            max_backfill_complete = False
-
-        merged = cached
-
+    def _backfill_period_history(
+        self,
+        *,
+        symbol: str,
+        merged: pd.DataFrame,
+        desired_start: date | None,
+        wants_max: bool,
+        max_backfill_complete: bool,
+    ) -> tuple[pd.DataFrame, bool, bool]:
         did_full_fetch = False
-
-        # Backfill earlier history if required.
         if merged.empty:
             if wants_max:
-                merged = _normalize_history(self._fetch_with_retry(symbol, None, None))
-                did_full_fetch = True
-                max_backfill_complete = True
-            elif desired_start is None:
-                merged = _normalize_history(self._fetch_with_retry(symbol, None, None))
-                did_full_fetch = True
-            else:
-                merged = _normalize_history(self._fetch_with_retry(symbol, desired_start, None))
-        elif wants_max:
-            if not max_backfill_complete:
-                first_cached = merged.index.min().date()
-                # Legacy caches can already start before our safe backfill floor.
-                # Skip the bounded backfill request in that case to avoid start>end.
-                if first_cached > self._MAX_BACKFILL_START:
-                    fetched = self._fetch_with_retry(symbol, self._MAX_BACKFILL_START, first_cached)
-                    fetched = _normalize_history(fetched)
-                    if not fetched.empty:
-                        merged = pd.concat([fetched, merged])
-                        merged = merged[~merged.index.duplicated(keep="last")].sort_index()
-                max_backfill_complete = True
+                return _normalize_history(self._fetch_with_retry(symbol, None, None)), True, True
+            if desired_start is None:
+                return _normalize_history(self._fetch_with_retry(symbol, None, None)), True, max_backfill_complete
+            return _normalize_history(self._fetch_with_retry(symbol, desired_start, None)), False, max_backfill_complete
+        if wants_max and not max_backfill_complete:
+            first_cached = merged.index.min().date()
+            if first_cached > self._MAX_BACKFILL_START:
+                fetched = _normalize_history(self._fetch_with_retry(symbol, self._MAX_BACKFILL_START, first_cached))
+                if not fetched.empty:
+                    merged = self._merge_history_frames(merged, fetched)
+            max_backfill_complete = True
         elif desired_start is not None:
             first_cached = merged.index.min().date()
             if desired_start < first_cached:
-                fetched = self._fetch_with_retry(symbol, desired_start, first_cached)
-                fetched = _normalize_history(fetched)
-                merged = pd.concat([fetched, merged])
-                merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+                fetched = _normalize_history(self._fetch_with_retry(symbol, desired_start, first_cached))
+                merged = self._merge_history_frames(merged, fetched)
+        return merged, did_full_fetch, max_backfill_complete
 
-        # Refresh the recent tail (captures late revisions / newly available data).
-        if not did_full_fetch and not merged.empty and self.backfill_days > 0:
-            last_cached_dt = merged.index.max()
-            refresh_start = (last_cached_dt.date() - timedelta(days=self.backfill_days))
-            fetched = self._fetch_with_retry(symbol, refresh_start, None)
-            fetched = _normalize_history(fetched)
-            if not fetched.empty:
-                # If we are pulling adjusted candles and Yahoo reports a corporate action in the
-                # refresh window, adjustment factors can change for *all* earlier rows. To avoid
-                # stitching incompatible adjustment regimes, do a full refresh for the requested
-                # period when we detect an action event.
-                action_cols = [c for c in ("Dividends", "Stock Splits", "Capital Gains") if c in fetched.columns]
-                has_action = False
-                for col in action_cols:
-                    ser = pd.to_numeric(fetched[col], errors="coerce").fillna(0.0)
-                    if (ser != 0.0).any():
-                        has_action = True
-                        break
+    def _refresh_recent_tail(
+        self,
+        *,
+        symbol: str,
+        merged: pd.DataFrame,
+        desired_start: date | None,
+        wants_max: bool,
+        did_full_fetch: bool,
+        max_backfill_complete: bool,
+    ) -> tuple[pd.DataFrame, bool, bool]:
+        if did_full_fetch or merged.empty or self.backfill_days <= 0:
+            return merged, did_full_fetch, max_backfill_complete
+        refresh_start = merged.index.max().date() - timedelta(days=self.backfill_days)
+        fetched = _normalize_history(self._fetch_with_retry(symbol, refresh_start, None))
+        if fetched.empty:
+            return merged, did_full_fetch, max_backfill_complete
+        if self._has_adjustment_event(fetched) and (bool(self.auto_adjust) or bool(self.back_adjust)):
+            if wants_max or desired_start is None:
+                merged = _normalize_history(self._fetch_with_retry(symbol, None, None))
+                if wants_max:
+                    max_backfill_complete = True
+            else:
+                merged = _normalize_history(self._fetch_with_retry(symbol, desired_start, None))
+            return merged, True, max_backfill_complete
+        return self._merge_history_frames(
+            merged,
+            fetched,
+            prefer_fetched=True,
+        ), did_full_fetch, max_backfill_complete
 
-                if has_action and (bool(self.auto_adjust) or bool(self.back_adjust)):
-                    if wants_max or desired_start is None:
-                        merged = _normalize_history(self._fetch_with_retry(symbol, None, None))
-                        if wants_max:
-                            max_backfill_complete = True
-                    else:
-                        merged = _normalize_history(self._fetch_with_retry(symbol, desired_start, None))
-                    did_full_fetch = True
-                else:
-                    merged = pd.concat([merged, fetched])
-                    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+    def _has_adjustment_event(self, fetched: pd.DataFrame) -> bool:
+        for column in ("Dividends", "Stock Splits", "Capital Gains"):
+            if column not in fetched.columns:
+                continue
+            series = pd.to_numeric(fetched[column], errors="coerce").fillna(0.0)
+            if (series != 0.0).any():
+                return True
+        return False
 
-        if merged is None:
-            merged = pd.DataFrame()
-
-        # Persist only if we have something; avoid writing empty files for invalid symbols.
-        if not merged.empty:
-            self.save(symbol, merged, max_backfill_complete=max_backfill_complete)
-
-        return merged
+    def _merge_history_frames(
+        self,
+        merged: pd.DataFrame,
+        fetched: pd.DataFrame,
+        *,
+        prefer_fetched: bool = False,
+    ) -> pd.DataFrame:
+        frames = [merged, fetched] if prefer_fetched else [fetched, merged]
+        out = pd.concat(frames)
+        return out[~out.index.duplicated(keep="last")].sort_index()
 
 
 def last_close(history: pd.DataFrame) -> float | None:
