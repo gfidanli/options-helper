@@ -94,6 +94,182 @@ def load_strategy_modeling_data_payload(
         return payload
 
 
+def _finalize_strategy_payload(
+    *,
+    payload: dict[str, Any],
+    require_intraday_bars: bool,
+) -> dict[str, Any]:
+    payload["has_data"] = bool(payload["modeled_symbols"]) and not bool(payload["errors"])
+    payload["blocking"] = build_blocking_status_payload(
+        preflight_payload=payload["intraday_preflight"],
+        errors=payload["errors"],
+        require_intraday_bars=require_intraday_bars,
+    )
+    if payload["errors"]:
+        payload["status"] = "error"
+    return payload
+
+
+def _strategy_error_payload(
+    *,
+    payload: dict[str, Any],
+    errors: Sequence[str],
+    require_intraday_bars: bool,
+) -> dict[str, Any]:
+    payload["errors"].extend(str(item) for item in errors if str(item).strip())
+    payload["status"] = "error"
+    return _finalize_strategy_payload(
+        payload=payload,
+        require_intraday_bars=require_intraday_bars,
+    )
+
+
+def _apply_universe_payload(*, payload: dict[str, Any], universe: Any) -> None:
+    payload["notes"].extend(universe.notes)
+    payload["universe_symbols"] = list(universe.symbols)
+
+
+def _apply_requested_symbols_payload(
+    *,
+    payload: dict[str, Any],
+    requested_symbols: list[str],
+    symbol_notes: list[str],
+) -> None:
+    payload["notes"].extend(symbol_notes)
+    payload["requested_symbols"] = list(requested_symbols)
+
+
+def _load_daily_result(
+    *,
+    requested_symbols: list[str],
+    database_path: str,
+    adjusted_data_fallback_mode: str,
+    start_date: date | None,
+    end_date: date | None,
+) -> tuple[Any | None, str | None]:
+    try:
+        daily = load_daily_ohlc_history(
+            requested_symbols,
+            database_path=database_path,
+            adjusted_data_fallback_mode=adjusted_data_fallback_mode,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return None, str(exc)
+    return daily, None
+
+
+def _apply_daily_payload(*, payload: dict[str, Any], daily: Any) -> None:
+    payload["notes"].extend(daily.notes)
+    payload["modeled_symbols"] = sorted(daily.candles_by_symbol)
+    payload["skipped_symbols"] = sorted(daily.skipped_symbols)
+    payload["missing_symbols"] = sorted(daily.missing_symbols)
+    payload["source_by_symbol"] = dict(daily.source_by_symbol)
+    payload["daily_rows_by_symbol"] = {
+        symbol: int(len(frame.index)) for symbol, frame in sorted(daily.candles_by_symbol.items())
+    }
+
+
+def _apply_preflight_payload(
+    *,
+    payload: dict[str, Any],
+    daily_candles_by_symbol: dict[str, Any],
+    start_date: date | None,
+    end_date: date | None,
+    intraday_dir: str,
+    intraday_timeframe: str,
+    require_intraday_bars: bool,
+) -> None:
+    required_sessions = build_required_intraday_sessions(
+        daily_candles_by_symbol,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    payload["required_sessions_by_symbol"] = serialize_required_sessions(required_sessions)
+    preflight = preflight_intraday_coverage(
+        required_sessions,
+        intraday_dir=Path(intraday_dir),
+        timeframe=intraday_timeframe,
+        require_intraday_bars=require_intraday_bars,
+    )
+    payload["intraday_preflight"] = intraday_preflight_to_payload(preflight)
+
+
+def _resolve_universe_and_requested_symbols(
+    *,
+    payload: dict[str, Any],
+    database_path: str,
+    symbols: Sequence[str],
+    require_intraday_bars: bool,
+) -> tuple[list[str], dict[str, Any] | None]:
+    universe = list_strategy_modeling_universe(database_path=database_path)
+    _apply_universe_payload(payload=payload, universe=universe)
+    if not universe.symbols:
+        message = universe.notes[0] if universe.notes else "No symbols available in universe."
+        return [], _strategy_error_payload(
+            payload=payload,
+            errors=[message],
+            require_intraday_bars=require_intraday_bars,
+        )
+
+    requested_symbols, symbol_errors, symbol_notes = _resolve_requested_symbols(
+        symbols=symbols,
+        universe_symbols=tuple(universe.symbols),
+    )
+    _apply_requested_symbols_payload(
+        payload=payload,
+        requested_symbols=requested_symbols,
+        symbol_notes=symbol_notes,
+    )
+    if symbol_errors:
+        return [], _strategy_error_payload(
+            payload=payload,
+            errors=symbol_errors,
+            require_intraday_bars=require_intraday_bars,
+        )
+    return requested_symbols, None
+
+
+def _load_daily_and_preflight(
+    *,
+    payload: dict[str, Any],
+    requested_symbols: list[str],
+    database_path: str,
+    adjusted_data_fallback_mode: str,
+    start_date: date | None,
+    end_date: date | None,
+    intraday_dir: str,
+    intraday_timeframe: str,
+    require_intraday_bars: bool,
+) -> dict[str, Any] | None:
+    daily, daily_error = _load_daily_result(
+        requested_symbols=requested_symbols,
+        database_path=database_path,
+        adjusted_data_fallback_mode=adjusted_data_fallback_mode,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if daily_error is not None or daily is None:
+        return _strategy_error_payload(
+            payload=payload,
+            errors=[daily_error or "Failed to load daily OHLC history."],
+            require_intraday_bars=require_intraday_bars,
+        )
+
+    _apply_daily_payload(payload=payload, daily=daily)
+    _apply_preflight_payload(
+        payload=payload,
+        daily_candles_by_symbol=daily.candles_by_symbol,
+        start_date=start_date,
+        end_date=end_date,
+        intraday_dir=intraday_dir,
+        intraday_timeframe=intraday_timeframe,
+        require_intraday_bars=require_intraday_bars,
+    )
+    return None
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def _load_strategy_modeling_payload_cached(
     *,
@@ -126,103 +302,41 @@ def _load_strategy_modeling_payload_cached(
         adjusted_data_fallback_mode=adjusted_data_fallback_mode,
     )
     if validation_errors:
-        payload["errors"].extend(validation_errors)
-        payload["status"] = "error"
-        payload["blocking"] = build_blocking_status_payload(
-            preflight_payload=payload["intraday_preflight"],
-            errors=payload["errors"],
+        return _strategy_error_payload(
+            payload=payload,
+            errors=validation_errors,
             require_intraday_bars=require_intraday_bars,
         )
-        return payload
 
-    universe = list_strategy_modeling_universe(database_path=database_path)
-    payload["notes"].extend(universe.notes)
-    payload["universe_symbols"] = list(universe.symbols)
-
-    if not universe.symbols:
-        if universe.notes:
-            payload["errors"].append(universe.notes[0])
-        else:
-            payload["errors"].append("No symbols available in universe.")
-        payload["status"] = "error"
-        payload["blocking"] = build_blocking_status_payload(
-            preflight_payload=payload["intraday_preflight"],
-            errors=payload["errors"],
-            require_intraday_bars=require_intraday_bars,
-        )
-        return payload
-
-    requested_symbols, symbol_errors, symbol_notes = _resolve_requested_symbols(
+    requested_symbols, symbol_result = _resolve_universe_and_requested_symbols(
+        payload=payload,
+        database_path=database_path,
         symbols=symbols,
-        universe_symbols=tuple(universe.symbols),
-    )
-    payload["notes"].extend(symbol_notes)
-    if symbol_errors:
-        payload["errors"].extend(symbol_errors)
-        payload["status"] = "error"
-        payload["blocking"] = build_blocking_status_payload(
-            preflight_payload=payload["intraday_preflight"],
-            errors=payload["errors"],
-            require_intraday_bars=require_intraday_bars,
-        )
-        return payload
-    payload["requested_symbols"] = list(requested_symbols)
-
-    try:
-        daily = load_daily_ohlc_history(
-            requested_symbols,
-            database_path=database_path,
-            adjusted_data_fallback_mode=adjusted_data_fallback_mode,
-            start_date=start_date,
-            end_date=end_date,
-        )
-    except Exception as exc:  # noqa: BLE001
-        payload["errors"].append(str(exc))
-        payload["status"] = "error"
-        payload["blocking"] = build_blocking_status_payload(
-            preflight_payload=payload["intraday_preflight"],
-            errors=payload["errors"],
-            require_intraday_bars=require_intraday_bars,
-        )
-        return payload
-
-    payload["notes"].extend(daily.notes)
-    payload["modeled_symbols"] = sorted(daily.candles_by_symbol)
-    payload["skipped_symbols"] = sorted(daily.skipped_symbols)
-    payload["missing_symbols"] = sorted(daily.missing_symbols)
-    payload["source_by_symbol"] = dict(daily.source_by_symbol)
-    payload["daily_rows_by_symbol"] = {
-        symbol: int(len(frame.index)) for symbol, frame in sorted(daily.candles_by_symbol.items())
-    }
-
-    required_sessions = build_required_intraday_sessions(
-        daily.candles_by_symbol,
-        start_date=start_date,
-        end_date=end_date,
-    )
-    payload["required_sessions_by_symbol"] = serialize_required_sessions(required_sessions)
-
-    preflight = preflight_intraday_coverage(
-        required_sessions,
-        intraday_dir=Path(intraday_dir),
-        timeframe=intraday_timeframe,
         require_intraday_bars=require_intraday_bars,
     )
-    payload["intraday_preflight"] = intraday_preflight_to_payload(preflight)
+    if symbol_result is not None:
+        return symbol_result
+
+    daily_result = _load_daily_and_preflight(
+        payload=payload,
+        requested_symbols=requested_symbols,
+        database_path=database_path,
+        adjusted_data_fallback_mode=adjusted_data_fallback_mode,
+        start_date=start_date,
+        end_date=end_date,
+        intraday_dir=intraday_dir,
+        intraday_timeframe=intraday_timeframe,
+        require_intraday_bars=require_intraday_bars,
+    )
+    if daily_result is not None:
+        return daily_result
 
     if not payload["modeled_symbols"]:
         payload["errors"].append("No daily candles available after applying current filters.")
-        payload["status"] = "error"
-
-    payload["has_data"] = bool(payload["modeled_symbols"]) and not bool(payload["errors"])
-    payload["blocking"] = build_blocking_status_payload(
-        preflight_payload=payload["intraday_preflight"],
-        errors=payload["errors"],
+    return _finalize_strategy_payload(
+        payload=payload,
         require_intraday_bars=require_intraday_bars,
     )
-    if payload["errors"]:
-        payload["status"] = "error"
-    return payload
 
 
 def validate_filter_combination(

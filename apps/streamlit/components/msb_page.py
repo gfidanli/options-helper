@@ -95,66 +95,44 @@ def load_candles_history(
     return out.reindex(columns=_CANDLES_COLUMNS), None
 
 
-@st.cache_data(ttl=60, show_spinner=False)
-def _build_msb_payload_cached(
+def _empty_msb_payload(*, symbol: str, note: str) -> dict[str, Any]:
+    return {
+        "symbol": normalize_symbol(symbol),
+        "asof": None,
+        "daily_events": [],
+        "weekly_events": [],
+        "summary_rows": [],
+        "counts": {},
+        "notes": [note],
+    }
+
+
+def _prepare_daily_ohlc(candles: pd.DataFrame) -> pd.DataFrame:
+    return (
+        candles.rename(
+            columns={
+                "open": "Open",
+                "high": "High",
+                "low": "Low",
+                "close": "Close",
+            }
+        )
+        .set_index("ts")[["Open", "High", "Low", "Close"]]
+        .sort_index()
+    )
+
+
+def _build_daily_events(
     *,
-    symbol: str,
-    lookback_days: int,
+    daily_ohlc: pd.DataFrame,
+    swing_left_bars: int,
+    swing_right_bars: int,
+    min_swing_distance_bars: int,
     tail_low_pct: float,
     tail_high_pct: float,
     rsi_overbought: float,
     rsi_oversold: float,
-    swing_left_bars: int,
-    swing_right_bars: int,
-    min_swing_distance_bars: int,
-    database_path: str,
-) -> dict[str, Any]:
-    candles, note = load_candles_history(
-        symbol=symbol,
-        database_path=database_path,
-        limit=max(600, int(lookback_days) + 260),
-    )
-    if note is not None:
-        return {
-            "symbol": normalize_symbol(symbol),
-            "asof": None,
-            "daily_events": [],
-            "weekly_events": [],
-            "summary_rows": [],
-            "counts": {},
-            "notes": [note],
-        }
-    if candles.empty:
-        return {
-            "symbol": normalize_symbol(symbol),
-            "asof": None,
-            "daily_events": [],
-            "weekly_events": [],
-            "summary_rows": [],
-            "counts": {},
-            "notes": [f"No daily candles found for {normalize_symbol(symbol)}."],
-        }
-
-    daily_ohlc = candles.rename(
-        columns={
-            "open": "Open",
-            "high": "High",
-            "low": "Low",
-            "close": "Close",
-        }
-    ).set_index("ts")[["Open", "High", "Low", "Close"]]
-    daily_ohlc = daily_ohlc.sort_index()
-    if daily_ohlc.empty:
-        return {
-            "symbol": normalize_symbol(symbol),
-            "asof": None,
-            "daily_events": [],
-            "weekly_events": [],
-            "summary_rows": [],
-            "counts": {},
-            "notes": [f"No usable daily OHLC candles found for {normalize_symbol(symbol)}."],
-        }
-
+) -> tuple[pd.Series, list[dict[str, Any]], dict[pd.Timestamp, bool]]:
     daily_close = daily_ohlc["Close"].astype("float64")
     daily_rsi = _rsi_series(daily_close)
     daily_ext, daily_ext_pct = _compute_extension_percentile_series(daily_ohlc)
@@ -169,7 +147,6 @@ def _build_msb_payload_cached(
         .astype(bool)
         .to_dict()
     )
-
     daily_signals = compute_msb_signals(
         daily_ohlc,
         swing_left_bars=int(swing_left_bars),
@@ -189,7 +166,20 @@ def _build_msb_payload_cached(
         week_has_daily_extension_map=daily_week_has_extreme,
         weekly_index_labels=False,
     )
+    return daily_close, daily_events, daily_week_has_extreme
 
+
+def _build_weekly_events(
+    *,
+    daily_ohlc: pd.DataFrame,
+    daily_close: pd.Series,
+    week_has_daily_extension_map: dict[pd.Timestamp, bool],
+    swing_left_bars: int,
+    swing_right_bars: int,
+    min_swing_distance_bars: int,
+    rsi_overbought: float,
+    rsi_oversold: float,
+) -> list[dict[str, Any]]:
     weekly_ohlc = (
         daily_ohlc.resample("W-FRI")
         .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
@@ -205,7 +195,7 @@ def _build_msb_payload_cached(
         min_swing_distance_bars=int(min_swing_distance_bars),
         timeframe="native",
     )
-    weekly_events = _events_from_signals(
+    return _events_from_signals(
         signals=weekly_signals,
         source_daily_close=daily_close,
         rsi_series=weekly_rsi,
@@ -214,34 +204,121 @@ def _build_msb_payload_cached(
         rsi_overbought=float(rsi_overbought),
         rsi_oversold=float(rsi_oversold),
         timeframe="weekly",
-        week_has_daily_extension_map=daily_week_has_extreme,
+        week_has_daily_extension_map=week_has_daily_extension_map,
         weekly_index_labels=True,
     )
 
+
+def _filter_events_by_lookback(
+    *,
+    daily_ohlc: pd.DataFrame,
+    daily_events: list[dict[str, Any]],
+    weekly_events: list[dict[str, Any]],
+    lookback_days: int,
+) -> tuple[pd.Timestamp, list[dict[str, Any]], list[dict[str, Any]]]:
     latest_ts = daily_ohlc.index.max()
     cutoff_ts = latest_ts - pd.Timedelta(days=int(lookback_days))
-    daily_events_filtered = [row for row in daily_events if pd.Timestamp(row["event_ts"]) >= cutoff_ts]
-    weekly_events_filtered = [row for row in weekly_events if pd.Timestamp(row["event_ts"]) >= cutoff_ts]
+    daily_filtered = [row for row in daily_events if pd.Timestamp(row["event_ts"]) >= cutoff_ts]
+    weekly_filtered = [row for row in weekly_events if pd.Timestamp(row["event_ts"]) >= cutoff_ts]
+    return latest_ts, daily_filtered, weekly_filtered
 
+
+def _build_msb_payload(
+    *,
+    symbol: str,
+    latest_ts: pd.Timestamp,
+    daily_events: list[dict[str, Any]],
+    weekly_events: list[dict[str, Any]],
+    summary_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "symbol": normalize_symbol(symbol),
+        "asof": latest_ts.date().isoformat(),
+        "daily_events": daily_events,
+        "weekly_events": weekly_events,
+        "summary_rows": summary_rows,
+        "counts": {
+            "daily_events": len(daily_events),
+            "weekly_events": len(weekly_events),
+            "daily_bullish": sum(1 for row in daily_events if row.get("direction") == "bullish"),
+            "daily_bearish": sum(1 for row in daily_events if row.get("direction") == "bearish"),
+        },
+        "notes": [],
+    }
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _build_msb_payload_cached(
+    *,
+    symbol: str,
+    lookback_days: int,
+    tail_low_pct: float,
+    tail_high_pct: float,
+    rsi_overbought: float,
+    rsi_oversold: float,
+    swing_left_bars: int,
+    swing_right_bars: int,
+    min_swing_distance_bars: int,
+    database_path: str,
+) -> dict[str, Any]:
+    normalized_symbol = normalize_symbol(symbol)
+    candles, note = load_candles_history(
+        symbol=normalized_symbol,
+        database_path=database_path,
+        limit=max(600, int(lookback_days) + 260),
+    )
+    if note is not None:
+        return _empty_msb_payload(symbol=normalized_symbol, note=note)
+    if candles.empty:
+        return _empty_msb_payload(
+            symbol=normalized_symbol,
+            note=f"No daily candles found for {normalized_symbol}.",
+        )
+
+    daily_ohlc = _prepare_daily_ohlc(candles)
+    if daily_ohlc.empty:
+        return _empty_msb_payload(
+            symbol=normalized_symbol,
+            note=f"No usable daily OHLC candles found for {normalized_symbol}.",
+        )
+
+    daily_close, daily_events, daily_week_has_extreme = _build_daily_events(
+        daily_ohlc=daily_ohlc,
+        swing_left_bars=swing_left_bars,
+        swing_right_bars=swing_right_bars,
+        min_swing_distance_bars=min_swing_distance_bars,
+        tail_low_pct=tail_low_pct,
+        tail_high_pct=tail_high_pct,
+        rsi_overbought=rsi_overbought,
+        rsi_oversold=rsi_oversold,
+    )
+    weekly_events = _build_weekly_events(
+        daily_ohlc=daily_ohlc,
+        daily_close=daily_close,
+        week_has_daily_extension_map=daily_week_has_extreme,
+        swing_left_bars=swing_left_bars,
+        swing_right_bars=swing_right_bars,
+        min_swing_distance_bars=min_swing_distance_bars,
+        rsi_overbought=rsi_overbought,
+        rsi_oversold=rsi_oversold,
+    )
+    latest_ts, daily_events_filtered, weekly_events_filtered = _filter_events_by_lookback(
+        daily_ohlc=daily_ohlc,
+        daily_events=daily_events,
+        weekly_events=weekly_events,
+        lookback_days=lookback_days,
+    )
     summary_rows = _build_summary_rows(
         daily_events=daily_events_filtered,
         weekly_events=weekly_events_filtered,
     )
-
-    return {
-        "symbol": normalize_symbol(symbol),
-        "asof": latest_ts.date().isoformat(),
-        "daily_events": daily_events_filtered,
-        "weekly_events": weekly_events_filtered,
-        "summary_rows": summary_rows,
-        "counts": {
-            "daily_events": len(daily_events_filtered),
-            "weekly_events": len(weekly_events_filtered),
-            "daily_bullish": sum(1 for row in daily_events_filtered if row.get("direction") == "bullish"),
-            "daily_bearish": sum(1 for row in daily_events_filtered if row.get("direction") == "bearish"),
-        },
-        "notes": [],
-    }
+    return _build_msb_payload(
+        symbol=normalized_symbol,
+        latest_ts=latest_ts,
+        daily_events=daily_events_filtered,
+        weekly_events=weekly_events_filtered,
+        summary_rows=summary_rows,
+    )
 
 
 def load_msb_payload(
