@@ -29,7 +29,7 @@ from options_helper.pipelines.visibility_jobs import (
 )
 from options_helper.storage import load_portfolio
 
-from . import assets_visibility_common
+from . import assets_visibility_common, assets_visibility_derived_common, assets_visibility_pipeline_common
 from .resources import DagsterPaths, DagsterRuntimeConfig
 
 
@@ -197,121 +197,27 @@ def _resolve_default_symbols(paths: DagsterPaths) -> tuple[list[str], list[str]]
     required_resource_keys={"paths", "runtime_config"},
 )
 def candles_daily(context) -> MaterializeResult:
-    partition_day = _partition_date(context)
-    partition_key = partition_day.isoformat()
+    partition_key = _partition_date(context).isoformat()
     paths: DagsterPaths = context.resources.paths
 
     with _observed_asset_run(
         context,
         job_name="dagster_candles_daily",
-        args={
-            "partition_key": partition_key,
-            "watchlists_path": str(paths.watchlists_path),
-            "watchlist": list(DEFAULT_WATCHLISTS),
-            "candle_cache_dir": str(paths.data_dir / "candles"),
-        },
+        args=assets_visibility_pipeline_common.candles_daily_run_args(
+            partition_key=partition_key,
+            paths=paths,
+        ),
     ) as run_logger:
-        try:
-            result = run_ingest_candles_job(
-                watchlists_path=paths.watchlists_path,
-                watchlist=list(DEFAULT_WATCHLISTS),
-                symbol=[],
-                candle_cache_dir=paths.data_dir / "candles",
-                provider_builder=cli_deps.build_provider,
-                candle_store_builder=cli_deps.build_candle_store,
-                run_logger=run_logger,
-            )
-        except VisibilityJobParameterError as exc:
-            run_logger.log_asset_failure(
-                asset_key="candles_daily",
-                asset_kind="table",
-                partition_key=partition_key,
-                extra={"error": str(exc)},
-            )
-            raise Failure(str(exc)) from exc
-
-        ok_items = [item for item in result.results if item.status == "ok"]
-        empty_items = [item for item in result.results if item.status == "empty"]
-        failed_items = [item for item in result.results if item.status == "error"]
-        latest_data_date = max(
-            (item.last_date for item in ok_items if item.last_date is not None),
-            default=None,
+        result = assets_visibility_pipeline_common.run_candles_daily_job(
+            paths=paths,
+            partition_key=partition_key,
+            run_logger=run_logger,
+            run_job=run_ingest_candles_job,
         )
-
-        if result.no_symbols:
-            run_logger.log_asset_skipped(
-                asset_key="candles_daily",
-                asset_kind="table",
-                partition_key=partition_key,
-                extra={"reason": "no_symbols"},
-            )
-            return MaterializeResult(
-                metadata={
-                    "partition": partition_key,
-                    "status": "skipped",
-                    "reason": "no_symbols",
-                }
-            )
-
-        if failed_items and not ok_items:
-            run_logger.log_asset_failure(
-                asset_key="candles_daily",
-                asset_kind="table",
-                partition_key=partition_key,
-                extra={
-                    "warnings": result.warnings,
-                    "failed_symbols": [item.symbol for item in failed_items],
-                },
-            )
-            raise Failure(f"candle ingest failed for all symbols in partition {partition_key}")
-
-        if ok_items:
-            run_logger.log_asset_success(
-                asset_key="candles_daily",
-                asset_kind="table",
-                partition_key=partition_key,
-                rows_inserted=len(ok_items),
-                min_event_ts=latest_data_date,
-                max_event_ts=latest_data_date,
-                extra={
-                    "warnings": result.warnings,
-                    "empty_count": len(empty_items),
-                    "failed_count": len(failed_items),
-                },
-            )
-        else:
-            run_logger.log_asset_skipped(
-                asset_key="candles_daily",
-                asset_kind="table",
-                partition_key=partition_key,
-                extra={
-                    "reason": "no_success_rows",
-                    "warnings": result.warnings,
-                },
-            )
-
-        for item in ok_items:
-            if item.last_date is None:
-                continue
-            run_logger.upsert_watermark(
-                asset_key="candles_daily",
-                scope_key=item.symbol,
-                watermark_ts=item.last_date,
-            )
-        if latest_data_date is not None:
-            run_logger.upsert_watermark(
-                asset_key="candles_daily",
-                scope_key="ALL",
-                watermark_ts=latest_data_date,
-            )
-
-        return MaterializeResult(
-            metadata={
-                "partition": partition_key,
-                "ok_count": len(ok_items),
-                "empty_count": len(empty_items),
-                "failed_count": len(failed_items),
-            }
+        return assets_visibility_pipeline_common.record_candles_daily_result(
+            run_logger=run_logger,
+            partition_key=partition_key,
+            result=result,
         )
 
 
@@ -436,114 +342,31 @@ def options_snapshot_file(context) -> MaterializeResult:
     required_resource_keys={"paths", "runtime_config"},
 )
 def options_flow(context) -> MaterializeResult:
-    partition_day = _partition_date(context)
-    partition_key = partition_day.isoformat()
+    partition_key = _partition_date(context).isoformat()
     paths: DagsterPaths = context.resources.paths
 
     with _observed_asset_run(
         context,
         job_name="dagster_options_flow",
-        args={
-            "partition_key": partition_key,
-            "portfolio_path": str(paths.portfolio_path),
-            "watchlists_path": str(paths.watchlists_path),
-            "cache_dir": str(paths.data_dir / "options_snapshots"),
-        },
+        args=assets_visibility_pipeline_common.options_flow_run_args(
+            partition_key=partition_key,
+            paths=paths,
+        ),
     ) as run_logger:
-        try:
-            result = run_flow_report_job(
-                portfolio_path=paths.portfolio_path,
-                symbol=None,
-                watchlists_path=paths.watchlists_path,
-                watchlist=[],
-                all_watchlists=False,
-                cache_dir=paths.data_dir / "options_snapshots",
-                window=1,
-                group_by="contract",
-                top=10,
-                out=paths.data_dir / "reports" / "dagster",
-                strict=False,
-                snapshot_store_builder=cli_deps.build_snapshot_store,
-                flow_store_builder=cli_deps.build_flow_store,
-                portfolio_loader=load_portfolio,
-                run_logger=run_logger,
-            )
-        except VisibilityJobParameterError as exc:
-            run_logger.log_asset_failure(
-                asset_key="options_flow",
-                asset_kind="table",
-                partition_key=partition_key,
-                extra={"error": str(exc)},
-            )
-            raise Failure(str(exc)) from exc
-
-        if result.no_symbols:
-            run_logger.log_asset_skipped(
-                asset_key="options_flow",
-                asset_kind="table",
-                partition_key=partition_key,
-                extra={"reason": "no_symbols"},
-            )
-            return MaterializeResult(
-                metadata={
-                    "partition": partition_key,
-                    "status": "skipped",
-                    "reason": "no_symbols",
-                }
-            )
-
+        result = assets_visibility_pipeline_common.run_options_flow_job(
+            paths=paths,
+            partition_key=partition_key,
+            run_logger=run_logger,
+            run_job=run_flow_report_job,
+            portfolio_loader=load_portfolio,
+        )
         success_by_symbol, skipped_symbols = _flow_renderable_statuses(result.renderables)
-        success_count = len(success_by_symbol)
-        latest_success = max((d for d in success_by_symbol.values() if d is not None), default=None)
-
-        if success_count > 0:
-            run_logger.log_asset_success(
-                asset_key="options_flow",
-                asset_kind="table",
-                partition_key=partition_key,
-                rows_inserted=success_count,
-                min_event_ts=latest_success,
-                max_event_ts=latest_success,
-                extra={"skipped_symbols": sorted(skipped_symbols)},
-            )
-            for sym, flow_end_date in sorted(success_by_symbol.items()):
-                if flow_end_date is None:
-                    continue
-                run_logger.upsert_watermark(
-                    asset_key="options_flow",
-                    scope_key=sym,
-                    watermark_ts=flow_end_date,
-                )
-            if latest_success is not None:
-                run_logger.upsert_watermark(
-                    asset_key="options_flow",
-                    scope_key="ALL",
-                    watermark_ts=latest_success,
-                )
-        elif skipped_symbols:
-            run_logger.log_asset_skipped(
-                asset_key="options_flow",
-                asset_kind="table",
-                partition_key=partition_key,
-                extra={
-                    "reason": "insufficient_snapshots",
-                    "symbols": sorted(skipped_symbols),
-                },
-            )
-        else:
-            run_logger.log_asset_success(
-                asset_key="options_flow",
-                asset_kind="table",
-                partition_key=partition_key,
-                extra={"reason": "no_flow_rows"},
-            )
-
-        return MaterializeResult(
-            metadata={
-                "partition": partition_key,
-                "success_symbols": success_count,
-                "skipped_symbols": len(skipped_symbols),
-            }
+        return assets_visibility_pipeline_common.record_options_flow_result(
+            run_logger=run_logger,
+            partition_key=partition_key,
+            result=result,
+            success_by_symbol=success_by_symbol,
+            skipped_symbols=skipped_symbols,
         )
 
 
@@ -562,117 +385,32 @@ def derived_metrics(context) -> MaterializeResult:
     with _observed_asset_run(
         context,
         job_name="dagster_derived_metrics",
-        args={
-            "partition_key": partition_key,
-            "symbols": symbols,
-            "cache_dir": str(paths.data_dir / "options_snapshots"),
-            "derived_dir": str(paths.data_dir / "derived"),
-            "candle_cache_dir": str(paths.data_dir / "candles"),
-        },
+        args=assets_visibility_derived_common.derived_metrics_run_args(
+            partition_key=partition_key,
+            symbols=symbols,
+            paths=paths,
+        ),
     ) as run_logger:
         if not symbols:
-            run_logger.log_asset_skipped(
-                asset_key="derived_metrics",
-                asset_kind="table",
+            return assets_visibility_derived_common.derived_metrics_no_symbols_result(
+                run_logger=run_logger,
                 partition_key=partition_key,
-                extra={"reason": "no_symbols", "warnings": symbol_warnings},
-            )
-            return MaterializeResult(
-                metadata={
-                    "partition": partition_key,
-                    "status": "skipped",
-                    "reason": "no_symbols",
-                }
+                symbol_warnings=symbol_warnings,
             )
 
-        successful_symbols: list[str] = []
-        skipped_symbols: list[str] = []
-        failed_symbols: list[str] = []
-        bytes_written = 0
-
-        for sym in symbols:
-            try:
-                result = run_derived_update_job(
-                    symbol=sym,
-                    as_of=partition_key,
-                    cache_dir=paths.data_dir / "options_snapshots",
-                    derived_dir=paths.data_dir / "derived",
-                    candle_cache_dir=paths.data_dir / "candles",
-                    snapshot_store_builder=cli_deps.build_snapshot_store,
-                    derived_store_builder=cli_deps.build_derived_store,
-                    candle_store_builder=cli_deps.build_candle_store,
-                    run_logger=run_logger,
-                )
-            except VisibilityJobExecutionError:
-                skipped_symbols.append(sym)
-                continue
-            except Exception:  # noqa: BLE001
-                failed_symbols.append(sym)
-                continue
-
-            successful_symbols.append(result.symbol.upper())
-            if result.output_path.exists():
-                bytes_written += result.output_path.stat().st_size
-
-        if failed_symbols and not successful_symbols:
-            run_logger.log_asset_failure(
-                asset_key="derived_metrics",
-                asset_kind="table",
-                partition_key=partition_key,
-                extra={
-                    "failed_symbols": failed_symbols,
-                    "skipped_symbols": skipped_symbols,
-                    "warnings": symbol_warnings,
-                },
-            )
-            raise Failure(f"derived stage failed for all symbols in partition {partition_key}")
-
-        if successful_symbols:
-            run_logger.log_asset_success(
-                asset_key="derived_metrics",
-                asset_kind="table",
-                partition_key=partition_key,
-                rows_inserted=len(successful_symbols),
-                bytes_written=bytes_written,
-                min_event_ts=partition_day,
-                max_event_ts=partition_day,
-                extra={
-                    "successful_symbols": successful_symbols,
-                    "skipped_symbols": skipped_symbols,
-                    "failed_symbols": failed_symbols,
-                    "warnings": symbol_warnings,
-                },
-            )
-            for sym in successful_symbols:
-                run_logger.upsert_watermark(
-                    asset_key="derived_metrics",
-                    scope_key=sym,
-                    watermark_ts=partition_day,
-                )
-            run_logger.upsert_watermark(
-                asset_key="derived_metrics",
-                scope_key="ALL",
-                watermark_ts=partition_day,
-            )
-        else:
-            run_logger.log_asset_skipped(
-                asset_key="derived_metrics",
-                asset_kind="table",
-                partition_key=partition_key,
-                extra={
-                    "reason": "no_symbols_succeeded",
-                    "skipped_symbols": skipped_symbols,
-                    "warnings": symbol_warnings,
-                },
-            )
-
-        return MaterializeResult(
-            metadata={
-                "partition": partition_key,
-                "successful_symbols": len(successful_symbols),
-                "skipped_symbols": len(skipped_symbols),
-                "failed_symbols": len(failed_symbols),
-            }
+        summary = assets_visibility_derived_common.run_derived_metrics_symbols(
+            symbols=symbols,
+            partition_key=partition_key,
+            paths=paths,
+            run_logger=run_logger,
+            run_job=run_derived_update_job,
+        )
+        return assets_visibility_derived_common.record_derived_metrics_result(
+            run_logger=run_logger,
+            partition_key=partition_key,
+            partition_day=partition_day,
+            summary=summary,
+            symbol_warnings=symbol_warnings,
         )
 
 
