@@ -173,176 +173,372 @@ class StrategyModelingService:
         segmentation_config = _resolve_segmentation_config(request.segmentation_config)
         filter_config = _resolve_filter_config(request.filter_config)
         signal_kwargs = dict(request.signal_kwargs or {})
-
-        universe = self.list_universe_loader(database_path=request.database_path)
-        requested_symbols = _resolve_requested_symbols(
-            request.symbols,
-            universe_symbols=universe.symbols,
-        )
-
-        daily = self.daily_loader(
-            requested_symbols,
-            database_path=request.database_path,
+        inputs = _load_strategy_inputs(
+            service=self,
+            request=request,
             policy=policy,
-            adjusted_data_fallback_mode=request.adjusted_data_fallback_mode,
-            start_date=request.start_date,
-            end_date=request.end_date,
-            interval=request.daily_interval,
         )
-
-        required_sessions = _normalize_required_sessions(
-            self.required_sessions_builder(
-                daily.candles_by_symbol,
-                start_date=request.start_date,
-                end_date=request.end_date,
-            )
+        signal_context = _build_signal_context(
+            service=self,
+            strategy=strategy,
+            request=request,
+            daily=inputs.daily,
+            feature_config=feature_config,
+            segmentation_config=segmentation_config,
+            signal_kwargs=signal_kwargs,
         )
-        intraday = self.intraday_loader(
-            required_sessions,
-            intraday_dir=request.intraday_dir,
-            timeframe=request.intraday_timeframe,
-            require_intraday_bars=policy.require_intraday_bars,
-        )
-
-        events: list[StrategySignalEvent] = []
-        segment_context: list[dict[str, str]] = []
-        daily_ohlc_by_symbol: dict[str, pd.DataFrame] = {}
-        daily_features_by_symbol: dict[str, pd.DataFrame] = {}
-
-        for symbol in sorted(daily.candles_by_symbol):
-            ohlc = _daily_candles_to_ohlc_frame(daily.candles_by_symbol[symbol])
-            if ohlc.empty:
-                continue
-
-            features = self.feature_computer(ohlc, config=feature_config)
-            daily_ohlc_by_symbol[symbol] = ohlc
-            daily_features_by_symbol[symbol] = features
-            symbol_events = self.signal_builder(
-                strategy,
-                ohlc,
-                symbol=symbol,
-                timeframe=request.signal_timeframe,
-                **signal_kwargs,
-            )
-            events.extend(symbol_events)
-            segment_context.extend(
-                _build_event_segment_context_rows(
-                    symbol=symbol,
-                    events=symbol_events,
-                    features=features,
-                    feature_config=feature_config,
-                    unknown_value=segmentation_config.unknown_segment_value,
-                )
-            )
-
-        filtered_events, filter_summary, filter_metadata = apply_entry_filters(
-            events,
+        filtered = _filter_strategy_events(
+            events=signal_context.events,
+            segment_context=signal_context.segment_context,
             filter_config=filter_config,
             feature_config=feature_config,
-            daily_features_by_symbol=daily_features_by_symbol,
-            daily_ohlc_by_symbol=daily_ohlc_by_symbol,
-            intraday_bars_by_symbol=intraday.bars_by_symbol,
+            daily_features_by_symbol=signal_context.daily_features_by_symbol,
+            daily_ohlc_by_symbol=signal_context.daily_ohlc_by_symbol,
+            intraday_bars_by_symbol=inputs.intraday.bars_by_symbol,
         )
-        sorted_events = tuple(filtered_events)
-        kept_event_ids = {event.event_id for event in sorted_events}
-        sorted_segment_context = tuple(
-            sorted(
-                (row for row in segment_context if row["event_id"] in kept_event_ids),
-                key=lambda row: (row["event_id"], row["ticker"]),
-            )
-        )
-
-        block_simulation = (
-            bool(request.block_on_missing_intraday_coverage)
-            and bool(policy.require_intraday_bars)
-            and intraday.preflight.is_blocked
-        )
-        target_ladder = tuple(request.target_ladder) if request.target_ladder is not None else None
-        if block_simulation:
-            trade_simulations: list[StrategyTradeSimulation] = []
-        else:
-            trade_simulations = self.trade_simulator(
-                sorted_events,
-                intraday.bars_by_symbol,
-                policy=policy,
-                max_hold_bars=request.max_hold_bars,
-                target_ladder=target_ladder,
-            )
-        sorted_trades = tuple(sorted(trade_simulations, key=_trade_sort_key))
-        portfolio_subset = _select_portfolio_target_subset(
-            sorted_trades,
-            target_ladder=target_ladder,
-        )
-        subset_ids = set(portfolio_subset.trade_ids)
-        portfolio_trades = tuple(trade for trade in sorted_trades if trade.trade_id in subset_ids)
-
-        portfolio = self.portfolio_builder(
-            portfolio_trades,
-            starting_capital=float(request.starting_capital),
+        trades = _build_trade_bundle(
+            service=self,
+            sorted_events=filtered.sorted_events,
+            intraday=inputs.intraday,
+            request=request,
             policy=policy,
-            max_concurrent_positions=request.max_concurrent_positions,
         )
-        portfolio_metrics_result = self.metrics_computer(
-            portfolio_trades,
-            portfolio.equity_curve,
-            starting_capital=float(request.starting_capital),
-        )
-        target_hit_rates = tuple(compute_strategy_target_hit_rates(sorted_trades))
-        directional_metrics = _build_directional_metrics(
-            all_trades=sorted_trades,
-            portfolio_trades=portfolio_trades,
-            portfolio_subset=portfolio_subset,
-            portfolio_builder=self.portfolio_builder,
-            metrics_computer=self.metrics_computer,
+        analytics = _build_strategy_analytics(
+            service=self,
+            trades=trades,
+            filtered=filtered,
+            request=request,
             policy=policy,
-            starting_capital=float(request.starting_capital),
-            max_concurrent_positions=request.max_concurrent_positions,
+            segmentation_config=segmentation_config,
         )
-        segmentation = self.segmentation_aggregator(
-            portfolio_trades,
-            segment_context=sorted_segment_context,
-            config=segmentation_config,
+        notes = _compose_strategy_notes(
+            universe_notes=inputs.universe.notes,
+            daily_notes=inputs.daily.notes,
+            intraday_notes=inputs.intraday.notes,
         )
-        segment_records = _segment_records_from_segmentation(segmentation)
-
-        notes = tuple(
-            [
-                *list(universe.notes),
-                *list(daily.notes),
-                *list(intraday.notes),
-            ]
-        )
-
-        return StrategyModelingRunResult(
+        return _build_strategy_run_result(
             strategy=strategy,
+            request=request,
             policy=policy,
             feature_config=feature_config,
             segmentation_config=segmentation_config,
-            requested_symbols=tuple(requested_symbols),
-            universe_symbols=tuple(universe.symbols),
-            modeled_symbols=tuple(sorted(daily.candles_by_symbol)),
-            skipped_symbols=tuple(daily.skipped_symbols),
-            missing_symbols=tuple(daily.missing_symbols),
-            source_by_symbol=dict(daily.source_by_symbol),
-            required_sessions_by_symbol=required_sessions,
-            intraday_preflight=intraday.preflight,
-            signal_events=sorted_events,
-            trade_simulations=sorted_trades,
-            portfolio_ledger=tuple(portfolio.ledger),
-            equity_curve=tuple(portfolio.equity_curve),
-            accepted_trade_ids=tuple(portfolio.accepted_trade_ids),
-            skipped_trade_ids=tuple(portfolio.skipped_trade_ids),
-            portfolio_metrics=portfolio_metrics_result.portfolio_metrics,
-            target_hit_rates=target_hit_rates,
-            expectancy_dollars=portfolio_metrics_result.expectancy_dollars,
-            segmentation=segmentation,
-            segment_records=segment_records,
-            segment_context=sorted_segment_context,
-            filter_metadata=filter_metadata,
-            filter_summary=filter_summary,
-            directional_metrics=directional_metrics,
+            inputs=inputs,
+            filtered=filtered,
+            trades=trades,
+            analytics=analytics,
             notes=notes,
         )
+
+
+@dataclass(frozen=True)
+class _StrategyInputBundle:
+    universe: StrategyModelingUniverseLoadResult
+    requested_symbols: list[str]
+    daily: StrategyModelingDailyLoadResult
+    required_sessions: dict[str, tuple[date, ...]]
+    intraday: StrategyModelingIntradayLoadResult
+
+
+@dataclass(frozen=True)
+class _StrategySignalContextBundle:
+    events: list[StrategySignalEvent]
+    segment_context: list[dict[str, str]]
+    daily_ohlc_by_symbol: dict[str, pd.DataFrame]
+    daily_features_by_symbol: dict[str, pd.DataFrame]
+
+
+@dataclass(frozen=True)
+class _StrategyFilteredBundle:
+    sorted_events: tuple[StrategySignalEvent, ...]
+    sorted_segment_context: tuple[dict[str, str], ...]
+    filter_summary: dict[str, Any]
+    filter_metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _StrategyTradeBundle:
+    sorted_trades: tuple[StrategyTradeSimulation, ...]
+    portfolio_subset: StrategyPortfolioTargetSubset
+    portfolio_trades: tuple[StrategyTradeSimulation, ...]
+
+
+@dataclass(frozen=True)
+class _StrategyAnalyticsBundle:
+    portfolio: StrategyPortfolioLedgerResult
+    portfolio_metrics_result: StrategyMetricsResult
+    target_hit_rates: tuple[StrategyRLadderStat, ...]
+    directional_metrics: dict[str, Any]
+    segmentation: StrategySegmentationResult
+    segment_records: tuple[StrategySegmentRecord, ...]
+
+
+def _load_strategy_inputs(
+    *,
+    service: StrategyModelingService,
+    request: StrategyModelingRequest,
+    policy: StrategyModelingPolicyConfig,
+) -> _StrategyInputBundle:
+    universe = service.list_universe_loader(database_path=request.database_path)
+    requested_symbols = _resolve_requested_symbols(
+        request.symbols,
+        universe_symbols=universe.symbols,
+    )
+    daily = service.daily_loader(
+        requested_symbols,
+        database_path=request.database_path,
+        policy=policy,
+        adjusted_data_fallback_mode=request.adjusted_data_fallback_mode,
+        start_date=request.start_date,
+        end_date=request.end_date,
+        interval=request.daily_interval,
+    )
+    required_sessions = _normalize_required_sessions(
+        service.required_sessions_builder(
+            daily.candles_by_symbol,
+            start_date=request.start_date,
+            end_date=request.end_date,
+        )
+    )
+    intraday = service.intraday_loader(
+        required_sessions,
+        intraday_dir=request.intraday_dir,
+        timeframe=request.intraday_timeframe,
+        require_intraday_bars=policy.require_intraday_bars,
+    )
+    return _StrategyInputBundle(
+        universe=universe,
+        requested_symbols=requested_symbols,
+        daily=daily,
+        required_sessions=required_sessions,
+        intraday=intraday,
+    )
+
+
+def _build_signal_context(
+    *,
+    service: StrategyModelingService,
+    strategy: str,
+    request: StrategyModelingRequest,
+    daily: StrategyModelingDailyLoadResult,
+    feature_config: StrategyFeatureConfig,
+    segmentation_config: StrategySegmentationConfig,
+    signal_kwargs: Mapping[str, Any],
+) -> _StrategySignalContextBundle:
+    events: list[StrategySignalEvent] = []
+    segment_context: list[dict[str, str]] = []
+    daily_ohlc_by_symbol: dict[str, pd.DataFrame] = {}
+    daily_features_by_symbol: dict[str, pd.DataFrame] = {}
+
+    for symbol in sorted(daily.candles_by_symbol):
+        ohlc = _daily_candles_to_ohlc_frame(daily.candles_by_symbol[symbol])
+        if ohlc.empty:
+            continue
+        features = service.feature_computer(ohlc, config=feature_config)
+        daily_ohlc_by_symbol[symbol] = ohlc
+        daily_features_by_symbol[symbol] = features
+        symbol_events = service.signal_builder(
+            strategy,
+            ohlc,
+            symbol=symbol,
+            timeframe=request.signal_timeframe,
+            **signal_kwargs,
+        )
+        events.extend(symbol_events)
+        segment_context.extend(
+            _build_event_segment_context_rows(
+                symbol=symbol,
+                events=symbol_events,
+                features=features,
+                feature_config=feature_config,
+                unknown_value=segmentation_config.unknown_segment_value,
+            )
+        )
+    return _StrategySignalContextBundle(
+        events=events,
+        segment_context=segment_context,
+        daily_ohlc_by_symbol=daily_ohlc_by_symbol,
+        daily_features_by_symbol=daily_features_by_symbol,
+    )
+
+
+def _filter_strategy_events(
+    *,
+    events: Sequence[StrategySignalEvent],
+    segment_context: Sequence[dict[str, str]],
+    filter_config: StrategyEntryFilterConfig,
+    feature_config: StrategyFeatureConfig,
+    daily_features_by_symbol: Mapping[str, pd.DataFrame],
+    daily_ohlc_by_symbol: Mapping[str, pd.DataFrame],
+    intraday_bars_by_symbol: Mapping[str, Any],
+) -> _StrategyFilteredBundle:
+    filtered_events, filter_summary, filter_metadata = apply_entry_filters(
+        events,
+        filter_config=filter_config,
+        feature_config=feature_config,
+        daily_features_by_symbol=daily_features_by_symbol,
+        daily_ohlc_by_symbol=daily_ohlc_by_symbol,
+        intraday_bars_by_symbol=intraday_bars_by_symbol,
+    )
+    sorted_events = tuple(filtered_events)
+    kept_event_ids = {event.event_id for event in sorted_events}
+    sorted_segment_context = tuple(
+        sorted(
+            (row for row in segment_context if row["event_id"] in kept_event_ids),
+            key=lambda row: (row["event_id"], row["ticker"]),
+        )
+    )
+    return _StrategyFilteredBundle(
+        sorted_events=sorted_events,
+        sorted_segment_context=sorted_segment_context,
+        filter_summary=filter_summary,
+        filter_metadata=filter_metadata,
+    )
+
+
+def _build_trade_bundle(
+    *,
+    service: StrategyModelingService,
+    sorted_events: Sequence[StrategySignalEvent],
+    intraday: StrategyModelingIntradayLoadResult,
+    request: StrategyModelingRequest,
+    policy: StrategyModelingPolicyConfig,
+) -> _StrategyTradeBundle:
+    block_simulation = (
+        bool(request.block_on_missing_intraday_coverage)
+        and bool(policy.require_intraday_bars)
+        and intraday.preflight.is_blocked
+    )
+    target_ladder = tuple(request.target_ladder) if request.target_ladder is not None else None
+    if block_simulation:
+        trade_simulations: list[StrategyTradeSimulation] = []
+    else:
+        trade_simulations = service.trade_simulator(
+            sorted_events,
+            intraday.bars_by_symbol,
+            policy=policy,
+            max_hold_bars=request.max_hold_bars,
+            target_ladder=target_ladder,
+        )
+    sorted_trades = tuple(sorted(trade_simulations, key=_trade_sort_key))
+    portfolio_subset = _select_portfolio_target_subset(
+        sorted_trades,
+        target_ladder=target_ladder,
+    )
+    subset_ids = set(portfolio_subset.trade_ids)
+    portfolio_trades = tuple(trade for trade in sorted_trades if trade.trade_id in subset_ids)
+    return _StrategyTradeBundle(
+        sorted_trades=sorted_trades,
+        portfolio_subset=portfolio_subset,
+        portfolio_trades=portfolio_trades,
+    )
+
+
+def _build_strategy_analytics(
+    *,
+    service: StrategyModelingService,
+    trades: _StrategyTradeBundle,
+    filtered: _StrategyFilteredBundle,
+    request: StrategyModelingRequest,
+    policy: StrategyModelingPolicyConfig,
+    segmentation_config: StrategySegmentationConfig,
+) -> _StrategyAnalyticsBundle:
+    starting_capital = float(request.starting_capital)
+    portfolio = service.portfolio_builder(
+        trades.portfolio_trades,
+        starting_capital=starting_capital,
+        policy=policy,
+        max_concurrent_positions=request.max_concurrent_positions,
+    )
+    portfolio_metrics_result = service.metrics_computer(
+        trades.portfolio_trades,
+        portfolio.equity_curve,
+        starting_capital=starting_capital,
+    )
+    target_hit_rates = tuple(compute_strategy_target_hit_rates(trades.sorted_trades))
+    directional_metrics = _build_directional_metrics(
+        all_trades=trades.sorted_trades,
+        portfolio_trades=trades.portfolio_trades,
+        portfolio_subset=trades.portfolio_subset,
+        portfolio_builder=service.portfolio_builder,
+        metrics_computer=service.metrics_computer,
+        policy=policy,
+        starting_capital=starting_capital,
+        max_concurrent_positions=request.max_concurrent_positions,
+    )
+    segmentation = service.segmentation_aggregator(
+        trades.portfolio_trades,
+        segment_context=filtered.sorted_segment_context,
+        config=segmentation_config,
+    )
+    segment_records = _segment_records_from_segmentation(segmentation)
+    return _StrategyAnalyticsBundle(
+        portfolio=portfolio,
+        portfolio_metrics_result=portfolio_metrics_result,
+        target_hit_rates=target_hit_rates,
+        directional_metrics=directional_metrics,
+        segmentation=segmentation,
+        segment_records=segment_records,
+    )
+
+
+def _compose_strategy_notes(
+    *,
+    universe_notes: Sequence[str],
+    daily_notes: Sequence[str],
+    intraday_notes: Sequence[str],
+) -> tuple[str, ...]:
+    return tuple(
+        [
+            *list(universe_notes),
+            *list(daily_notes),
+            *list(intraday_notes),
+        ]
+    )
+
+
+def _build_strategy_run_result(
+    *,
+    strategy: str,
+    request: StrategyModelingRequest,
+    policy: StrategyModelingPolicyConfig,
+    feature_config: StrategyFeatureConfig,
+    segmentation_config: StrategySegmentationConfig,
+    inputs: _StrategyInputBundle,
+    filtered: _StrategyFilteredBundle,
+    trades: _StrategyTradeBundle,
+    analytics: _StrategyAnalyticsBundle,
+    notes: tuple[str, ...],
+) -> StrategyModelingRunResult:
+    return StrategyModelingRunResult(
+        strategy=strategy,
+        policy=policy,
+        feature_config=feature_config,
+        segmentation_config=segmentation_config,
+        requested_symbols=tuple(inputs.requested_symbols),
+        universe_symbols=tuple(inputs.universe.symbols),
+        modeled_symbols=tuple(sorted(inputs.daily.candles_by_symbol)),
+        skipped_symbols=tuple(inputs.daily.skipped_symbols),
+        missing_symbols=tuple(inputs.daily.missing_symbols),
+        source_by_symbol=dict(inputs.daily.source_by_symbol),
+        required_sessions_by_symbol=inputs.required_sessions,
+        intraday_preflight=inputs.intraday.preflight,
+        signal_events=filtered.sorted_events,
+        trade_simulations=trades.sorted_trades,
+        portfolio_ledger=tuple(analytics.portfolio.ledger),
+        equity_curve=tuple(analytics.portfolio.equity_curve),
+        accepted_trade_ids=tuple(analytics.portfolio.accepted_trade_ids),
+        skipped_trade_ids=tuple(analytics.portfolio.skipped_trade_ids),
+        portfolio_metrics=analytics.portfolio_metrics_result.portfolio_metrics,
+        target_hit_rates=analytics.target_hit_rates,
+        expectancy_dollars=analytics.portfolio_metrics_result.expectancy_dollars,
+        segmentation=analytics.segmentation,
+        segment_records=analytics.segment_records,
+        segment_context=filtered.sorted_segment_context,
+        filter_metadata=filtered.filter_metadata,
+        filter_summary=filtered.filter_summary,
+        directional_metrics=analytics.directional_metrics,
+        notes=notes,
+    )
 
 
 def build_strategy_modeling_service(
