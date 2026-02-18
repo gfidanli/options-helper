@@ -225,132 +225,40 @@ def compute_volume_profile(
 
     if num_bins <= 0:
         warnings.append("invalid_num_bins")
-        return VolumeProfileResult(
-            bins=[],
-            poc_price=None,
-            hvn_candidates=[],
-            lvn_candidates=[],
-            warnings=_dedupe_preserve_order(warnings),
-        )
+        return _empty_volume_profile_result(warnings)
 
     if bars.empty:
         warnings.append("empty_intraday_bars")
-        return VolumeProfileResult(
-            bins=[],
-            poc_price=None,
-            hvn_candidates=[],
-            lvn_candidates=[],
-            warnings=_dedupe_preserve_order(warnings),
-        )
+        return _empty_volume_profile_result(warnings)
 
-    profile_price = bars["close"].copy()
-    high_low_mid = (bars["high"] + bars["low"]) / 2.0
-    profile_price = profile_price.where(profile_price.notna(), high_low_mid)
-    profile_price = profile_price.where(profile_price.notna(), bars["open"])
-
-    volume = bars["volume"].astype("float64")
-    valid = profile_price.notna() & (volume > 0.0)
-
-    if not bool(valid.any()):
+    inputs = _prepare_volume_profile_inputs(bars)
+    if inputs is None:
         warnings.append("zero_volume_profile")
+        return _empty_volume_profile_result(warnings)
+    price_values, vol_values = inputs
+
+    single_price_result = _single_price_volume_profile_result(price_values=price_values, vol_values=vol_values)
+    if single_price_result is not None:
         return VolumeProfileResult(
-            bins=[],
-            poc_price=None,
-            hvn_candidates=[],
-            lvn_candidates=[],
-            warnings=_dedupe_preserve_order(warnings),
+            bins=single_price_result.bins,
+            poc_price=single_price_result.poc_price,
+            hvn_candidates=single_price_result.hvn_candidates,
+            lvn_candidates=single_price_result.lvn_candidates,
+            warnings=_dedupe_preserve_order([*warnings, *single_price_result.warnings]),
         )
 
-    price_values = profile_price[valid].astype("float64").to_numpy()
-    vol_values = volume[valid].astype("float64").to_numpy()
-
-    price_min = float(np.min(price_values))
-    price_max = float(np.max(price_values))
-
-    if price_min == price_max:
-        total = float(np.sum(vol_values))
-        if total <= 0.0:
-            warnings.append("zero_volume_profile")
-            return VolumeProfileResult(
-                bins=[],
-                poc_price=None,
-                hvn_candidates=[],
-                lvn_candidates=[],
-                warnings=_dedupe_preserve_order(warnings),
-            )
-        single_bin = VolumeProfileBin(
-            price_bin_low=price_min,
-            price_bin_high=price_max,
-            volume=total,
-            volume_pct=1.0,
-            is_poc=True,
-            is_hvn=True,
-            is_lvn=True,
-        )
-        return VolumeProfileResult(
-            bins=[single_bin],
-            poc_price=price_min,
-            hvn_candidates=[price_min],
-            lvn_candidates=[price_min],
-            warnings=_dedupe_preserve_order(warnings),
-        )
-
-    edges = np.linspace(price_min, price_max, num_bins + 1, dtype="float64")
-    bin_idx = np.searchsorted(edges, price_values, side="right") - 1
-    bin_idx = np.clip(bin_idx, 0, num_bins - 1)
-
-    bin_volume = np.zeros(num_bins, dtype="float64")
-    np.add.at(bin_volume, bin_idx, vol_values)
-
-    total_volume = float(np.sum(bin_volume))
-    if total_volume <= 0.0:
+    histogram = _volume_profile_histogram(price_values=price_values, vol_values=vol_values, num_bins=num_bins)
+    if histogram is None:
         warnings.append("zero_volume_profile")
-        return VolumeProfileResult(
-            bins=[],
-            poc_price=None,
-            hvn_candidates=[],
-            lvn_candidates=[],
-            warnings=_dedupe_preserve_order(warnings),
-        )
-
-    active = bin_volume[bin_volume > 0.0]
-    hvn_cutoff = float(np.quantile(active, hvn_quantile)) if active.size else float("nan")
-    lvn_cutoff = float(np.quantile(active, lvn_quantile)) if active.size else float("nan")
-
-    poc_idx = int(np.argmax(bin_volume))
-
-    bins: list[VolumeProfileBin] = []
-    hvn_candidates: list[float] = []
-    lvn_candidates: list[float] = []
-    poc_price: float | None = None
-
-    for idx in range(num_bins):
-        low = float(edges[idx])
-        high = float(edges[idx + 1])
-        volume_value = float(bin_volume[idx])
-        mid = (low + high) / 2.0
-        is_poc = idx == poc_idx and volume_value > 0.0
-        is_hvn = volume_value > 0.0 and volume_value >= hvn_cutoff
-        is_lvn = volume_value > 0.0 and volume_value <= lvn_cutoff
-
-        if is_poc:
-            poc_price = mid
-        if is_hvn:
-            hvn_candidates.append(mid)
-        if is_lvn:
-            lvn_candidates.append(mid)
-
-        bins.append(
-            VolumeProfileBin(
-                price_bin_low=low,
-                price_bin_high=high,
-                volume=volume_value,
-                volume_pct=volume_value / total_volume,
-                is_poc=is_poc,
-                is_hvn=is_hvn,
-                is_lvn=is_lvn,
-            )
-        )
+        return _empty_volume_profile_result(warnings)
+    edges, bin_volume, total_volume = histogram
+    bins, poc_price, hvn_candidates, lvn_candidates = _build_volume_profile_bins(
+        edges=edges,
+        bin_volume=bin_volume,
+        total_volume=total_volume,
+        hvn_quantile=hvn_quantile,
+        lvn_quantile=lvn_quantile,
+    )
 
     return VolumeProfileResult(
         bins=bins,
@@ -359,6 +267,129 @@ def compute_volume_profile(
         lvn_candidates=lvn_candidates,
         warnings=_dedupe_preserve_order(warnings),
     )
+
+
+def _empty_volume_profile_result(warnings: list[str]) -> VolumeProfileResult:
+    return VolumeProfileResult(
+        bins=[],
+        poc_price=None,
+        hvn_candidates=[],
+        lvn_candidates=[],
+        warnings=_dedupe_preserve_order(warnings),
+    )
+
+
+def _prepare_volume_profile_inputs(bars: pd.DataFrame) -> tuple[np.ndarray, np.ndarray] | None:
+    profile_price = bars["close"].copy()
+    high_low_mid = (bars["high"] + bars["low"]) / 2.0
+    profile_price = profile_price.where(profile_price.notna(), high_low_mid)
+    profile_price = profile_price.where(profile_price.notna(), bars["open"])
+    volume = bars["volume"].astype("float64")
+    valid = profile_price.notna() & (volume > 0.0)
+    if not bool(valid.any()):
+        return None
+    price_values = profile_price[valid].astype("float64").to_numpy()
+    vol_values = volume[valid].astype("float64").to_numpy()
+    return price_values, vol_values
+
+
+def _single_price_volume_profile_result(
+    *,
+    price_values: np.ndarray,
+    vol_values: np.ndarray,
+) -> VolumeProfileResult | None:
+    price_min = float(np.min(price_values))
+    price_max = float(np.max(price_values))
+    if price_min != price_max:
+        return None
+    total = float(np.sum(vol_values))
+    if total <= 0.0:
+        return VolumeProfileResult(
+            bins=[],
+            poc_price=None,
+            hvn_candidates=[],
+            lvn_candidates=[],
+            warnings=["zero_volume_profile"],
+        )
+    single_bin = VolumeProfileBin(
+        price_bin_low=price_min,
+        price_bin_high=price_max,
+        volume=total,
+        volume_pct=1.0,
+        is_poc=True,
+        is_hvn=True,
+        is_lvn=True,
+    )
+    return VolumeProfileResult(
+        bins=[single_bin],
+        poc_price=price_min,
+        hvn_candidates=[price_min],
+        lvn_candidates=[price_min],
+        warnings=[],
+    )
+
+
+def _volume_profile_histogram(
+    *,
+    price_values: np.ndarray,
+    vol_values: np.ndarray,
+    num_bins: int,
+) -> tuple[np.ndarray, np.ndarray, float] | None:
+    price_min = float(np.min(price_values))
+    price_max = float(np.max(price_values))
+    edges = np.linspace(price_min, price_max, num_bins + 1, dtype="float64")
+    bin_idx = np.searchsorted(edges, price_values, side="right") - 1
+    bin_idx = np.clip(bin_idx, 0, num_bins - 1)
+    bin_volume = np.zeros(num_bins, dtype="float64")
+    np.add.at(bin_volume, bin_idx, vol_values)
+    total_volume = float(np.sum(bin_volume))
+    if total_volume <= 0.0:
+        return None
+    return edges, bin_volume, total_volume
+
+
+def _build_volume_profile_bins(
+    *,
+    edges: np.ndarray,
+    bin_volume: np.ndarray,
+    total_volume: float,
+    hvn_quantile: float,
+    lvn_quantile: float,
+) -> tuple[list[VolumeProfileBin], float | None, list[float], list[float]]:
+    active = bin_volume[bin_volume > 0.0]
+    hvn_cutoff = float(np.quantile(active, hvn_quantile)) if active.size else float("nan")
+    lvn_cutoff = float(np.quantile(active, lvn_quantile)) if active.size else float("nan")
+    poc_idx = int(np.argmax(bin_volume))
+    bins: list[VolumeProfileBin] = []
+    hvn_candidates: list[float] = []
+    lvn_candidates: list[float] = []
+    poc_price: float | None = None
+    for idx in range(len(bin_volume)):
+        bin_low = float(edges[idx])
+        bin_high = float(edges[idx + 1])
+        volume_value = float(bin_volume[idx])
+        mid = (bin_low + bin_high) / 2.0
+        is_poc = idx == poc_idx and volume_value > 0.0
+        is_hvn = volume_value > 0.0 and volume_value >= hvn_cutoff
+        is_lvn = volume_value > 0.0 and volume_value <= lvn_cutoff
+        if is_poc:
+            poc_price = mid
+        if is_hvn:
+            hvn_candidates.append(mid)
+        if is_lvn:
+            lvn_candidates.append(mid)
+        bins.append(
+            VolumeProfileBin(
+                price_bin_low=bin_low,
+                price_bin_high=bin_high,
+                volume=volume_value,
+                volume_pct=volume_value / total_volume,
+                is_poc=is_poc,
+                is_hvn=is_hvn,
+                is_lvn=is_lvn,
+            )
+        )
+    return bins, poc_price, hvn_candidates, lvn_candidates
 
 
 def compute_gap_and_daily_levels(
