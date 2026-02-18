@@ -91,6 +91,43 @@ def _merge_contract_metadata(chain_df: pd.DataFrame, contracts_df: pd.DataFrame 
     return merged
 
 
+def _merge_option_volume_rows(chain_df: pd.DataFrame, bars_df: pd.DataFrame) -> pd.DataFrame:
+    if chain_df is None or chain_df.empty:
+        return chain_df
+    if bars_df is None or bars_df.empty:
+        return chain_df
+
+    bars_df = bars_df.rename(
+        columns={
+            "volume": "volume_bar",
+            "vwap": "vwap_bar",
+            "trade_count": "trade_count_bar",
+        }
+    )
+    merge_cols = ["contractSymbol", "volume_bar", "vwap_bar", "trade_count_bar"]
+    chain_df = chain_df.merge(bars_df[merge_cols], on="contractSymbol", how="left")
+
+    if "volume" not in chain_df.columns:
+        chain_df["volume"] = pd.NA
+    volume_numeric = pd.to_numeric(chain_df["volume"], errors="coerce")
+    fill_volume = volume_numeric.isna() | (volume_numeric <= 0)
+    chain_df.loc[fill_volume, "volume"] = chain_df.loc[fill_volume, "volume_bar"]
+
+    if "vwap" not in chain_df.columns:
+        chain_df["vwap"] = chain_df["vwap_bar"]
+    else:
+        mask = chain_df["vwap"].map(_needs_fill)
+        chain_df.loc[mask, "vwap"] = chain_df.loc[mask, "vwap_bar"]
+
+    if "trade_count" not in chain_df.columns:
+        chain_df["trade_count"] = chain_df["trade_count_bar"]
+    else:
+        mask = chain_df["trade_count"].map(_needs_fill)
+        chain_df.loc[mask, "trade_count"] = chain_df.loc[mask, "trade_count_bar"]
+
+    return chain_df.drop(columns=["volume_bar", "vwap_bar", "trade_count_bar"], errors="ignore")
+
+
 def _fill_missing_from_osi(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty or "contractSymbol" not in df.columns:
         return df
@@ -376,6 +413,93 @@ class AlpacaProvider(MarketDataProvider):
 
         return OptionsChain(symbol=sym, expiry=expiry, calls=calls, puts=puts)
 
+    def _fetch_contracts_for_expiry(self, sym: str, expiry: date) -> list[dict[str, Any]]:
+        try:
+            return self._client.list_option_contracts(
+                sym,
+                exp_gte=expiry,
+                exp_lte=expiry,
+                limit=1000,
+                page_limit=50,
+            )
+        except DataFetchError:
+            return []
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to fetch Alpaca contracts for %s: %s", sym, exc)
+            return []
+
+    def _load_contracts_df_for_expiry(self, sym: str, expiry: date) -> pd.DataFrame | None:
+        as_of = date.today()
+        contracts_df = self._contracts_store.load(sym, as_of)
+        if contracts_df is None:
+            raw_contracts = self._fetch_contracts_for_expiry(sym, expiry)
+            if raw_contracts:
+                contracts_df = contracts_to_df(raw_contracts)
+                meta = {
+                    "provider": self.name,
+                    "provider_version": self._client.provider_version,
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    "exp_gte": expiry.isoformat(),
+                    "exp_lte": expiry.isoformat(),
+                    "contracts": int(len(raw_contracts)),
+                }
+                self._contracts_store.save(sym, as_of, contracts_df, raw={"contracts": raw_contracts}, meta=meta)
+        if contracts_df is not None and "expiry" in contracts_df.columns:
+            contracts_df = contracts_df[contracts_df["expiry"] == expiry.isoformat()]
+        return contracts_df
+
+    def _fetch_daily_option_bars(
+        self,
+        *,
+        symbols: list[str],
+        snapshot_day: date,
+        sym: str,
+        expiry: date,
+    ) -> pd.DataFrame:
+        if snapshot_day > date.today() or not symbols:
+            return pd.DataFrame()
+        start_dt = datetime.combine(snapshot_day, datetime.min.time()).replace(tzinfo=timezone.utc)
+        end_dt = None
+        if snapshot_day < date.today():
+            end_dt = datetime.combine(snapshot_day, datetime.max.time()).replace(tzinfo=timezone.utc)
+        try:
+            return self._client.get_option_bars(symbols, start=start_dt, end=end_dt, interval="1d")
+        except DataFetchError as exc:
+            logger.warning("Failed to fetch Alpaca option bars for %s %s: %s", sym, expiry, exc)
+            return pd.DataFrame()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to fetch Alpaca option bars for %s %s: %s", sym, expiry, exc)
+            return pd.DataFrame()
+
+    def _merge_daily_option_bars(self, chain_df: pd.DataFrame, *, sym: str, expiry: date, snapshot_date: date | None) -> pd.DataFrame:
+        if "contractSymbol" not in chain_df.columns or chain_df.empty:
+            return chain_df
+        symbols = [str(raw).strip() for raw in chain_df["contractSymbol"].dropna().unique().tolist() if str(raw).strip()]
+        bars_df = self._fetch_daily_option_bars(
+            symbols=symbols,
+            snapshot_day=snapshot_date or date.today(),
+            sym=sym,
+            expiry=expiry,
+        )
+        if bars_df.empty:
+            return chain_df
+        return _merge_option_volume_rows(chain_df, bars_df)
+
+    def _build_underlying_payload(self, payload: Any, *, sym: str) -> dict[str, Any]:
+        if isinstance(payload, dict):
+            underlying_payload = payload.get("underlying") or payload.get("underlying_snapshot")
+        else:
+            underlying_payload = getattr(payload, "underlying", None)
+        underlying: dict[str, Any] = {"symbol": sym}
+        if isinstance(underlying_payload, dict):
+            underlying.update(underlying_payload)
+            spot = _extract_snapshot_price(underlying_payload, sym)
+            if spot is not None:
+                underlying["spot"] = spot
+        elif underlying_payload is not None:
+            underlying["raw"] = str(underlying_payload)
+        return underlying
+
     def get_options_chain_raw(self, symbol: str, expiry: date, *, snapshot_date: date | None = None) -> dict:
         sym = to_repo_symbol(symbol)
         if not sym:
@@ -394,132 +518,17 @@ class AlpacaProvider(MarketDataProvider):
 
         rows = option_chain_to_rows(payload)
         chain_df = pd.DataFrame(rows)
-
-        contracts_df: pd.DataFrame | None = None
-        as_of = date.today()
-        cached = self._contracts_store.load(sym, as_of)
-        if cached is not None:
-            contracts_df = cached
-        else:
-            try:
-                raw_contracts = self._client.list_option_contracts(
-                    sym,
-                    exp_gte=expiry,
-                    exp_lte=expiry,
-                    limit=1000,
-                    page_limit=50,
-                )
-            except DataFetchError:
-                raw_contracts = []
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Failed to fetch Alpaca contracts for %s: %s", sym, exc)
-                raw_contracts = []
-
-            if raw_contracts:
-                contracts_df = contracts_to_df(raw_contracts)
-                meta = {
-                    "provider": self.name,
-                    "provider_version": self._client.provider_version,
-                    "fetched_at": datetime.now(timezone.utc).isoformat(),
-                    "exp_gte": expiry.isoformat(),
-                    "exp_lte": expiry.isoformat(),
-                    "contracts": int(len(raw_contracts)),
-                }
-                self._contracts_store.save(sym, as_of, contracts_df, raw={"contracts": raw_contracts}, meta=meta)
-
-        if contracts_df is not None and "expiry" in contracts_df.columns:
-            contracts_df = contracts_df[contracts_df["expiry"] == expiry.isoformat()]
-
+        contracts_df = self._load_contracts_df_for_expiry(sym, expiry)
         chain_df = _merge_contract_metadata(chain_df, contracts_df)
         chain_df = _fill_missing_from_osi(chain_df)
-
-        if "contractSymbol" in chain_df.columns and not chain_df.empty:
-            snapshot_day = snapshot_date or date.today()
-            if snapshot_day <= date.today():
-                start_dt = datetime.combine(snapshot_day, datetime.min.time()).replace(tzinfo=timezone.utc)
-                end_dt = None
-                if snapshot_day < date.today():
-                    end_dt = datetime.combine(snapshot_day, datetime.max.time()).replace(tzinfo=timezone.utc)
-
-                symbols = [
-                    str(raw).strip()
-                    for raw in chain_df["contractSymbol"].dropna().unique().tolist()
-                    if str(raw).strip()
-                ]
-                if symbols:
-                    try:
-                        bars_df = self._client.get_option_bars(
-                            symbols,
-                            start=start_dt,
-                            end=end_dt,
-                            interval="1d",
-                        )
-                    except DataFetchError as exc:
-                        logger.warning("Failed to fetch Alpaca option bars for %s %s: %s", sym, expiry, exc)
-                        bars_df = pd.DataFrame()
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("Failed to fetch Alpaca option bars for %s %s: %s", sym, expiry, exc)
-                        bars_df = pd.DataFrame()
-
-                    if not bars_df.empty:
-                        bars_df = bars_df.rename(
-                            columns={
-                                "volume": "volume_bar",
-                                "vwap": "vwap_bar",
-                                "trade_count": "trade_count_bar",
-                            }
-                        )
-                        merge_cols = ["contractSymbol", "volume_bar", "vwap_bar", "trade_count_bar"]
-                        chain_df = chain_df.merge(
-                            bars_df[merge_cols],
-                            on="contractSymbol",
-                            how="left",
-                        )
-
-                        if "volume" not in chain_df.columns:
-                            chain_df["volume"] = pd.NA
-                        volume_numeric = pd.to_numeric(chain_df["volume"], errors="coerce")
-                        fill_volume = volume_numeric.isna() | (volume_numeric <= 0)
-                        chain_df.loc[fill_volume, "volume"] = chain_df.loc[fill_volume, "volume_bar"]
-
-                        if "vwap" not in chain_df.columns:
-                            chain_df["vwap"] = chain_df["vwap_bar"]
-                        else:
-                            mask = chain_df["vwap"].map(_needs_fill)
-                            chain_df.loc[mask, "vwap"] = chain_df.loc[mask, "vwap_bar"]
-
-                        if "trade_count" not in chain_df.columns:
-                            chain_df["trade_count"] = chain_df["trade_count_bar"]
-                        else:
-                            mask = chain_df["trade_count"].map(_needs_fill)
-                            chain_df.loc[mask, "trade_count"] = chain_df.loc[mask, "trade_count_bar"]
-
-                        chain_df = chain_df.drop(
-                            columns=["volume_bar", "vwap_bar", "trade_count_bar"],
-                            errors="ignore",
-                        )
+        chain_df = self._merge_daily_option_bars(chain_df, sym=sym, expiry=expiry, snapshot_date=snapshot_date)
 
         if "optionType" not in chain_df.columns:
             chain_df["optionType"] = pd.NA
 
         calls_df = chain_df[chain_df.get("optionType") == "call"].copy()
         puts_df = chain_df[chain_df.get("optionType") == "put"].copy()
-
-        underlying_payload = None
-        if isinstance(payload, dict):
-            underlying_payload = payload.get("underlying") or payload.get("underlying_snapshot")
-        else:
-            underlying_payload = getattr(payload, "underlying", None)
-
-        underlying: dict[str, Any] = {"symbol": sym}
-        if isinstance(underlying_payload, dict):
-            underlying.update(underlying_payload)
-            spot = _extract_snapshot_price(underlying_payload, sym)
-            if spot is not None:
-                underlying["spot"] = spot
-        elif underlying_payload is not None:
-            underlying["raw"] = str(underlying_payload)
-
+        underlying = self._build_underlying_payload(payload, sym=sym)
         return {
             "underlying": underlying,
             "calls": calls_df.to_dict(orient="records"),
