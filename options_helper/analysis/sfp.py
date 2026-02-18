@@ -39,6 +39,20 @@ class SfpEvent:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class _SfpBreakArrays:
+    bearish_sfp: np.ndarray
+    bullish_sfp: np.ndarray
+    bars_since_high: np.ndarray
+    bars_since_low: np.ndarray
+    last_high_level: np.ndarray
+    last_low_level: np.ndarray
+    swept_high_level: np.ndarray
+    swept_low_level: np.ndarray
+    swept_high_ts: list[str | None]
+    swept_low_ts: list[str | None]
+
+
 def normalize_ohlc_frame(ohlc: pd.DataFrame) -> pd.DataFrame:
     if ohlc is None or ohlc.empty:
         return pd.DataFrame(columns=list(_REQUIRED_OHLC_COLUMNS))
@@ -105,6 +119,43 @@ def compute_sfp_signals(
     if timeframe and timeframe.lower() not in {"native", "raw", "none"}:
         frame = resample_ohlc_frame(frame, timeframe=timeframe)
 
+    out = _initialize_sfp_output(frame)
+    n = len(out)
+    if n == 0:
+        return out
+
+    high = frame["High"].to_numpy(dtype=float)
+    low = frame["Low"].to_numpy(dtype=float)
+    close = frame["Close"].to_numpy(dtype=float)
+    swing_high, swing_low = _compute_swings(
+        high=high,
+        low=low,
+        left=left,
+        right=right,
+    )
+    breaks = _compute_sfp_break_arrays(
+        index_values=frame.index.tolist(),
+        high=high,
+        low=low,
+        close=close,
+        swing_high=swing_high,
+        swing_low=swing_low,
+        right=right,
+        min_distance=min_distance,
+        ignore_swept_swings=ignore_swept_swings,
+    )
+    _apply_sfp_arrays(
+        out=out,
+        high=high,
+        low=low,
+        swing_high=swing_high,
+        swing_low=swing_low,
+        breaks=breaks,
+    )
+    return out
+
+
+def _initialize_sfp_output(frame: pd.DataFrame) -> pd.DataFrame:
     n = len(frame)
     out = frame.copy()
     out["swing_high"] = False
@@ -122,17 +173,19 @@ def compute_sfp_signals(
     out["bearish_sfp"] = False
     out["bullish_sfp"] = False
     out["sfp"] = pd.Series([None] * n, index=out.index, dtype="object")
+    return out
 
-    if n == 0:
-        return out
 
-    high = frame["High"].to_numpy(dtype=float)
-    low = frame["Low"].to_numpy(dtype=float)
-    close = frame["Close"].to_numpy(dtype=float)
-
+def _compute_swings(
+    *,
+    high: np.ndarray,
+    low: np.ndarray,
+    left: int,
+    right: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    n = len(high)
     swing_high = np.zeros(n, dtype=bool)
     swing_low = np.zeros(n, dtype=bool)
-
     for i in range(left, n - right):
         h = high[i]
         low_val = low[i]
@@ -156,7 +209,22 @@ def compute_sfp_signals(
             and low_val <= float(np.min(right_low))
         ):
             swing_low[i] = True
+    return swing_high, swing_low
 
+
+def _compute_sfp_break_arrays(
+    *,
+    index_values: list[object],
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    swing_high: np.ndarray,
+    swing_low: np.ndarray,
+    right: int,
+    min_distance: int,
+    ignore_swept_swings: bool,
+) -> _SfpBreakArrays:
+    n = len(high)
     bearish_sfp = np.zeros(n, dtype=bool)
     bullish_sfp = np.zeros(n, dtype=bool)
     bars_since_high = np.full(n, np.nan, dtype=float)
@@ -167,14 +235,8 @@ def compute_sfp_signals(
     swept_low_level = np.full(n, np.nan, dtype=float)
     swept_high_ts: list[str | None] = [None] * n
     swept_low_ts: list[str | None] = [None] * n
-
     last_swing_high_idx: int | None = None
     last_swing_low_idx: int | None = None
-
-    def _label(ts: object) -> str:
-        if isinstance(ts, pd.Timestamp):
-            return ts.isoformat()
-        return str(ts)
 
     for i in range(n):
         # A swing at index k needs `right` future bars to be confirmed.
@@ -185,59 +247,124 @@ def compute_sfp_signals(
                 last_swing_high_idx = confirm_idx
             if swing_low[confirm_idx]:
                 last_swing_low_idx = confirm_idx
+        last_swing_high_idx = _mark_sfp_break(
+            idx=i,
+            extreme_price=high[i],
+            close_price=close[i],
+            swing_idx=last_swing_high_idx,
+            swing_levels=high,
+            min_distance=min_distance,
+            bars_since=bars_since_high,
+            last_level=last_high_level,
+            signal_flag=bearish_sfp,
+            swept_level=swept_high_level,
+            swept_ts=swept_high_ts,
+            direction="bearish",
+            index_values=index_values,
+            ignore_swept_swings=ignore_swept_swings,
+        )
+        last_swing_low_idx = _mark_sfp_break(
+            idx=i,
+            extreme_price=low[i],
+            close_price=close[i],
+            swing_idx=last_swing_low_idx,
+            swing_levels=low,
+            min_distance=min_distance,
+            bars_since=bars_since_low,
+            last_level=last_low_level,
+            signal_flag=bullish_sfp,
+            swept_level=swept_low_level,
+            swept_ts=swept_low_ts,
+            direction="bullish",
+            index_values=index_values,
+            ignore_swept_swings=ignore_swept_swings,
+        )
+    return _SfpBreakArrays(
+        bearish_sfp=bearish_sfp,
+        bullish_sfp=bullish_sfp,
+        bars_since_high=bars_since_high,
+        bars_since_low=bars_since_low,
+        last_high_level=last_high_level,
+        last_low_level=last_low_level,
+        swept_high_level=swept_high_level,
+        swept_low_level=swept_low_level,
+        swept_high_ts=swept_high_ts,
+        swept_low_ts=swept_low_ts,
+    )
 
-        if last_swing_high_idx is not None:
-            level = float(high[last_swing_high_idx])
-            age = i - last_swing_high_idx
-            last_high_level[i] = level
-            bars_since_high[i] = float(age)
-            if age >= min_distance and np.isfinite(high[i]) and np.isfinite(close[i]):
-                if high[i] > level and close[i] < level:
-                    bearish_sfp[i] = True
-                    swept_high_level[i] = level
-                    swept_high_ts[i] = _label(frame.index[last_swing_high_idx])
-                    if ignore_swept_swings:
-                        # Optional "consume liquidity" mode: once swept, this swing can no longer
-                        # anchor later SFPs until a new swing high is confirmed.
-                        last_swing_high_idx = None
 
-        if last_swing_low_idx is not None:
-            level = float(low[last_swing_low_idx])
-            age = i - last_swing_low_idx
-            last_low_level[i] = level
-            bars_since_low[i] = float(age)
-            if age >= min_distance and np.isfinite(low[i]) and np.isfinite(close[i]):
-                if low[i] < level and close[i] > level:
-                    bullish_sfp[i] = True
-                    swept_low_level[i] = level
-                    swept_low_ts[i] = _label(frame.index[last_swing_low_idx])
-                    if ignore_swept_swings:
-                        # Optional "consume liquidity" mode: once swept, this swing can no longer
-                        # anchor later SFPs until a new swing low is confirmed.
-                        last_swing_low_idx = None
+def _mark_sfp_break(
+    *,
+    idx: int,
+    extreme_price: float,
+    close_price: float,
+    swing_idx: int | None,
+    swing_levels: np.ndarray,
+    min_distance: int,
+    bars_since: np.ndarray,
+    last_level: np.ndarray,
+    signal_flag: np.ndarray,
+    swept_level: np.ndarray,
+    swept_ts: list[str | None],
+    direction: str,
+    index_values: list[object],
+    ignore_swept_swings: bool,
+) -> int | None:
+    if swing_idx is None:
+        return None
+    level = float(swing_levels[swing_idx])
+    age = idx - swing_idx
+    last_level[idx] = level
+    bars_since[idx] = float(age)
+    if age < min_distance or not np.isfinite(extreme_price) or not np.isfinite(close_price):
+        return swing_idx
+    if direction == "bearish":
+        triggered = extreme_price > level and close_price < level
+    else:
+        triggered = extreme_price < level and close_price > level
+    if not triggered:
+        return swing_idx
+    signal_flag[idx] = True
+    swept_level[idx] = level
+    swept_ts[idx] = _timestamp_label(index_values[swing_idx])
+    return None if ignore_swept_swings else swing_idx
 
+
+def _apply_sfp_arrays(
+    *,
+    out: pd.DataFrame,
+    high: np.ndarray,
+    low: np.ndarray,
+    swing_high: np.ndarray,
+    swing_low: np.ndarray,
+    breaks: _SfpBreakArrays,
+) -> None:
+    n = len(out)
     out["swing_high"] = swing_high
     out["swing_low"] = swing_low
     out["swing_high_level"] = np.where(swing_high, high, np.nan)
     out["swing_low_level"] = np.where(swing_low, low, np.nan)
-    out["last_swing_high_level"] = last_high_level
-    out["last_swing_low_level"] = last_low_level
-    out["bars_since_swing_high"] = bars_since_high
-    out["bars_since_swing_low"] = bars_since_low
-    out["swept_swing_high_level"] = swept_high_level
-    out["swept_swing_low_level"] = swept_low_level
-    out["swept_swing_high_timestamp"] = pd.Series(swept_high_ts, index=out.index, dtype="object")
-    out["swept_swing_low_timestamp"] = pd.Series(swept_low_ts, index=out.index, dtype="object")
-    out["bearish_sfp"] = bearish_sfp
-    out["bullish_sfp"] = bullish_sfp
-
+    out["last_swing_high_level"] = breaks.last_high_level
+    out["last_swing_low_level"] = breaks.last_low_level
+    out["bars_since_swing_high"] = breaks.bars_since_high
+    out["bars_since_swing_low"] = breaks.bars_since_low
+    out["swept_swing_high_level"] = breaks.swept_high_level
+    out["swept_swing_low_level"] = breaks.swept_low_level
+    out["swept_swing_high_timestamp"] = pd.Series(breaks.swept_high_ts, index=out.index, dtype="object")
+    out["swept_swing_low_timestamp"] = pd.Series(breaks.swept_low_ts, index=out.index, dtype="object")
+    out["bearish_sfp"] = breaks.bearish_sfp
+    out["bullish_sfp"] = breaks.bullish_sfp
     direction = np.full(n, None, dtype=object)
-    direction[(bearish_sfp) & (~bullish_sfp)] = "bearish"
-    direction[(bullish_sfp) & (~bearish_sfp)] = "bullish"
-    direction[(bullish_sfp) & (bearish_sfp)] = "both"
+    direction[(breaks.bearish_sfp) & (~breaks.bullish_sfp)] = "bearish"
+    direction[(breaks.bullish_sfp) & (~breaks.bearish_sfp)] = "bullish"
+    direction[(breaks.bullish_sfp) & (breaks.bearish_sfp)] = "both"
     out["sfp"] = pd.Series(direction, index=out.index, dtype="object")
 
-    return out
+
+def _timestamp_label(value: object) -> str:
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    return str(value)
 
 
 def extract_sfp_events(signals: pd.DataFrame) -> list[SfpEvent]:
