@@ -475,116 +475,159 @@ def render_briefing_markdown(
     portfolio_table_md: str | None = None,
     top: int = 3,
 ) -> str:
-    lines: list[str] = []
-
-    lines.append(f"# Daily briefing ({report_date})")
-    lines.append("")
-    lines.append("> Not financial advice. For informational/educational use only.")
-    lines.append("")
-    lines.append(f"- Portfolio: `{portfolio_path}`")
-    lines.append(f"- Symbols: `{', '.join(s.symbol for s in symbol_sections) or '-'}`")
-    lines.append("")
-
-    if portfolio_table_md:
-        lines.append("## Portfolio")
-        lines.append("")
-        lines.append(portfolio_table_md.rstrip())
-        lines.append("")
-
-    for sec in symbol_sections:
-        lines.append(f"## {sec.symbol} ({sec.as_of})")
-        lines.append("")
-
-        as_of_date = None
-        try:
-            as_of_date = date.fromisoformat(sec.as_of)
-        except Exception:  # noqa: BLE001
-            as_of_date = date.today()
-        lines.append(f"- {format_next_earnings_line(as_of_date, sec.next_earnings_date)}")
-        if sec.quote_quality:
-            lines.append(f"- {_fmt_quote_quality(sec.quote_quality)}")
-        vol_line = vol_regime_takeaway(sec.derived)
-        if vol_line:
-            lines.append(f"- {vol_line}")
-        if sec.confluence is not None:
-            total = f"{sec.confluence.total:.0f}"
-            coverage = f"{sec.confluence.coverage * 100.0:.0f}%"
-            lines.append(f"- Confluence score: `{total}` (coverage `{coverage}`)")
-        lines.append("")
-
-        if sec.errors and sec.chain is None and sec.technicals is None:
-            lines.append("Errors:")
-            for e in sec.errors:
-                lines.append(f"- {e}")
-            lines.append("")
-            continue
-        if sec.errors:
-            lines.append("Errors:")
-            for e in sec.errors:
-                lines.append(f"- {e}")
-            lines.append("")
-
-        if sec.warnings:
-            lines.append("Warnings:")
-            for w in sec.warnings:
-                lines.append(f"- {w}")
-            lines.append("")
-
-        if sec.technicals is not None:
-            lines.append("### Technicals (canonical: technicals_backtesting)")
-            for b in technicals_takeaways(sec.technicals):
-                lines.append(f"- {b}")
-            lines.append("")
-
-        if sec.chain is not None:
-            if sec.technicals is not None:
-                sm = strike_map_takeaways(
-                    chain=sec.chain,
-                    flow_net=sec.flow_net,
-                    technicals=sec.technicals,
-                    top=top,
-                )
-                if sm:
-                    lines.append("### Strike map (spot + ATR distance)")
-                    lines.append(f"- Spot (snapshot): `{sec.chain.spot:.2f}`")
-                    for line in sm:
-                        if line.startswith("- "):
-                            lines.append(line)
-                        elif line.endswith(":"):
-                            lines.append(f"- {line}")
-                        else:
-                            lines.append(f"- {line}")
-                    lines.append("")
-
-            lines.append("### Chain")
-            for b in chain_takeaways(sec.chain):
-                lines.append(f"- {b}")
-            if sec.chain.warnings:
-                lines.append("- Warnings: " + ", ".join(f"`{w}`" for w in sec.chain.warnings))
-            lines.append("")
-
-        if sec.compare is not None:
-            lines.append("### Compare")
-            for b in compare_takeaways(sec.compare):
-                lines.append(f"- {b}")
-            lines.append("")
-
-        if sec.flow_net is not None:
-            ft = flow_takeaways(sec.flow_net, top=top)
-            if ft:
-                lines.append("### Flow (net, aggregated by strike)")
-                # `flow_takeaways` returns a small mixed list (section headers + bullets).
-                for line in ft:
-                    if line.startswith("- "):
-                        lines.append(line)
-                    elif line.endswith(":"):
-                        lines.append(f"- {line}")
-                    else:
-                        lines.append(f"- {line}")
-                lines.append("")
-
-        if sec.derived_updated:
-            lines.append("- Derived: updated")
-            lines.append("")
-
+    lines = _briefing_header_lines(
+        report_date=report_date,
+        portfolio_path=portfolio_path,
+        symbol_sections=symbol_sections,
+    )
+    _append_portfolio_markdown(lines, portfolio_table_md)
+    for section in symbol_sections:
+        _append_symbol_section(lines, section=section, top=top)
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _briefing_header_lines(
+    *,
+    report_date: str,
+    portfolio_path: str,
+    symbol_sections: list[BriefingSymbolSection],
+) -> list[str]:
+    return [
+        f"# Daily briefing ({report_date})",
+        "",
+        "> Not financial advice. For informational/educational use only.",
+        "",
+        f"- Portfolio: `{portfolio_path}`",
+        f"- Symbols: `{', '.join(s.symbol for s in symbol_sections) or '-'}`",
+        "",
+    ]
+
+
+def _append_portfolio_markdown(lines: list[str], portfolio_table_md: str | None) -> None:
+    if not portfolio_table_md:
+        return
+    lines.append("## Portfolio")
+    lines.append("")
+    lines.append(portfolio_table_md.rstrip())
+    lines.append("")
+
+
+def _append_symbol_section(lines: list[str], *, section: BriefingSymbolSection, top: int) -> None:
+    lines.append(f"## {section.symbol} ({section.as_of})")
+    lines.append("")
+    _append_symbol_overview(lines, section=section)
+    lines.append("")
+    if _append_symbol_issues(lines, section=section):
+        return
+    _append_symbol_technicals(lines, section=section)
+    _append_symbol_chain(lines, section=section, top=top)
+    _append_symbol_compare(lines, section=section)
+    _append_symbol_flow(lines, section=section, top=top)
+    if section.derived_updated:
+        lines.append("- Derived: updated")
+        lines.append("")
+
+
+def _append_symbol_overview(lines: list[str], *, section: BriefingSymbolSection) -> None:
+    as_of_date = _parse_as_of_date(section.as_of)
+    lines.append(f"- {format_next_earnings_line(as_of_date, section.next_earnings_date)}")
+    if section.quote_quality:
+        lines.append(f"- {_fmt_quote_quality(section.quote_quality)}")
+    vol_line = vol_regime_takeaway(section.derived)
+    if vol_line:
+        lines.append(f"- {vol_line}")
+    if section.confluence is not None:
+        total = f"{section.confluence.total:.0f}"
+        coverage = f"{section.confluence.coverage * 100.0:.0f}%"
+        lines.append(f"- Confluence score: `{total}` (coverage `{coverage}`)")
+
+
+def _parse_as_of_date(as_of: str) -> date:
+    try:
+        return date.fromisoformat(as_of)
+    except Exception:  # noqa: BLE001
+        return date.today()
+
+
+def _append_symbol_issues(lines: list[str], *, section: BriefingSymbolSection) -> bool:
+    has_only_errors = bool(section.errors) and section.chain is None and section.technicals is None
+    if has_only_errors:
+        _append_labeled_messages(lines, label="Errors", messages=section.errors)
+        return True
+    if section.errors:
+        _append_labeled_messages(lines, label="Errors", messages=section.errors)
+    if section.warnings:
+        _append_labeled_messages(lines, label="Warnings", messages=section.warnings)
+    return False
+
+
+def _append_labeled_messages(lines: list[str], *, label: str, messages: list[str]) -> None:
+    lines.append(f"{label}:")
+    for message in messages:
+        lines.append(f"- {message}")
+    lines.append("")
+
+
+def _append_symbol_technicals(lines: list[str], *, section: BriefingSymbolSection) -> None:
+    if section.technicals is None:
+        return
+    lines.append("### Technicals (canonical: technicals_backtesting)")
+    for takeaway in technicals_takeaways(section.technicals):
+        lines.append(f"- {takeaway}")
+    lines.append("")
+
+
+def _append_symbol_chain(lines: list[str], *, section: BriefingSymbolSection, top: int) -> None:
+    if section.chain is None:
+        return
+    if section.technicals is not None:
+        _append_strike_map(lines, section=section, top=top)
+    lines.append("### Chain")
+    for takeaway in chain_takeaways(section.chain):
+        lines.append(f"- {takeaway}")
+    if section.chain.warnings:
+        lines.append("- Warnings: " + ", ".join(f"`{w}`" for w in section.chain.warnings))
+    lines.append("")
+
+
+def _append_strike_map(lines: list[str], *, section: BriefingSymbolSection, top: int) -> None:
+    if section.chain is None or section.technicals is None:
+        return
+    takeaways = strike_map_takeaways(
+        chain=section.chain,
+        flow_net=section.flow_net,
+        technicals=section.technicals,
+        top=top,
+    )
+    if not takeaways:
+        return
+    lines.append("### Strike map (spot + ATR distance)")
+    lines.append(f"- Spot (snapshot): `{section.chain.spot:.2f}`")
+    _append_bulleted_takeaways(lines, takeaways)
+    lines.append("")
+
+
+def _append_symbol_compare(lines: list[str], *, section: BriefingSymbolSection) -> None:
+    if section.compare is None:
+        return
+    lines.append("### Compare")
+    for takeaway in compare_takeaways(section.compare):
+        lines.append(f"- {takeaway}")
+    lines.append("")
+
+
+def _append_symbol_flow(lines: list[str], *, section: BriefingSymbolSection, top: int) -> None:
+    if section.flow_net is None:
+        return
+    takeaways = flow_takeaways(section.flow_net, top=top)
+    if not takeaways:
+        return
+    lines.append("### Flow (net, aggregated by strike)")
+    _append_bulleted_takeaways(lines, takeaways)
+    lines.append("")
+
+
+def _append_bulleted_takeaways(lines: list[str], takeaways: list[str]) -> None:
+    for takeaway in takeaways:
+        bullet = takeaway if takeaway.startswith("- ") else f"- {takeaway}"
+        lines.append(bullet)
