@@ -421,7 +421,21 @@ def _render_summary_markdown(payload: Mapping[str, Any]) -> str:
     trade_rows = _normalize_records(payload.get("trade_log", []))
     trade_review = _to_mapping(payload.get("trade_review"))
 
-    lines: list[str] = [
+    lines = _render_summary_header(payload=payload, summary=summary)
+    _append_policy_metadata_lines(lines=lines, policy=policy)
+    _append_filter_section_lines(lines=lines, filter_summary=filter_summary, filter_metadata=filter_metadata)
+    _append_directional_section_lines(lines=lines, directional_metrics=directional_metrics)
+    _append_portfolio_metrics_section_lines(lines=lines, metrics=metrics)
+    _append_r_ladder_section_lines(lines=lines, r_ladder_rows=r_ladder_rows)
+    _append_segments_section_lines(lines=lines, segments=segments)
+    _append_trade_review_section_lines(lines=lines, trade_review=trade_review)
+    _append_trade_log_notes(lines=lines, trade_rows=trade_rows)
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_summary_header(*, payload: Mapping[str, Any], summary: Mapping[str, Any]) -> list[str]:
+    return [
         f"# Strategy Modeling Summary ({str(payload.get('strategy', '')).upper()})",
         "",
         DISCLAIMER_TEXT,
@@ -438,6 +452,8 @@ def _render_summary_markdown(payload: Mapping[str, Any]) -> str:
         "",
     ]
 
+
+def _append_policy_metadata_lines(*, lines: list[str], policy: Mapping[str, Any]) -> None:
     for key in (
         "entry_anchor",
         "signal_confirmation_lag_bars",
@@ -451,6 +467,13 @@ def _render_summary_markdown(payload: Mapping[str, Any]) -> str:
         if key in policy:
             lines.append(f"- {key}: `{policy.get(key)}`")
 
+
+def _append_filter_section_lines(
+    *,
+    lines: list[str],
+    filter_summary: Mapping[str, Any],
+    filter_metadata: Mapping[str, Any],
+) -> None:
     lines.extend(["", "## Filters", ""])
     if filter_summary:
         lines.append(
@@ -467,10 +490,11 @@ def _render_summary_markdown(payload: Mapping[str, Any]) -> str:
             for reason, count in reject_counts.items()
             if (_as_int_or_none(count) or 0) > 0
         ]
-        if rejects_with_count:
-            lines.append(f"- Reject reasons: `{', '.join(rejects_with_count)}`")
-        else:
-            lines.append("- Reject reasons: `none`")
+        lines.append(
+            f"- Reject reasons: `{', '.join(rejects_with_count)}`"
+            if rejects_with_count
+            else "- Reject reasons: `none`"
+        )
     else:
         lines.append("- No filter summary returned.")
 
@@ -480,96 +504,94 @@ def _render_summary_markdown(payload: Mapping[str, Any]) -> str:
     elif filter_metadata:
         lines.append("- Active filters: `none`")
 
+
+def _append_directional_section_lines(*, lines: list[str], directional_metrics: Mapping[str, Any]) -> None:
     lines.extend(["", "## Directional Results", ""])
-    if directional_metrics:
-        counts = _to_mapping(directional_metrics.get("counts"))
-        if counts:
-            lines.append(
-                (
-                    "- Portfolio subset trades: "
-                    f"all=`{counts.get('portfolio_subset_trade_count', 0)}` "
-                    f"closed=`{counts.get('portfolio_subset_closed_trade_count', 0)}` "
-                    f"long=`{counts.get('portfolio_subset_long_trade_count', 0)}` "
-                    f"short=`{counts.get('portfolio_subset_short_trade_count', 0)}`"
-                )
-            )
-
-        portfolio_target = _to_mapping(directional_metrics.get("portfolio_target"))
-        if portfolio_target:
-            target_label = portfolio_target.get("target_label") or portfolio_target.get("target_r")
-            lines.append(
-                (
-                    f"- Portfolio target: `{target_label}` "
-                    f"(source=`{portfolio_target.get('selection_source')}`)"
-                )
-            )
-
-        lines.extend(_render_directional_bucket_lines(directional_metrics))
-    else:
+    if not directional_metrics:
         lines.append("- No directional metrics returned.")
-
-    lines.extend(
-        [
-            "",
-            "## Portfolio Metrics",
-            "",
-        ]
-    )
-    if metrics:
-        for key, value in metrics.items():
-            lines.append(f"- {key}: `{value}`")
-    else:
-        lines.append("- No portfolio metrics returned.")
-
-    lines.extend(["", "## R Ladder", ""])
-    if r_ladder_rows:
-        for row in r_ladder_rows:
-            target = row.get("target_label") or row.get("target_r")
-            hit_rate = row.get("hit_rate")
-            expectancy = row.get("expectancy_r")
-            lines.append(f"- {target}: hit_rate=`{hit_rate}` expectancy_r=`{expectancy}`")
-    else:
-        lines.append("- No R-ladder records returned.")
-
-    lines.extend(["", "## Segments", ""])
-    if segments:
-        for row in segments[:10]:
-            lines.append(
-                (
-                    f"- {row.get('segment_dimension')}={row.get('segment_value')}: "
-                    f"trades=`{row.get('trade_count')}` avg_realized_r=`{row.get('avg_realized_r')}`"
-                )
-            )
-    else:
-        lines.append("- No segment records returned.")
-
-    lines.extend(["", "## Trade Review", ""])
-    if trade_review:
-        lines.append(f"- Scope: `{trade_review.get('scope', '-')}`")
-        lines.append(f"- Metric: `{trade_review.get('metric', 'realized_r')}`")
+        return
+    counts = _to_mapping(directional_metrics.get("counts"))
+    if counts:
         lines.append(
             (
-                "- Candidate trades / best / worst: "
-                f"`{trade_review.get('candidate_trade_count', 0)}` / "
-                f"`{trade_review.get('top_best_count', 0)}` / "
-                f"`{trade_review.get('top_worst_count', 0)}`"
+                "- Portfolio subset trades: "
+                f"all=`{counts.get('portfolio_subset_trade_count', 0)}` "
+                f"closed=`{counts.get('portfolio_subset_closed_trade_count', 0)}` "
+                f"long=`{counts.get('portfolio_subset_long_trade_count', 0)}` "
+                f"short=`{counts.get('portfolio_subset_short_trade_count', 0)}`"
+            )
+        )
+    portfolio_target = _to_mapping(directional_metrics.get("portfolio_target"))
+    if portfolio_target:
+        target_label = portfolio_target.get("target_label") or portfolio_target.get("target_r")
+        lines.append(
+            (
+                f"- Portfolio target: `{target_label}` "
+                f"(source=`{portfolio_target.get('selection_source')}`)"
+            )
+        )
+    lines.extend(_render_directional_bucket_lines(directional_metrics))
+
+
+def _append_portfolio_metrics_section_lines(*, lines: list[str], metrics: Mapping[str, Any]) -> None:
+    lines.extend(["", "## Portfolio Metrics", ""])
+    if not metrics:
+        lines.append("- No portfolio metrics returned.")
+        return
+    for key, value in metrics.items():
+        lines.append(f"- {key}: `{value}`")
+
+
+def _append_r_ladder_section_lines(*, lines: list[str], r_ladder_rows: Sequence[Mapping[str, Any]]) -> None:
+    lines.extend(["", "## R Ladder", ""])
+    if not r_ladder_rows:
+        lines.append("- No R-ladder records returned.")
+        return
+    for row in r_ladder_rows:
+        target = row.get("target_label") or row.get("target_r")
+        hit_rate = row.get("hit_rate")
+        expectancy = row.get("expectancy_r")
+        lines.append(f"- {target}: hit_rate=`{hit_rate}` expectancy_r=`{expectancy}`")
+
+
+def _append_segments_section_lines(*, lines: list[str], segments: Sequence[Mapping[str, Any]]) -> None:
+    lines.extend(["", "## Segments", ""])
+    if not segments:
+        lines.append("- No segment records returned.")
+        return
+    for row in segments[:10]:
+        lines.append(
+            (
+                f"- {row.get('segment_dimension')}={row.get('segment_value')}: "
+                f"trades=`{row.get('trade_count')}` avg_realized_r=`{row.get('avg_realized_r')}`"
             )
         )
 
-        top_best = _normalize_records(trade_review.get("top_best", []))
-        if top_best:
-            lines.append(
-                f"- Best highlight: {_format_trade_review_highlight(top_best[0])}"
-            )
 
-        top_worst = _normalize_records(trade_review.get("top_worst", []))
-        if top_worst:
-            lines.append(
-                f"- Worst highlight: {_format_trade_review_highlight(top_worst[0])}"
-            )
-    else:
+def _append_trade_review_section_lines(*, lines: list[str], trade_review: Mapping[str, Any]) -> None:
+    lines.extend(["", "## Trade Review", ""])
+    if not trade_review:
         lines.append("- No trade-review rows returned.")
+        return
+    lines.append(f"- Scope: `{trade_review.get('scope', '-')}`")
+    lines.append(f"- Metric: `{trade_review.get('metric', 'realized_r')}`")
+    lines.append(
+        (
+            "- Candidate trades / best / worst: "
+            f"`{trade_review.get('candidate_trade_count', 0)}` / "
+            f"`{trade_review.get('top_best_count', 0)}` / "
+            f"`{trade_review.get('top_worst_count', 0)}`"
+        )
+    )
+    top_best = _normalize_records(trade_review.get("top_best", []))
+    if top_best:
+        lines.append(f"- Best highlight: {_format_trade_review_highlight(top_best[0])}")
+    top_worst = _normalize_records(trade_review.get("top_worst", []))
+    if top_worst:
+        lines.append(f"- Worst highlight: {_format_trade_review_highlight(top_worst[0])}")
 
+
+def _append_trade_log_notes(*, lines: list[str], trade_rows: Sequence[Mapping[str, Any]]) -> None:
     lines.extend(
         [
             "",
@@ -582,8 +604,6 @@ def _render_summary_markdown(payload: Mapping[str, Any]) -> str:
             "Not financial advice.",
         ]
     )
-
-    return "\n".join(lines).rstrip() + "\n"
 
 
 def _format_trade_review_highlight(row: Mapping[str, Any]) -> str:
