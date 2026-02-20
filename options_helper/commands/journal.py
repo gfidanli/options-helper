@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -10,22 +11,18 @@ from rich.console import Console
 
 import options_helper.cli_deps as cli_deps
 import options_helper.commands.journal_eval_common as journal_eval_common
+from options_helper.pipelines.journal_log_research_runtime import _collect_research_events as _collect_research_events_runtime
 from options_helper.analysis.advice import Advice, PositionMetrics, advise
 from options_helper.analysis.confluence import ConfluenceScore, score_confluence
 from options_helper.analysis.extension_scan import compute_current_extension_percentile
 from options_helper.analysis.journal_eval import build_journal_report, render_journal_report_markdown
 from options_helper.analysis.research import (
-    Direction,
     OptionCandidate,
     TradeLevels,
     UnderlyingSetup,
     VolatilityContext,
     analyze_underlying,
     build_confluence_inputs,
-    choose_expiry,
-    compute_volatility_context,
-    select_option_candidate,
-    suggest_trade_levels,
 )
 from options_helper.commands.position_metrics import _position_metrics
 from options_helper.data.candles import close_asof, last_close
@@ -39,7 +36,6 @@ from options_helper.data.technical_backtesting_config import (
     ConfigError as TechnicalConfigError,
     load_technical_backtesting_config,
 )
-from options_helper.models import OptionType
 from options_helper.storage import load_portfolio
 from options_helper.watchlists import load_watchlists
 
@@ -289,578 +285,574 @@ def _read_scanner_shortlist(path: Path) -> list[dict[str, object]]:
     return rows
 
 
-@app.command("log")
-def journal_log(
-    portfolio_path: Path = typer.Argument(..., help="Path to portfolio JSON."),
-    positions: bool = typer.Option(True, "--positions/--no-positions", help="Log position signals."),
-    research: bool = typer.Option(False, "--research/--no-research", help="Log research recommendations."),
-    scanner: bool = typer.Option(False, "--scanner/--no-scanner", help="Log scanner shortlist entries."),
-    as_of: str = typer.Option("latest", "--as-of", help="Snapshot date (YYYY-MM-DD) or 'latest'."),
-    offline: bool = typer.Option(
-        True,
-        "--offline/--online",
-        help="Use offline snapshots + candle cache when available.",
-    ),
-    offline_strict: bool = typer.Option(
-        False,
-        "--offline-strict",
-        help="Fail if any position is missing snapshot coverage (used with --offline).",
-    ),
-    snapshots_dir: Path = typer.Option(
-        Path("data/options_snapshots"),
-        "--snapshots-dir",
-        help="Directory containing options snapshot folders (used with --offline).",
-    ),
-    cache_dir: Path = typer.Option(
-        Path("data/candles"),
-        "--cache-dir",
-        help="Directory for locally cached daily candles.",
-    ),
-    journal_dir: Path = typer.Option(
-        Path("data/journal"),
-        "--journal-dir",
-        help="Directory for journal signal events (writes signal_events.jsonl).",
-    ),
-    period: str = typer.Option("2y", "--period", help="Underlying history period (online only)."),
-    watchlists_path: Path = typer.Option(
-        Path("data/watchlists.json"),
-        "--watchlists-path",
-        help="Path to watchlists JSON store (used for research).",
-    ),
-    research_watchlist: str = typer.Option(
-        "watchlist",
-        "--research-watchlist",
-        help="Watchlist name to research (ignored when --research-symbol is provided).",
-    ),
-    research_symbol: str | None = typer.Option(None, "--research-symbol", help="Run research for a single symbol."),
-    research_top: int = typer.Option(
-        10,
-        "--research-top",
-        min=1,
-        max=500,
-        help="Max research symbols to log after ranking.",
-    ),
-    research_period: str = typer.Option(
-        "5y",
-        "--research-period",
-        help="Daily candle period to ensure cached for research (yfinance period format).",
-    ),
-    research_window_pct: float = typer.Option(
-        0.30,
-        "--research-window-pct",
-        min=0.0,
-        max=2.0,
-        help="Strike window around spot for research option selection.",
-    ),
-    research_short_min_dte: int = typer.Option(30, "--research-short-min-dte"),
-    research_short_max_dte: int = typer.Option(90, "--research-short-max-dte"),
-    research_long_min_dte: int = typer.Option(365, "--research-long-min-dte"),
-    research_long_max_dte: int = typer.Option(1500, "--research-long-max-dte"),
-    research_include_bad_quotes: bool = typer.Option(
-        False,
-        "--research-include-bad-quotes",
-        help="Include research candidates with bad quote quality (best-effort).",
-    ),
-    derived_dir: Path = typer.Option(
-        Path("data/derived"),
-        "--derived-dir",
-        help="Directory for derived metric files (used for IV percentile context).",
-    ),
-    scanner_run_dir: Path = typer.Option(
-        Path("data/scanner/runs"),
-        "--scanner-run-dir",
-        help="Scanner runs directory (used to load shortlist.csv).",
-    ),
-    scanner_run_id: str | None = typer.Option(
-        None,
-        "--scanner-run-id",
-        help="Specific scanner run id to load (defaults to latest).",
-    ),
-    scanner_top: int = typer.Option(
-        20,
-        "--scanner-top",
-        min=1,
-        max=500,
-        help="Max scanner shortlist symbols to log.",
-    ),
-) -> None:
-    """Append journal signal events (positions, research, scanner) best-effort."""
-    _ensure_pandas()
-    portfolio = load_portfolio(portfolio_path)
-    console = Console()
+_JOURNAL_LOG_PORTFOLIO_PATH_ARG = typer.Argument(..., help="Path to portfolio JSON.")
+_JOURNAL_LOG_POSITIONS_OPT = typer.Option(True, "--positions/--no-positions", help="Log position signals.")
+_JOURNAL_LOG_RESEARCH_OPT = typer.Option(False, "--research/--no-research", help="Log research recommendations.")
+_JOURNAL_LOG_SCANNER_OPT = typer.Option(False, "--scanner/--no-scanner", help="Log scanner shortlist entries.")
+_JOURNAL_LOG_AS_OF_OPT = typer.Option("latest", "--as-of", help="Snapshot date (YYYY-MM-DD) or 'latest'.")
+_JOURNAL_LOG_OFFLINE_OPT = typer.Option(
+    True,
+    "--offline/--online",
+    help="Use offline snapshots + candle cache when available.",
+)
+_JOURNAL_LOG_OFFLINE_STRICT_OPT = typer.Option(
+    False,
+    "--offline-strict",
+    help="Fail if any position is missing snapshot coverage (used with --offline).",
+)
+_JOURNAL_LOG_SNAPSHOTS_DIR_OPT = typer.Option(
+    Path("data/options_snapshots"),
+    "--snapshots-dir",
+    help="Directory containing options snapshot folders (used with --offline).",
+)
+_JOURNAL_LOG_CACHE_DIR_OPT = typer.Option(
+    Path("data/candles"),
+    "--cache-dir",
+    help="Directory for locally cached daily candles.",
+)
+_JOURNAL_LOG_JOURNAL_DIR_OPT = typer.Option(
+    Path("data/journal"),
+    "--journal-dir",
+    help="Directory for journal signal events (writes signal_events.jsonl).",
+)
+_JOURNAL_LOG_PERIOD_OPT = typer.Option("2y", "--period", help="Underlying history period (online only).")
+_JOURNAL_LOG_WATCHLISTS_PATH_OPT = typer.Option(
+    Path("data/watchlists.json"),
+    "--watchlists-path",
+    help="Path to watchlists JSON store (used for research).",
+)
+_JOURNAL_LOG_RESEARCH_WATCHLIST_OPT = typer.Option(
+    "watchlist",
+    "--research-watchlist",
+    help="Watchlist name to research (ignored when --research-symbol is provided).",
+)
+_JOURNAL_LOG_RESEARCH_SYMBOL_OPT = typer.Option(None, "--research-symbol", help="Run research for a single symbol.")
+_JOURNAL_LOG_RESEARCH_TOP_OPT = typer.Option(10, "--research-top", min=1, max=500, help="Max research symbols to log after ranking.")
+_JOURNAL_LOG_RESEARCH_PERIOD_OPT = typer.Option(
+    "5y",
+    "--research-period",
+    help="Daily candle period to ensure cached for research (yfinance period format).",
+)
+_JOURNAL_LOG_RESEARCH_WINDOW_PCT_OPT = typer.Option(
+    0.30,
+    "--research-window-pct",
+    min=0.0,
+    max=2.0,
+    help="Strike window around spot for research option selection.",
+)
+_JOURNAL_LOG_RESEARCH_SHORT_MIN_DTE_OPT = typer.Option(30, "--research-short-min-dte")
+_JOURNAL_LOG_RESEARCH_SHORT_MAX_DTE_OPT = typer.Option(90, "--research-short-max-dte")
+_JOURNAL_LOG_RESEARCH_LONG_MIN_DTE_OPT = typer.Option(365, "--research-long-min-dte")
+_JOURNAL_LOG_RESEARCH_LONG_MAX_DTE_OPT = typer.Option(1500, "--research-long-max-dte")
+_JOURNAL_LOG_RESEARCH_INCLUDE_BAD_QUOTES_OPT = typer.Option(
+    False,
+    "--research-include-bad-quotes",
+    help="Include research candidates with bad quote quality (best-effort).",
+)
+_JOURNAL_LOG_DERIVED_DIR_OPT = typer.Option(
+    Path("data/derived"),
+    "--derived-dir",
+    help="Directory for derived metric files (used for IV percentile context).",
+)
+_JOURNAL_LOG_SCANNER_RUN_DIR_OPT = typer.Option(
+    Path("data/scanner/runs"),
+    "--scanner-run-dir",
+    help="Scanner runs directory (used to load shortlist.csv).",
+)
+_JOURNAL_LOG_SCANNER_RUN_ID_OPT = typer.Option(
+    None,
+    "--scanner-run-id",
+    help="Specific scanner run id to load (defaults to latest).",
+)
+_JOURNAL_LOG_SCANNER_TOP_OPT = typer.Option(20, "--scanner-top", min=1, max=500, help="Max scanner shortlist symbols to log.")
 
+
+@dataclass(frozen=True)
+class _JournalLogArgs:
+    portfolio_path: Path
+    positions: bool
+    research: bool
+    scanner: bool
+    as_of: str
+    offline: bool
+    offline_strict: bool
+    snapshots_dir: Path
+    cache_dir: Path
+    journal_dir: Path
+    period: str
+    watchlists_path: Path
+    research_watchlist: str
+    research_symbol: str | None
+    research_top: int
+    research_period: str
+    research_window_pct: float
+    research_short_min_dte: int
+    research_short_max_dte: int
+    research_long_min_dte: int
+    research_long_max_dte: int
+    research_include_bad_quotes: bool
+    derived_dir: Path
+    scanner_run_dir: Path
+    scanner_run_id: str | None
+    scanner_top: int
+
+
+@dataclass
+class _JournalLogRuntime:
+    portfolio: object
+    console: Console
+    provider: MarketDataProvider | None
+    candle_store: object
+    earnings_store: object
+    journal_store: object
+    events: list[SignalEvent] = field(default_factory=list)
+    counts: dict[str, int] = field(default_factory=lambda: {"position": 0, "research": 0, "scanner": 0})
+    offline_missing: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _PositionSymbolData:
+    history_by_symbol: dict[str, pd.DataFrame] = field(default_factory=dict)
+    last_price_by_symbol: dict[str, float | None] = field(default_factory=dict)
+    as_of_by_symbol: dict[str, date | None] = field(default_factory=dict)
+    next_earnings_by_symbol: dict[str, date | None] = field(default_factory=dict)
+    snapshot_day_by_symbol: dict[str, pd.DataFrame] = field(default_factory=dict)
+
+
+@dataclass
+class _ResearchCache:
+    history_by_symbol: dict[str, pd.DataFrame] = field(default_factory=dict)
+    setup_by_symbol: dict[str, UnderlyingSetup] = field(default_factory=dict)
+    extension_pct_by_symbol: dict[str, float | None] = field(default_factory=dict)
+    pre_confluence_by_symbol: dict[str, ConfluenceScore] = field(default_factory=dict)
+
+
+def _history_as_of_date(history: pd.DataFrame) -> date | None:
+    if history.empty or not isinstance(history.index, pd.DatetimeIndex):
+        return None
+    last_ts = history.index.max()
+    if last_ts is None or pd.isna(last_ts):
+        return None
+    return last_ts.date()
+
+
+def _validate_journal_contexts(
+    portfolio: object,
+    *,
+    console: Console,
+    positions: bool,
+    research: bool,
+    scanner: bool,
+) -> bool:
     if not positions and not research and not scanner:
         console.print("No journal contexts selected.")
         raise typer.Exit(0)
-
     if positions and not portfolio.positions:
         if research or scanner:
             console.print("[yellow]Warning:[/yellow] No positions found; skipping position logging.")
-            positions = False
-        else:
-            console.print("No positions.")
-            raise typer.Exit(0)
-
-    provider: MarketDataProvider | None = None
-    if (positions and not offline) or research:
-        provider = cli_deps.build_provider()
-
-    candle_store = cli_deps.build_candle_store(cache_dir, provider=provider)
-    earnings_store = cli_deps.build_earnings_store(Path("data/earnings"))
-    journal_store = cli_deps.build_journal_store(journal_dir)
-
-    events: list[SignalEvent] = []
-    counts = {"position": 0, "research": 0, "scanner": 0}
-    offline_missing: list[str] = []
-
-    if positions:
-        snapshot_store: OptionsSnapshotStore | None = None
-        if offline:
-            snapshot_store = cli_deps.build_snapshot_store(snapshots_dir)
-
-        history_by_symbol: dict[str, pd.DataFrame] = {}
-        last_price_by_symbol: dict[str, float | None] = {}
-        as_of_by_symbol: dict[str, date | None] = {}
-        next_earnings_by_symbol: dict[str, date | None] = {}
-        snapshot_day_by_symbol: dict[str, pd.DataFrame] = {}
-
-        for sym in sorted({p.symbol for p in portfolio.positions}):
-            history = pd.DataFrame()
-            snapshot_date: date | None = None
-
-            if offline:
-                try:
-                    history = candle_store.load(sym)
-                except Exception as exc:  # noqa: BLE001
-                    console.print(f"[yellow]Warning:[/yellow] candle cache read failed for {sym}: {exc}")
-                    history = pd.DataFrame()
-
-                if snapshot_store is not None:
-                    try:
-                        snapshot_date = snapshot_store.resolve_date(sym, as_of)
-                    except Exception as exc:  # noqa: BLE001
-                        console.print(f"[yellow]Warning:[/yellow] snapshot date resolve failed for {sym}: {exc}")
-                        snapshot_date = None
-
-                if snapshot_date is None and not history.empty and isinstance(history.index, pd.DatetimeIndex):
-                    last_ts = history.index.max()
-                    if last_ts is not None and not pd.isna(last_ts):
-                        snapshot_date = last_ts.date()
-
-                if snapshot_date is not None and not history.empty and isinstance(history.index, pd.DatetimeIndex):
-                    history = history.loc[history.index <= pd.Timestamp(snapshot_date)]
-
-                snap_df = pd.DataFrame()
-                if snapshot_store is not None and snapshot_date is not None:
-                    try:
-                        snap_df = snapshot_store.load_day(sym, snapshot_date)
-                    except Exception as exc:  # noqa: BLE001
-                        console.print(f"[yellow]Warning:[/yellow] snapshot load failed for {sym}: {exc}")
-                        snap_df = pd.DataFrame()
-                snapshot_day_by_symbol[sym] = snap_df
-            else:
-                try:
-                    history = candle_store.get_daily_history(sym, period=period)
-                except Exception as exc:  # noqa: BLE001
-                    console.print(f"[red]Candle cache error:[/red] {sym}: {exc}")
-                    history = pd.DataFrame()
-
-            history_by_symbol[sym] = history
-
-            if offline:
-                as_of_by_symbol[sym] = snapshot_date
-                last_price_by_symbol[sym] = (
-                    close_asof(history, snapshot_date) if snapshot_date is not None else last_close(history)
-                )
-            else:
-                last_price_by_symbol[sym] = last_close(history)
-                as_of_date = None
-                if not history.empty and isinstance(history.index, pd.DatetimeIndex):
-                    last_ts = history.index.max()
-                    if last_ts is not None and not pd.isna(last_ts):
-                        as_of_date = last_ts.date()
-                as_of_by_symbol[sym] = as_of_date
-
-            next_earnings_by_symbol[sym] = safe_next_earnings_date(earnings_store, sym)
-
-        for p in portfolio.positions:
-            try:
-                snapshot_row = None
-                snapshot_date = None
-                contract_symbol = None
-                data_warnings: list[str] = []
-
-                if offline:
-                    snapshot_date = as_of_by_symbol.get(p.symbol)
-                    df_snap = snapshot_day_by_symbol.get(p.symbol, pd.DataFrame())
-                    row = None
-
-                    if snapshot_date is None:
-                        msg = f"{p.id}: missing offline as-of date for {p.symbol}"
-                        offline_missing.append(msg)
-                        data_warnings.append(msg)
-                    elif df_snap.empty:
-                        msg = (
-                            f"{p.id}: missing snapshot day data for {p.symbol} "
-                            f"(as-of {snapshot_date.isoformat()})"
-                        )
-                        offline_missing.append(msg)
-                        data_warnings.append(msg)
-                    else:
-                        row = find_snapshot_row(
-                            df_snap,
-                            expiry=p.expiry,
-                            strike=p.strike,
-                            option_type=p.option_type,
-                        )
-                        if row is None:
-                            msg = (
-                                f"{p.id}: missing snapshot row for {p.symbol} {p.expiry.isoformat()} "
-                                f"{p.option_type} {p.strike:g} (as-of {snapshot_date.isoformat()})"
-                            )
-                            offline_missing.append(msg)
-                            data_warnings.append(msg)
-
-                    snapshot_row = row if row is not None else {}
-                    contract_symbol = _contract_symbol_from_row(row)
-
-                metrics = _position_metrics(
-                    None if offline else provider,
-                    p,
-                    risk_profile=portfolio.risk_profile,
-                    underlying_history=history_by_symbol.get(p.symbol, pd.DataFrame()),
-                    underlying_last_price=last_price_by_symbol.get(p.symbol),
-                    as_of=as_of_by_symbol.get(p.symbol),
-                    next_earnings_date=next_earnings_by_symbol.get(p.symbol),
-                    snapshot_row=snapshot_row,
-                )
-                advice = advise(metrics, portfolio)
-                payload = _build_position_journal_payload(metrics, advice, data_warnings=data_warnings)
-
-                event_date = metrics.as_of or date.today()
-                events.append(
-                    SignalEvent(
-                        date=event_date,
-                        symbol=p.symbol,
-                        context=SignalContext.POSITION,
-                        payload=payload,
-                        snapshot_date=snapshot_date,
-                        contract_symbol=contract_symbol,
-                    )
-                )
-                counts["position"] += 1
-            except DataFetchError as exc:
-                console.print(f"[red]Data error:[/red] {exc}")
-            except Exception as exc:  # noqa: BLE001
-                console.print(f"[red]Unexpected error:[/red] {exc}")
-
-    if research:
-        rp = portfolio.risk_profile
-        derived_store = cli_deps.build_derived_store(derived_dir)
-        confluence_cfg = None
-        technicals_cfg = None
-        confluence_cfg_error = None
-        technicals_cfg_error = None
-
-        try:
-            confluence_cfg = load_confluence_config()
-        except ConfluenceConfigError as exc:
-            confluence_cfg_error = str(exc)
-
-        try:
-            technicals_cfg = load_technical_backtesting_config()
-        except TechnicalConfigError as exc:
-            technicals_cfg_error = str(exc)
-
-        if confluence_cfg_error:
-            console.print(f"[yellow]Warning:[/yellow] confluence config unavailable: {confluence_cfg_error}")
-        if technicals_cfg_error:
-            console.print(f"[yellow]Warning:[/yellow] technicals config unavailable: {technicals_cfg_error}")
-
-        if research_symbol:
-            research_symbols = [research_symbol.strip().upper()]
-        else:
-            wl = load_watchlists(watchlists_path)
-            research_symbols = wl.get(research_watchlist)
-            if not research_symbols:
-                console.print(
-                    f"[yellow]Warning:[/yellow] research watchlist '{research_watchlist}' is empty or missing."
-                )
-                research_symbols = []
-
-        cached_history: dict[str, pd.DataFrame] = {}
-        cached_setup: dict[str, UnderlyingSetup] = {}
-        cached_extension_pct: dict[str, float | None] = {}
-        pre_confluence: dict[str, ConfluenceScore] = {}
-
-        for sym in research_symbols:
-            try:
-                history = candle_store.get_daily_history(sym, period=research_period)
-            except Exception as exc:  # noqa: BLE001
-                console.print(f"[yellow]Warning:[/yellow] {sym}: candle cache error: {exc}")
-                history = pd.DataFrame()
-            cached_history[sym] = history
-
-            setup = analyze_underlying(sym, history=history, risk_profile=rp)
-            cached_setup[sym] = setup
-
-            ext_pct = None
-            if technicals_cfg is not None and history is not None and not history.empty:
-                try:
-                    ext_result = compute_current_extension_percentile(history, technicals_cfg)
-                    ext_pct = ext_result.percentile
-                except Exception:  # noqa: BLE001
-                    ext_pct = None
-            cached_extension_pct[sym] = ext_pct
-
-            inputs = build_confluence_inputs(setup, extension_percentile=ext_pct, vol_context=None)
-            pre_confluence[sym] = score_confluence(inputs, cfg=confluence_cfg)
-
-        if len(research_symbols) > 1:
-            def _sort_key(sym: str) -> tuple[float, float, str]:
-                score = pre_confluence.get(sym)
-                coverage = score.coverage if score is not None else -1.0
-                total = score.total if score is not None else -1.0
-                return (-coverage, -total, sym)
-
-            research_symbols = sorted(research_symbols, key=_sort_key)
-
-        if research_top and research_symbols:
-            research_symbols = research_symbols[:research_top]
-
-        for sym in research_symbols:
-            try:
-                history = cached_history.get(sym, pd.DataFrame())
-                setup = cached_setup.get(sym) or analyze_underlying(sym, history=history, risk_profile=rp)
-                ext_pct = cached_extension_pct.get(sym)
-
-                as_of_date = None
-                if not history.empty and isinstance(history.index, pd.DatetimeIndex):
-                    last_ts = history.index.max()
-                    if last_ts is not None and not pd.isna(last_ts):
-                        as_of_date = last_ts.date()
-
-                next_earnings_date = safe_next_earnings_date(earnings_store, sym)
-                levels = suggest_trade_levels(setup, history=history, risk_profile=rp)
-
-                warnings: list[str] = []
-                short_pick = None
-                long_pick = None
-                confluence_score = None
-                vol_context = None
-
-                if setup.spot is None:
-                    warnings.append("no_spot_price")
-                else:
-                    expiry_strs = [d.isoformat() for d in provider.list_option_expiries(sym)] if provider else []
-                    if not expiry_strs:
-                        warnings.append("no_listed_expiries")
-                    else:
-                        expiry_as_of = as_of_date or date.today()
-                        short_exp = choose_expiry(
-                            expiry_strs,
-                            min_dte=research_short_min_dte,
-                            max_dte=research_short_max_dte,
-                            target_dte=60,
-                            today=expiry_as_of,
-                        )
-                        long_exp = choose_expiry(
-                            expiry_strs,
-                            min_dte=research_long_min_dte,
-                            max_dte=research_long_max_dte,
-                            target_dte=540,
-                            today=expiry_as_of,
-                        )
-                        if long_exp is None:
-                            parsed = []
-                            for s in expiry_strs:
-                                try:
-                                    exp = date.fromisoformat(s)
-                                except ValueError:
-                                    continue
-                                dte = (exp - expiry_as_of).days
-                                parsed.append((dte, exp))
-                            parsed = [t for t in parsed if t[0] >= research_long_min_dte]
-                            if parsed:
-                                _, long_exp = max(parsed, key=lambda t: t[0])
-
-                        if setup.direction == Direction.NEUTRAL:
-                            confluence_score = score_confluence(
-                                build_confluence_inputs(
-                                    setup,
-                                    extension_percentile=ext_pct,
-                                    vol_context=None,
-                                ),
-                                cfg=confluence_cfg,
-                            )
-                        else:
-                            opt_type: OptionType = "call" if setup.direction == Direction.BULLISH else "put"
-                            min_oi = rp.min_open_interest
-                            min_vol = rp.min_volume
-                            derived_history = derived_store.load(sym)
-
-                            if short_exp is not None and provider is not None:
-                                chain = provider.get_options_chain(sym, short_exp)
-                                if vol_context is None:
-                                    vol_context = compute_volatility_context(
-                                        history=history,
-                                        spot=setup.spot,
-                                        calls=chain.calls,
-                                        puts=chain.puts,
-                                        derived_history=derived_history,
-                                    )
-                                df = chain.calls if opt_type == "call" else chain.puts
-                                target_delta = 0.40 if opt_type == "call" else -0.40
-                                short_pick = select_option_candidate(
-                                    df,
-                                    symbol=sym,
-                                    option_type=opt_type,
-                                    expiry=short_exp,
-                                    spot=setup.spot,
-                                    target_delta=target_delta,
-                                    window_pct=research_window_pct,
-                                    min_open_interest=min_oi,
-                                    min_volume=min_vol,
-                                    as_of=expiry_as_of,
-                                    next_earnings_date=next_earnings_date,
-                                    earnings_warn_days=rp.earnings_warn_days,
-                                    earnings_avoid_days=rp.earnings_avoid_days,
-                                    include_bad_quotes=research_include_bad_quotes,
-                                )
-                            else:
-                                warnings.append("no_short_expiry")
-
-                            if long_exp is not None and provider is not None:
-                                chain = provider.get_options_chain(sym, long_exp)
-                                if vol_context is None:
-                                    vol_context = compute_volatility_context(
-                                        history=history,
-                                        spot=setup.spot,
-                                        calls=chain.calls,
-                                        puts=chain.puts,
-                                        derived_history=derived_history,
-                                    )
-                                df = chain.calls if opt_type == "call" else chain.puts
-                                target_delta = 0.70 if opt_type == "call" else -0.70
-                                long_pick = select_option_candidate(
-                                    df,
-                                    symbol=sym,
-                                    option_type=opt_type,
-                                    expiry=long_exp,
-                                    spot=setup.spot,
-                                    target_delta=target_delta,
-                                    window_pct=research_window_pct,
-                                    min_open_interest=min_oi,
-                                    min_volume=min_vol,
-                                    as_of=expiry_as_of,
-                                    next_earnings_date=next_earnings_date,
-                                    earnings_warn_days=rp.earnings_warn_days,
-                                    earnings_avoid_days=rp.earnings_avoid_days,
-                                    include_bad_quotes=research_include_bad_quotes,
-                                )
-                            else:
-                                warnings.append("no_long_expiry")
-
-                            confluence_score = score_confluence(
-                                build_confluence_inputs(
-                                    setup,
-                                    extension_percentile=ext_pct,
-                                    vol_context=vol_context,
-                                ),
-                                cfg=confluence_cfg,
-                            )
-
-                if confluence_score is None:
-                    confluence_score = pre_confluence.get(sym)
-
-                payload = {
-                    "as_of": _iso_date(as_of_date),
-                    "setup": {
-                        "direction": setup.direction.value,
-                        "spot": _clean_float(setup.spot),
-                        "reasons": list(setup.reasons),
-                        "daily_rsi": _clean_float(setup.daily_rsi),
-                        "daily_stoch_rsi": _clean_float(setup.daily_stoch_rsi),
-                        "weekly_rsi": _clean_float(setup.weekly_rsi),
-                        "weekly_breakout": setup.weekly_breakout,
-                    },
-                    "extension_percentile": _clean_float(ext_pct),
-                    "levels": _levels_payload(levels),
-                    "vol_context": _vol_context_payload(vol_context),
-                    "confluence": _confluence_payload(confluence_score),
-                    "short_candidate": _option_candidate_payload(short_pick),
-                    "long_candidate": _option_candidate_payload(long_pick),
-                    "warnings": warnings,
-                }
-
-                event_date = as_of_date or date.today()
-                events.append(
-                    SignalEvent(
-                        date=event_date,
-                        symbol=sym,
-                        context=SignalContext.RESEARCH,
-                        payload=payload,
-                        snapshot_date=None,
-                        contract_symbol=None,
-                    )
-                )
-                counts["research"] += 1
-            except DataFetchError as exc:
-                console.print(f"[red]Research data error:[/red] {sym}: {exc}")
-            except Exception as exc:  # noqa: BLE001
-                console.print(f"[red]Research error:[/red] {sym}: {exc}")
-
-    if scanner:
-        run_root = _latest_scanner_run_dir(scanner_run_dir, run_id=scanner_run_id)
-        if run_root is None:
-            console.print("[yellow]Warning:[/yellow] No scanner runs found; skipping scanner logging.")
-        else:
-            rows = _read_scanner_shortlist(run_root / "shortlist.csv")
-            if not rows:
-                console.print("[yellow]Warning:[/yellow] Scanner shortlist.csv empty or missing.")
-            else:
-                if scanner_top and len(rows) > scanner_top:
-                    rows = rows[:scanner_top]
-                run_date = _scanner_run_date(run_root.name) or date.today()
-                for idx, row in enumerate(rows, start=1):
-                    sym = str(row.get("symbol") or "").strip().upper()
-                    if not sym:
-                        continue
-                    payload = {
-                        "rank": idx,
-                        "score": row.get("score"),
-                        "coverage": row.get("coverage"),
-                        "top_reasons": row.get("top_reasons"),
-                        "run_id": run_root.name,
-                        "run_path": str(run_root),
-                    }
-                    events.append(
-                        SignalEvent(
-                            date=run_date,
-                            symbol=sym,
-                            context=SignalContext.SCANNER,
-                            payload=payload,
-                            snapshot_date=None,
-                            contract_symbol=None,
-                        )
-                    )
-                    counts["scanner"] += 1
-
-    if not events:
-        console.print("No journal events written.")
+            return False
+        console.print("No positions.")
         raise typer.Exit(0)
+    return positions
 
-    logged = journal_store.append_events(events)
-    console.print(
-        f"Logged {logged} signal(s) to {journal_store.path()} "
-        f"(positions={counts['position']}, research={counts['research']}, scanner={counts['scanner']})"
+
+def _build_journal_runtime(
+    args: _JournalLogArgs,
+    *,
+    portfolio: object,
+    console: Console,
+    positions_enabled: bool,
+) -> _JournalLogRuntime:
+    provider: MarketDataProvider | None = None
+    if (positions_enabled and not args.offline) or args.research:
+        provider = cli_deps.build_provider()
+    candle_store = cli_deps.build_candle_store(args.cache_dir, provider=provider)
+    earnings_store = cli_deps.build_earnings_store(Path("data/earnings"))
+    journal_store = cli_deps.build_journal_store(args.journal_dir)
+    return _JournalLogRuntime(
+        portfolio=portfolio,
+        console=console,
+        provider=provider,
+        candle_store=candle_store,
+        earnings_store=earnings_store,
+        journal_store=journal_store,
     )
 
-    if offline_missing:
-        for msg in offline_missing:
-            console.print(f"[yellow]Warning:[/yellow] {msg}")
+
+def _resolve_snapshot_date(
+    symbol: str,
+    *,
+    as_of: str,
+    history: pd.DataFrame,
+    snapshot_store: OptionsSnapshotStore | None,
+    console: Console,
+) -> date | None:
+    snapshot_date = None
+    if snapshot_store is not None:
+        try:
+            snapshot_date = snapshot_store.resolve_date(symbol, as_of)
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[yellow]Warning:[/yellow] snapshot date resolve failed for {symbol}: {exc}")
+    if snapshot_date is None:
+        snapshot_date = _history_as_of_date(history)
+    return snapshot_date
+
+
+def _load_snapshot_day(
+    symbol: str,
+    *,
+    snapshot_date: date | None,
+    snapshot_store: OptionsSnapshotStore | None,
+    console: Console,
+) -> pd.DataFrame:
+    if snapshot_store is None or snapshot_date is None:
+        return pd.DataFrame()
+    try:
+        return snapshot_store.load_day(symbol, snapshot_date)
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[yellow]Warning:[/yellow] snapshot load failed for {symbol}: {exc}")
+        return pd.DataFrame()
+
+
+def _prepare_position_symbol_data(
+    runtime: _JournalLogRuntime,
+    *,
+    args: _JournalLogArgs,
+    snapshot_store: OptionsSnapshotStore | None,
+) -> _PositionSymbolData:
+    symbol_data = _PositionSymbolData()
+    symbols = sorted({pos.symbol for pos in runtime.portfolio.positions})
+    for symbol in symbols:
+        history = pd.DataFrame()
+        snapshot_date = None
+        if args.offline:
+            try:
+                history = runtime.candle_store.load(symbol)
+            except Exception as exc:  # noqa: BLE001
+                runtime.console.print(f"[yellow]Warning:[/yellow] candle cache read failed for {symbol}: {exc}")
+            snapshot_date = _resolve_snapshot_date(
+                symbol,
+                as_of=args.as_of,
+                history=history,
+                snapshot_store=snapshot_store,
+                console=runtime.console,
+            )
+            if snapshot_date is not None and not history.empty and isinstance(history.index, pd.DatetimeIndex):
+                history = history.loc[history.index <= pd.Timestamp(snapshot_date)]
+            symbol_data.snapshot_day_by_symbol[symbol] = _load_snapshot_day(
+                symbol,
+                snapshot_date=snapshot_date,
+                snapshot_store=snapshot_store,
+                console=runtime.console,
+            )
+        else:
+            try:
+                history = runtime.candle_store.get_daily_history(symbol, period=args.period)
+            except Exception as exc:  # noqa: BLE001
+                runtime.console.print(f"[red]Candle cache error:[/red] {symbol}: {exc}")
+        symbol_data.history_by_symbol[symbol] = history
+        symbol_data.as_of_by_symbol[symbol] = snapshot_date if args.offline else _history_as_of_date(history)
+        if args.offline and snapshot_date is not None:
+            symbol_data.last_price_by_symbol[symbol] = close_asof(history, snapshot_date)
+        else:
+            symbol_data.last_price_by_symbol[symbol] = last_close(history)
+        symbol_data.next_earnings_by_symbol[symbol] = safe_next_earnings_date(runtime.earnings_store, symbol)
+    return symbol_data
+
+
+def _offline_snapshot_row(
+    position: object,
+    *,
+    symbol_data: _PositionSymbolData,
+    offline_missing: list[str],
+) -> tuple[dict, date | None, str | None, list[str]]:
+    snapshot_date = symbol_data.as_of_by_symbol.get(position.symbol)
+    snapshot_day = symbol_data.snapshot_day_by_symbol.get(position.symbol, pd.DataFrame())
+    row = None
+    data_warnings: list[str] = []
+    if snapshot_date is None:
+        msg = f"{position.id}: missing offline as-of date for {position.symbol}"
+        offline_missing.append(msg)
+        data_warnings.append(msg)
+    elif snapshot_day.empty:
+        msg = f"{position.id}: missing snapshot day data for {position.symbol} (as-of {snapshot_date.isoformat()})"
+        offline_missing.append(msg)
+        data_warnings.append(msg)
+    else:
+        row = find_snapshot_row(
+            snapshot_day,
+            expiry=position.expiry,
+            strike=position.strike,
+            option_type=position.option_type,
+        )
+        if row is None:
+            msg = (
+                f"{position.id}: missing snapshot row for {position.symbol} {position.expiry.isoformat()} "
+                f"{position.option_type} {position.strike:g} (as-of {snapshot_date.isoformat()})"
+            )
+            offline_missing.append(msg)
+            data_warnings.append(msg)
+    snapshot_row = row if row is not None else {}
+    return snapshot_row, snapshot_date, _contract_symbol_from_row(row), data_warnings
+
+
+def _append_position_event(
+    runtime: _JournalLogRuntime,
+    *,
+    args: _JournalLogArgs,
+    position: object,
+    symbol_data: _PositionSymbolData,
+) -> None:
+    try:
+        snapshot_row = None
+        snapshot_date = None
+        contract_symbol = None
+        data_warnings: list[str] = []
+        if args.offline:
+            snapshot_row, snapshot_date, contract_symbol, data_warnings = _offline_snapshot_row(
+                position,
+                symbol_data=symbol_data,
+                offline_missing=runtime.offline_missing,
+            )
+        metrics = _position_metrics(
+            None if args.offline else runtime.provider,
+            position,
+            risk_profile=runtime.portfolio.risk_profile,
+            underlying_history=symbol_data.history_by_symbol.get(position.symbol, pd.DataFrame()),
+            underlying_last_price=symbol_data.last_price_by_symbol.get(position.symbol),
+            as_of=symbol_data.as_of_by_symbol.get(position.symbol),
+            next_earnings_date=symbol_data.next_earnings_by_symbol.get(position.symbol),
+            snapshot_row=snapshot_row,
+        )
+        advice = advise(metrics, runtime.portfolio)
+        payload = _build_position_journal_payload(metrics, advice, data_warnings=data_warnings)
+        runtime.events.append(
+            SignalEvent(
+                date=metrics.as_of or date.today(),
+                symbol=position.symbol,
+                context=SignalContext.POSITION,
+                payload=payload,
+                snapshot_date=snapshot_date,
+                contract_symbol=contract_symbol,
+            )
+        )
+        runtime.counts["position"] += 1
+    except DataFetchError as exc:
+        runtime.console.print(f"[red]Data error:[/red] {exc}")
+    except Exception as exc:  # noqa: BLE001
+        runtime.console.print(f"[red]Unexpected error:[/red] {exc}")
+
+
+def _collect_position_events(runtime: _JournalLogRuntime, *, args: _JournalLogArgs) -> None:
+    snapshot_store = cli_deps.build_snapshot_store(args.snapshots_dir) if args.offline else None
+    symbol_data = _prepare_position_symbol_data(runtime, args=args, snapshot_store=snapshot_store)
+    for position in runtime.portfolio.positions:
+        _append_position_event(runtime, args=args, position=position, symbol_data=symbol_data)
+
+
+def _load_research_configs(console: Console) -> tuple[object | None, object | None]:
+    confluence_cfg = None
+    technicals_cfg = None
+    confluence_cfg_error = None
+    technicals_cfg_error = None
+    try:
+        confluence_cfg = load_confluence_config()
+    except ConfluenceConfigError as exc:
+        confluence_cfg_error = str(exc)
+    try:
+        technicals_cfg = load_technical_backtesting_config()
+    except TechnicalConfigError as exc:
+        technicals_cfg_error = str(exc)
+    if confluence_cfg_error:
+        console.print(f"[yellow]Warning:[/yellow] confluence config unavailable: {confluence_cfg_error}")
+    if technicals_cfg_error:
+        console.print(f"[yellow]Warning:[/yellow] technicals config unavailable: {technicals_cfg_error}")
+    return confluence_cfg, technicals_cfg
+
+
+def _resolve_research_symbols(args: _JournalLogArgs, *, console: Console) -> list[str]:
+    if args.research_symbol:
+        return [args.research_symbol.strip().upper()]
+    watchlists = load_watchlists(args.watchlists_path)
+    symbols = watchlists.get(args.research_watchlist)
+    if symbols:
+        return symbols
+    console.print(f"[yellow]Warning:[/yellow] research watchlist '{args.research_watchlist}' is empty or missing.")
+    return []
+
+
+def _build_research_cache(
+    *,
+    symbols: list[str],
+    candle_store: object,
+    period: str,
+    risk_profile: object,
+    technicals_cfg: object,
+    confluence_cfg: object,
+    console: Console,
+) -> _ResearchCache:
+    cache = _ResearchCache()
+    for symbol in symbols:
+        try:
+            history = candle_store.get_daily_history(symbol, period=period)
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[yellow]Warning:[/yellow] {symbol}: candle cache error: {exc}")
+            history = pd.DataFrame()
+        cache.history_by_symbol[symbol] = history
+        setup = analyze_underlying(symbol, history=history, risk_profile=risk_profile)
+        cache.setup_by_symbol[symbol] = setup
+        ext_pct = None
+        if technicals_cfg is not None and history is not None and not history.empty:
+            try:
+                ext_result = compute_current_extension_percentile(history, technicals_cfg)
+                ext_pct = ext_result.percentile
+            except Exception:  # noqa: BLE001
+                ext_pct = None
+        cache.extension_pct_by_symbol[symbol] = ext_pct
+        inputs = build_confluence_inputs(setup, extension_percentile=ext_pct, vol_context=None)
+        cache.pre_confluence_by_symbol[symbol] = score_confluence(inputs, cfg=confluence_cfg)
+    return cache
+
+
+def _rank_research_symbols(
+    symbols: list[str],
+    pre_confluence: dict[str, ConfluenceScore],
+    research_top: int,
+) -> list[str]:
+    ranked = list(symbols)
+    if len(ranked) > 1:
+        def _sort_key(symbol: str) -> tuple[float, float, str]:
+            score = pre_confluence.get(symbol)
+            coverage = score.coverage if score is not None else -1.0
+            total = score.total if score is not None else -1.0
+            return (-coverage, -total, symbol)
+
+        ranked = sorted(ranked, key=_sort_key)
+    if research_top and ranked:
+        ranked = ranked[:research_top]
+    return ranked
+
+
+def _collect_scanner_events(runtime: _JournalLogRuntime, *, args: _JournalLogArgs) -> None:
+    run_root = _latest_scanner_run_dir(args.scanner_run_dir, run_id=args.scanner_run_id)
+    if run_root is None:
+        runtime.console.print("[yellow]Warning:[/yellow] No scanner runs found; skipping scanner logging.")
+        return
+    rows = _read_scanner_shortlist(run_root / "shortlist.csv")
+    if not rows:
+        runtime.console.print("[yellow]Warning:[/yellow] Scanner shortlist.csv empty or missing.")
+        return
+    if args.scanner_top and len(rows) > args.scanner_top:
+        rows = rows[:args.scanner_top]
+    run_date = _scanner_run_date(run_root.name) or date.today()
+    for rank, row in enumerate(rows, start=1):
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        payload = {
+            "rank": rank,
+            "score": row.get("score"),
+            "coverage": row.get("coverage"),
+            "top_reasons": row.get("top_reasons"),
+            "run_id": run_root.name,
+            "run_path": str(run_root),
+        }
+        runtime.events.append(
+            SignalEvent(
+                date=run_date,
+                symbol=symbol,
+                context=SignalContext.SCANNER,
+                payload=payload,
+                snapshot_date=None,
+                contract_symbol=None,
+            )
+        )
+        runtime.counts["scanner"] += 1
+
+
+def _finalize_journal_log(runtime: _JournalLogRuntime, *, offline_strict: bool) -> None:
+    if not runtime.events:
+        runtime.console.print("No journal events written.")
+        raise typer.Exit(0)
+    logged = runtime.journal_store.append_events(runtime.events)
+    runtime.console.print(
+        f"Logged {logged} signal(s) to {runtime.journal_store.path()} "
+        f"(positions={runtime.counts['position']}, research={runtime.counts['research']}, scanner={runtime.counts['scanner']})"
+    )
+    if runtime.offline_missing:
+        for msg in runtime.offline_missing:
+            runtime.console.print(f"[yellow]Warning:[/yellow] {msg}")
         if offline_strict:
             raise typer.Exit(1)
+
+
+def _run_journal_log(args: _JournalLogArgs) -> None:
+    _ensure_pandas()
+    portfolio = load_portfolio(args.portfolio_path)
+    console = Console()
+    positions_enabled = _validate_journal_contexts(
+        portfolio,
+        console=console,
+        positions=args.positions,
+        research=args.research,
+        scanner=args.scanner,
+    )
+    runtime = _build_journal_runtime(args, portfolio=portfolio, console=console, positions_enabled=positions_enabled)
+    if positions_enabled:
+        _collect_position_events(runtime, args=args)
+    if args.research:
+        _collect_research_events_runtime(
+            runtime,
+            args=args,
+            load_research_configs_fn=_load_research_configs,
+            resolve_research_symbols_fn=_resolve_research_symbols,
+            build_research_cache_fn=_build_research_cache,
+            rank_research_symbols_fn=_rank_research_symbols,
+            history_as_of_date_fn=_history_as_of_date,
+            iso_date_fn=_iso_date,
+            clean_float_fn=_clean_float,
+            levels_payload_fn=_levels_payload,
+            vol_context_payload_fn=_vol_context_payload,
+            confluence_payload_fn=_confluence_payload,
+            option_candidate_payload_fn=_option_candidate_payload,
+            build_derived_store_fn=cli_deps.build_derived_store,
+        )
+    if args.scanner:
+        _collect_scanner_events(runtime, args=args)
+    _finalize_journal_log(runtime, offline_strict=args.offline_strict)
+
+
+@app.command("log")
+def journal_log(
+    portfolio_path: Path = _JOURNAL_LOG_PORTFOLIO_PATH_ARG,
+    positions: bool = _JOURNAL_LOG_POSITIONS_OPT,
+    research: bool = _JOURNAL_LOG_RESEARCH_OPT,
+    scanner: bool = _JOURNAL_LOG_SCANNER_OPT,
+    as_of: str = _JOURNAL_LOG_AS_OF_OPT,
+    offline: bool = _JOURNAL_LOG_OFFLINE_OPT,
+    offline_strict: bool = _JOURNAL_LOG_OFFLINE_STRICT_OPT,
+    snapshots_dir: Path = _JOURNAL_LOG_SNAPSHOTS_DIR_OPT,
+    cache_dir: Path = _JOURNAL_LOG_CACHE_DIR_OPT,
+    journal_dir: Path = _JOURNAL_LOG_JOURNAL_DIR_OPT,
+    period: str = _JOURNAL_LOG_PERIOD_OPT,
+    watchlists_path: Path = _JOURNAL_LOG_WATCHLISTS_PATH_OPT,
+    research_watchlist: str = _JOURNAL_LOG_RESEARCH_WATCHLIST_OPT,
+    research_symbol: str | None = _JOURNAL_LOG_RESEARCH_SYMBOL_OPT,
+    research_top: int = _JOURNAL_LOG_RESEARCH_TOP_OPT,
+    research_period: str = _JOURNAL_LOG_RESEARCH_PERIOD_OPT,
+    research_window_pct: float = _JOURNAL_LOG_RESEARCH_WINDOW_PCT_OPT,
+    research_short_min_dte: int = _JOURNAL_LOG_RESEARCH_SHORT_MIN_DTE_OPT,
+    research_short_max_dte: int = _JOURNAL_LOG_RESEARCH_SHORT_MAX_DTE_OPT,
+    research_long_min_dte: int = _JOURNAL_LOG_RESEARCH_LONG_MIN_DTE_OPT,
+    research_long_max_dte: int = _JOURNAL_LOG_RESEARCH_LONG_MAX_DTE_OPT,
+    research_include_bad_quotes: bool = _JOURNAL_LOG_RESEARCH_INCLUDE_BAD_QUOTES_OPT,
+    derived_dir: Path = _JOURNAL_LOG_DERIVED_DIR_OPT,
+    scanner_run_dir: Path = _JOURNAL_LOG_SCANNER_RUN_DIR_OPT,
+    scanner_run_id: str | None = _JOURNAL_LOG_SCANNER_RUN_ID_OPT,
+    scanner_top: int = _JOURNAL_LOG_SCANNER_TOP_OPT,
+) -> None:
+    """Append journal signal events (positions, research, scanner) best-effort."""
+    _run_journal_log(_JournalLogArgs(**locals()))
 
 
 @app.command("evaluate")
