@@ -59,5 +59,10 @@ def required_feature_columns_for_strategy(
             required.add(f"atr_{w}")
         required.add("weekly_trend_up")
 
-    return sorted(required)
+    elif strategy == "CvdDivergenceMSB":
+        atr_windows = [int(v) for v in _vals("atr_window")]
+        for w in atr_windows:
+            required.add(f"atr_{w}")
+        required.add("weekly_trend_up")
 
+    return sorted(required)

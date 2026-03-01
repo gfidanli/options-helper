@@ -121,6 +121,11 @@ walk_forward:
   validate_months: 6
   step_months: 6
   min_history_years: 6
+  # Optional intraday-safe bar-count splits. If train_bars > 0, bar mode is used.
+  min_history_bars: 0
+  train_bars: 0
+  validate_bars: 0
+  step_bars: 0
 
   selection:
     metric: "validate_score_mean"
@@ -198,6 +203,53 @@ strategies:
       - "p_entry < p_exit"
       - "stop_mult_atr >= 0.0"
 
+  CvdDivergenceMSB:
+    enabled: false
+
+    defaults:
+      atr_window: 14
+      stop_mult_atr: 2.0
+      take_profit_mult_atr: 3.0
+      max_holding_bars: 0
+      use_weekly_filter: true
+      cvd_smooth_span: 20
+      cvd_z_window: 30
+      pivot_left: 3
+      pivot_right: 3
+      divergence_window_bars: 80
+      min_separation_bars: 4
+      min_price_delta_pct: 0.1
+      min_cvd_z_delta: 0.1
+      max_setup_age_bars: 30
+      msb_min_distance_bars: 1
+
+    # Keep search space intentionally small to avoid combinatorial blow-up.
+    search_space:
+      atr_window: [14]
+      stop_mult_atr: [2.0, 2.5]
+      take_profit_mult_atr: [2.0, 3.0]
+      max_holding_bars: [0, 30]
+      use_weekly_filter: [true]
+      cvd_smooth_span: [20]
+      cvd_z_window: [30]
+      pivot_left: [3]
+      pivot_right: [3]
+      divergence_window_bars: [80]
+      min_separation_bars: [4]
+      min_price_delta_pct: [0.1]
+      min_cvd_z_delta: [0.1, 0.2]
+      max_setup_age_bars: [30]
+      msb_min_distance_bars: [1]
+
+    constraints:
+      - "pivot_left >= 1"
+      - "pivot_right >= 1"
+      - "cvd_z_window >= 2"
+      - "divergence_window_bars > min_separation_bars"
+      - "stop_mult_atr >= 0.0"
+      - "take_profit_mult_atr >= 0.0"
+      - "max_holding_bars >= 0"
+
 artifacts:
   base_dir: "artifacts/technicals"
   overwrite: false
@@ -205,9 +257,9 @@ artifacts:
   write_heatmap: true
   write_trades: false
 
-  params_path_template: "params/{ticker}/{strategy}.json"
-  report_path_template: "reports/{ticker}/{strategy}/summary.md"
-  heatmap_path_template: "reports/{ticker}/{strategy}/heatmap.csv"
+  params_path_template: "params/{interval}/{ticker}/{strategy}.json"
+  report_path_template: "reports/{interval}/{ticker}/{strategy}/summary.md"
+  heatmap_path_template: "reports/{interval}/{ticker}/{strategy}/heatmap.csv"
 
 logging:
   level: "INFO"

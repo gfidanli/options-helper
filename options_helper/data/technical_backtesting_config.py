@@ -78,6 +78,8 @@ def _light_validate(cfg: dict) -> None:
     if bool(price_adj.get("auto_adjust")) and bool(price_adj.get("back_adjust")):
         raise ConfigError("data.candles.price_adjustment: auto_adjust and back_adjust cannot both be true")
 
+    _validate_walk_forward(cfg.get("walk_forward", {}))
+
     ext_cfg = cfg.get("extension_percentiles", {})
     if ext_cfg:
         high = float(ext_cfg.get("tail_high_pct", 95))
@@ -93,3 +95,39 @@ def _light_validate(cfg: dict) -> None:
         forward_days = ext_cfg.get("forward_days", [])
         if not forward_days:
             raise ConfigError("extension_percentiles.forward_days must be non-empty")
+
+
+def _walk_forward_int(cfg: dict, key: str, default: int = 0) -> int:
+    value = cfg.get(key, default)
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"walk_forward.{key} must be an integer") from exc
+    if parsed < 0:
+        raise ConfigError(f"walk_forward.{key} must be >= 0")
+    return parsed
+
+
+def _validate_walk_forward(walk_cfg: dict) -> None:
+    min_history_bars = _walk_forward_int(walk_cfg, "min_history_bars")
+    train_bars = _walk_forward_int(walk_cfg, "train_bars")
+    validate_bars = _walk_forward_int(walk_cfg, "validate_bars")
+    step_bars = _walk_forward_int(walk_cfg, "step_bars")
+
+    if train_bars > 0:
+        if validate_bars <= 0:
+            raise ConfigError("walk_forward.validate_bars must be > 0 when train_bars > 0")
+        if "step_bars" in walk_cfg and step_bars <= 0:
+            raise ConfigError("walk_forward.step_bars must be > 0 when train_bars > 0")
+        if min_history_bars > 0 and min_history_bars < (train_bars + validate_bars):
+            raise ConfigError(
+                "walk_forward.min_history_bars must be >= train_bars + validate_bars when train_bars > 0"
+            )
+        return
+
+    if validate_bars > 0:
+        raise ConfigError("walk_forward.validate_bars requires train_bars > 0")
+    if step_bars > 0:
+        raise ConfigError("walk_forward.step_bars requires train_bars > 0")

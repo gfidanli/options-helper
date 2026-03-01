@@ -214,6 +214,10 @@
         "validate_months": { "type": "number" },
         "step_months": { "type": "number" },
         "min_history_years": { "type": "number" },
+        "min_history_bars": { "type": "integer", "minimum": 0 },
+        "train_bars": { "type": "integer", "minimum": 0 },
+        "validate_bars": { "type": "integer", "minimum": 0 },
+        "step_bars": { "type": "integer", "minimum": 0 },
         "selection": {
           "type": "object",
           "properties": {
