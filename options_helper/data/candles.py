@@ -204,8 +204,13 @@ class CandleStore:
         if not meta:
             return False
         try:
-            return bool(meta.get("auto_adjust")) == bool(self.auto_adjust) and bool(meta.get("back_adjust")) == bool(
-                self.back_adjust
+            meta_interval = meta.get("interval")
+            if meta_interval is None:
+                return False
+            return (
+                str(meta_interval).strip().lower() == str(self.interval).strip().lower()
+                and bool(meta.get("auto_adjust")) == bool(self.auto_adjust)
+                and bool(meta.get("back_adjust")) == bool(self.back_adjust)
             )
         except Exception:  # noqa: BLE001
             return False

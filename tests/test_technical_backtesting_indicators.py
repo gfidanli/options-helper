@@ -74,7 +74,7 @@ def test_weekly_regime_logic_close_above_fast_is_more_permissive() -> None:
 
     # Construct weekly closes where the last week closes above fast MA,
     # but fast MA is still below slow MA (so strict logic is False).
-    weekly_closes = [120, 118, 116, 114, 112, 110, 108, 106, 104, 102, 100, 105]
+    weekly_closes = [120, 118, 116, 114, 112, 110, 108, 106, 104, 102, 100, 105, 105]
     start = pd.Timestamp("2024-01-01")  # Monday
     dates = pd.bdate_range(start=start, periods=len(weekly_closes) * 5)
     close = []
@@ -101,9 +101,24 @@ def test_weekly_regime_logic_close_above_fast_is_more_permissive() -> None:
     cfg_relaxed["weekly_regime"]["logic"] = "close_above_fast"
     feat_relaxed = compute_features(df, cfg_relaxed)
 
-    last_day = df.index.max()
-    assert bool(feat_relaxed.loc[last_day, "weekly_trend_up"]) is True
-    assert bool(feat_strict.loc[last_day, "weekly_trend_up"]) is False
+    # Week 12 is the source week where close moves above fast MA. The weekly
+    # regime must not apply it until week 13 (prior-completed-week semantics).
+    week12_days = df.index[55:60]
+    week13_days = df.index[60:65]
+    assert feat_relaxed.loc[week12_days, "weekly_trend_up"].eq(False).all()
+    assert feat_relaxed.loc[week13_days, "weekly_trend_up"].eq(True).all()
+    assert feat_strict.loc[week13_days, "weekly_trend_up"].eq(False).all()
+
+    weekly_close_series = pd.Series(
+        weekly_closes,
+        index=pd.date_range(start=start, periods=len(weekly_closes), freq="W-FRI"),
+        dtype=float,
+    )
+    expected_fast = weekly_close_series.rolling(window=3).mean().iloc[11]
+    expected_slow = weekly_close_series.rolling(window=6).mean().iloc[11]
+    first_day_week13 = week13_days[0]
+    assert abs(float(feat_relaxed.loc[first_day_week13, "weekly_sma_3"]) - float(expected_fast)) < 1e-12
+    assert abs(float(feat_relaxed.loc[first_day_week13, "weekly_sma_6"]) - float(expected_slow)) < 1e-12
 
 
 def test_compute_features_handles_short_history() -> None:

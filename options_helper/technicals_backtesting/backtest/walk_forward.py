@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
 from typing import Any
 
 import numpy as np
@@ -21,30 +20,99 @@ class WalkForwardResult:
     reason: str | None
 
 
-def _generate_splits(
+SplitRange = tuple[int, int, int, int]
+
+
+def _walk_cfg_int(walk_cfg: dict, key: str, default: int = 0) -> int:
+    value = walk_cfg.get(key, default)
+    if value is None:
+        return int(default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _use_bar_splits(walk_cfg: dict) -> bool:
+    return _walk_cfg_int(walk_cfg, "train_bars") > 0
+
+
+def _generate_bar_splits(
+    idx: pd.DatetimeIndex,
+    train_bars: int,
+    validate_bars: int,
+    step_bars: int,
+) -> list[SplitRange]:
+    if idx.empty or train_bars <= 0 or validate_bars <= 0:
+        return []
+    if step_bars <= 0:
+        return []
+
+    n_rows = len(idx)
+    splits: list[SplitRange] = []
+    start_pos = 0
+    while True:
+        train_end_pos = start_pos + train_bars - 1
+        val_start_pos = train_end_pos + 1
+        val_end_pos = val_start_pos + validate_bars - 1
+        if val_end_pos >= n_rows:
+            break
+        splits.append((start_pos, train_end_pos, val_start_pos, val_end_pos))
+        start_pos += step_bars
+        if start_pos >= n_rows:
+            break
+    return splits
+
+
+def _generate_date_splits(
     idx: pd.DatetimeIndex,
     train_years: float,
     validate_months: float,
     step_months: float,
-) -> list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]]:
+) -> list[SplitRange]:
     if idx.empty:
         return []
-    start = idx.min()
-    last = idx.max()
+    if train_years <= 0 or validate_months <= 0 or step_months <= 0:
+        return []
 
     train_offset = pd.DateOffset(years=train_years)
     validate_offset = pd.DateOffset(months=validate_months)
     step_offset = pd.DateOffset(months=step_months)
 
-    splits: list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]] = []
+    splits: list[SplitRange] = []
+    start_pos = 0
+    last_pos = len(idx) - 1
+    last_ts = idx[last_pos]
+
     while True:
-        train_end = start + train_offset
-        val_start = train_end + timedelta(days=1)
-        val_end = val_start + validate_offset - timedelta(days=1)
-        if val_end > last:
+        if start_pos > last_pos:
             break
-        splits.append((start, train_end, val_start, val_end))
-        start = start + step_offset
+        start_ts = idx[start_pos]
+        train_end_target = start_ts + train_offset
+        if train_end_target > last_ts:
+            break
+        train_end_pos = int(idx.searchsorted(train_end_target, side="right")) - 1
+        if train_end_pos < start_pos:
+            break
+
+        val_start_pos = train_end_pos + 1
+        if val_start_pos > last_pos:
+            break
+        val_start_ts = idx[val_start_pos]
+        val_end_target = val_start_ts + validate_offset
+        if val_end_target > last_ts:
+            break
+        val_end_pos = int(idx.searchsorted(val_end_target, side="left")) - 1
+        if val_end_pos < val_start_pos:
+            break
+
+        splits.append((start_pos, train_end_pos, val_start_pos, val_end_pos))
+
+        next_start_target = start_ts + step_offset
+        next_start_pos = int(idx.searchsorted(next_start_target, side="left"))
+        if next_start_pos <= start_pos:
+            next_start_pos = start_pos + 1
+        start_pos = next_start_pos
     return splits
 
 
@@ -64,10 +132,38 @@ def _prepare_walk_forward_data(
     df_used = df_features.iloc[warmup_bars:] if warmup_bars > 0 else df_features
     if df_used.empty:
         return None, _defaults_result(defaults, "empty_after_warmup")
-    total_years = (df_used.index.max() - df_used.index.min()).days / 365.25
-    if total_years < walk_cfg["min_history_years"]:
+    total_bars = len(df_used)
+    min_history_bars = _walk_cfg_int(walk_cfg, "min_history_bars")
+    if _use_bar_splits(walk_cfg):
+        train_bars = _walk_cfg_int(walk_cfg, "train_bars")
+        validate_bars = _walk_cfg_int(walk_cfg, "validate_bars")
+        required_bars = max(min_history_bars, train_bars + validate_bars)
+        if required_bars > 0 and total_bars < required_bars:
+            return None, _defaults_result(defaults, "insufficient_history")
+        return df_used, None
+
+    if min_history_bars > 0 and total_bars < min_history_bars:
         return None, _defaults_result(defaults, "insufficient_history")
+    min_history_years = float(walk_cfg.get("min_history_years", 0.0) or 0.0)
+    if min_history_years > 0:
+        total_years = (df_used.index.max() - df_used.index.min()).days / 365.25
+        if total_years < min_history_years:
+            return None, _defaults_result(defaults, "insufficient_history")
     return df_used, None
+
+
+def _generate_splits(idx: pd.DatetimeIndex, walk_cfg: dict) -> list[SplitRange]:
+    if _use_bar_splits(walk_cfg):
+        train_bars = _walk_cfg_int(walk_cfg, "train_bars")
+        validate_bars = _walk_cfg_int(walk_cfg, "validate_bars")
+        step_bars = _walk_cfg_int(walk_cfg, "step_bars", validate_bars)
+        return _generate_bar_splits(idx, train_bars, validate_bars, step_bars)
+    return _generate_date_splits(
+        idx,
+        float(walk_cfg.get("train_years", 0.0) or 0.0),
+        float(walk_cfg.get("validate_months", 0.0) or 0.0),
+        float(walk_cfg.get("step_months", 0.0) or 0.0),
+    )
 
 
 def _run_walk_forward_fold(
@@ -111,7 +207,7 @@ def _run_walk_forward_fold(
 def _build_folds(
     *,
     df_used: pd.DataFrame,
-    splits: list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]],
+    splits: list[SplitRange],
     StrategyClass: type,
     bt_cfg: dict,
     search_space: dict,
@@ -124,9 +220,10 @@ def _build_folds(
     return_heatmap: bool,
 ) -> list[dict[str, Any]]:
     folds: list[dict[str, Any]] = []
-    for train_start, train_end, val_start, val_end in splits:
-        train_df = df_used.loc[train_start:train_end]
-        validate_df = df_used.loc[val_start:val_end]
+    index = df_used.index
+    for train_start_pos, train_end_pos, val_start_pos, val_end_pos in splits:
+        train_df = df_used.iloc[train_start_pos : train_end_pos + 1]
+        validate_df = df_used.iloc[val_start_pos : val_end_pos + 1]
         if min_train_bars and len(train_df) < min_train_bars:
             continue
         best_params, train_stats, validate_stats, validate_score, heatmap = _run_walk_forward_fold(
@@ -144,10 +241,10 @@ def _build_folds(
         )
         folds.append(
             {
-                "train_start": train_start,
-                "train_end": train_end,
-                "validate_start": val_start,
-                "validate_end": val_end,
+                "train_start": index[train_start_pos],
+                "train_end": index[train_end_pos],
+                "validate_start": index[val_start_pos],
+                "validate_end": index[val_end_pos],
                 "best_params": best_params,
                 "train_stats": train_stats,
                 "validate_stats": validate_stats,
@@ -211,12 +308,7 @@ def walk_forward_optimize(
     if early_result is not None:
         return early_result
     assert df_used is not None
-    splits = _generate_splits(
-        df_used.index,
-        walk_cfg["train_years"],
-        walk_cfg["validate_months"],
-        walk_cfg["step_months"],
-    )
+    splits = _generate_splits(df_used.index, walk_cfg)
     folds = _build_folds(
         df_used=df_used,
         splits=splits,

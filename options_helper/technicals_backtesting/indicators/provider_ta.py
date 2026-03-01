@@ -213,6 +213,23 @@ def _compute_extension_features(
             out[f"extension_atr_{sma_window}_{atr_window}"] = (close - out[sma_col]) / out[atr_col]
 
 
+def _to_naive_index(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    if index.tz is None:
+        return index
+    return index.tz_convert(None)
+
+
+def _align_shifted_weekly_to_base(weekly_values: pd.Series, *, base_index: pd.DatetimeIndex, rule: str) -> pd.Series:
+    shifted = weekly_values.shift(1)
+    shifted_index = _to_naive_index(shifted.index).normalize()
+    shifted = pd.Series(shifted.to_numpy(), index=shifted_index)
+
+    base_naive = _to_naive_index(base_index)
+    base_week_end = base_naive.to_period(rule).to_timestamp(how="end").normalize()
+    aligned = shifted.reindex(base_week_end, method="ffill")
+    return pd.Series(aligned.to_numpy(), index=base_index)
+
+
 def _compute_weekly_regime_features(out: pd.DataFrame, *, cfg: dict) -> None:
     weekly_cfg = cfg.get("weekly_regime", {})
     if not weekly_cfg.get("enabled", False):
@@ -242,9 +259,9 @@ def _compute_weekly_regime_features(out: pd.DataFrame, *, cfg: dict) -> None:
     else:
         trend = (weekly_close > weekly_fast) & (weekly_fast > weekly_slow)
 
-    out[f"weekly_sma_{fast}"] = weekly_fast.reindex(out.index, method="ffill")
-    out[f"weekly_sma_{slow}"] = weekly_slow.reindex(out.index, method="ffill")
-    weekly_trend = trend.reindex(out.index, method="ffill").astype("boolean")
+    out[f"weekly_sma_{fast}"] = _align_shifted_weekly_to_base(weekly_fast, base_index=out.index, rule=rule)
+    out[f"weekly_sma_{slow}"] = _align_shifted_weekly_to_base(weekly_slow, base_index=out.index, rule=rule)
+    weekly_trend = _align_shifted_weekly_to_base(trend, base_index=out.index, rule=rule).astype("boolean")
     out["weekly_trend_up"] = weekly_trend.fillna(False).astype(bool)
 
 

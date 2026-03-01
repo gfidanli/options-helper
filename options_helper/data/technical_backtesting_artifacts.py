@@ -17,15 +17,61 @@ class ArtifactPaths:
     heatmap_path: Path | None
 
 
-def _render_path(template: str, *, base_dir: Path, ticker: str, strategy: str) -> Path:
-    rel = template.format(ticker=ticker.upper(), strategy=strategy)
+def _coerce_interval_token(value: Any) -> str | None:
+    if value is None:
+        return None
+    token = str(value).strip()
+    return token or None
+
+
+def _resolve_interval_token(*, interval: str | None = None, data_meta: Any = None, cfg: Any = None) -> str:
+    candidates: list[Any] = [interval]
+    if isinstance(data_meta, dict):
+        candidates.append(data_meta.get("interval"))
+    if isinstance(cfg, dict):
+        candidates.append(cfg.get("data", {}).get("candles", {}).get("interval"))
+    for candidate in candidates:
+        token = _coerce_interval_token(candidate)
+        if token is not None:
+            return token
+    return "unknown"
+
+
+def _render_path(
+    template: str,
+    *,
+    base_dir: Path,
+    ticker: str,
+    strategy: str,
+    interval: str,
+) -> Path:
+    rel = template.format(ticker=ticker.upper(), strategy=strategy, interval=interval)
     return base_dir / rel
 
 
-def build_artifact_paths(cfg: dict, *, ticker: str, strategy: str) -> ArtifactPaths:
+def build_artifact_paths(
+    cfg: dict,
+    *,
+    ticker: str,
+    strategy: str,
+    interval: str | None = None,
+) -> ArtifactPaths:
     base_dir = Path(cfg["artifacts"]["base_dir"])
-    params_path = _render_path(cfg["artifacts"]["params_path_template"], base_dir=base_dir, ticker=ticker, strategy=strategy)
-    report_path = _render_path(cfg["artifacts"]["report_path_template"], base_dir=base_dir, ticker=ticker, strategy=strategy)
+    resolved_interval = _resolve_interval_token(interval=interval, cfg=cfg)
+    params_path = _render_path(
+        cfg["artifacts"]["params_path_template"],
+        base_dir=base_dir,
+        ticker=ticker,
+        strategy=strategy,
+        interval=resolved_interval,
+    )
+    report_path = _render_path(
+        cfg["artifacts"]["report_path_template"],
+        base_dir=base_dir,
+        ticker=ticker,
+        strategy=strategy,
+        interval=resolved_interval,
+    )
     heatmap_path = None
     if cfg["artifacts"].get("write_heatmap", False):
         heatmap_path = _render_path(
@@ -33,6 +79,7 @@ def build_artifact_paths(cfg: dict, *, ticker: str, strategy: str) -> ArtifactPa
             base_dir=base_dir,
             ticker=ticker,
             strategy=strategy,
+            interval=resolved_interval,
         )
     return ArtifactPaths(params_path=params_path, report_path=report_path, heatmap_path=heatmap_path)
 
@@ -69,6 +116,7 @@ def write_artifacts(
     *,
     ticker: str,
     strategy: str,
+    interval: str | None = None,
     params: dict,
     train_stats: Any | None,
     walk_forward_result: Any | None,
@@ -76,7 +124,8 @@ def write_artifacts(
     data_meta: dict,
     heatmap: pd.DataFrame | pd.Series | None = None,
 ) -> ArtifactPaths:
-    paths = build_artifact_paths(cfg, ticker=ticker, strategy=strategy)
+    resolved_interval = _resolve_interval_token(interval=interval, data_meta=data_meta, cfg=cfg)
+    paths = build_artifact_paths(cfg, ticker=ticker, strategy=strategy, interval=resolved_interval)
     overwrite = bool(cfg["artifacts"].get("overwrite", False))
 
     for path in (paths.params_path, paths.report_path, paths.heatmap_path):
@@ -86,6 +135,9 @@ def write_artifacts(
             raise FileExistsError(f"Artifact exists and overwrite=false: {path}")
         path.parent.mkdir(parents=True, exist_ok=True)
 
+    data_payload = dict(data_meta)
+    data_payload["interval"] = resolved_interval
+
     params_payload = {
         "ticker": ticker.upper(),
         "strategy": strategy,
@@ -93,7 +145,7 @@ def write_artifacts(
         "params": _jsonable(params),
         "yfinance_adjustment": _jsonable(cfg["data"]["candles"]["price_adjustment"]),
         "optimization": _jsonable(optimize_meta),
-        "data": _jsonable(data_meta),
+        "data": _jsonable(data_payload),
         "train_stats": _serialize_stats(train_stats) if train_stats is not None else None,
         "walk_forward": _jsonable(walk_forward_result) if walk_forward_result is not None else None,
     }

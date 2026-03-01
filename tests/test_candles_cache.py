@@ -139,6 +139,55 @@ def test_backfill_earlier_history_when_period_expands(tmp_path) -> None:
     assert out.index.min().date() == start
 
 
+def test_interval_mismatch_resets_cache_before_fetch(tmp_path) -> None:
+    cached_start = date(2026, 1, 20)
+    cached = _df(cached_start, 5)
+    CandleStore(tmp_path, backfill_days=0, interval="1h").save("UROY", cached)
+
+    calls: list[tuple[str, date | None, date | None]] = []
+
+    def fetcher(symbol: str, start: date | None, end: date | None) -> pd.DataFrame:
+        calls.append((symbol, start, end))
+        assert start is not None
+        if end is None:
+            return _df(start, 20)
+        return _df(start, (end - start).days)
+
+    store = CandleStore(tmp_path, fetcher=fetcher, backfill_days=0, interval="1d")
+    today = date(2026, 1, 27)
+    out = store.get_daily_history("UROY", period="20d", today=today)
+
+    assert len(calls) == 1
+    _, start, end = calls[0]
+    assert start == today - timedelta(days=20)
+    assert end is None
+    assert out.index.min().date() == start
+
+
+def test_interval_meta_match_is_case_insensitive(tmp_path) -> None:
+    cached_start = date(2026, 1, 20)
+    cached = _df(cached_start, 5)
+    CandleStore(tmp_path, backfill_days=0, interval="1D").save("UROY", cached)
+
+    calls: list[tuple[str, date | None, date | None]] = []
+
+    def fetcher(symbol: str, start: date | None, end: date | None) -> pd.DataFrame:
+        calls.append((symbol, start, end))
+        assert start is not None
+        assert end is not None
+        return _df(start, (end - start).days)
+
+    store = CandleStore(tmp_path, fetcher=fetcher, backfill_days=0, interval="1d")
+    today = date(2026, 1, 27)
+    out = store.get_daily_history("UROY", period="20d", today=today)
+
+    assert len(calls) == 1
+    _, start, end = calls[0]
+    assert start == today - timedelta(days=20)
+    assert end == cached_start
+    assert out.index.min().date() == start
+
+
 def test_period_max_backfills_earlier_history_when_cache_exists(tmp_path) -> None:
     cached_start = date(2026, 1, 20)
     cached = _df(cached_start, 5)
