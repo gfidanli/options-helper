@@ -1,68 +1,83 @@
-# Data Contracts — Candles for Indicators + Backtesting
+# Data Contracts
 
-## 1) CandleFrame Contract (Input to this feature)
+Technical backtesting data contracts support research/decision workflows only. They are not trade recommendations or financial advice.
 
-### Required columns
+## 1) Canonical CandleFrame Contract
+Required columns:
 - `Open`, `High`, `Low`, `Close`
-- `Volume` is optional (but recommended)
 
-### Index
-- DatetimeIndex (timezone-naive OK, but must be consistent)
-- Sorted ascending
-- Unique timestamps
+Optional columns:
+- `Volume`
 
-### Frequency
-- Daily bars are the primary input.
-- Weekly bars are derived via resampling (weekly alignment must be documented and consistent).
+Index requirements:
+- `DatetimeIndex`
+- sorted ascending
+- unique timestamps
 
-## 2) yfinance Adjustment Settings (must be explicit)
+Normalization behavior:
+- Input can be index-based or include a date-like column (`date`/`datetime`/`timestamp`).
+- Runtime parses timestamps with UTC semantics.
+- tz-aware timestamps are converted to UTC and stored as tz-naive.
+- tz-naive timestamps are treated as UTC.
 
-yfinance can adjust OHLC for corporate actions depending on settings.
+## 2) Daily Cache Input Contract
+`technicals` daily workflows use candle cache/yfinance-backed OHLC data.
 
-### yfinance.download
-- Parameter `auto_adjust` controls whether OHLC are adjusted (default True).
-- Parameter `back_adjust` can be used to “mimic true historical prices”.
+Adjustment policy:
+- `data.candles.price_adjustment.auto_adjust` and `back_adjust` must be explicit.
+- Both cannot be `true` simultaneously.
+- Adjustments are persisted in artifact metadata.
 
-**Policy for this project:**
-- Always set `auto_adjust` and `back_adjust` explicitly in the upstream fetch code.
-- Persist those settings in backtest artifact metadata.
- - If cached candles include `Adj Close`, the technicals pipeline applies the configured adjustment locally so
-   indicators/backtests operate on the intended price series even with legacy/unadjusted caches.
+## 3) Intraday Partition Contract
+Intraday mode reads `IntradayStore` stock bar partitions:
+- `kind="stocks"`
+- `dataset="bars"`
+- `timeframe in {"1Min", "5Min"}`
+- per-day partitions over `[intraday_start, intraday_end]`
 
-Recommended defaults for technical backtests:
-- `auto_adjust=True`, `back_adjust=False` (robust long-history continuity)
-Alternative for “raw tape”:
-- `auto_adjust=False`, `back_adjust=False` (requires handling splits/divs effects)
+Accepted timestamp columns in partitions:
+- `timestamp` or `ts` or `time`
 
-## 2b) Alpaca Adjustment Settings
+Accepted OHLCV columns (case-insensitive):
+- `open`, `high`, `low`, `close`, optional `volume`
 
-Alpaca stock bars support an `adjustment` parameter.
+Missing/empty partitions:
+- warning + continue
+- recorded in intraday coverage metadata
 
-**Policy for this project:**
-- When using the Alpaca provider for daily candles, request adjusted bars (`adjustment="all"`) by default.
-- Use raw bars (`adjustment="raw"`) only when you explicitly want an unadjusted series.
+## 4) Intraday Resample Contract
+Resampling target interval:
+- accepted forms: e.g. `1Min`, `5Min`, `15m`, `30m`, `1h`
+- must be `>=` base timeframe
+- must be an integer multiple of base timeframe
 
-## 3) Adapter Rules (yfinance -> CandleFrame)
-- If input columns include extras (e.g., `Dividends`, `Stock Splits`), ignore/drop unless explicitly configured to keep them.
-- Normalize column names to `Open/High/Low/Close/Volume` (title case).
-- Ensure float dtype for price columns; int/float for volume.
-- Remove rows with all-NaN OHLC.
-- Validate High >= max(Open, Close) and Low <= min(Open, Close) for non-NaN rows (warn; don’t hard-fail unless configured).
+Resample semantics:
+- UTC-normalized index
+- `label="left"`, `closed="left"`
+- OHLC aggregation: first/max/min/last
+- Volume aggregation: sum (`min_count=1`)
 
-## 4) Output Frames
+## 5) FeatureFrame Contract
+`compute_features` output is CandleFrame plus feature columns, including:
+- ATR/ATRP (`atr_*`, `atrp_*`)
+- SMA (`sma_*`)
+- z-score (`zscore_*`)
+- Bollinger (`bb_*`)
+- extension (`extension_atr_*_*`)
+- optional RSI (`rsi_*`)
+- weekly columns: `weekly_sma_*`, `weekly_trend_up`
 
-### FeatureFrame
-CandleFrame + computed columns such as:
-- `atr_14`, `atrp_14`
-- `bb_mavg_20`, `bb_hband_20_2`, `bb_lband_20_2`, `bb_pband_20_2`, `bb_wband_20_2`
-- `rsi_14`
-- `sma_20`, `zscore_20`, `extension_atr_20_14`
-- `weekly_sma_10`, `weekly_sma_20`, `weekly_trend_up` (boolean)
+## 6) No-Lookahead Timing Contract
+- Weekly regime values are shifted by one completed weekly bar before forward-fill.
+- Strategy logic that is close-confirmed at bar `t` must anchor execution from `t+1` open when `trade_on_close=false`.
+- `CvdDivergenceMSB` pivot signals are only consumed after pivot confirmation lag (`pivot_right`).
 
-## 5) References
-- yfinance download API docs:
-  https://ranaroussi.github.io/yfinance/reference/api/yfinance.download.html
-- yfinance PriceHistory.history docs:
-  https://ranaroussi.github.io/yfinance/reference/yfinance.price_history.html
-- backtesting.py data requirements:
-  https://kernc.github.io/backtesting.py/doc/examples/Quick%20Start%20User%20Guide.html
+## 7) Artifact Data Meta Contract
+Technical backtesting params artifacts include `data` payload with:
+- `start`, `end`, `bars`, `warmup_bars`, `interval`
+- optional `intraday_coverage`:
+  - `symbol`, `base_timeframe`, `target_interval`
+  - `requested_days`, `loaded_days`, `missing_days`, `empty_days`
+  - day counts and row counts
+
+This metadata is part of auditability for best-effort data quality and anti-lookahead interpretation.

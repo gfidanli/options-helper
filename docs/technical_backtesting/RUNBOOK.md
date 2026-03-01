@@ -1,76 +1,98 @@
-# Runbook — Technical Indicators + Backtesting/Optimization
+# Runbook
 
-## 1) Dependencies
-Install (pin versions in your repo as you prefer):
-- yfinance
-- pandas, numpy
-- ta
-- backtesting
-- (optional, required for `optimization.method: sambo`) `sambo` + `scikit-learn`
-- (optional) TA-Lib
+This tooling is for research and decision-support only. It is not financial advice.
 
-## 2) Upstream Data Fetch Requirements
-Your existing yfinance fetch must:
-- return a DataFrame with `Open`, `High`, `Low`, `Close` (+ optional Volume)
-- set `auto_adjust` / `back_adjust` explicitly and record the choice
+## 1) Prerequisites
+- Installed repo environment (`./.venv`)
+- Technical backtesting config at `config/technical_backtesting.yaml`
+- For intraday mode: local intraday partitions under `data/intraday`
 
-References:
-- yfinance.download params:
-  https://ranaroussi.github.io/yfinance/reference/api/yfinance.download.html
-- yfinance history params:
-  https://ranaroussi.github.io/yfinance/reference/yfinance.price_history.html
+## 2) Data Source Selection (CLI)
+For `technicals optimize`, `technicals walk-forward`, and `technicals run-all`, OHLC source precedence is:
+1. `--ohlc-path`
+2. `--intraday-dir` (requires intraday options below)
+3. `--symbol` + `--cache-dir`
 
-## 3) Typical Workflow
+## 3) Intraday Options
+Available on `optimize`, `walk-forward`, and `run-all`:
+- `--interval`: target candle interval token (used for intraday resampling and artifact namespacing)
+- `--intraday-dir`: intraday partition root (enables intraday mode)
+- `--intraday-timeframe`: source partition timeframe (`1Min` or `5Min`)
+- `--intraday-start`: start session date (`YYYY-MM-DD`)
+- `--intraday-end`: end session date (`YYYY-MM-DD`)
 
-### 3.1 One ticker, one strategy (no optimization)
-- Standardize DF
-- Compute indicators
-- Run backtest with fixed params
-- Write summary artifact
+Intraday mode requirements:
+- `--symbol` is required.
+- `--intraday-start` and `--intraday-end` are required.
+- `--intraday-end` must be on/after `--intraday-start`.
+- Target `--interval` must be >= base timeframe and an integer multiple.
 
-### 3.2 One ticker, optimize strategy params
-- Provide `search_space` dict
-- Provide `constraint` callable
-- Run `Backtest.optimize(method="grid" or "sambo")`
-- Persist best params + report
+If `--interval` is omitted:
+- intraday mode defaults to `--intraday-timeframe`
+- non-intraday mode defaults to `1d`
 
-### 3.3 Walk-forward
-- Define train/validate windows
-- Optimize on train, score on validate
-- Roll forward, compute stability, choose final params
-- Persist final params.json
+## 4) Daily Workflow Examples
+Optimize one strategy from daily candle cache:
+```bash
+./.venv/bin/options-helper technicals optimize \
+  --strategy TrendPullbackATR \
+  --symbol AAPL \
+  --cache-dir data/candles
+```
 
-## 4) CLI Examples
+Walk-forward one strategy:
+```bash
+./.venv/bin/options-helper technicals walk-forward \
+  --strategy MeanReversionBollinger \
+  --symbol SPY \
+  --cache-dir data/candles
+```
 
-### Compute indicators from a local OHLC file
-- `./.venv/bin/options-helper technicals compute-indicators --ohlc-path data/ohlc/AAPL.csv --output data/ohlc/AAPL_features.parquet`
+## 5) Intraday Workflow Examples
+Walk-forward `CvdDivergenceMSB` on intraday input:
+```bash
+./.venv/bin/options-helper technicals walk-forward \
+  --strategy CvdDivergenceMSB \
+  --symbol SPY \
+  --intraday-dir data/intraday \
+  --intraday-timeframe 1Min \
+  --intraday-start 2025-01-02 \
+  --intraday-end 2025-01-31 \
+  --interval 15m
+```
 
-### Optimize a single strategy (writes artifacts)
-- `./.venv/bin/options-helper technicals optimize --strategy TrendPullbackATR --symbol AAPL --cache-dir data/candles`
+Run all enabled strategies for multiple symbols in intraday mode:
+```bash
+./.venv/bin/options-helper technicals run-all \
+  --tickers SPY,QQQ \
+  --intraday-dir data/intraday \
+  --intraday-timeframe 5Min \
+  --intraday-start 2025-01-02 \
+  --intraday-end 2025-01-31 \
+  --interval 30m
+```
 
-### Walk-forward calibration (writes artifacts)
-- `./.venv/bin/options-helper technicals walk-forward --strategy MeanReversionBollinger --symbol AAPL --cache-dir data/candles`
+## 6) No-Lookahead Semantics
+- Weekly regime (`weekly_trend_up`, `weekly_sma_*`) is shifted by one completed weekly bar before forward-fill.
+- `CvdDivergenceMSB` pivots are consumed only after pivot confirmation lag (`pivot_right`).
+- Entry is close-confirmed (`Close[t] > break_level`), then filled next bar open when `backtest.trade_on_close=false`.
 
-### Run all strategies for multiple tickers
-- `./.venv/bin/options-helper technicals run-all --tickers AAPL,MSFT,SPY --cache-dir data/candles`
+## 7) UTC / Resampling Semantics
+- Canonical timestamps are UTC-naive.
+- tz-aware timestamps are converted to UTC and then made tz-naive.
+- tz-naive timestamps are treated as UTC.
+- Intraday resampling uses UTC bucket boundaries (`label=left`, `closed=left`).
 
-### Extension percentile stats (tail events + drift table)
-- `./.venv/bin/options-helper technicals extension-stats --symbol AAPL --cache-dir data/candles --out data/reports/technicals/extension --print`
+## 8) Artifacts
+Default templates include `{interval}`:
+- `params/{interval}/{ticker}/{strategy}.json`
+- `reports/{interval}/{ticker}/{strategy}/summary.md`
+- `reports/{interval}/{ticker}/{strategy}/heatmap.csv`
 
-### Re-run without overwriting old artifacts
-By default, `config/technical_backtesting.yaml` sets `artifacts.overwrite: false`.
+Intraday runs also write `data.intraday_coverage` into params artifacts (requested/loaded/missing/empty day counts and day lists).
 
-For a “fresh run” (new output directory), copy the config to a local override and change only the artifacts section:
-- `cp config/technical_backtesting.yaml data/technicals/technical_backtesting_local.yaml`
-- Edit:
-  - `artifacts.base_dir` (e.g., `artifacts/technicals_cvx_rerun_2026-01-31`)
-  - `artifacts.overwrite: true`
-- Run with `--config data/technicals/technical_backtesting_local.yaml`
-
-## 5) Troubleshooting
-- If backtests start late (missing early period):
-  - rolling indicators produce NaNs; simulation starts once all indicators are valid
-- If results differ after changing yfinance adjustment settings:
-  - expected; record `auto_adjust/back_adjust` in artifact metadata
-- If optimization is too slow:
-  - reduce grid space, use `max_tries` randomized grid, or switch to `method="sambo"`
+## 9) Troubleshooting
+- `No OHLC data found`: verify selected input source and required flags.
+- Interval validation errors: use intervals like `1Min`, `5Min`, `15m`, `30m`, `1h` and keep them compatible with base timeframe.
+- Sparse intraday history: loader warns and continues; check `intraday_coverage` in params artifact.
+- Slow optimization: narrow `search_space` or use `optimization.method: sambo`.

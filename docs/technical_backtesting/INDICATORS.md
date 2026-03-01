@@ -1,95 +1,69 @@
-# Indicator Catalog + Parameterization
+# Indicator Catalog
 
-## 0) Philosophy
-Use a small set of indicators that are:
-- orthogonal (trend/regime vs location vs volatility scaling)
-- stable across tickers
-- easy to optimize without exploding the search space
+This subsystem is for research and decision-support only. It is not financial advice.
 
-Default implementation uses `ta` (bukosabino/ta). Optional provider for `TA-Lib`.
+## 1) Core Computed Features
+The default provider is `ta`.
 
-## 1) Core Indicators (Required)
+### ATR / ATR%
+- `atr_<window>` from `AverageTrueRange`
+- `atrp_<window> = atr_<window> / Close`
 
-### 1.1 ATR (Average True Range)
-Purpose: volatility scaling for thresholds and stops.
+### SMA
+- `sma_<window> = rolling mean(Close)`
 
-Implementation (`ta`):
-- `ta.volatility.AverageTrueRange(high, low, close, window=W).average_true_range()`
+### Z-score
+- `zscore_<window> = (Close - rolling_mean) / rolling_std`
+- `rolling_std == 0` is treated as `NaN`
 
-Optional (`TA-Lib`):
-- `talib.ATR(high, low, close, timeperiod=W)` (note TA-Lib mentions unstable period)
+### Bollinger
+For each configured window/dev pair:
+- `bb_mavg_<w>`
+- `bb_hband_<w>_<dev>`
+- `bb_lband_<w>_<dev>`
+- `bb_pband_<w>_<dev>`
+- `bb_wband_<w>_<dev>`
 
-Parameters:
-- `W ∈ [10, 21]` default 14
+### RSI (optional)
+- `rsi_<window>` when `indicators.rsi.enabled=true`
 
-Derived:
-- `ATR% = ATR / Close`
+### Extension
+For each SMA/ATR combination:
+- `extension_atr_<sma_window>_<atr_window> = (Close - sma) / atr`
 
-### 1.2 Bollinger Bands
-Purpose: mean reversion signals + “compression/expansion” via bandwidth.
+## 2) Weekly Regime Columns
+Weekly regime is computed from resampled OHLC (`weekly_regime.resample_rule`) and projected back to the base timeframe.
 
-Implementation (`ta`):
-- `BollingerBands(close, window=N, window_dev=K)`
-  - `bollinger_mavg()`, `bollinger_hband()`, `bollinger_lband()`
-  - `bollinger_pband()`, `bollinger_wband()`
+Columns:
+- `weekly_sma_<fast_ma>` (or EMA when `ma_type=ema`)
+- `weekly_sma_<slow_ma>`
+- `weekly_trend_up`
 
-Parameters:
-- `N ∈ [10, 40]` default 20
-- `K ∈ [1.5, 3.0]` default 2.0
+`weekly_trend_up` logic is controlled by `weekly_regime.logic`:
+- `close_above_fast_and_fast_above_slow`
+- `close_above_fast`
+- `fast_above_slow`
 
-### 1.3 RSI
-Purpose: overbought/oversold context and filters.
+## 3) No-Lookahead Weekly Semantics
+Weekly series are shifted by one completed weekly bar before forward-fill.
+- Current bars can only consume prior completed week values.
+- This applies to both `weekly_sma_*` and `weekly_trend_up`.
 
-Implementation (`ta`):
-- `RSIIndicator(close, window=R).rsi()`
+## 4) Timezone Semantics
+- Canonical index for indicators is UTC-naive.
+- tz-aware indexes are converted to UTC and made tz-naive.
+- tz-naive indexes are treated as UTC.
+- Weekly resampling boundaries therefore operate on UTC-normalized timestamps.
 
-Parameters:
-- `R ∈ [7, 21]` default 14
+## 5) Strategy-Internal Series
+`CvdDivergenceMSB` computes CVD-derived series internally:
+- signed volume delta
+- cumulative CVD
+- EMA-detrended oscillator
+- rolling z-score (`cvd_z`)
 
-## 2) Derived Features (Required)
+These are strategy internals and are not part of the standard feature frame contract.
 
-These can be computed via pandas using core indicators.
-
-### 2.1 SMA (rolling mean)
-- `sma_N = Close.rolling(N).mean()`
-Parameters:
-- `N ∈ [10, 60]` default 20
-
-### 2.2 Z-Score of Close vs SMA
-- `zscore_N = (Close - sma_N) / Close.rolling(N).std()`
-
-Note:
-- If std is 0 or NaN, zscore is NaN.
-
-### 2.3 Extension in ATR units
-- `extension_atr = (Close - sma_N) / atr_W`
-
-## 3) Weekly Regime Columns (Required)
-Purpose: align daily timing with weekly trend context.
-
-Process:
-1) Resample daily OHLC to weekly OHLC (define consistent rule: e.g., week ending Friday).
-2) Compute weekly moving averages (fast/slow) using a configured MA type:
-   - `ma_type: "sma"` (rolling mean) or `"ema"` (EWMA).
-3) Define `weekly_trend_up` using a configured logic:
-   - `logic: "close_above_fast_and_fast_above_slow"`:
-     - `weekly_trend_up = (weekly_close > weekly_fast) AND (weekly_fast > weekly_slow)`
-   - `logic: "close_above_fast"`:
-     - `weekly_trend_up = (weekly_close > weekly_fast)`
-   - `logic: "fast_above_slow"`:
-     - `weekly_trend_up = (weekly_fast > weekly_slow)`
-4) Forward-fill weekly values back to daily rows.
-
-Parameters:
-- weekly fast MA: [8, 13] default 10
-- weekly slow MA: [18, 30] default 20
-
-## 4) Warm-up / NaNs
-All rolling indicators will have NaNs for the first `max(lookback windows)` bars.
-Backtesting engine must begin only once all required indicators are non-NaN.
-
-## 5) References
-- `ta` docs (ATR, BollingerBands, RSI):
-  https://technical-analysis-library-in-python.readthedocs.io/en/latest/ta.html
-- TA-Lib ATR docs:
-  https://ta-lib.github.io/ta-lib-python/func_groups/volatility_indicators.html
+## 6) Warmup and NaNs
+- Rolling indicators naturally emit NaNs in early bars.
+- Backtests should run with adequate warmup (`data.warmup_bars`) so entries occur only after required inputs are available.
