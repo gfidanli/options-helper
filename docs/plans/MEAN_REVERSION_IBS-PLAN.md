@@ -242,9 +242,16 @@ T9a + T9b + T9c + T9d + T9e + T10 -> T11
   - Add CLI entrypoint for multi/single ticker runs and overlay/cost flags.
   - Keep command thin; delegate to runtime module.
 - **validation**: CLI help and invocation tests pass.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - 2026-03-03: Added `technicals backtest-batch` command wrapper with single/multi symbol parsing (`--symbol` + `--tickers`), CLI cost overrides (`--commission`, `--slippage-bps`), and MeanReversionIBS overlay flags; command delegates execution to `run_technicals_backtest_batch_runtime`.
+  - 2026-03-03: Registered `backtest-batch` under the `technicals` app and exported compatibility symbols from package `__init__`.
+  - 2026-03-03: Added deterministic CLI coverage for technicals help registration, command help flags, and invocation-time runtime delegation/override wiring.
 - **files edited/created**:
+  - `options_helper/commands/technicals/backtest_batch.py` (new)
+  - `options_helper/commands/technicals/__init__.py`
+  - `tests/test_technical_backtest_batch_cli.py` (new)
+  - `docs/plans/MEAN_REVERSION_IBS-PLAN.md`
 
 ### T9a: Strategy Semantics Tests
 - **depends_on**: [T3]

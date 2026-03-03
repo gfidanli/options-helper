@@ -3,6 +3,10 @@ from __future__ import annotations
 import typer
 
 from options_helper.commands import technicals_legacy as _legacy
+from options_helper.commands.technicals.backtest_batch import (
+    register as register_backtest_batch,
+    technicals_backtest_batch,
+)
 from options_helper.commands.technicals.backtesting import (
     register as register_backtesting,
     technicals_compute_indicators,
@@ -27,6 +31,7 @@ from options_helper.commands.technicals.strategy_model import (
 app = typer.Typer(help="Technical indicators + backtesting/optimization.")
 
 register_backtesting(app)
+register_backtest_batch(app)
 register_scans(app)
 register_extension_stats(app)
 register_strategy_model(app)
@@ -45,5 +50,6 @@ __all__ = [
     "technicals_optimize",
     "technicals_walk_forward",
     "technicals_run_all",
+    "technicals_backtest_batch",
     "technicals_strategy_model",
 ]
