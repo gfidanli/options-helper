@@ -360,9 +360,13 @@ T9a + T9b + T9c + T9d + T9e + T10 -> T11
   - Run local reference-path parity command.
   - Run timing smoke for multi-ticker aggregation.
 - **validation**: All targeted checks pass within budget.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - 2026-03-03: Ran targeted pytest matrix (`tests/test_technical_backtesting_config.py`, `tests/test_mean_reversion_ibs_strategy.py`, `tests/test_technical_backtest_batch_runtime_costs.py`, `tests/test_technical_backtest_batch_runner.py`, `tests/test_technical_backtest_batch_runtime.py`, `tests/test_technical_backtest_batch_analytics.py`, `tests/test_technical_backtest_batch_schema.py`, `tests/test_technical_backtest_batch_artifacts.py`, `tests/test_technical_backtest_batch_cli.py`, `tests/test_mean_reversion_reference_parity.py`) with `/Volumes/develop/options-helper/.venv/bin/python -m pytest`; result: `71 passed` in `1.57s` pytest time (`real 2.39s`).
+  - 2026-03-03: Ran local reference-path parity command (`scripts/validate_mean_reversion_reference.py` with canonical markdown path + fixture); result: `PASS: reference markdown matches normalized fixture.` (`real 0.03s`).
+  - 2026-03-03: Ran deterministic multi-symbol timing smoke through `run_backtest_batch` + `compute_batch_analytics` using synthetic payload (`40` symbols x `756` business days); timings: `runtime=0.0048s`, `analytics=0.0888s`, `total=0.0936s`; budget gate: `<=2.00s` => `PASS`.
 - **files edited/created**:
+  - `docs/plans/MEAN_REVERSION_IBS-PLAN.md`
 
 ## Parallel Execution Groups
 
