@@ -91,10 +91,37 @@ Each strategy entry requires:
 - `search_space`
 - `constraints`
 
+Optional per-strategy cost block:
+- `cost_overrides.commission` (number, `>= 0`)
+- `cost_overrides.slippage_bps` (number, `>= 0`)
+
+Validation notes:
+- `cost_overrides` must be an object when present.
+- Only `commission` and `slippage_bps` are allowed keys.
+- Unknown keys or negative values fail config loading.
+
 Default config includes:
 - `TrendPullbackATR`
 - `MeanReversionBollinger`
+- `MeanReversionIBS`
 - `CvdDivergenceMSB` (disabled by default)
+
+`MeanReversionIBS` strategy block:
+- Canonical defaults:
+  - `lookback_high`
+  - `range_window`
+  - `range_mult`
+  - `ibs_threshold`
+  - `exit_lookback`
+- Optional overlay/default fields used by strategy runtime:
+  - `use_sma_trend_gate`, `sma_trend_window`
+  - `use_weekly_trend_gate`, `weekly_trend_col`
+  - `use_ma_direction_gate`, `ma_direction_window`, `ma_direction_lookback`
+
+Backtest-batch runtime precedence for effective costs:
+1. CLI (`--commission`, `--slippage-bps`)
+2. `strategies.<strategy>.cost_overrides`
+3. `backtest.commission` and `backtest.slippage_bps`
 
 ## 9) Artifacts
 Fields:

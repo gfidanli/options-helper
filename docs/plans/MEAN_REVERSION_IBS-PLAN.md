@@ -340,9 +340,17 @@ T9a + T9b + T9c + T9d + T9e + T10 -> T11
 - **description**:
   - Document formulas, overlays, cost precedence, benchmark semantics, and parity workflow using the reference markdown file.
 - **validation**: Docs match implemented CLI/options/artifacts.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - 2026-03-03: Expanded `MEAN_REVERSION_IBS.md` with overlay gate formulas (AND semantics), explicit cost precedence (`CLI > strategy cost_overrides > global backtest`), benchmark semantics, and parity workflow commands tied to the locked reference markdown path.
+  - 2026-03-03: Updated `RUNBOOK.md` with `technicals backtest-batch` usage, supported overlay/cost flags, completion/failure output semantics, and documented batch artifact contract files plus parity command usage.
+  - 2026-03-03: Updated `CONFIG_SCHEMA.md` to document `MeanReversionIBS` strategy block fields, optional `cost_overrides` keys/validation, and run-time cost precedence rules; updated `docs/index.md` quick links to point to the new technical backtesting pages.
 - **files edited/created**:
+  - `docs/technical_backtesting/MEAN_REVERSION_IBS.md`
+  - `docs/technical_backtesting/RUNBOOK.md`
+  - `docs/technical_backtesting/CONFIG_SCHEMA.md`
+  - `docs/index.md`
+  - `docs/plans/MEAN_REVERSION_IBS-PLAN.md`
 
 ### T11: End-to-End Validation + Perf Smoke
 - **depends_on**: [T9a, T9b, T9c, T9d, T9e, T10]

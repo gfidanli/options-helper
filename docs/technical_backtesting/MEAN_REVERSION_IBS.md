@@ -23,6 +23,26 @@ This tooling is for informational research and decision-support only. It is not 
 - When `trade_on_close=true`, fills are allowed on the same close bar.
 - If no next bar exists, no next-open fill can occur.
 
+## Overlay Gates (AND Semantics)
+Optional gates are applied as additional AND conditions on top of the base entry rule:
+- SMA trend gate (`use_sma_trend_gate=true`):
+  - Require `close_t > SMA(close, sma_trend_window)_t`.
+- Weekly trend gate (`use_weekly_trend_gate=true`):
+  - Require `weekly_trend_up_t` to be truthy.
+  - `weekly_trend_up` must come from the completed-week-shifted weekly regime feature set.
+- MA direction gate (`use_ma_direction_gate=true`):
+  - Require `SMA(close, ma_direction_window)_t > SMA(close, ma_direction_window)_{t-ma_direction_lookback}`.
+
+All enabled gates must pass on the signal bar for entry to be valid.
+
+Runtime CLI overlays for `technicals backtest-batch`:
+- `--require-sma-trend/--no-require-sma-trend`
+- `--sma-trend-window`
+- `--require-weekly-trend/--no-require-weekly-trend`
+- `--require-ma-direction/--no-require-ma-direction`
+- `--ma-direction-window`
+- `--ma-direction-lookback`
+
 ## Aggregate Rule (Batch Composite)
 - Per symbol, compute daily strategy return series on the run calendar.
 - Daily aggregate return is equal-weight across symbols with a valid return on that date:
@@ -34,6 +54,12 @@ This tooling is for informational research and decision-support only. It is not 
 - Batch benchmark is SPY buy-and-hold.
 - Compute SPY close-to-close return series on the same analysis date window used for aggregate reporting.
 - Benchmark equity is compounded from those SPY returns and aligned for side-by-side comparison with aggregate strategy equity.
+
+## Cost Override Precedence
+Per-run costs are resolved field-by-field for `commission` and `slippage_bps` with this precedence:
+1. CLI override (`--commission`, `--slippage-bps`) when provided.
+2. Strategy override (`strategies.<strategy>.cost_overrides`).
+3. Global backtest defaults (`backtest.commission`, `backtest.slippage_bps`).
 
 ## Reference Parity Targets (Locked)
 Source of truth:  
@@ -71,3 +97,30 @@ Unless a tighter test fixture is explicitly declared, parity is considered passi
 - `Final Capital`: relative delta <= `1.50%`.
 
 These tolerances are intentionally narrow enough to catch semantic drift (formula/anchor/cost timing changes) while allowing small implementation and data-normalization differences.
+
+## Parity Workflow
+Validate canonical markdown parity against the normalized fixture:
+
+```bash
+./.venv/bin/python scripts/validate_mean_reversion_reference.py
+```
+
+Optional checks:
+- Refresh fixture from the local markdown copy:
+
+```bash
+./.venv/bin/python scripts/validate_mean_reversion_reference.py --write-fixture
+```
+
+- Validate run output against locked tolerances:
+
+```bash
+./.venv/bin/python scripts/validate_mean_reversion_reference.py \
+  --run-summary-path /path/to/summary.json
+```
+
+`--run-summary-path` accepts:
+- Batch artifact shape with `per_symbol_metrics[].metrics` (ratio-space fields like `win_rate=0.70`).
+- Raw symbol stats mapping (`SPY`/`QQQ` keys with backtesting.py headline fields).
+
+When the local reference markdown file is unavailable, script output is an explicit `SKIP` for that path while fixture-based checks remain deterministic.
