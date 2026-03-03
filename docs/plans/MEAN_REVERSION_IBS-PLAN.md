@@ -163,9 +163,18 @@ T9a + T9b + T9c + T9d + T9e + T10 -> T11
   - Continue on symbol-level failures.
   - Emit stage timings/progress.
 - **validation**: Deterministic runtime tests with partial-failure behavior.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - 2026-03-03: Added a fat runtime batch runner with deterministic symbol normalization, per-symbol outcomes (`stats`, `_equity_curve`, `_trades`, warnings/error), and symbol-level fault isolation so failures do not abort remaining symbols.
+  - 2026-03-03: Added stage progress/timing emission (`batch`, `symbol`, `load_ohlc`, `compute_features`, `select_strategy_features`, `run_backtest`) with both per-symbol and aggregate timing metadata.
+  - 2026-03-03: Added a thin technicals command runtime wrapper that wires config, strategy defaults, feature selection, and T4 cost precedence (`CLI > strategy override > global`) into the batch runner.
+  - 2026-03-03: Added deterministic runtime tests covering normal path, warning capture for missing private stats frames, runtime wiring, and partial-failure continuation behavior.
 - **files edited/created**:
+  - `options_helper/technicals_backtesting/backtest/batch_runner.py` (new)
+  - `options_helper/commands/technicals/backtest_batch_runtime.py` (new)
+  - `tests/test_technical_backtest_batch_runner.py` (new)
+  - `tests/test_technical_backtest_batch_runtime.py` (new)
+  - `docs/plans/MEAN_REVERSION_IBS-PLAN.md`
 
 ### T6: Aggregate + Benchmark Analytics
 - **depends_on**: [T5]
