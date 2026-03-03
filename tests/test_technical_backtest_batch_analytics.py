@@ -6,6 +6,7 @@ import pytest
 from options_helper.technicals_backtesting.backtest.batch_analytics import (
     build_aligned_benchmark_curve,
     build_equal_weight_aggregate_curve,
+    build_period_return_table,
     compute_batch_analytics,
     compute_summary_metrics,
     extract_symbol_daily_returns,
@@ -165,3 +166,107 @@ def test_benchmark_alignment_no_overlap_produces_flat_equity_and_empty_summary_w
         "annualized_volatility": None,
         "sharpe": None,
     }
+
+
+def test_equal_weight_aggregate_uses_active_denominator_with_sparse_overlap_gaps() -> None:
+    symbol_daily_returns = {
+        "AAA": pd.Series(
+            [0.10, -0.20],
+            index=pd.to_datetime(["2025-01-02", "2025-01-06"]),
+        ),
+        "BBB": pd.Series(
+            [0.04, 0.06],
+            index=pd.to_datetime(["2025-01-03", "2025-01-06"]),
+        ),
+        "CCC": pd.Series(
+            [0.10],
+            index=pd.to_datetime(["2025-01-06"]),
+        ),
+    }
+
+    curve = build_equal_weight_aggregate_curve(symbol_daily_returns, initial_equity=1.0)
+
+    assert list(curve.index.strftime("%Y-%m-%d")) == ["2025-01-02", "2025-01-03", "2025-01-06"]
+    assert curve["active_symbols"].tolist() == [1, 1, 3]
+    assert curve.loc[pd.Timestamp("2025-01-02"), "daily_return"] == pytest.approx(0.10)
+    assert curve.loc[pd.Timestamp("2025-01-03"), "daily_return"] == pytest.approx(0.04)
+    assert curve.loc[pd.Timestamp("2025-01-06"), "daily_return"] == pytest.approx((-0.20 + 0.06 + 0.10) / 3.0)
+    assert curve.loc[pd.Timestamp("2025-01-06"), "equity"] == pytest.approx(1.1287466667)
+
+
+def test_benchmark_alignment_includes_left_edge_return_and_trailing_gaps() -> None:
+    analysis_dates = pd.to_datetime(["2025-01-02", "2025-01-03", "2025-01-06", "2025-01-07"])
+    benchmark_close = pd.Series(
+        [100.0, 105.0, 103.0, 106.0],
+        index=pd.to_datetime(["2025-01-01", "2025-01-02", "2025-01-03", "2025-01-06"]),
+    )
+
+    curve = build_aligned_benchmark_curve(
+        benchmark_close,
+        analysis_dates=analysis_dates,
+        initial_equity=1.0,
+    )
+
+    assert curve.loc[pd.Timestamp("2025-01-02"), "daily_return"] == pytest.approx(0.05)
+    assert curve.loc[pd.Timestamp("2025-01-03"), "daily_return"] == pytest.approx(-0.0190476190)
+    assert curve.loc[pd.Timestamp("2025-01-06"), "daily_return"] == pytest.approx(0.0291262136)
+    assert pd.isna(curve.loc[pd.Timestamp("2025-01-07"), "daily_return"])
+    assert curve["has_data"].tolist() == [True, True, True, False]
+    assert curve["equity"].tolist() == pytest.approx([1.05, 1.03, 1.06, 1.06])
+
+
+def test_period_return_table_generates_monthly_and_yearly_buckets() -> None:
+    aggregate_returns = pd.Series(
+        [0.10, -0.05, 0.02, 0.03],
+        index=pd.to_datetime(["2025-01-31", "2025-02-03", "2025-02-28", "2026-01-02"]),
+    )
+    benchmark_returns = pd.Series(
+        [0.01, 0.04, -0.02],
+        index=pd.to_datetime(["2025-01-31", "2025-03-03", "2026-01-02"]),
+    )
+
+    monthly = build_period_return_table(
+        aggregate_daily_returns=aggregate_returns,
+        benchmark_daily_returns=benchmark_returns,
+        frequency="M",
+    )
+    yearly = build_period_return_table(
+        aggregate_daily_returns=aggregate_returns,
+        benchmark_daily_returns=benchmark_returns,
+        frequency="Y",
+    )
+
+    assert monthly.to_dict(orient="records") == [
+        {
+            "period": "2025-01",
+            "aggregate_return": pytest.approx(0.10),
+            "benchmark_return": pytest.approx(0.01),
+        },
+        {
+            "period": "2025-02",
+            "aggregate_return": pytest.approx(-0.031),
+            "benchmark_return": pytest.approx(float("nan"), nan_ok=True),
+        },
+        {
+            "period": "2025-03",
+            "aggregate_return": pytest.approx(float("nan"), nan_ok=True),
+            "benchmark_return": pytest.approx(0.04),
+        },
+        {
+            "period": "2026-01",
+            "aggregate_return": pytest.approx(0.03),
+            "benchmark_return": pytest.approx(-0.02),
+        },
+    ]
+    assert yearly.to_dict(orient="records") == [
+        {
+            "period": "2025",
+            "aggregate_return": pytest.approx(0.0659),
+            "benchmark_return": pytest.approx(0.0504),
+        },
+        {
+            "period": "2026",
+            "aggregate_return": pytest.approx(0.03),
+            "benchmark_return": pytest.approx(-0.02),
+        },
+    ]

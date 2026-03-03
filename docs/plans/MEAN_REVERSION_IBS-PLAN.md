@@ -251,9 +251,12 @@ T9a + T9b + T9c + T9d + T9e + T10 -> T11
   - Validate equal-weight math and SPY alignment behavior.
   - Validate monthly/yearly bucket generation.
 - **validation**: Deterministic analytics tests pass.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - 2026-03-03: Added deterministic regression tests for sparse-overlap equal-weight denominator semantics, benchmark alignment edge behavior (left-edge return anchoring plus trailing gap handling), and monthly/yearly bucket output across multi-month/multi-year period unions.
 - **files edited/created**:
+  - `tests/test_technical_backtest_batch_analytics.py`
+  - `docs/plans/MEAN_REVERSION_IBS-PLAN.md`
 
 ### T9c: CLI + Artifact Tests
 - **depends_on**: [T8]
