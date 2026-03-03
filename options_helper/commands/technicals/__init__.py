@@ -23,6 +23,10 @@ from options_helper.commands.technicals.scans import (
     technicals_msb_scan,
     technicals_sfp_scan,
 )
+from options_helper.commands.technicals.regime_tactic import (
+    register as register_regime_tactic,
+    technicals_regime_tactic,
+)
 from options_helper.commands.technicals.strategy_model import (
     register as register_strategy_model,
     technicals_strategy_model,
@@ -34,6 +38,7 @@ register_backtesting(app)
 register_backtest_batch(app)
 register_scans(app)
 register_extension_stats(app)
+register_regime_tactic(app)
 register_strategy_model(app)
 
 # Compatibility seam for tests that monkeypatch
@@ -51,5 +56,6 @@ __all__ = [
     "technicals_walk_forward",
     "technicals_run_all",
     "technicals_backtest_batch",
+    "technicals_regime_tactic",
     "technicals_strategy_model",
 ]
