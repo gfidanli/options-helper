@@ -81,20 +81,80 @@ def _overlay_gate_frame(*, weekly_trend_at_entry: bool = True) -> pd.DataFrame:
 
 
 def _run(frame: pd.DataFrame, **param_overrides: object):
+    trade_on_close = bool(param_overrides.pop("trade_on_close", False))
     params = _strategy_params()
     params.update(param_overrides)
-    return run_backtest(frame, MeanReversionIBS, _bt_cfg(), params, warmup_bars=0)
+    bt_cfg = _bt_cfg()
+    bt_cfg["trade_on_close"] = trade_on_close
+    return run_backtest(frame, MeanReversionIBS, bt_cfg, params, warmup_bars=0)
+
+
+def _contract_terms(frame: pd.DataFrame, params: dict) -> dict[str, pd.Series]:
+    high = frame["High"]
+    low = frame["Low"]
+    close = frame["Close"]
+    intrabar_range = high - low
+    rolling_high = high.rolling(window=params["lookback_high"], min_periods=params["lookback_high"]).max()
+    avg_range = intrabar_range.rolling(window=params["range_window"], min_periods=params["range_window"]).mean()
+    ibs = pd.Series(
+        _compute_ibs(
+            close=close.to_numpy(dtype=float),
+            low=low.to_numpy(dtype=float),
+            high=high.to_numpy(dtype=float),
+            zero_range_value=0.5,
+        ),
+        index=frame.index,
+    )
+    threshold = rolling_high - params["range_mult"] * avg_range
+    entry_signal = (close < threshold) & (ibs < params["ibs_threshold"])
+    exit_signal = close > high.shift(params["exit_lookback"])
+    return {
+        "rolling_high": rolling_high,
+        "avg_range": avg_range,
+        "ibs": ibs,
+        "threshold": threshold,
+        "entry_signal": entry_signal,
+        "exit_signal": exit_signal,
+    }
 
 
 def test_mean_reversion_ibs_entry_exit_contract() -> None:
     frame = _entry_exit_frame()
-    stats = _run(frame)
+    params = _strategy_params()
+    terms = _contract_terms(frame, params)
+
+    signal_bar = 7
+    exit_signal_bar = 9
+    assert terms["rolling_high"].iloc[signal_bar] == pytest.approx(13.0)
+    assert terms["avg_range"].iloc[signal_bar] == pytest.approx(5.0 / 6.0)
+    assert terms["threshold"].iloc[signal_bar] == pytest.approx(13.0 - (params["range_mult"] * (5.0 / 6.0)))
+    assert terms["ibs"].iloc[signal_bar] == pytest.approx(0.1)
+    assert bool(terms["entry_signal"].iloc[signal_bar])
+    assert not bool(terms["entry_signal"].iloc[signal_bar - 1])
+    assert bool(terms["exit_signal"].iloc[exit_signal_bar])
+    assert not bool(terms["exit_signal"].iloc[exit_signal_bar - 1])
+
+    stats = _run(frame, trade_on_close=False)
     trades = stats["_trades"]
     assert len(trades) == 1
-    assert int(trades.iloc[0]["EntryBar"]) == 8
-    assert trades.iloc[0]["EntryTime"] == frame.index[8]
-    assert int(trades.iloc[0]["ExitBar"]) == 10
-    assert trades.iloc[0]["ExitTime"] == frame.index[10]
+    trade = trades.iloc[0]
+    assert int(trade["EntryBar"]) == signal_bar + 1
+    assert trade["EntryTime"] == frame.index[signal_bar + 1]
+    assert trade["EntryPrice"] == pytest.approx(frame["Open"].iloc[signal_bar + 1])
+    assert int(trade["ExitBar"]) == exit_signal_bar + 1
+    assert trade["ExitTime"] == frame.index[exit_signal_bar + 1]
+    assert trade["ExitPrice"] == pytest.approx(frame["Open"].iloc[exit_signal_bar + 1])
+
+
+def test_mean_reversion_ibs_no_next_open_no_fill_when_signal_on_last_bar() -> None:
+    frame = _entry_exit_frame().iloc[:8]
+    terms = _contract_terms(frame, _strategy_params())
+    last_bar = len(frame) - 1
+    assert bool(terms["entry_signal"].iloc[last_bar])
+
+    stats = _run(frame, trade_on_close=False)
+    assert int(stats["# Trades"]) == 0
+    assert stats["_trades"].empty
 
 
 def test_mean_reversion_ibs_zero_range_uses_neutral_fallback() -> None:
@@ -107,7 +167,17 @@ def test_mean_reversion_ibs_zero_range_uses_neutral_fallback() -> None:
     assert ibs[0] == 0.25
     assert ibs[1] == 0.5
 
-    stats = _run(_zero_range_frame())
+    frame = _zero_range_frame()
+    terms = _contract_terms(frame, _strategy_params())
+    zero_range_bar = 7
+    intrabar_range = frame["High"] - frame["Low"]
+    close_below_threshold = frame["Close"] < terms["threshold"]
+    assert intrabar_range.iloc[zero_range_bar] == pytest.approx(0.0)
+    assert terms["ibs"].iloc[zero_range_bar] == pytest.approx(0.5)
+    assert bool(close_below_threshold.iloc[zero_range_bar])
+    assert not bool(terms["entry_signal"].iloc[zero_range_bar])
+
+    stats = _run(frame)
     assert int(stats["# Trades"]) == 0
     assert stats["_trades"].empty
 

@@ -222,9 +222,12 @@ T9a + T9b + T9c + T9d + T9e + T10 -> T11
   - Validate entry/exit formulas and no-lookahead execution semantics.
   - Validate IBS divide-by-zero behavior.
 - **validation**: Deterministic unit tests pass.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - 2026-03-03: Added deterministic regression assertions that lock contract formulas (`rolling_high`, `avg_range`, threshold, IBS, entry/exit signal bars), next-bar-open fill semantics for `trade_on_close=false` (including no-fill when a signal appears on the final bar), and IBS zero-range fallback behavior (`0.5`) that blocks entry on a zero-range bar.
 - **files edited/created**:
+  - `tests/test_mean_reversion_ibs_strategy.py`
+  - `docs/plans/MEAN_REVERSION_IBS-PLAN.md`
 
 ### T9b: Aggregate/Benchmark Tests
 - **depends_on**: [T6]
