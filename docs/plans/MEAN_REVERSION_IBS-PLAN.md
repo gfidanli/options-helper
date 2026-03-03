@@ -184,9 +184,15 @@ T9a + T9b + T9c + T9d + T9e + T10 -> T11
   - Build SPY benchmark curve aligned to analysis window.
   - Compute monthly/yearly returns + summary metrics.
 - **validation**: Sparse date alignment and benchmark edge-case tests pass.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - 2026-03-03: Added pure batch analytics module with deterministic helpers to extract per-symbol daily returns from batch outcomes, build equal-weight aggregate return/equity curves with active-symbol denominators, and align SPY benchmark returns/equity to the aggregate analysis window.
+  - 2026-03-03: Added monthly/yearly compounded return table generation and summary metric computation (date window, total return, ending equity, CAGR, max drawdown, annualized volatility, Sharpe) for aggregate and benchmark curves.
+  - 2026-03-03: Added deterministic sparse-alignment tests for active-denominator aggregate math plus benchmark missing-edge/no-overlap handling and period-table/summary outputs.
 - **files edited/created**:
+  - `options_helper/technicals_backtesting/backtest/batch_analytics.py` (new)
+  - `tests/test_technical_backtest_batch_analytics.py` (new)
+  - `docs/plans/MEAN_REVERSION_IBS-PLAN.md`
 
 ### T7a: Batch Artifact Schema
 - **depends_on**: [T6]
