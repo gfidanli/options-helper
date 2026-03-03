@@ -18,19 +18,31 @@ def _col_as_float(df: pd.DataFrame, name: str) -> pd.Series:
 def _parse_last_trade_dates(series: pd.Series) -> pd.Series:
     parsed = pd.to_datetime(series, errors="coerce", utc=True)
     numeric = pd.to_numeric(series, errors="coerce")
-    needs_numeric = parsed.isna() & numeric.notna()
-    if needs_numeric.any():
-        max_val = numeric[needs_numeric].max()
-        if pd.isna(max_val):
-            return parsed
-        if max_val < 1e11:
-            unit = "s"
-        elif max_val < 1e14:
-            unit = "ms"
-        else:
-            unit = "ns"
-        parsed_numeric = pd.to_datetime(numeric, errors="coerce", utc=True, unit=unit)
-        parsed = parsed.where(~needs_numeric, parsed_numeric)
+    numeric_mask = numeric.notna()
+    if not numeric_mask.any():
+        return parsed
+
+    # pandas assumes integer timestamps are in nanoseconds, which turns epoch-second
+    # values (e.g. 1771966802) into dates near 1970. Detect that and re-parse using
+    # inferred units based on magnitude.
+    needs_numeric = parsed.isna() & numeric_mask
+    try:
+        epochish = parsed.notna() & (parsed.dt.year <= 1971)
+        needs_numeric = needs_numeric | (numeric_mask & epochish)
+    except Exception:  # noqa: BLE001
+        pass
+
+    max_val = numeric[numeric_mask].max()
+    if pd.isna(max_val):
+        return parsed
+    if max_val < 1e11:
+        unit = "s"
+    elif max_val < 1e14:
+        unit = "ms"
+    else:
+        unit = "ns"
+    parsed_numeric = pd.to_datetime(numeric, errors="coerce", utc=True, unit=unit)
+    parsed = parsed.where(~needs_numeric, parsed_numeric)
     return parsed
 
 
