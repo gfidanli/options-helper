@@ -22,6 +22,7 @@ from options_helper.schemas.strategy_modeling_contracts import (
     TradeRejectCode,
 )
 from options_helper.schemas.strategy_modeling_policy import (
+    StopTrailRule,
     StrategyModelingPolicyConfig,
     parse_max_hold_timeframe,
 )
@@ -103,6 +104,8 @@ def simulate_strategy_trade_paths(
     max_hold_bars: int | None = None,
     max_hold_timeframe: str | None = None,
     target_ladder: Sequence[StrategyRTarget] | None = None,
+    stop_trail_rules: Sequence[StopTrailRule] | None = None,
+    daily_ohlc_by_symbol: Mapping[str, pd.DataFrame] | None = None,
 ) -> list[StrategyTradeSimulation]:
     """Simulate one path per (event, target) with deterministic reject/exit semantics."""
 
@@ -122,6 +125,8 @@ def simulate_strategy_trade_paths(
         raise ValueError("target_ladder cannot be empty")
 
     normalized_intraday = _normalize_intraday_by_symbol(intraday_bars_by_symbol)
+    normalized_daily_ohlc = _normalize_daily_ohlc_by_symbol(daily_ohlc_by_symbol)
+    trail_rules = tuple(stop_trail_rules) if stop_trail_rules is not None else tuple(cfg.stop_trail_rules)
     prepared_intraday = _prepare_intraday_by_symbol(normalized_intraday)
     parsed_events = parse_strategy_signal_events(events)
     sorted_events = sorted(parsed_events, key=_event_sort_key)
@@ -131,6 +136,7 @@ def simulate_strategy_trade_paths(
     for event in sorted_events:
         symbol = _normalize_symbol(event.symbol)
         prepared = prepared_intraday.get(symbol)
+        daily_ohlc = normalized_daily_ohlc.get(symbol)
         decision = entry_decisions.get(event.event_id)
         if decision is None:
             decision = _resolve_entry_decision(event=event, prepared=prepared)
@@ -146,9 +152,22 @@ def simulate_strategy_trade_paths(
                     max_hold_timeframe=parsed_hold_timeframe,
                     gap_fill_policy=cfg.gap_fill_policy,
                     stop_move_rules=cfg.stop_move_rules,
+                    stop_trail_rules=trail_rules,
+                    daily_ohlc=daily_ohlc,
                 )
             )
     return trades
+
+
+def _normalize_daily_ohlc_by_symbol(
+    daily_ohlc_by_symbol: Mapping[str, pd.DataFrame] | None,
+) -> dict[str, pd.DataFrame]:
+    if not daily_ohlc_by_symbol:
+        return {}
+    out: dict[str, pd.DataFrame] = {}
+    for raw_symbol in sorted(daily_ohlc_by_symbol):
+        out[_normalize_symbol(raw_symbol)] = daily_ohlc_by_symbol[raw_symbol]
+    return out
 
 
 def _normalize_intraday_by_symbol(
