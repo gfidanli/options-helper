@@ -128,9 +128,14 @@ T9a + T9b + T9c + T9d + T9e + T10 -> T11
   - Resolve costs with precedence:
     CLI > strategy override > global backtest config.
 - **validation**: Table-driven precedence tests pass.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - 2026-03-03: Added `backtest_batch_runtime_costs` helper with deterministic field-level precedence resolution (`commission`, `slippage_bps`) and a merge helper for runtime integration.
+  - 2026-03-03: Added table-driven tests for CLI/strategy/global combinations, including partial overrides and missing override fallbacks.
 - **files edited/created**:
+  - `options_helper/commands/technicals/backtest_batch_runtime_costs.py` (new)
+  - `tests/test_technical_backtest_batch_runtime_costs.py` (new)
+  - `docs/plans/MEAN_REVERSION_IBS-PLAN.md`
 
 ### T5: Batch Runner Runtime (Thin CLI, Fat Runtime)
 - **depends_on**: [T3, T4, T1b]
