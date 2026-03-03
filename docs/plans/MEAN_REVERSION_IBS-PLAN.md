@@ -223,9 +223,17 @@ T9a + T9b + T9c + T9d + T9e + T10 -> T11
     - monthly returns
     - yearly returns
 - **validation**: HTML renders for normal and empty/partial datasets.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+- 2026-03-03: Added batch artifact writer that validates schema payloads, writes `summary.json`, and emits deterministic CSV artifacts (`per_symbol_metrics.csv`, `equity_curve.csv`, `monthly_returns.csv`, `yearly_returns.csv`, `failed_symbols.csv`) under run-scoped output directories.
+- 2026-03-03: Added deterministic HTML report renderer with required headline metric cards and sections for equity/drawdown (strategy vs SPY), monthly returns, and yearly returns; empty/partial datasets render explicit fallback states.
+- 2026-03-03: Added focused artifact + HTML tests validating schema-compatible output payload persistence, file creation, and required report sections for normal and sparse datasets.
 - **files edited/created**:
+  - `options_helper/data/technical_backtest_batch_artifacts.py` (new)
+  - `options_helper/reporting/technical_backtest_html.py` (new)
+  - `options_helper/reporting/__init__.py` (moved from `options_helper/reporting.py`)
+  - `tests/test_technical_backtest_batch_artifacts.py` (new)
+  - `docs/plans/MEAN_REVERSION_IBS-PLAN.md`
 
 ### T8: CLI Command + Registration
 - **depends_on**: [T5, T6, T7]
