@@ -25,6 +25,15 @@ def required_feature_columns_for_strategy(
             out.append(v)
         return out
 
+    def _is_enabled(value: object) -> bool:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"false", "0", "no", "n", ""}:
+                return False
+            if normalized in {"true", "1", "yes", "y"}:
+                return True
+        return bool(value)
+
     if strategy == "TrendPullbackATR":
         atr_windows = [int(v) for v in _vals("atr_window")]
         sma_windows = [int(v) for v in _vals("sma_window")]
@@ -68,5 +77,8 @@ def required_feature_columns_for_strategy(
     elif strategy == "MeanReversionIBS":
         # MeanReversionIBS computes rolling levels/IBS from raw OHLC at runtime.
         required.update({"Close", "High", "Low"})
+        weekly_gate_values = _vals("use_weekly_trend_gate")
+        if any(_is_enabled(v) for v in weekly_gate_values):
+            required.add("weekly_trend_up")
 
     return sorted(required)

@@ -127,9 +127,16 @@ T9a + T9b + T9c + T9d + T9e + T10 -> T11
     - MA direction gate
   - Validate overlay params.
 - **validation**: Deterministic tests show correct acceptance/rejection behavior.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - 2026-03-03: Added optional AND entry overlays to `MeanReversionIBS`: SMA trend gate (`close > SMA(window)`), weekly trend gate (`weekly_trend_up` true), and MA direction gate (`SMA(window) > SMA(window-lookback)`).
+  - 2026-03-03: Added explicit overlay parameter validation with clear `ValueError` messages for invalid booleans/integers and missing weekly trend column when weekly gate is enabled.
+  - 2026-03-03: Added deterministic gate tests covering per-gate accept/reject paths, combined AND behavior, and validation errors; updated IBS feature selection to include `weekly_trend_up` when weekly gate is enabled in strategy config.
 - **files edited/created**:
+  - `options_helper/technicals_backtesting/strategies/mean_reversion_ibs.py`
+  - `options_helper/technicals_backtesting/feature_selection.py`
+  - `tests/test_mean_reversion_ibs_strategy.py`
+  - `docs/plans/MEAN_REVERSION_IBS-PLAN.md`
 
 ### T4: Cost Override Precedence Resolver
 - **depends_on**: [T1]
