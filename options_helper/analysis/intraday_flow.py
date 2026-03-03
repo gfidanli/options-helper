@@ -411,8 +411,8 @@ def _normalize_quotes(quotes: pd.DataFrame) -> pd.DataFrame:
     out["option_type"] = _normalize_option_type_series(_first_present(df, ("option_type", "optionType", "type")))
     out["strike"] = pd.to_numeric(_first_present(df, ("strike",)), errors="coerce")
     out["bs_delta"] = pd.to_numeric(_first_present(df, ("bs_delta", "delta")), errors="coerce")
-    out["bid"] = pd.to_numeric(_first_present(df, ("bid",)), errors="coerce")
-    out["ask"] = pd.to_numeric(_first_present(df, ("ask",)), errors="coerce")
+    out["bid"] = pd.to_numeric(_first_present(df, ("bid", "bid_price", "bidPrice")), errors="coerce")
+    out["ask"] = pd.to_numeric(_first_present(df, ("ask", "ask_price", "askPrice")), errors="coerce")
     return out
 
 

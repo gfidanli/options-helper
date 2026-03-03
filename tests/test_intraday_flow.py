@@ -224,6 +224,54 @@ def test_classify_intraday_trades_handles_sorting_dedup_and_edge_cases() -> None
     assert "dropped_zero_size" in dropped_missing_size["warning_codes"]
 
 
+def test_classify_intraday_trades_accepts_alpaca_streaming_bid_price_ask_price() -> None:
+    trades = pd.DataFrame(
+        [
+            {
+                "symbol": "IREN",
+                "contractSymbol": "IREN260515C00070000",
+                "optionType": "call",
+                "expiry": "2026-05-15",
+                "strike": 70.0,
+                "timestamp": "2026-02-24T18:02:54Z",
+                "price": 2.88,
+                "size": 1,
+            },
+            {
+                "symbol": "IREN",
+                "contractSymbol": "IREN260515C00070000",
+                "optionType": "call",
+                "expiry": "2026-05-15",
+                "strike": 70.0,
+                "timestamp": "2026-02-24T18:03:23Z",
+                "price": 2.78,
+                "size": 1,
+            },
+        ]
+    )
+    quotes = pd.DataFrame(
+        [
+            {
+                "symbol": "IREN",
+                "contractSymbol": "IREN260515C00070000",
+                "timestamp": "2026-02-24T18:02:47Z",
+                "bid_price": 2.78,
+                "ask_price": 2.88,
+            }
+        ]
+    )
+    classified = classify_intraday_trades(trades, quotes)
+    assert len(classified) == 2
+
+    buy = classified.loc[classified["price"] == 2.88].iloc[0]
+    assert buy["direction"] == "buy"
+    assert bool(buy["has_valid_quote"])
+
+    sell = classified.loc[classified["price"] == 2.78].iloc[0]
+    assert sell["direction"] == "sell"
+    assert bool(sell["has_valid_quote"])
+
+
 def test_summarize_intraday_contract_flow_outputs_contract_day_metrics() -> None:
     trades, quotes = _sample_trades_and_quotes()
     classified = classify_intraday_trades(trades, quotes)
