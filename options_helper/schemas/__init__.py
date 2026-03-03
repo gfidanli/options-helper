@@ -104,6 +104,17 @@ from options_helper.schemas.strategy_modeling_artifact import (
     STRATEGY_MODELING_ARTIFACT_SCHEMA_VERSION,
     StrategyModelingArtifact,
 )
+from options_helper.schemas.technical_backtest_batch import (
+    TECHNICAL_BACKTEST_BATCH_SCHEMA_VERSION,
+    TechnicalBacktestBatchEquityPoint,
+    TechnicalBacktestBatchFailure,
+    TechnicalBacktestBatchMetrics,
+    TechnicalBacktestBatchMonthlyReturn,
+    TechnicalBacktestBatchSummaryArtifact,
+    TechnicalBacktestBatchSymbolMetrics,
+    TechnicalBacktestBatchYearlyReturn,
+    validate_technical_backtest_batch_summary_payload,
+)
 
 __all__ = [
     "ArtifactBase",
@@ -116,6 +127,7 @@ __all__ = [
     "BacktestSkipRow",
     "BacktestSummaryArtifact",
     "BacktestTradeRow",
+    "TECHNICAL_BACKTEST_BATCH_SCHEMA_VERSION",
     "CANDLE_DERIVED_ARTIFACTS",
     "ChainReportArtifact",
     "CompareArtifact",
@@ -190,6 +202,13 @@ __all__ = [
     "STRATEGY_MODELING_PROFILE_SCHEMA_VERSION",
     "STRATEGY_SIGNAL_EVENT_FIELDS",
     "STRATEGY_TRADE_SIMULATION_FIELDS",
+    "TechnicalBacktestBatchEquityPoint",
+    "TechnicalBacktestBatchFailure",
+    "TechnicalBacktestBatchMetrics",
+    "TechnicalBacktestBatchMonthlyReturn",
+    "TechnicalBacktestBatchSummaryArtifact",
+    "TechnicalBacktestBatchSymbolMetrics",
+    "TechnicalBacktestBatchYearlyReturn",
     "TradeExitReason",
     "TradeRejectCode",
     "TradeStatus",
@@ -200,4 +219,5 @@ __all__ = [
     "contract_defaults",
     "contract_field_names",
     "utc_now",
+    "validate_technical_backtest_batch_summary_payload",
 ]

@@ -83,6 +83,21 @@ All artifacts include:
     - `policy_overrides -> policy`
     - `universe -> symbols`
 
+### Technical backtest batch summary
+- Path: `data/reports/technicals/backtest_batch/{RUN_ID}/summary.json` (planned writer in mean-reversion IBS flow)
+- Source: planned `options-helper technicals backtest-batch ... --out ...`
+- Schema: `options_helper.schemas.technical_backtest_batch.TechnicalBacktestBatchSummaryArtifact`
+- Required sections:
+  - `schema_version`, `generated_at`, `as_of`, `run_id`, `strategy`
+  - `benchmark_symbol`, `requested_symbols`, `modeled_symbols`, `failed_symbols`
+  - `period_start`, `period_end`
+  - `aggregate_metrics`, `benchmark_metrics`, `per_symbol_metrics`
+  - `equity_curve`, `monthly_returns`, `yearly_returns`
+  - `warnings`, `disclaimer`
+- Writer seam:
+  - Use `options_helper.schemas.technical_backtest_batch.validate_technical_backtest_batch_summary_payload(...)`
+    before writing `summary.json` to ensure strict contract compatibility.
+
 ### Tail risk
 - Path: `data/reports/tail_risk/{SYMBOL}/tail_risk_{ASOF}_h{H}_n{N}_seed{SEED}.json` (when `--out` is used)
 - Source: `options-helper market-analysis tail-risk ... --out ...`

@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-03-03T14:00:00Z",
+  "as_of": "2026-03-02",
+  "run_id": "mean-reversion-ibs-20260303-140000",
+  "strategy": "MeanReversionIBS",
+  "benchmark_symbol": "SPY",
+  "requested_symbols": ["SPY", "QQQ", "IWM"],
+  "modeled_symbols": ["SPY", "QQQ"],
+  "failed_symbols": [
+    {
+      "symbol": "IWM",
+      "stage": "backtest",
+      "error": "missing cached candles for requested date range"
+    }
+  ],
+  "period_start": "2025-01-02",
+  "period_end": "2026-03-02",
+  "aggregate_metrics": {
+    "starting_equity": 100000.0,
+    "ending_equity": 114350.0,
+    "total_return_pct": 0.1435,
+    "annualized_return_pct": 0.1154,
+    "max_drawdown_pct": -0.0821,
+    "trade_count": 124,
+    "win_rate": 0.7016,
+    "profit_factor": 1.79,
+    "invested_pct": 0.214
+  },
+  "benchmark_metrics": {
+    "starting_equity": 100000.0,
+    "ending_equity": 109120.0,
+    "total_return_pct": 0.0912,
+    "annualized_return_pct": 0.0731,
+    "max_drawdown_pct": -0.109,
+    "trade_count": 0,
+    "win_rate": null,
+    "profit_factor": null,
+    "invested_pct": 1.0
+  },
+  "per_symbol_metrics": [
+    {
+      "symbol": "SPY",
+      "period_start": "2025-01-02",
+      "period_end": "2026-03-02",
+      "metrics": {
+        "starting_equity": 50000.0,
+        "ending_equity": 57200.0,
+        "total_return_pct": 0.144,
+        "annualized_return_pct": 0.1162,
+        "max_drawdown_pct": -0.079,
+        "trade_count": 67,
+        "win_rate": 0.7164,
+        "profit_factor": 1.85,
+        "invested_pct": 0.227
+      }
+    },
+    {
+      "symbol": "QQQ",
+      "period_start": "2025-01-02",
+      "period_end": "2026-03-02",
+      "metrics": {
+        "starting_equity": 50000.0,
+        "ending_equity": 57150.0,
+        "total_return_pct": 0.143,
+        "annualized_return_pct": 0.1147,
+        "max_drawdown_pct": -0.0853,
+        "trade_count": 57,
+        "win_rate": 0.6842,
+        "profit_factor": 1.72,
+        "invested_pct": 0.201
+      }
+    }
+  ],
+  "equity_curve": [
+    {
+      "session_date": "2026-02-27",
+      "aggregate_equity": 113900.0,
+      "benchmark_equity": 108770.0,
+      "aggregate_drawdown_pct": -0.0345,
+      "benchmark_drawdown_pct": -0.0514
+    },
+    {
+      "session_date": "2026-03-02",
+      "aggregate_equity": 114350.0,
+      "benchmark_equity": 109120.0,
+      "aggregate_drawdown_pct": -0.032,
+      "benchmark_drawdown_pct": -0.0488
+    }
+  ],
+  "monthly_returns": [
+    {
+      "year": 2026,
+      "month": 1,
+      "aggregate_return_pct": 0.021,
+      "benchmark_return_pct": 0.014
+    },
+    {
+      "year": 2026,
+      "month": 2,
+      "aggregate_return_pct": 0.018,
+      "benchmark_return_pct": 0.011
+    }
+  ],
+  "yearly_returns": [
+    {
+      "year": 2025,
+      "aggregate_return_pct": 0.104,
+      "benchmark_return_pct": 0.063
+    },
+    {
+      "year": 2026,
+      "aggregate_return_pct": 0.036,
+      "benchmark_return_pct": 0.027
+    }
+  ],
+  "warnings": [
+    "1 symbol failed and was excluded from aggregate analytics."
+  ],
+  "disclaimer": "Not financial advice. For informational/educational use only."
+}

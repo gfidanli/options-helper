@@ -15,6 +15,7 @@ from options_helper.schemas.iv_surface import IvSurfaceArtifact
 from options_helper.schemas.levels import LevelsArtifact
 from options_helper.schemas.scenarios import ScenariosArtifact
 from options_helper.schemas.scanner_shortlist import ScannerShortlistArtifact
+from options_helper.schemas.technical_backtest_batch import TechnicalBacktestBatchSummaryArtifact
 from options_helper.schemas.tail_risk import TailRiskArtifact
 
 
@@ -34,6 +35,7 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures" / "artifacts"
         ("levels_minimal.json", LevelsArtifact),
         ("scanner_shortlist.json", ScannerShortlistArtifact),
         ("scenarios_minimal.json", ScenariosArtifact),
+        ("technical_backtest_batch_summary.json", TechnicalBacktestBatchSummaryArtifact),
         ("tail_risk.json", TailRiskArtifact),
     ],
 )

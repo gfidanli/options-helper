@@ -200,9 +200,17 @@ T9a + T9b + T9c + T9d + T9e + T10 -> T11
 - **description**:
   - Define schema-versioned `summary.json` model.
 - **validation**: Contract tests validate fixtures and writer outputs.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - 2026-03-03: Added strict schema-versioned batch summary contract with explicit required sections and writer-validation seam.
+  - 2026-03-03: Added fixture-backed contract coverage plus focused schema tests for required keys and strict extra-field rejection.
 - **files edited/created**:
+  - `options_helper/schemas/technical_backtest_batch.py` (new)
+  - `tests/fixtures/artifacts/technical_backtest_batch_summary.json` (new)
+  - `tests/test_technical_backtest_batch_schema.py` (new)
+  - `tests/test_artifact_fixtures.py`
+  - `options_helper/schemas/__init__.py`
+  - `docs/ARTIFACT_SCHEMAS.md`
 
 ### T7: Artifact + HTML Writer
 - **depends_on**: [T7a]
