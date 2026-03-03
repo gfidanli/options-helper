@@ -12,6 +12,7 @@ EntryTsAnchorPolicy = Literal["first_tradable_bar_open_after_signal_confirmed_ts
 PriceAdjustmentPolicy = Literal["adjusted_ohlc"]
 MaxHoldUnit = Literal["entry", "min", "h", "d", "w"]
 StopMoveTrigger = Literal["close_r"]
+StopTrailEmaSpan = Literal[9, 21, 50, 200]
 
 _MAX_HOLD_TIMEFRAME_PATTERN = re.compile(r"^(?P<count>\d+)\s*(?P<unit>m|min|h|d|w)$", re.IGNORECASE)
 
@@ -79,8 +80,25 @@ class StopMoveRule(BaseModel):
         return self
 
 
+class StopTrailRule(BaseModel):
+    """Staged stop-trail rule activated once profit reaches `start_r`."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    start_r: float = Field(ge=0.0)
+    ema_span: StopTrailEmaSpan
+    buffer_atr_multiple: float | None = Field(default=None, ge=0.0)
+
+
 class StrategyModelingPolicyConfig(BaseModel):
-    """Baseline policy contract for strategy-modeling simulations."""
+    """Baseline policy contract for strategy-modeling simulations.
+
+    Stop policy precedence:
+    - `stop_move_rules` and `stop_trail_rules` both propose stop candidates.
+    - Simulation applies a tighten-only reducer:
+      - long: `max(current_stop, candidates...)`
+      - short: `min(current_stop, candidates...)`
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -97,6 +115,7 @@ class StrategyModelingPolicyConfig(BaseModel):
     )
     price_adjustment_policy: PriceAdjustmentPolicy = "adjusted_ohlc"
     stop_move_rules: tuple[StopMoveRule, ...] = Field(default_factory=tuple)
+    stop_trail_rules: list[StopTrailRule] = Field(default_factory=list)
 
     @field_validator("max_hold_timeframe", mode="before")
     @classmethod
@@ -132,5 +151,31 @@ class StrategyModelingPolicyConfig(BaseModel):
             if stop_r + 1e-12 < last_stop_r:
                 raise ValueError("stop_move_rules must tighten stops (non-decreasing stop_r)")
             last_stop_r = stop_r
+
+        return sorted_rules
+
+    @field_validator("stop_trail_rules", mode="before")
+    @classmethod
+    def _normalize_stop_trail_rules(cls, value: object) -> list[StopTrailRule]:
+        if value is None:
+            return []
+        if isinstance(value, StopTrailRule):
+            raw_items: list[object] = [value]
+        elif isinstance(value, tuple | list):
+            raw_items = list(value)
+        else:
+            raise TypeError("stop_trail_rules must be a sequence")
+
+        rules = [StopTrailRule.model_validate(item) for item in raw_items]
+        if not rules:
+            return []
+
+        sorted_rules = sorted(rules, key=lambda rule: float(rule.start_r))
+        seen_starts: set[float] = set()
+        for rule in sorted_rules:
+            start_r = float(rule.start_r)
+            if start_r in seen_starts:
+                raise ValueError("stop_trail_rules must not contain duplicate start_r values")
+            seen_starts.add(start_r)
 
         return sorted_rules

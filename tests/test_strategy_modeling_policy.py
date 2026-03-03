@@ -20,6 +20,7 @@ def test_strategy_modeling_policy_defaults() -> None:
     assert cfg.gap_fill_policy == "fill_at_open"
     assert cfg.entry_ts_anchor_policy == "first_tradable_bar_open_after_signal_confirmed_ts"
     assert cfg.price_adjustment_policy == "adjusted_ohlc"
+    assert cfg.stop_trail_rules == []
 
 
 def test_parse_strategy_modeling_policy_config_applies_overrides() -> None:
@@ -58,3 +59,49 @@ def test_parse_strategy_modeling_policy_config_rejects_invalid_max_hold_bars() -
 def test_parse_strategy_modeling_policy_config_rejects_invalid_max_hold_timeframe() -> None:
     with pytest.raises(ValidationError):
         parse_strategy_modeling_policy_config({"max_hold_timeframe": "quarter"})
+
+
+def test_parse_strategy_modeling_policy_config_sorts_stop_trail_rules_by_start_r() -> None:
+    cfg = parse_strategy_modeling_policy_config(
+        {
+            "stop_trail_rules": [
+                {"start_r": 2.0, "ema_span": 9},
+                {"start_r": 0.5, "ema_span": 21, "buffer_atr_multiple": 0.25},
+                {"start_r": 1.0, "ema_span": 50},
+            ]
+        }
+    )
+    assert [rule.start_r for rule in cfg.stop_trail_rules] == [0.5, 1.0, 2.0]
+    assert [rule.ema_span for rule in cfg.stop_trail_rules] == [21, 50, 9]
+    assert cfg.stop_trail_rules[0].buffer_atr_multiple == 0.25
+
+
+def test_parse_strategy_modeling_policy_config_rejects_invalid_stop_trail_rules() -> None:
+    with pytest.raises(ValidationError):
+        parse_strategy_modeling_policy_config(
+            {"stop_trail_rules": [{"start_r": -0.1, "ema_span": 21}]}
+        )
+
+    with pytest.raises(ValidationError):
+        parse_strategy_modeling_policy_config(
+            {"stop_trail_rules": [{"start_r": 0.5, "ema_span": 13}]}
+        )
+
+    with pytest.raises(ValidationError):
+        parse_strategy_modeling_policy_config(
+            {
+                "stop_trail_rules": [
+                    {"start_r": 0.5, "ema_span": 21, "buffer_atr_multiple": -0.1}
+                ]
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        parse_strategy_modeling_policy_config(
+            {
+                "stop_trail_rules": [
+                    {"start_r": 0.5, "ema_span": 21},
+                    {"start_r": 0.5, "ema_span": 9},
+                ]
+            }
+        )
