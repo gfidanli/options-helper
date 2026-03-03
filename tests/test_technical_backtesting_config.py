@@ -55,6 +55,22 @@ def test_load_accepts_legacy_config_without_new_fields(tmp_path: Path) -> None:
     assert "train_years" in loaded["walk_forward"]
 
 
+def test_legacy_config_without_mean_reversion_ibs_preserves_existing_strategy_contract(tmp_path: Path) -> None:
+    cfg = deepcopy(load_technical_backtesting_config())
+    baseline_defaults = deepcopy(cfg["strategies"]["TrendPullbackATR"]["defaults"])
+    baseline_constraints = list(cfg["strategies"]["TrendPullbackATR"]["constraints"])
+    cfg["strategies"].pop("MeanReversionIBS", None)
+    cfg["strategies"]["TrendPullbackATR"].pop("cost_overrides", None)
+
+    loaded = _load_from_tmp_config(tmp_path, cfg)
+    trend_cfg = loaded["strategies"]["TrendPullbackATR"]
+
+    assert trend_cfg["enabled"] is True
+    assert trend_cfg["defaults"] == baseline_defaults
+    assert trend_cfg["constraints"] == baseline_constraints
+    assert "cost_overrides" not in trend_cfg
+
+
 def test_load_accepts_mean_reversion_ibs_with_optional_cost_overrides(tmp_path: Path) -> None:
     cfg = deepcopy(load_technical_backtesting_config())
     cfg["strategies"]["MeanReversionIBS"]["cost_overrides"] = {"commission": 0.001}

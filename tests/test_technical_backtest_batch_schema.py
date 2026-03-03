@@ -160,3 +160,18 @@ def test_validate_technical_backtest_batch_summary_payload_accepts_writer_payloa
     assert serialized["schema_version"] == TECHNICAL_BACKTEST_BATCH_SCHEMA_VERSION
     assert serialized["requested_symbols"] == ["SPY", "QQQ"]
     assert serialized["benchmark_symbol"] == "SPY"
+
+
+def test_validate_technical_backtest_batch_summary_supports_payload_without_optional_version_fields() -> None:
+    payload = _writer_payload()
+    payload.pop("schema_version")
+    payload.pop("generated_at")
+    payload.pop("disclaimer", None)
+
+    artifact = validate_technical_backtest_batch_summary_payload(payload)
+    serialized = artifact.to_dict()
+
+    assert artifact.schema_version == TECHNICAL_BACKTEST_BATCH_SCHEMA_VERSION
+    assert artifact.generated_at.tzinfo == timezone.utc
+    assert serialized["schema_version"] == TECHNICAL_BACKTEST_BATCH_SCHEMA_VERSION
+    assert serialized["disclaimer"] == "Not financial advice. For informational/educational use only."

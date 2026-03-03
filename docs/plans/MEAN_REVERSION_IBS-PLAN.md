@@ -282,9 +282,14 @@ T9a + T9b + T9c + T9d + T9e + T10 -> T11
 - **description**:
   - Ensure existing technical backtesting behavior remains intact.
 - **validation**: Regression suites pass.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - 2026-03-03: Added config regression coverage proving legacy technical strategy contracts still load unchanged when new `MeanReversionIBS`/`cost_overrides` keys are absent.
+  - 2026-03-03: Added batch summary schema regression coverage for backward-compatible payload validation when optional versioning/metadata keys (`schema_version`, `generated_at`, `disclaimer`) are omitted.
 - **files edited/created**:
+  - `tests/test_technical_backtesting_config.py`
+  - `tests/test_technical_backtest_batch_schema.py`
+  - `docs/plans/MEAN_REVERSION_IBS-PLAN.md`
 
 ### T9e: Reference Markdown Parity Validation Gate
 - **depends_on**: [T8, T7a]
