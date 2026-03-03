@@ -1,0 +1,51 @@
+{
+  "metrics": {
+    "QQQ": {
+      "cagr_pct": 9.18,
+      "final_capital": 365740.47,
+      "max_drawdown_pct": 11.92,
+      "profit_factor": 2.15,
+      "time_invested_pct": 16.41,
+      "total_return_pct": 265.74,
+      "total_trades": 188,
+      "win_rate_pct": 70.74
+    },
+    "SPY": {
+      "cagr_pct": 7.75,
+      "final_capital": 434835.64,
+      "max_drawdown_pct": 15.26,
+      "profit_factor": 2.02,
+      "time_invested_pct": 21.02,
+      "total_return_pct": 334.84,
+      "total_trades": 240,
+      "win_rate_pct": 75.0
+    }
+  },
+  "rules": {
+    "backtest_defaults": {
+      "commission": 0.01,
+      "initial_capital": 100000.0,
+      "slippage": 0.01,
+      "ticker": "SPY",
+      "timeframe": "Daily"
+    },
+    "entry": {
+      "ibs_formula": "(close - low) / (high - low)",
+      "ibs_threshold": 0.3,
+      "lookback_high_days": 10,
+      "range_multiplier": 2.5,
+      "range_window_days": 25
+    },
+    "exit": {
+      "close_gt_yesterday_high": true
+    }
+  },
+  "schema_version": 1,
+  "source_path": "/Users/sergio/Library/Mobile Documents/iCloud~md~obsidian/Documents/Personal/Clippings/Found a simple mean reversion setup with 70% win rate but only invested 20% of the time.md",
+  "tolerances": {
+    "final_capital_rel_pct": 1.5,
+    "percent_metrics_abs_pct_points": 1.0,
+    "profit_factor_abs": 0.1,
+    "total_trades_abs": 3
+  }
+}

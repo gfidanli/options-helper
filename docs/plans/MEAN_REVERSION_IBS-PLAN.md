@@ -323,9 +323,16 @@ T9a + T9b + T9c + T9d + T9e + T10 -> T11
 - **validation**:
   - Local path-based check passes when file exists.
   - CI fixture-based parity test passes deterministically.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - 2026-03-03: Added `scripts/validate_mean_reversion_reference.py` with robust markdown parsing for canonical rules/SPY+QQQ headline metrics, fixture-refresh mode (`--write-fixture`), local reference-path parity validation with skip note when unavailable, and optional run-summary tolerance checks.
+  - 2026-03-03: Added normalized CI-stable fixture `tests/fixtures/technicals/reddit_mean_reversion_reference.json` locking canonical metrics and tolerance policy used by parity checks.
+  - 2026-03-03: Added deterministic tests for fixture lock, markdown parser noise tolerance, fixture parity checks without external files, tolerance-gated run-metric validation, and missing-local-reference skip behavior.
 - **files edited/created**:
+  - `scripts/validate_mean_reversion_reference.py` (new)
+  - `tests/fixtures/technicals/reddit_mean_reversion_reference.json` (new)
+  - `tests/test_mean_reversion_reference_parity.py` (new)
+  - `docs/plans/MEAN_REVERSION_IBS-PLAN.md`
 
 ### T10: Documentation
 - **depends_on**: [T8, T7a, T9e]
