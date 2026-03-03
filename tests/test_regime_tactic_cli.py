@@ -219,3 +219,93 @@ def test_regime_tactic_cli_errors_for_duplicate_timestamps(tmp_path: Path) -> No
     )
     assert res.exit_code == 2
     assert "duplicate timestamps" in res.output
+
+
+def test_regime_tactic_cli_errors_for_unparseable_timestamps(tmp_path: Path) -> None:
+    invalid_symbol = _trend_ohlc(periods=90, start_price=100.0, step=0.9).copy()
+    invalid_symbol.index = [*invalid_symbol.index[:-1], "not-a-timestamp"]
+    market_df = _trend_ohlc(periods=90, start_price=420.0, step=0.6)
+    symbol_path = tmp_path / "symbol_unparseable_ts.csv"
+    market_path = tmp_path / "market.csv"
+    invalid_symbol.to_csv(symbol_path)
+    market_df.to_csv(market_path)
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "regime-tactic",
+            "--ohlc-path",
+            str(symbol_path),
+            "--market-ohlc-path",
+            str(market_path),
+            "--symbol",
+            "AAPL",
+        ],
+    )
+    assert res.exit_code == 2
+    assert "unparseable timestamps" in res.output
+
+
+def test_regime_tactic_cli_accepts_utc_timestamp_index(tmp_path: Path) -> None:
+    symbol_df = _trend_ohlc(periods=90, start_price=100.0, step=0.9)
+    symbol_df.index = symbol_df.index.tz_localize("UTC")
+    market_df = _trend_ohlc(periods=90, start_price=420.0, step=0.6)
+    market_df.index = market_df.index.tz_localize("UTC")
+    symbol_path = tmp_path / "symbol_utc.csv"
+    market_path = tmp_path / "market_utc.csv"
+    symbol_df.to_csv(symbol_path)
+    market_df.to_csv(market_path)
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "regime-tactic",
+            "--ohlc-path",
+            str(symbol_path),
+            "--market-ohlc-path",
+            str(market_path),
+            "--symbol",
+            "AAPL",
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    assert "Recommendation: breakout" in res.output
+    assert "as of 2025-05-07" in res.output
+
+
+def test_regime_tactic_cli_rejects_mixed_timezone_offsets(tmp_path: Path) -> None:
+    symbol_df = _trend_ohlc(periods=90, start_price=100.0, step=0.9)
+    symbol_df.index = pd.date_range("2025-01-02", periods=90, freq="B", tz="US/Eastern")
+    market_df = _trend_ohlc(periods=90, start_price=420.0, step=0.6)
+    market_df.index = market_df.index.tz_localize("UTC")
+    symbol_path = tmp_path / "symbol_mixed_tz_offsets.csv"
+    market_path = tmp_path / "market_utc.csv"
+    symbol_df.to_csv(symbol_path)
+    market_df.to_csv(market_path)
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "regime-tactic",
+            "--ohlc-path",
+            str(symbol_path),
+            "--market-ohlc-path",
+            str(market_path),
+            "--symbol",
+            "AAPL",
+        ],
+    )
+    assert res.exit_code == 2
+    assert "unparseable timestamps" in res.output
