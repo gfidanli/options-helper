@@ -85,9 +85,12 @@ T9a + T9b + T9c + T9d + T9e + T10 -> T11
 - **description**:
   - Add tests for new schema keys and backward compatibility.
 - **validation**: Targeted config pytest passes.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - 2026-03-03: Added regression coverage for `strategies.MeanReversionIBS` defaults, valid optional `cost_overrides`, invalid `cost_overrides` key/value/type handling with `ConfigError`, and legacy config compatibility without new strategy/fields.
 - **files edited/created**:
+  - `tests/test_technical_backtesting_config.py`
+  - `docs/plans/MEAN_REVERSION_IBS-PLAN.md`
 
 ### T2: Strategy Class + Registry Wiring
 - **depends_on**: [T1]

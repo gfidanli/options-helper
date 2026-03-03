@@ -23,6 +23,9 @@ def test_load_defaults_include_cvd_strategy_interval_templates_and_bar_fields() 
 
     cvd_cfg = cfg["strategies"]["CvdDivergenceMSB"]
     assert cvd_cfg["enabled"] is False
+    ibs_cfg = cfg["strategies"]["MeanReversionIBS"]
+    assert ibs_cfg["enabled"] is True
+    assert "cost_overrides" not in ibs_cfg
 
     walk_cfg = cfg["walk_forward"]
     assert walk_cfg["min_history_bars"] == 0
@@ -39,12 +42,45 @@ def test_load_defaults_include_cvd_strategy_interval_templates_and_bar_fields() 
 def test_load_accepts_legacy_config_without_new_fields(tmp_path: Path) -> None:
     cfg = deepcopy(load_technical_backtesting_config())
     cfg["strategies"].pop("CvdDivergenceMSB", None)
+    cfg["strategies"].pop("MeanReversionIBS", None)
+    for strategy_cfg in cfg["strategies"].values():
+        if isinstance(strategy_cfg, dict):
+            strategy_cfg.pop("cost_overrides", None)
     for key in ("min_history_bars", "train_bars", "validate_bars", "step_bars"):
         cfg["walk_forward"].pop(key, None)
 
     loaded = _load_from_tmp_config(tmp_path, cfg)
     assert "CvdDivergenceMSB" not in loaded["strategies"]
+    assert "MeanReversionIBS" not in loaded["strategies"]
     assert "train_years" in loaded["walk_forward"]
+
+
+def test_load_accepts_mean_reversion_ibs_with_optional_cost_overrides(tmp_path: Path) -> None:
+    cfg = deepcopy(load_technical_backtesting_config())
+    cfg["strategies"]["MeanReversionIBS"]["cost_overrides"] = {"commission": 0.001}
+
+    loaded = _load_from_tmp_config(tmp_path, cfg)
+    assert loaded["strategies"]["MeanReversionIBS"]["cost_overrides"] == {"commission": 0.001}
+
+
+@pytest.mark.parametrize(
+    ("cost_overrides", "match"),
+    [
+        ({"commission": -0.001}, r"cost_overrides\.commission"),
+        ({"fee_bps": 2.0}, r"cost_overrides"),
+        ("invalid", r"cost_overrides"),
+    ],
+)
+def test_load_rejects_invalid_strategy_cost_overrides(
+    tmp_path: Path,
+    cost_overrides: dict[str, float] | str,
+    match: str,
+) -> None:
+    cfg = deepcopy(load_technical_backtesting_config())
+    cfg["strategies"]["MeanReversionIBS"]["cost_overrides"] = cost_overrides
+
+    with pytest.raises(ConfigError, match=match):
+        _load_from_tmp_config(tmp_path, cfg)
 
 
 def test_load_rejects_bar_mode_without_validate_bars(tmp_path: Path) -> None:
