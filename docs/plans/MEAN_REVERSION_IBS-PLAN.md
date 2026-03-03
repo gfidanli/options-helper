@@ -287,9 +287,14 @@ T9a + T9b + T9c + T9d + T9e + T10 -> T11
 - **description**:
   - Validate single/multi ticker paths, partial failures, artifact files, and required HTML sections.
 - **validation**: CLI/artifact tests pass.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - 2026-03-03: Added deterministic CLI regression coverage for explicit single-symbol (`--symbol`) and multi-ticker (`--tickers`) invocation paths, including symbol normalization and partial-failure continuation output (non-zero failed count still exits successfully and prints failed symbol list).
+  - 2026-03-03: Expanded artifact regression assertions to lock run-scoped output paths, failed-symbol CSV row contents, and required report HTML structure/metadata sections (`headline-metrics`, `equity-drawdown`, `monthly-returns`, `yearly-returns`) plus disclaimer rendering.
 - **files edited/created**:
+  - `tests/test_technical_backtest_batch_cli.py`
+  - `tests/test_technical_backtest_batch_artifacts.py`
+  - `docs/plans/MEAN_REVERSION_IBS-PLAN.md`
 
 ### T9d: Config/Contract Regression Tests
 - **depends_on**: [T1, T7a]

@@ -129,6 +129,7 @@ def test_write_technical_backtest_batch_artifacts_persists_required_files(tmp_pa
         summary_payload=_summary_payload(),
     )
 
+    assert paths.run_dir == tmp_path / "mean-reversion-ibs-001"
     assert paths.summary_json.exists()
     assert paths.report_html.exists()
     assert paths.per_symbol_metrics_csv.exists()
@@ -147,9 +148,21 @@ def test_write_technical_backtest_batch_artifacts_persists_required_files(tmp_pa
     assert len(_read_rows(paths.equity_curve_csv)) == 2
     assert len(_read_rows(paths.monthly_returns_csv)) == 2
     assert len(_read_rows(paths.yearly_returns_csv)) == 2
-    assert len(_read_rows(paths.failed_symbols_csv)) == 1
+    failed_rows = _read_rows(paths.failed_symbols_csv)
+    assert failed_rows == [
+        {
+            "symbol": "IWM",
+            "stage": "backtest",
+            "error": "missing cached candles for requested date range",
+        }
+    ]
 
     report_html = paths.report_html.read_text(encoding="utf-8")
+    assert "<h1>Technical Backtest Batch Report</h1>" in report_html
+    assert 'id="headline-metrics"' in report_html
+    assert 'id="equity-drawdown"' in report_html
+    assert 'id="monthly-returns"' in report_html
+    assert 'id="yearly-returns"' in report_html
     assert "<h2>Headline Metrics</h2>" in report_html
     assert "<h2>Equity + Drawdown (Strategy vs SPY)</h2>" in report_html
     assert "<h2>Monthly Returns</h2>" in report_html
@@ -158,6 +171,8 @@ def test_write_technical_backtest_batch_artifacts_persists_required_files(tmp_pa
     assert "Win Rate" in report_html
     assert "Profit Factor" in report_html
     assert "Max Drawdown" in report_html
+    assert "Run ID: <strong>mean-reversion-ibs-001</strong>" in report_html
+    assert "Not financial advice. For informational/educational use only." in report_html
 
 
 def test_write_technical_backtest_batch_artifacts_handles_empty_partial_datasets(tmp_path: Path) -> None:
