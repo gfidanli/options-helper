@@ -6,6 +6,7 @@ from options_helper.technicals_backtesting.pipeline import compute_features, war
 from options_helper.technicals_backtesting.strategies.mean_reversion_bbands import (
     MeanReversionBollinger,
 )
+from options_helper.technicals_backtesting.strategies.mean_reversion_ibs import MeanReversionIBS
 from options_helper.technicals_backtesting.strategies.trend_pullback_atr import TrendPullbackATR
 from tests.technical_backtesting_helpers import make_synthetic_ohlc
 
@@ -36,3 +37,13 @@ def test_strategy_backtest_smoke() -> None:
         warmup_bars=warmup,
     )
     assert stats_mean is not None
+
+    ibs_cfg = cfg["strategies"]["MeanReversionIBS"]
+    stats_ibs = run_backtest(
+        features,
+        MeanReversionIBS,
+        cfg["backtest"],
+        ibs_cfg["defaults"],
+        warmup_bars=warmup,
+    )
+    assert stats_ibs is not None

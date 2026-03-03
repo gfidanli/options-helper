@@ -103,9 +103,19 @@ T9a + T9b + T9c + T9d + T9e + T10 -> T11
   - Implement deterministic `IBS` zero-range handling.
   - Register strategy.
 - **validation**: Strategy is runnable through existing runner paths.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - 2026-03-03: Added `MeanReversionIBS` strategy with canonical entry (`close < rolling_high - range_mult * avg_range` and `IBS < threshold`) and exit (`close > high[t-exit_lookback]`) semantics.
+  - 2026-03-03: Implemented deterministic IBS zero-range handling with explicit neutral fallback (`ibs_zero_range_value=0.5`).
+  - 2026-03-03: Wired registry lookup (`MeanReversionIBS`) and feature selection requirements for strategy frame selection.
+  - 2026-03-03: Added focused strategy tests for entry/exit contract, zero-range fallback behavior, and registry/feature-selection wiring.
 - **files edited/created**:
+  - `options_helper/technicals_backtesting/strategies/mean_reversion_ibs.py` (new)
+  - `options_helper/technicals_backtesting/strategies/registry.py`
+  - `options_helper/technicals_backtesting/feature_selection.py`
+  - `tests/test_mean_reversion_ibs_strategy.py` (new)
+  - `tests/test_technical_backtesting_strategy_smoke.py`
+  - `docs/plans/MEAN_REVERSION_IBS-PLAN.md`
 
 ### T3: Overlay Gates (AND)
 - **depends_on**: [T2]

@@ -65,4 +65,8 @@ def required_feature_columns_for_strategy(
             required.add(f"atr_{w}")
         required.add("weekly_trend_up")
 
+    elif strategy == "MeanReversionIBS":
+        # MeanReversionIBS computes rolling levels/IBS from raw OHLC at runtime.
+        required.update({"Close", "High", "Low"})
+
     return sorted(required)
