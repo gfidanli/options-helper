@@ -12,6 +12,7 @@ from options_helper.schemas.strategy_modeling_filters import OrbStopPolicy, Vola
 from options_helper.schemas.strategy_modeling_policy import (
     GapFillPolicy,
     StopMoveRule,
+    StopTrailRule,
     normalize_max_hold_timeframe,
 )
 
@@ -40,6 +41,7 @@ class StrategyModelingProfile(ArtifactBase):
     max_hold_timeframe: str = "entry"
     one_open_per_symbol: bool = True
     stop_move_rules: tuple[StopMoveRule, ...] = Field(default_factory=tuple)
+    stop_trail_rules: list[StopTrailRule] = Field(default_factory=list)
 
     r_ladder_min_tenths: int = Field(default=10, ge=1)
     r_ladder_max_tenths: int = Field(default=20, ge=1)
@@ -178,6 +180,73 @@ class StrategyModelingProfile(ArtifactBase):
         except ValueError as exc:
             raise ValueError("orb_confirmation_cutoff_et must be HH:MM in 24-hour time") from exc
         return token
+
+    @classmethod
+    def _parse_stop_trail_rule_text(cls, value: str) -> StopTrailRule:
+        token = value.strip()
+        parts = [part.strip() for part in token.split(":")]
+        if len(parts) not in (2, 3):
+            raise ValueError("stop_trail_rules items must be 'start_r:ema_span[:buffer_atr_multiple]'")
+        start_text, ema_text = parts[0], parts[1]
+        if not start_text:
+            raise ValueError("stop_trail_rules start_r must be non-empty")
+        if not ema_text:
+            raise ValueError("stop_trail_rules ema_span must be non-empty")
+
+        buffer_value: float | None = None
+        if len(parts) == 3:
+            buffer_text = parts[2]
+            if not buffer_text:
+                raise ValueError("stop_trail_rules buffer_atr_multiple must be non-empty when provided")
+            buffer_value = float(buffer_text)
+        return StopTrailRule(
+            start_r=float(start_text),
+            ema_span=int(ema_text),
+            buffer_atr_multiple=buffer_value,
+        )
+
+    @field_validator("stop_trail_rules", mode="before")
+    @classmethod
+    def _normalize_stop_trail_rules(cls, value: object) -> list[StopTrailRule]:
+        if value is None:
+            return []
+        if isinstance(value, StopTrailRule):
+            raw_items: list[object] = [value]
+        elif isinstance(value, str):
+            token = value.strip()
+            raw_items = [] if not token else [item for item in token.split(",")]
+        elif isinstance(value, tuple | list):
+            raw_items = list(value)
+        else:
+            raise TypeError("stop_trail_rules must be a sequence or comma-separated string")
+
+        parsed: list[StopTrailRule] = []
+        for raw in raw_items:
+            if raw is None:
+                continue
+            if isinstance(raw, StopTrailRule):
+                parsed.append(raw)
+                continue
+            if isinstance(raw, str):
+                text = raw.strip()
+                if not text:
+                    continue
+                parsed.append(cls._parse_stop_trail_rule_text(text))
+                continue
+            parsed.append(StopTrailRule.model_validate(raw))
+
+        if not parsed:
+            return []
+
+        sorted_rules = sorted(parsed, key=lambda rule: float(rule.start_r))
+        seen_starts: set[float] = set()
+        for rule in sorted_rules:
+            start_r = float(rule.start_r)
+            if start_r in seen_starts:
+                raise ValueError("stop_trail_rules must not contain duplicate start_r values")
+            seen_starts.add(start_r)
+
+        return sorted_rules
 
     @field_validator("allowed_volatility_regimes", mode="before")
     @classmethod

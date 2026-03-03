@@ -21,6 +21,7 @@ def build_cli_profile_values(*, params: dict[str, Any], validation: Any) -> dict
         "max_hold_timeframe": validation.normalized_max_hold_timeframe,
         "one_open_per_symbol": bool(params["one_open_per_symbol"]),
         "stop_move_rules": tuple(params["stop_move_rules"]),
+        "stop_trail_rules": tuple(params["stop_trail_rules"]),
         "r_ladder_min_tenths": int(params["r_ladder_min_tenths"]),
         "r_ladder_max_tenths": int(params["r_ladder_max_tenths"]),
         "r_ladder_step_tenths": int(params["r_ladder_step_tenths"]),

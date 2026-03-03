@@ -250,10 +250,25 @@ _STOP_MOVE_RULES_OPT = typer.Option(
         ),
     )
 
+_STOP_TRAIL_RULES_OPT = typer.Option(
+        [],
+        "--stop-trail",
+        help=(
+            "Repeatable EMA stop-trail rule expressed as 'start_r:ema_span[:buffer_atr_multiple]'. "
+            "Example: --stop-trail 1.0:21:0.25"
+        ),
+    )
+
 _DISABLE_STOP_MOVES_OPT = typer.Option(
         False,
         "--disable-stop-moves",
         help="Disable stop-move rules even if a loaded profile includes them.",
+    )
+
+_DISABLE_STOP_TRAILS_OPT = typer.Option(
+        False,
+        "--disable-stop-trails",
+        help="Disable stop-trail rules even if a loaded profile includes them.",
     )
 
 _GAP_FILL_POLICY_OPT = typer.Option(
@@ -383,7 +398,9 @@ def technicals_strategy_model(
     starting_capital: float = _STARTING_CAPITAL_OPT,
     risk_per_trade_pct: float = _RISK_PER_TRADE_PCT_OPT,
     stop_move_rules: list[str] = _STOP_MOVE_RULES_OPT,
+    stop_trail_rules: list[str] = _STOP_TRAIL_RULES_OPT,
     disable_stop_moves: bool = _DISABLE_STOP_MOVES_OPT,
+    disable_stop_trails: bool = _DISABLE_STOP_TRAILS_OPT,
     gap_fill_policy: str = _GAP_FILL_POLICY_OPT,
     max_hold_bars: int | None = _MAX_HOLD_BARS_OPT,
     max_hold_timeframe: str = _MAX_HOLD_TIMEFRAME_OPT,

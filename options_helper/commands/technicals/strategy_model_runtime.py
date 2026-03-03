@@ -19,6 +19,7 @@ from .strategy_model_helpers_legacy import (
     _option_was_set_on_command_line,
     _parse_allowed_volatility_regimes,
     _parse_iso_date,
+    _parse_stop_trail_rules,
     _resolve_strategy_symbols,
     _split_csv_option,
 )
@@ -140,6 +141,7 @@ def _validate_pre_profile_inputs(*, params: dict[str, Any], strategy: str) -> tu
         str(params["allowed_volatility_regimes"]),
         option_name="--allowed-volatility-regimes",
     )
+    _parse_stop_trail_rules(tuple(params["stop_trail_rules"]), option_name="--stop-trail")
     return parsed_start, parsed_end, allowed_regimes
 
 
@@ -270,6 +272,8 @@ def _resolve_profile_state(
         effective_profile = effective_profile.model_copy(update={"max_hold_bars": None})
     if bool(params["disable_stop_moves"]):
         effective_profile = effective_profile.model_copy(update={"stop_move_rules": ()})
+    if bool(params["disable_stop_trails"]):
+        effective_profile = effective_profile.model_copy(update={"stop_trail_rules": []})
 
     _maybe_save_profile(params=params, effective_profile=effective_profile, console=console)
     return _build_profile_state(params=params, effective_profile=effective_profile)
@@ -314,6 +318,7 @@ def _build_request(
             "max_hold_timeframe": profile_state.effective_profile.max_hold_timeframe,
             "one_open_per_symbol": bool(profile_state.effective_profile.one_open_per_symbol),
             "stop_move_rules": profile_state.effective_profile.stop_move_rules,
+            "stop_trail_rules": profile_state.effective_profile.stop_trail_rules,
             "entry_ts_anchor_policy": "first_tradable_bar_open_after_signal_confirmed_ts",
         },
     )

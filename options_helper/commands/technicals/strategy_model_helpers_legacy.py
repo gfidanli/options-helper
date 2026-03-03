@@ -77,6 +77,72 @@ def _parse_allowed_volatility_regimes(value: str, *, option_name: str) -> tuple[
     return parsed
 
 
+def _parse_stop_trail_rules(
+    values: tuple[str, ...] | list[str],
+    *,
+    option_name: str,
+):
+    from pydantic import ValidationError
+
+    from options_helper.schemas.strategy_modeling_policy import StopTrailRule
+
+    parsed: list[StopTrailRule] = []
+    for raw in values:
+        token = str(raw or "").strip()
+        if not token:
+            continue
+        parts = [part.strip() for part in token.split(":")]
+        if len(parts) not in (2, 3):
+            raise typer.BadParameter(
+                f"{option_name} must be formatted as start_r:ema_span[:buffer_atr_multiple]."
+            )
+        start_text, ema_text = parts[0], parts[1]
+        if not start_text or not ema_text:
+            raise typer.BadParameter(
+                f"{option_name} must be formatted as start_r:ema_span[:buffer_atr_multiple]."
+            )
+
+        payload: dict[str, float | int | None] = {}
+        try:
+            payload["start_r"] = float(start_text)
+        except ValueError as exc:
+            raise typer.BadParameter(f"{option_name} start_r must be numeric (received: {token!r}).") from exc
+        try:
+            payload["ema_span"] = int(ema_text)
+        except ValueError as exc:
+            raise typer.BadParameter(f"{option_name} ema_span must be an integer (received: {token!r}).") from exc
+        if len(parts) == 3:
+            buffer_text = parts[2]
+            if not buffer_text:
+                raise typer.BadParameter(
+                    f"{option_name} buffer_atr_multiple must be numeric when provided (received: {token!r})."
+                )
+            try:
+                payload["buffer_atr_multiple"] = float(buffer_text)
+            except ValueError as exc:
+                raise typer.BadParameter(
+                    f"{option_name} buffer_atr_multiple must be numeric (received: {token!r})."
+                ) from exc
+
+        try:
+            parsed.append(StopTrailRule.model_validate(payload))
+        except ValidationError as exc:
+            detail = "; ".join(error.get("msg", "invalid value") for error in exc.errors())
+            raise typer.BadParameter(f"{option_name}={token!r} invalid: {detail}") from exc
+
+    if not parsed:
+        return ()
+
+    sorted_rules = tuple(sorted(parsed, key=lambda rule: float(rule.start_r)))
+    seen_starts: set[float] = set()
+    for rule in sorted_rules:
+        start_r = float(rule.start_r)
+        if start_r in seen_starts:
+            raise typer.BadParameter(f"{option_name} must not include duplicate start_r values.")
+        seen_starts.add(start_r)
+    return sorted_rules
+
+
 def _build_strategy_signal_kwargs(
     *,
     strategy: str,
@@ -375,6 +441,7 @@ __all__ = [
     "_parse_iso_date",
     "_split_csv_option",
     "_parse_allowed_volatility_regimes",
+    "_parse_stop_trail_rules",
     "_build_strategy_signal_kwargs",
     "_build_strategy_filter_config",
     "_merge_strategy_modeling_profile_values",

@@ -255,6 +255,14 @@ def test_strategy_model_command_is_registered_under_technicals() -> None:
     assert "strategy-model" in res.output
 
 
+def test_strategy_model_help_includes_stop_trail_flags() -> None:
+    runner = CliRunner()
+    res = runner.invoke(app, ["technicals", "strategy-model", "--help"])
+    assert res.exit_code == 0, res.output
+    assert "--stop-trail" in res.output
+    assert "Disable stop-trail" in res.output
+
+
 def test_strategy_model_rejects_invalid_strategy_value() -> None:
     runner = CliRunner()
     res = runner.invoke(
@@ -780,6 +788,115 @@ def test_strategy_model_disable_max_hold_overrides_profile_value(
     assert req is not None
     assert req.max_hold_bars is None
     assert req.policy["max_hold_bars"] is None
+
+
+def test_strategy_model_profile_stop_trails_honor_cli_override_precedence(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    stub = _StubStrategyModelingService(blocked=False)
+    monkeypatch.setattr(
+        "options_helper.commands.technicals.cli_deps.build_strategy_modeling_service",
+        lambda: stub,
+    )
+    profile_path = tmp_path / "strategy_profiles.json"
+    save_strategy_modeling_profile(
+        profile_path,
+        "swing_core",
+        _profile_fixture(
+            stop_trail_rules=[
+                {"start_r": 0.5, "ema_span": 21, "buffer_atr_multiple": 0.25},
+                {"start_r": 1.5, "ema_span": 9},
+            ]
+        ),
+        overwrite=False,
+    )
+
+    runner = CliRunner()
+    profile_res = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--profile-path",
+            str(profile_path),
+            "--profile",
+            "swing_core",
+        ],
+    )
+    assert profile_res.exit_code == 0, profile_res.output
+    profile_req = stub.last_request
+    assert profile_req is not None
+    profile_rules = profile_req.policy["stop_trail_rules"]
+    assert [rule.start_r for rule in profile_rules] == [0.5, 1.5]
+    assert [rule.ema_span for rule in profile_rules] == [21, 9]
+    assert profile_rules[0].buffer_atr_multiple == 0.25
+
+    cli_override_res = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--profile-path",
+            str(profile_path),
+            "--profile",
+            "swing_core",
+            "--stop-trail",
+            "2.0:50:0.10",
+            "--stop-trail",
+            "1.0:9",
+        ],
+    )
+    assert cli_override_res.exit_code == 0, cli_override_res.output
+    cli_req = stub.last_request
+    assert cli_req is not None
+    cli_rules = cli_req.policy["stop_trail_rules"]
+    assert [rule.start_r for rule in cli_rules] == [1.0, 2.0]
+    assert [rule.ema_span for rule in cli_rules] == [9, 50]
+    assert [rule.buffer_atr_multiple for rule in cli_rules] == [None, 0.1]
+
+
+def test_strategy_model_disable_stop_trails_overrides_profile_value(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    stub = _StubStrategyModelingService(blocked=False)
+    monkeypatch.setattr(
+        "options_helper.commands.technicals.cli_deps.build_strategy_modeling_service",
+        lambda: stub,
+    )
+    profile_path = tmp_path / "strategy_profiles.json"
+    save_strategy_modeling_profile(
+        profile_path,
+        "swing_core",
+        _profile_fixture(stop_trail_rules=[{"start_r": 0.5, "ema_span": 21}]),
+        overwrite=False,
+    )
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--storage",
+            "filesystem",
+            "technicals",
+            "strategy-model",
+            "--profile-path",
+            str(profile_path),
+            "--profile",
+            "swing_core",
+            "--disable-stop-trails",
+        ],
+    )
+
+    assert res.exit_code == 0, res.output
+    req = stub.last_request
+    assert req is not None
+    assert req.policy["stop_trail_rules"] == []
 
 
 def test_strategy_model_profile_load_applies_stored_values(
