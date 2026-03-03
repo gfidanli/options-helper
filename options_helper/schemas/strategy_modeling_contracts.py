@@ -81,6 +81,7 @@ STRATEGY_TRADE_SIMULATION_FIELDS: Final[tuple[str, ...]] = (
     "mfe_r",
     "holding_bars",
     "gap_fill_applied",
+    "stop_updates",
 )
 
 STRATEGY_EQUITY_POINT_FIELDS: Final[tuple[str, ...]] = (
@@ -157,6 +158,13 @@ class StrategySignalEvent(StrategyModelingContractBase):
     notes: list[str] = Field(default_factory=list)
 
 
+class StrategyTradeStopUpdate(StrategyModelingContractBase):
+    ts: datetime
+    stop_price: float
+    reason: str
+    stage: str | None = None
+
+
 class StrategyTradeSimulation(StrategyModelingContractBase):
     trade_id: str
     event_id: str
@@ -182,6 +190,7 @@ class StrategyTradeSimulation(StrategyModelingContractBase):
     mfe_r: float | None = None
     holding_bars: int = Field(ge=0)
     gap_fill_applied: bool = False
+    stop_updates: list[StrategyTradeStopUpdate] = Field(default_factory=list)
 
 
 class StrategyEquityPoint(StrategyModelingContractBase):
@@ -258,6 +267,7 @@ __all__ = [
     "EntryPriceSource",
     "SegmentDimension",
     "StrategyId",
+    "StrategyTradeStopUpdate",
     "SignalDirection",
     "StrategyEquityPoint",
     "StrategyModelingContractBase",

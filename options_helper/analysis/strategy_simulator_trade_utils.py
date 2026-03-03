@@ -9,6 +9,7 @@ import pandas as pd
 
 from options_helper.schemas.strategy_modeling_contracts import (
     StrategySignalEvent,
+    StrategyTradeStopUpdate,
     StrategyTradeSimulation,
     TradeExitReason,
     TradeRejectCode,
@@ -49,6 +50,7 @@ class _TargetStateLike(Protocol):
     exit_price: float | None
     exit_reason: TradeExitReason | None
     holding_bars: int
+    stop_updates: Sequence[StrategyTradeStopUpdate]
 
 
 def normalize_symbol(value: object) -> str:
@@ -242,6 +244,7 @@ def build_closed_trade(
         mfe_r=state.mfe_r,
         holding_bars=int(state.holding_bars),
         gap_fill_applied=state.gap_fill_applied,
+        stop_updates=list(state.stop_updates),
     )
 
 
