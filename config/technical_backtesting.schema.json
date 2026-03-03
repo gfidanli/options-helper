@@ -269,6 +269,14 @@
         "additionalProperties": false,
         "properties": {
           "enabled": { "type": "boolean" },
+          "cost_overrides": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "commission": { "type": "number", "minimum": 0 },
+              "slippage_bps": { "type": "number", "minimum": 0 }
+            }
+          },
           "defaults": { "type": "object", "additionalProperties": true },
           "search_space": { "type": "object", "additionalProperties": true },
           "constraints": {

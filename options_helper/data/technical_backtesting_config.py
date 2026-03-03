@@ -74,6 +74,8 @@ def _light_validate(cfg: dict) -> None:
     if provider not in {"ta", "talib"}:
         raise ConfigError("indicators.provider must be 'ta' or 'talib'")
 
+    _validate_strategy_cost_overrides(cfg.get("strategies", {}))
+
     price_adj = (cfg.get("data", {}).get("candles", {}) or {}).get("price_adjustment", {}) or {}
     if bool(price_adj.get("auto_adjust")) and bool(price_adj.get("back_adjust")):
         raise ConfigError("data.candles.price_adjustment: auto_adjust and back_adjust cannot both be true")
@@ -95,6 +97,46 @@ def _light_validate(cfg: dict) -> None:
         forward_days = ext_cfg.get("forward_days", [])
         if not forward_days:
             raise ConfigError("extension_percentiles.forward_days must be non-empty")
+
+
+def _validate_non_negative_number(value: object, *, path: str) -> float:
+    if isinstance(value, bool):
+        raise ConfigError(f"{path} must be a number")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{path} must be a number") from exc
+    if parsed < 0:
+        raise ConfigError(f"{path} must be >= 0")
+    return parsed
+
+
+def _validate_strategy_cost_overrides(strategies_cfg: dict) -> None:
+    if not isinstance(strategies_cfg, dict):
+        return
+
+    allowed_keys = {"commission", "slippage_bps"}
+    for strategy_name, strategy_cfg in strategies_cfg.items():
+        if not isinstance(strategy_cfg, dict):
+            continue
+
+        overrides = strategy_cfg.get("cost_overrides")
+        if overrides is None:
+            continue
+        if not isinstance(overrides, dict):
+            raise ConfigError(f"strategies.{strategy_name}.cost_overrides must be an object")
+
+        unknown_keys = sorted(key for key in overrides if key not in allowed_keys)
+        if unknown_keys:
+            allowed = ", ".join(sorted(allowed_keys))
+            unknown = ", ".join(unknown_keys)
+            raise ConfigError(
+                f"strategies.{strategy_name}.cost_overrides has unsupported key(s): {unknown}. "
+                f"Allowed keys: {allowed}"
+            )
+
+        for key, value in overrides.items():
+            _validate_non_negative_number(value, path=f"strategies.{strategy_name}.cost_overrides.{key}")
 
 
 def _walk_forward_int(cfg: dict, key: str, default: int = 0) -> int:

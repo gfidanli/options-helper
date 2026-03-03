@@ -203,6 +203,31 @@ strategies:
       - "p_entry < p_exit"
       - "stop_mult_atr >= 0.0"
 
+  MeanReversionIBS:
+    enabled: true
+
+    defaults:
+      lookback_high: 10
+      range_window: 25
+      range_mult: 2.5
+      ibs_threshold: 0.30
+      exit_lookback: 1
+
+    search_space:
+      lookback_high: [8, 10, 12, 15]
+      range_window: [20, 25, 30]
+      range_mult: [2.0, 2.5, 3.0]
+      ibs_threshold: [0.20, 0.25, 0.30, 0.35]
+      exit_lookback: [1]
+
+    constraints:
+      - "lookback_high >= 2"
+      - "range_window >= 2"
+      - "range_mult > 0.0"
+      - "ibs_threshold > 0.0"
+      - "ibs_threshold < 1.0"
+      - "exit_lookback >= 1"
+
   CvdDivergenceMSB:
     enabled: false
 

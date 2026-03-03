@@ -68,9 +68,16 @@ T9a + T9b + T9c + T9d + T9e + T10 -> T11
   - Add strategy-level cost override support.
   - Keep backward compatibility with existing strategy configs.
 - **validation**: Legacy and new configs both load; invalid configs fail cleanly.
-- **status**: Not Completed
+- **status**: Completed
 - **log**:
+  - 2026-03-03: Added `strategies.MeanReversionIBS` defaults/search space/constraints to the default YAML config.
+  - 2026-03-03: Extended strategy schema with optional `cost_overrides` (`commission`, `slippage_bps`) and kept it optional for backward compatibility.
+  - 2026-03-03: Added loader-side validation for strategy-level cost override type/keys/non-negative numeric values to produce clear `ConfigError` messages.
 - **files edited/created**:
+  - `config/technical_backtesting.schema.json`
+  - `config/technical_backtesting.yaml`
+  - `options_helper/data/technical_backtesting_config.py`
+  - `docs/plans/MEAN_REVERSION_IBS-PLAN.md`
 
 ### T1b: Config Regression Tests
 - **depends_on**: [T1]
