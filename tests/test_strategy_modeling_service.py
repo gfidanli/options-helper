@@ -570,3 +570,79 @@ def test_strategy_modeling_service_directional_counterfactuals_use_portfolio_tar
     assert long_return > 0.0
     assert short_return < 0.0
     assert long_return != combined_return
+
+
+def test_strategy_modeling_service_forwards_stop_trail_rules_and_daily_ohlc_context() -> None:
+    captured: dict[str, object] = {}
+
+    def _stub_signal_builder(*_args, symbol=None, timeframe="1d", **_kwargs):  # noqa: ANN001,ANN202
+        return [
+            StrategySignalEvent(
+                event_id=f"evt-{str(symbol).lower()}",
+                strategy="sfp",
+                symbol=str(symbol),
+                timeframe=str(timeframe or "1d"),
+                direction="long",
+                signal_ts=pd.Timestamp("2026-01-09T00:00:00Z").to_pydatetime(),
+                signal_confirmed_ts=pd.Timestamp("2026-01-09T00:00:00Z").to_pydatetime(),
+                entry_ts=pd.Timestamp("2026-01-12T14:30:00Z").to_pydatetime(),
+                entry_price_source="first_tradable_bar_open_after_signal_confirmed_ts",
+                stop_price=4.0,
+                notes=[],
+            )
+        ]
+
+    def _capturing_trade_simulator(
+        events,
+        _bars_by_symbol,
+        *,
+        policy,
+        max_hold_bars=None,
+        target_ladder=None,
+        stop_trail_rules=(),
+        daily_ohlc_by_symbol=None,
+    ):  # noqa: ANN001,ANN202
+        captured["event_count"] = len(tuple(events))
+        captured["policy"] = policy
+        captured["max_hold_bars"] = max_hold_bars
+        captured["target_ladder"] = tuple(target_ladder or ())
+        captured["stop_trail_rules"] = tuple(stop_trail_rules)
+        captured["daily_ohlc_by_symbol"] = daily_ohlc_by_symbol
+        return []
+
+    service = strategy_modeling.build_strategy_modeling_service(
+        list_universe_loader=_stub_list_universe,
+        daily_loader=_stub_daily_loader,
+        intraday_loader=_stub_intraday_loader,
+        feature_computer=lambda *_args, **_kwargs: pd.DataFrame(),
+        signal_builder=_stub_signal_builder,
+        trade_simulator=_capturing_trade_simulator,
+    )
+    request = StrategyModelingRequest(
+        strategy="sfp",
+        symbols=("SPY",),
+        max_hold_bars=5,
+        target_ladder=build_r_target_ladder(min_target_tenths=10, max_target_tenths=10),
+        policy={
+            "stop_trail_rules": [
+                {"start_r": 1.0, "ema_span": 9, "buffer_atr_multiple": 0.25},
+                {"start_r": 0.5, "ema_span": 21},
+            ]
+        },
+    )
+
+    service.run(request)
+
+    stop_trail_rules = captured["stop_trail_rules"]
+    assert isinstance(stop_trail_rules, tuple)
+    assert [float(rule.start_r) for rule in stop_trail_rules] == [0.5, 1.0]
+    assert [int(rule.ema_span) for rule in stop_trail_rules] == [21, 9]
+    assert float(stop_trail_rules[1].buffer_atr_multiple) == 0.25
+
+    daily_context = captured["daily_ohlc_by_symbol"]
+    assert isinstance(daily_context, dict)
+    assert list(daily_context) == ["SPY"]
+    spy_daily = daily_context["SPY"]
+    assert list(spy_daily.columns) == ["session_date", "open", "high", "low", "close"]
+    assert spy_daily["session_date"].is_unique
+    assert list(spy_daily["session_date"]) == sorted(spy_daily["session_date"])

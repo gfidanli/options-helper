@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
+import inspect
 import math
 from pathlib import Path
 from typing import Any
@@ -200,6 +201,7 @@ class StrategyModelingService:
             service=self,
             sorted_events=filtered.sorted_events,
             intraday=inputs.intraday,
+            daily_ohlc_by_symbol=signal_context.daily_ohlc_by_symbol,
             request=request,
             policy=policy,
         )
@@ -400,6 +402,7 @@ def _build_trade_bundle(
     service: StrategyModelingService,
     sorted_events: Sequence[StrategySignalEvent],
     intraday: StrategyModelingIntradayLoadResult,
+    daily_ohlc_by_symbol: Mapping[str, pd.DataFrame],
     request: StrategyModelingRequest,
     policy: StrategyModelingPolicyConfig,
 ) -> _StrategyTradeBundle:
@@ -412,12 +415,15 @@ def _build_trade_bundle(
     if block_simulation:
         trade_simulations: list[StrategyTradeSimulation] = []
     else:
-        trade_simulations = service.trade_simulator(
-            sorted_events,
-            intraday.bars_by_symbol,
+        trade_simulations = _invoke_trade_simulator(
+            trade_simulator=service.trade_simulator,
+            events=sorted_events,
+            intraday_bars_by_symbol=intraday.bars_by_symbol,
             policy=policy,
             max_hold_bars=request.max_hold_bars,
             target_ladder=target_ladder,
+            stop_trail_rules=tuple(policy.stop_trail_rules),
+            daily_ohlc_by_symbol=_build_simulator_daily_ohlc_by_symbol(daily_ohlc_by_symbol),
         )
     sorted_trades = tuple(sorted(trade_simulations, key=_trade_sort_key))
     portfolio_subset = _select_portfolio_target_subset(
@@ -431,6 +437,87 @@ def _build_trade_bundle(
         portfolio_subset=portfolio_subset,
         portfolio_trades=portfolio_trades,
     )
+
+
+def _invoke_trade_simulator(
+    *,
+    trade_simulator: StrategyTradeSimulator,
+    events: Sequence[StrategySignalEvent],
+    intraday_bars_by_symbol: Mapping[str, pd.DataFrame],
+    policy: StrategyModelingPolicyConfig,
+    max_hold_bars: int | None,
+    target_ladder: tuple[StrategyRTarget, ...] | None,
+    stop_trail_rules: tuple[Any, ...],
+    daily_ohlc_by_symbol: Mapping[str, pd.DataFrame],
+) -> list[StrategyTradeSimulation]:
+    kwargs: dict[str, Any] = {
+        "policy": policy,
+        "max_hold_bars": max_hold_bars,
+        "target_ladder": target_ladder,
+    }
+    optional_kwargs: dict[str, Any] = {
+        "stop_trail_rules": stop_trail_rules,
+        "daily_ohlc_by_symbol": daily_ohlc_by_symbol,
+    }
+    supported_kwargs = _simulator_supported_kwargs(trade_simulator)
+    for key, value in optional_kwargs.items():
+        if supported_kwargs is None or key in supported_kwargs:
+            kwargs[key] = value
+    return trade_simulator(events, intraday_bars_by_symbol, **kwargs)
+
+
+def _simulator_supported_kwargs(trade_simulator: StrategyTradeSimulator) -> set[str] | None:
+    try:
+        signature = inspect.signature(trade_simulator)
+    except (TypeError, ValueError):
+        return None
+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()):
+        return None
+    return {
+        name
+        for name, param in signature.parameters.items()
+        if param.kind in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+    }
+
+
+def _build_simulator_daily_ohlc_by_symbol(
+    daily_ohlc_by_symbol: Mapping[str, pd.DataFrame],
+) -> dict[str, pd.DataFrame]:
+    out: dict[str, pd.DataFrame] = {}
+    for symbol in sorted(daily_ohlc_by_symbol):
+        out[symbol] = _daily_ohlc_to_simulator_frame(daily_ohlc_by_symbol[symbol])
+    return out
+
+
+def _daily_ohlc_to_simulator_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame is None or frame.empty:
+        return pd.DataFrame(columns=["session_date", "open", "high", "low", "close"])
+
+    out = frame.copy()
+    timestamps = pd.to_datetime(pd.Index(out.index), errors="coerce", utc=True)
+    session_dates = pd.Series(timestamps.date, index=out.index)
+
+    normalized = pd.DataFrame(
+        {
+            "session_date": session_dates.to_numpy(),
+            "open": pd.to_numeric(_frame_series_for(out, "open", "Open"), errors="coerce").to_numpy(),
+            "high": pd.to_numeric(_frame_series_for(out, "high", "High"), errors="coerce").to_numpy(),
+            "low": pd.to_numeric(_frame_series_for(out, "low", "Low"), errors="coerce").to_numpy(),
+            "close": pd.to_numeric(_frame_series_for(out, "close", "Close"), errors="coerce").to_numpy(),
+        }
+    )
+    normalized = normalized.dropna(subset=["session_date", "open", "high", "low", "close"])
+    if normalized.empty:
+        return pd.DataFrame(columns=["session_date", "open", "high", "low", "close"])
+    normalized = normalized.sort_values(by="session_date", kind="stable")
+    return normalized.groupby("session_date", sort=True, as_index=False).last()
+
+
+def _frame_series_for(frame: pd.DataFrame, *column_names: str) -> pd.Series:
+    for column_name in column_names:
+        if column_name in frame.columns:
+            return frame[column_name]
+    return pd.Series([None] * len(frame), index=frame.index)
 
 
 def _build_strategy_analytics(

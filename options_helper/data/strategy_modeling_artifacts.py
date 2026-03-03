@@ -351,6 +351,8 @@ def _build_policy_metadata(
         or "entry"
     )
     stop_move_rules = _normalize_records(policy_payload.get("stop_move_rules") or ())
+    stop_trail_rules = _normalize_records(policy_payload.get("stop_trail_rules") or ())
+    stop_trail_rules = _sort_stop_trail_rule_records(stop_trail_rules)
 
     return clean_nan(
         {
@@ -370,11 +372,25 @@ def _build_policy_metadata(
             "one_open_per_symbol": _as_bool_or_none(policy_payload.get("one_open_per_symbol")),
             "price_adjustment_policy": _as_str_or_none(policy_payload.get("price_adjustment_policy")),
             "stop_move_rules": stop_move_rules,
+            "stop_trail_rules": stop_trail_rules,
             "anti_lookahead_note": (
                 "Signals confirmed at bar close are modeled from the next tradable bar open."
             ),
         }
     )
+
+
+def _sort_stop_trail_rule_records(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    def _sort_key(row: Mapping[str, Any]) -> tuple[float, int]:
+        payload = _to_mapping(row)
+        start_r = _as_float_or_none(payload.get("start_r"))
+        ema_span = _as_int_or_none(payload.get("ema_span"))
+        return (
+            float("inf") if start_r is None else float(start_r),
+            int(ema_span) if ema_span is not None else 0,
+        )
+
+    return [clean_nan(_to_mapping(row)) for row in sorted(records, key=_sort_key)]
 
 
 def _build_trade_review_payload(

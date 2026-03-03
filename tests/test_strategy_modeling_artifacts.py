@@ -286,6 +286,30 @@ def test_strategy_modeling_artifacts_include_required_metadata_and_disclaimer(tm
     assert "Not financial advice." in llm_prompt
 
 
+def test_strategy_modeling_artifacts_include_stop_trail_rules_in_policy_metadata(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    request = _sample_request()
+    request.policy = {
+        **request.policy,
+        "stop_trail_rules": [
+            {"start_r": 1.0, "ema_span": 9, "buffer_atr_multiple": 0.25},
+            {"start_r": 0.5, "ema_span": 21},
+        ],
+    }
+    paths = write_strategy_modeling_artifacts(
+        out_dir=tmp_path,
+        strategy="sfp",
+        request=request,
+        run_result=_sample_run_result(),
+        generated_at=datetime(2026, 2, 8, 12, 30, tzinfo=timezone.utc),
+    )
+
+    payload = json.loads(paths.summary_json.read_text(encoding="utf-8"))
+    assert payload["policy_metadata"]["stop_trail_rules"] == [
+        {"start_r": 0.5, "ema_span": 21},
+        {"start_r": 1.0, "ema_span": 9, "buffer_atr_multiple": 0.25},
+    ]
+
+
 def test_strategy_modeling_trade_csv_surfaces_gap_and_stop_slippage(tmp_path) -> None:  # type: ignore[no-untyped-def]
     paths = write_strategy_modeling_artifacts(
         out_dir=tmp_path,
