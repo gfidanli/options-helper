@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, cast
@@ -95,6 +95,7 @@ class SnapshotOptionsJobResult:
     dates_used: list[date]
     symbols: list[str]
     no_symbols: bool
+    incomplete_symbols: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -292,9 +293,13 @@ def run_snapshot_options_job(
     full_chain: bool,
     max_expiries: int | None,
     risk_free_rate: float,
+    symbol_retries: int = 1,
+    strict_completeness: bool = False,
     provider_builder: Callable[[], Any] = cli_deps.build_provider,
     snapshot_store_builder: Callable[[Path], Any] = cli_deps.build_snapshot_store,
     candle_store_builder: Callable[..., Any] = cli_deps.build_candle_store,
+    contracts_store_builder: Callable[[Path], Any] = cli_deps.build_option_contracts_store,
+    contracts_store_dir: Path = Path("data/option_contracts"),
     portfolio_loader: Callable[[Path], Any] = load_portfolio,
     watchlists_loader: Callable[[Path], Any] = load_watchlists,
     run_logger: Any | None = None,
@@ -316,9 +321,13 @@ def run_snapshot_options_job(
             full_chain=full_chain,
             max_expiries=max_expiries,
             risk_free_rate=risk_free_rate,
+            symbol_retries=symbol_retries,
+            strict_completeness=strict_completeness,
             provider_builder=provider_builder,
             snapshot_store_builder=snapshot_store_builder,
             candle_store_builder=candle_store_builder,
+            contracts_store_builder=contracts_store_builder,
+            contracts_store_dir=contracts_store_dir,
             portfolio_loader=portfolio_loader,
             watchlists_loader=watchlists_loader,
             run_logger=run_logger,

@@ -125,6 +125,17 @@ _SNAPSHOT_RISK_FREE_RATE_OPT = typer.Option(
     "--risk-free-rate",
     help="Risk-free rate used for best-effort Black-Scholes Greeks (e.g. 0.05 = 5%).",
 )
+_SNAPSHOT_SYMBOL_RETRIES_OPT = typer.Option(
+    1,
+    "--symbol-retries",
+    min=0,
+    help="Retry attempts per symbol after an unexpected snapshot error.",
+)
+_SNAPSHOT_STRICT_COMPLETENESS_OPT = typer.Option(
+    False,
+    "--strict-completeness/--best-effort-completeness",
+    help="Exit non-zero if any requested symbol is missing snapshot coverage (symbol-level or expiry-level).",
+)
 
 
 def daily_performance(
@@ -210,6 +221,8 @@ def snapshot_options(
     full_chain: bool = _SNAPSHOT_FULL_CHAIN_OPT,
     max_expiries: int | None = _SNAPSHOT_MAX_EXPIRIES_OPT,
     risk_free_rate: float = _SNAPSHOT_RISK_FREE_RATE_OPT,
+    symbol_retries: int = _SNAPSHOT_SYMBOL_RETRIES_OPT,
+    strict_completeness: bool = _SNAPSHOT_STRICT_COMPLETENESS_OPT,
 ) -> None:
     """Save a once-daily options chain snapshot (full-chain + all expiries by default)."""
     console = Console()
@@ -231,6 +244,8 @@ def snapshot_options(
             full_chain=full_chain,
             max_expiries=max_expiries,
             risk_free_rate=risk_free_rate,
+            symbol_retries=symbol_retries,
+            strict_completeness=strict_completeness,
         ),
     ) as run_logger:
         result = _run_snapshot_options_job(
@@ -248,9 +263,13 @@ def snapshot_options(
             full_chain=full_chain,
             max_expiries=max_expiries,
             risk_free_rate=risk_free_rate,
+            symbol_retries=symbol_retries,
+            strict_completeness=strict_completeness,
         )
         _render_snapshot_messages(console, result)
         _log_snapshot_assets(run_logger, result)
+        if strict_completeness and result.incomplete_symbols:
+            raise typer.Exit(1)
 
 
 def _snapshot_run_args(
@@ -269,6 +288,8 @@ def _snapshot_run_args(
     full_chain: bool,
     max_expiries: int | None,
     risk_free_rate: float,
+    symbol_retries: int,
+    strict_completeness: bool,
 ) -> dict[str, object]:
     return {
         "portfolio_path": str(portfolio_path),
@@ -285,6 +306,8 @@ def _snapshot_run_args(
         "full_chain": full_chain,
         "max_expiries": max_expiries,
         "risk_free_rate": risk_free_rate,
+        "symbol_retries": symbol_retries,
+        "strict_completeness": strict_completeness,
     }
 
 
@@ -304,6 +327,8 @@ def _run_snapshot_options_job(
     full_chain: bool,
     max_expiries: int | None,
     risk_free_rate: float,
+    symbol_retries: int,
+    strict_completeness: bool,
 ) -> Any:
     import options_helper.commands.workflows as workflows_pkg
 
@@ -323,9 +348,12 @@ def _run_snapshot_options_job(
             full_chain=full_chain,
             max_expiries=max_expiries,
             risk_free_rate=risk_free_rate,
+            symbol_retries=symbol_retries,
+            strict_completeness=strict_completeness,
             provider_builder=cli_deps.build_provider,
             snapshot_store_builder=cli_deps.build_snapshot_store,
             candle_store_builder=cli_deps.build_candle_store,
+            contracts_store_builder=cli_deps.build_option_contracts_store,
             portfolio_loader=load_portfolio,
             watchlists_loader=load_watchlists,
         )

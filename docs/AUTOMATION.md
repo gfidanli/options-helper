@@ -60,6 +60,7 @@ corresponding `scripts/install_cron_*.sh` first, then keep this table in sync (t
 - **What it does:**
   - `options-helper refresh-candles portfolio.json` (portfolio + watchlists)
   - `options-helper snapshot-options portfolio.json --all-expiries --full-chain` (portfolio symbols, all listed expiries + strikes)
+  - recommended hardening: add `--symbol-retries 1 --strict-completeness` to fail fast on partial/missing expiry coverage
   - waits for the current day's daily candle to be published (canary check) so snapshots don't get written under the prior date
 - **Writes:**
   - candles: `data/candles/{SYMBOL}.csv`
@@ -78,6 +79,7 @@ flow/chain reports work for them too.
 - **Script:** `scripts/cron_daily_monitor_options_snapshot.sh`
 - **Installs via:** `scripts/install_cron_daily_monitor_options_snapshot.sh`
 - **What it does:** `options-helper snapshot-options portfolio.json --watchlist monitor --watchlist positions --all-expiries --full-chain`
+- **Hardening option:** add `--symbol-retries 1 --strict-completeness` so the run exits non-zero when any watchlist symbol misses one or more expiries
 - **Depends on:**
   - `data/watchlists.json` existing and containing a non-empty `monitor` and/or `positions` list (otherwise it skips)
   - network access (Alpaca via `alpaca-py`)

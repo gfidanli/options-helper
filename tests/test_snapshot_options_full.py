@@ -8,6 +8,7 @@ import pandas as pd
 from typer.testing import CliRunner
 
 from options_helper.cli import app
+from options_helper.data.market_types import DataFetchError
 
 
 def test_snapshot_options_full_chain_from_all_watchlists(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -388,3 +389,262 @@ def test_snapshot_options_can_write_parquet_without_legacy_sidecars(tmp_path: Pa
     assert (day_dir / "chain.parquet").exists()
     assert not (day_dir / f"{expiry.isoformat()}.csv").exists()
     assert (day_dir / "meta.json.gz").exists()
+
+
+def test_snapshot_options_strict_completeness_fails_on_partial_expiry_coverage(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    portfolio_path = tmp_path / "portfolio.json"
+    portfolio_path.write_text(
+        '{"cash": 0, "risk_profile": {"tolerance": "high", "max_portfolio_risk_pct": null, "max_single_position_risk_pct": null}}',
+        encoding="utf-8",
+    )
+
+    watchlists_path = tmp_path / "watchlists.json"
+    watchlists_path.write_text(
+        '{"watchlists":{"monitor":["AAA"],"positions":["AAA"]}}',
+        encoding="utf-8",
+    )
+
+    candle_day = date(2026, 1, 28)
+
+    def _stub_history(self, symbol: str, *, period: str = "10d"):  # noqa: ARG001
+        idx = pd.to_datetime([candle_day.replace(day=candle_day.day - 1), candle_day])
+        return pd.DataFrame({"Close": [100.0, 101.0]}, index=idx)
+
+    monkeypatch.setattr("options_helper.data.candles.CandleStore.get_daily_history", _stub_history)
+
+    expiries = [date(2026, 2, 20), date(2026, 3, 20)]
+
+    class _StubProvider:
+        name = "stub"
+        version = "0.0"
+
+        def get_underlying(self, symbol: str, *, period: str = "10d", interval: str = "1d"):  # noqa: ARG002
+            raise AssertionError("Candle history should provide spot in this test")
+
+        def list_option_expiries(self, symbol: str):  # noqa: ARG002
+            return expiries
+
+        def get_options_chain_raw(self, symbol: str, expiry: date):  # noqa: ARG002
+            if expiry == expiries[1]:
+                raise DataFetchError("simulated expiry fetch failure")
+            return {
+                "expirationDate": int(pd.Timestamp(expiry).timestamp()),
+                "underlying": {"regularMarketPrice": 101.0},
+                "calls": [{"contractSymbol": "AAA_CALL", "strike": 100.0, "lastPrice": 2.0}],
+                "puts": [{"contractSymbol": "AAA_PUT", "strike": 100.0, "lastPrice": 1.5}],
+            }
+
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda *_args, **_kwargs: _StubProvider())
+
+    cache_dir = tmp_path / "snapshots"
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--duckdb-path",
+            str(tmp_path / "options.duckdb"),
+            "snapshot-options",
+            str(portfolio_path),
+            "--watchlists-path",
+            str(watchlists_path),
+            "--all-watchlists",
+            "--cache-dir",
+            str(cache_dir),
+            "--candle-cache-dir",
+            str(tmp_path / "candles"),
+            "--strict-completeness",
+            "--symbol-retries",
+            "0",
+        ],
+    )
+    assert res.exit_code == 1, res.output
+    assert "Strict completeness check failed" in res.output
+    assert "Incomplete snapshot coverage" in res.output
+
+    day_dir = cache_dir / "AAA" / candle_day.isoformat()
+    assert (day_dir / f"{expiries[0].isoformat()}.csv").exists()
+    assert not (day_dir / f"{expiries[1].isoformat()}.csv").exists()
+
+
+def test_snapshot_options_symbol_retries_can_recover_transient_failure(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    portfolio_path = tmp_path / "portfolio.json"
+    portfolio_path.write_text(
+        '{"cash": 0, "risk_profile": {"tolerance": "high", "max_portfolio_risk_pct": null, "max_single_position_risk_pct": null}}',
+        encoding="utf-8",
+    )
+
+    watchlists_path = tmp_path / "watchlists.json"
+    watchlists_path.write_text(
+        '{"watchlists":{"monitor":["AAA"],"positions":["AAA"]}}',
+        encoding="utf-8",
+    )
+
+    candle_day = date(2026, 1, 28)
+
+    def _stub_history(self, symbol: str, *, period: str = "10d"):  # noqa: ARG001
+        idx = pd.to_datetime([candle_day.replace(day=candle_day.day - 1), candle_day])
+        return pd.DataFrame({"Close": [100.0, 101.0]}, index=idx)
+
+    monkeypatch.setattr("options_helper.data.candles.CandleStore.get_daily_history", _stub_history)
+
+    expiry = date(2026, 2, 20)
+    attempts = {"AAA": 0}
+
+    class _StubProvider:
+        name = "stub"
+        version = "0.0"
+
+        def get_underlying(self, symbol: str, *, period: str = "10d", interval: str = "1d"):  # noqa: ARG002
+            raise AssertionError("Candle history should provide spot in this test")
+
+        def list_option_expiries(self, symbol: str):  # noqa: ARG002
+            return [expiry]
+
+        def get_options_chain_raw(self, symbol: str, expiry: date):  # noqa: ARG002
+            attempts[symbol] = attempts.get(symbol, 0) + 1
+            if attempts[symbol] == 1:
+                raise DataFetchError("temporary provider timeout")
+            return {
+                "expirationDate": int(pd.Timestamp(expiry).timestamp()),
+                "underlying": {"regularMarketPrice": 101.0},
+                "calls": [{"contractSymbol": "AAA_CALL", "strike": 100.0, "lastPrice": 2.0}],
+                "puts": [{"contractSymbol": "AAA_PUT", "strike": 100.0, "lastPrice": 1.5}],
+            }
+
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda *_args, **_kwargs: _StubProvider())
+
+    cache_dir = tmp_path / "snapshots"
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--duckdb-path",
+            str(tmp_path / "options.duckdb"),
+            "snapshot-options",
+            str(portfolio_path),
+            "--watchlists-path",
+            str(watchlists_path),
+            "--all-watchlists",
+            "--cache-dir",
+            str(cache_dir),
+            "--candle-cache-dir",
+            str(tmp_path / "candles"),
+            "--symbol-retries",
+            "1",
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    assert "attempt 1/2 failed" in res.output
+    assert attempts["AAA"] == 2
+    assert (cache_dir / "AAA" / candle_day.isoformat() / f"{expiry.isoformat()}.csv").exists()
+
+
+def test_snapshot_options_persists_contract_oi_snapshot(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    portfolio_path = tmp_path / "portfolio.json"
+    portfolio_path.write_text(
+        '{"cash": 0, "risk_profile": {"tolerance": "high", "max_portfolio_risk_pct": null, "max_single_position_risk_pct": null}}',
+        encoding="utf-8",
+    )
+
+    watchlists_path = tmp_path / "watchlists.json"
+    watchlists_path.write_text(
+        '{"watchlists":{"monitor":["AAA"],"positions":["AAA"]}}',
+        encoding="utf-8",
+    )
+
+    candle_day = date(2026, 1, 28)
+
+    def _stub_history(self, symbol: str, *, period: str = "10d"):  # noqa: ARG001
+        idx = pd.to_datetime([candle_day.replace(day=candle_day.day - 1), candle_day])
+        return pd.DataFrame({"Close": [100.0, 101.0]}, index=idx)
+
+    monkeypatch.setattr("options_helper.data.candles.CandleStore.get_daily_history", _stub_history)
+
+    expiry = date(2026, 2, 20)
+
+    class _StubProvider:
+        name = "stub"
+        version = "0.0"
+
+        def get_underlying(self, symbol: str, *, period: str = "10d", interval: str = "1d"):  # noqa: ARG002
+            raise AssertionError("Candle history should provide spot in this test")
+
+        def list_option_expiries(self, symbol: str):  # noqa: ARG002
+            return [expiry]
+
+        def get_options_chain_raw(self, symbol: str, expiry: date):  # noqa: ARG002
+            return {
+                "expirationDate": int(pd.Timestamp(expiry).timestamp()),
+                "underlying": {"regularMarketPrice": 101.0},
+                "calls": [
+                    {
+                        "contractSymbol": "AAA_CALL",
+                        "strike": 100.0,
+                        "openInterest": 111,
+                        "openInterestDate": "2026-01-28",
+                        "closePrice": 2.0,
+                        "closePriceDate": "2026-01-28",
+                    }
+                ],
+                "puts": [
+                    {
+                        "contractSymbol": "AAA_PUT",
+                        "strike": 100.0,
+                        "openInterest": 222,
+                        "openInterestDate": "2026-01-28",
+                        "closePrice": 1.5,
+                        "closePriceDate": "2026-01-28",
+                    }
+                ],
+            }
+
+    class _RecordingContractsStore:
+        def __init__(self) -> None:
+            self.calls: list[tuple[pd.DataFrame, str, date]] = []
+
+        def upsert_contracts(self, df_contracts: pd.DataFrame, *, provider: str, as_of_date: date, **_kwargs) -> None:
+            self.calls.append((df_contracts.copy(), provider, as_of_date))
+
+    recorder = _RecordingContractsStore()
+
+    monkeypatch.setattr("options_helper.cli_deps.build_provider", lambda *_args, **_kwargs: _StubProvider())
+    monkeypatch.setattr(
+        "options_helper.cli_deps.build_option_contracts_store",
+        lambda *_args, **_kwargs: recorder,
+    )
+
+    cache_dir = tmp_path / "snapshots"
+
+    runner = CliRunner()
+    res = runner.invoke(
+        app,
+        [
+            "--duckdb-path",
+            str(tmp_path / "options.duckdb"),
+            "snapshot-options",
+            str(portfolio_path),
+            "--watchlists-path",
+            str(watchlists_path),
+            "--all-watchlists",
+            "--cache-dir",
+            str(cache_dir),
+            "--candle-cache-dir",
+            str(tmp_path / "candles"),
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    assert len(recorder.calls) == 1
+
+    payload, provider, as_of_date = recorder.calls[0]
+    assert provider == "stub"
+    assert as_of_date == candle_day
+    assert set(payload["contractSymbol"].astype(str)) == {"AAA_CALL", "AAA_PUT"}
+    by_symbol = payload.set_index("contractSymbol")
+    assert int(by_symbol.loc["AAA_CALL", "openInterest"]) == 111
+    assert int(by_symbol.loc["AAA_PUT", "openInterest"]) == 222

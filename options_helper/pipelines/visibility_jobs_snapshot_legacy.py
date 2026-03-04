@@ -22,6 +22,7 @@ from options_helper.watchlists import load_watchlists
 class _SnapshotRuntime:
     quality_logger: Any | None
     store: Any
+    contracts_store: Any | None
     provider: Any
     candle_store: Any
     provider_name: str
@@ -34,6 +35,7 @@ class _SnapshotRuntime:
     expiries_by_symbol: dict[str, set[date]]
     required_date: date | None
     effective_max_expiries: int | None
+    symbol_retries: int
     messages: list[str]
 
 
@@ -54,6 +56,19 @@ class _SymbolSnapshotContext:
     strike_max: float
     meta: dict[str, Any]
     expiries: list[date]
+
+
+@dataclass(frozen=True)
+class _SymbolSnapshotOutcome:
+    snapshot_date: date
+    missing_expiries: tuple[date, ...]
+
+
+def _format_expiry_preview(expiries: tuple[date, ...], *, max_items: int = 4) -> str:
+    values = sorted(value.isoformat() for value in expiries)
+    preview = ", ".join(values[:max_items])
+    suffix = "" if len(values) <= max_items else f", +{len(values) - max_items} more"
+    return f"{preview}{suffix}"
 
 
 def _persist_snapshot_quality(
@@ -555,6 +570,78 @@ def _save_symbol_snapshot(
         raw_by_expiry=frames.raw_by_expiry if frames.raw_by_expiry else None,
         meta=context.meta,
     )
+    _persist_contract_snapshot(
+        contracts_store=runtime.contracts_store,
+        chain_df=chain_df,
+        symbol_value=symbol_value,
+        snapshot_date=context.effective_snapshot_date,
+        provider_name=runtime.provider_name,
+        messages=runtime.messages,
+    )
+
+
+def _build_contract_snapshot_frame(chain_df: pd.DataFrame, *, symbol_value: str) -> pd.DataFrame:
+    if chain_df is None or chain_df.empty:
+        return pd.DataFrame()
+
+    contract_symbol = chain_df.get("contractSymbol")
+    if contract_symbol is None:
+        return pd.DataFrame()
+    open_interest = chain_df.get("openInterest")
+    open_interest_date = chain_df.get("openInterestDate")
+    close_price = chain_df.get("closePrice")
+    close_price_date = chain_df.get("closePriceDate")
+    underlying = chain_df.get("underlying")
+    if underlying is None:
+        underlying = pd.Series([symbol_value] * len(chain_df), index=chain_df.index)
+
+    payload = pd.DataFrame(
+        {
+            "contractSymbol": contract_symbol,
+            "underlying": underlying,
+            "expiry": chain_df.get("expiry"),
+            "optionType": chain_df.get("optionType"),
+            "strike": chain_df.get("strike"),
+            "multiplier": chain_df.get("multiplier"),
+            "openInterest": open_interest,
+            "openInterestDate": open_interest_date,
+            "closePrice": close_price,
+            "closePriceDate": close_price_date,
+        }
+    )
+    payload = payload.dropna(subset=["contractSymbol"]).copy()
+    payload["contractSymbol"] = payload["contractSymbol"].astype(str).str.strip()
+    payload = payload[payload["contractSymbol"] != ""]
+    if payload.empty:
+        return payload
+    payload["underlying"] = payload["underlying"].fillna(symbol_value).astype(str).str.upper()
+    return payload
+
+
+def _persist_contract_snapshot(
+    *,
+    contracts_store: Any | None,
+    chain_df: pd.DataFrame,
+    symbol_value: str,
+    snapshot_date: date,
+    provider_name: str,
+    messages: list[str],
+) -> None:
+    if contracts_store is None:
+        return
+    payload = _build_contract_snapshot_frame(chain_df, symbol_value=symbol_value)
+    if payload.empty:
+        return
+    try:
+        contracts_store.upsert_contracts(
+            payload,
+            provider=provider_name,
+            as_of_date=snapshot_date,
+        )
+    except Exception as exc:  # noqa: BLE001
+        messages.append(
+            f"[yellow]Warning:[/yellow] {symbol_value}: failed to persist contract OI snapshot ({exc})."
+        )
 
 
 def _process_symbol_snapshot(
@@ -564,7 +651,7 @@ def _process_symbol_snapshot(
     spot_period: str,
     window_pct: float,
     risk_free_rate: float,
-) -> date | None:
+) -> _SymbolSnapshotOutcome | None:
     context = _prepare_symbol_snapshot_context(
         runtime=runtime,
         symbol_value=symbol_value,
@@ -586,7 +673,9 @@ def _process_symbol_snapshot(
         risk_free_rate=risk_free_rate,
     )
     if not frames.saved_expiries:
-        return None
+        raise DataFetchError(
+            f"{symbol_value}: no expiries saved from provider chain fetches ({len(context.expiries)} attempted)."
+        )
 
     _save_symbol_snapshot(
         runtime=runtime,
@@ -594,7 +683,11 @@ def _process_symbol_snapshot(
         context=context,
         frames=frames,
     )
-    return context.effective_snapshot_date
+    missing_expiries = tuple(sorted(set(context.expiries) - set(frames.saved_expiries)))
+    return _SymbolSnapshotOutcome(
+        snapshot_date=context.effective_snapshot_date,
+        missing_expiries=missing_expiries,
+    )
 
 
 def _prepare_snapshot_runtime(params: dict[str, Any]) -> tuple[_SnapshotRuntime | None, Any | None]:
@@ -632,13 +725,24 @@ def _prepare_snapshot_runtime(params: dict[str, Any]) -> tuple[_SnapshotRuntime 
         f"Snapshotting options chains for {len(symbols)} symbol(s) "
         f"({mode}, {'full-chain' if params['full_chain'] else 'windowed'})..."
     ]
+    contracts_store = None
+    contracts_store_builder = params.get("contracts_store_builder")
+    if contracts_store_builder is not None:
+        try:
+            contracts_store = contracts_store_builder(params["contracts_store_dir"])
+        except Exception as exc:  # noqa: BLE001
+            messages.append(
+                f"[yellow]Warning:[/yellow] Contract OI snapshot persistence disabled: {exc}"
+            )
     effective_max_expiries = params["max_expiries"]
     if use_watchlists and not params["all_expiries"] and effective_max_expiries is None:
         effective_max_expiries = 2
+    symbol_retries = max(0, int(params["symbol_retries"]))
     return (
         _SnapshotRuntime(
             quality_logger=quality_logger,
             store=store,
+            contracts_store=contracts_store,
             provider=provider,
             candle_store=candle_store,
             provider_name=provider_name,
@@ -651,6 +755,7 @@ def _prepare_snapshot_runtime(params: dict[str, Any]) -> tuple[_SnapshotRuntime 
             expiries_by_symbol=expiries_by_symbol,
             required_date=required_date,
             effective_max_expiries=effective_max_expiries,
+            symbol_retries=symbol_retries,
             messages=messages,
         ),
         None,
@@ -673,9 +778,13 @@ def run_snapshot_options_job_impl(
     full_chain: bool,
     max_expiries: int | None,
     risk_free_rate: float,
+    symbol_retries: int = 1,
+    strict_completeness: bool = False,
     provider_builder: Callable[[], Any] = cli_deps.build_provider,
     snapshot_store_builder: Callable[[Path], Any] = cli_deps.build_snapshot_store,
     candle_store_builder: Callable[..., Any] = cli_deps.build_candle_store,
+    contracts_store_builder: Callable[[Path], Any] | None = cli_deps.build_option_contracts_store,
+    contracts_store_dir: Path = Path("data/option_contracts"),
     portfolio_loader: Callable[[Path], Any] = load_portfolio,
     watchlists_loader: Callable[[Path], Any] = load_watchlists,
     run_logger: Any | None = None,
@@ -695,22 +804,76 @@ def run_snapshot_options_job_impl(
 
     dates_used: set[date] = set()
     snapshot_dates_by_symbol: dict[str, date] = {}
+    symbol_errors: dict[str, str] = {}
+    partial_expiries_by_symbol: dict[str, tuple[date, ...]] = {}
     for symbol_value in runtime.symbols:
-        snapshot_date = _process_symbol_snapshot(
-            runtime=runtime,
-            symbol_value=symbol_value,
-            spot_period=spot_period,
-            window_pct=window_pct,
-            risk_free_rate=risk_free_rate,
-        )
-        if snapshot_date is None:
-            continue
-        dates_used.add(snapshot_date)
-        snapshot_dates_by_symbol[symbol_value.upper()] = snapshot_date
+        symbol_key = symbol_value.upper()
+        max_attempts = runtime.symbol_retries + 1
+        for attempt in range(1, max_attempts + 1):
+            try:
+                outcome = _process_symbol_snapshot(
+                    runtime=runtime,
+                    symbol_value=symbol_value,
+                    spot_period=spot_period,
+                    window_pct=window_pct,
+                    risk_free_rate=risk_free_rate,
+                )
+            except Exception as exc:  # noqa: BLE001
+                symbol_errors[symbol_key] = str(exc)
+                if attempt < max_attempts:
+                    runtime.messages.append(
+                        f"[yellow]Warning:[/yellow] {symbol_value}: attempt {attempt}/{max_attempts} failed ({exc}); retrying."
+                    )
+                    continue
+                runtime.messages.append(
+                    f"[red]Error:[/red] {symbol_value}: failed after {max_attempts} attempts ({exc})."
+                )
+                outcome = None
+            if outcome is None:
+                break
+            if outcome.missing_expiries and attempt < max_attempts:
+                runtime.messages.append(
+                    f"[yellow]Warning:[/yellow] {symbol_value}: partial expiry coverage, missing "
+                    f"{len(outcome.missing_expiries)} expiries ({_format_expiry_preview(outcome.missing_expiries)}); "
+                    f"retrying ({attempt}/{max_attempts})."
+                )
+                continue
+            dates_used.add(outcome.snapshot_date)
+            snapshot_dates_by_symbol[symbol_key] = outcome.snapshot_date
+            if outcome.missing_expiries:
+                partial_expiries_by_symbol[symbol_key] = outcome.missing_expiries
+            else:
+                partial_expiries_by_symbol.pop(symbol_key, None)
+            break
 
     if dates_used:
         days = ", ".join(sorted(value.isoformat() for value in dates_used))
         runtime.messages.append(f"Snapshot complete. Data date(s): {days}.")
+
+    incomplete_set = {sym.upper() for sym in runtime.symbols if sym.upper() not in snapshot_dates_by_symbol}
+    incomplete_set.update(partial_expiries_by_symbol.keys())
+    incomplete_symbols = sorted(incomplete_set)
+    if incomplete_symbols:
+        preview = ", ".join(sorted(incomplete_symbols)[:8])
+        suffix = "" if len(incomplete_symbols) <= 8 else f", +{len(incomplete_symbols) - 8} more"
+        runtime.messages.append(
+            f"[yellow]Warning:[/yellow] Incomplete snapshot coverage: {len(incomplete_symbols)}/{len(runtime.symbols)} missing ({preview}{suffix})."
+        )
+        for symbol in sorted(incomplete_symbols):
+            missing_expiries = partial_expiries_by_symbol.get(symbol)
+            if missing_expiries:
+                runtime.messages.append(
+                    f"[yellow]Warning:[/yellow] {symbol}: missing {len(missing_expiries)} expiry snapshot(s) "
+                    f"({_format_expiry_preview(missing_expiries)})."
+                )
+                continue
+            error = symbol_errors.get(symbol)
+            if error:
+                runtime.messages.append(f"[yellow]Warning:[/yellow] {symbol}: {error}")
+        if strict_completeness:
+            runtime.messages.append(
+                "[red]Error:[/red] Strict completeness check failed: one or more requested symbols were not snapshotted."
+            )
 
     _persist_snapshot_quality(
         persist_quality_results_fn=persist_quality_results_fn,
@@ -725,4 +888,5 @@ def run_snapshot_options_job_impl(
         dates_used=sorted(dates_used),
         symbols=runtime.symbols,
         no_symbols=False,
+        incomplete_symbols=incomplete_symbols,
     )

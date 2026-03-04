@@ -102,6 +102,15 @@ Full-chain CLI (default; larger but richer dataset):
 options-helper snapshot-options portfolio.json
 ```
 
+For coverage enforcement (recommended for production runs), add retries and strict completeness:
+
+```bash
+options-helper snapshot-options portfolio.json --symbol-retries 1 --strict-completeness
+```
+
+`--strict-completeness` exits non-zero when any requested symbol is missing one or more expiry snapshots.
+Use this to catch partial-chain days early in cron/log monitoring.
+
 ### Snapshotting watchlists (optional)
 You can also snapshot symbols from your watchlists store:
 
