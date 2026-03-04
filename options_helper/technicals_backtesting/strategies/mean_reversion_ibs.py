@@ -47,6 +47,13 @@ def _rolling_max(values: np.ndarray, *, window: int) -> np.ndarray:
     return series.rolling(window=window, min_periods=window).max().to_numpy(dtype=float, copy=False)
 
 
+def _rolling_min(values: np.ndarray, *, window: int) -> np.ndarray:
+    if window <= 0:
+        raise ValueError("window must be > 0")
+    series = pd.Series(values, copy=False)
+    return series.rolling(window=window, min_periods=window).min().to_numpy(dtype=float, copy=False)
+
+
 def _rolling_mean(values: np.ndarray, *, window: int) -> np.ndarray:
     if window <= 0:
         raise ValueError("window must be > 0")
@@ -65,14 +72,34 @@ def _compute_ibs(close: np.ndarray, low: np.ndarray, high: np.ndarray, *, zero_r
     return out
 
 
+def _coerce_position_fraction(name: str, value: object) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be > 0 and <= 1")
+    try:
+        out = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be > 0 and <= 1") from exc
+    if not np.isfinite(out) or out <= 0.0 or out > 1.0:
+        raise ValueError(f"{name} must be > 0 and <= 1")
+    return out
+
+
+def _order_size_fraction(value: float) -> float:
+    # backtesting.py interprets size >= 1 as absolute units, so clip 1.0 to a
+    # near-1 fraction to express full-equity sizing semantics.
+    return min(float(value), 0.999999)
+
+
 class MeanReversionIBS(Strategy):
     """
-    Long-only mean reversion strategy using IBS and volatility-adjusted pullback.
+    Mean reversion strategy using IBS and volatility-adjusted pullback.
 
     Canonical defaults:
     - Entry: close < (rolling_high_10 - 2.5 * avg(high-low, 25)) and IBS < 0.3
     - Exit: close > yesterday_high
+    - Short entry/exit are opposite of long rules
     - IBS fallback for high == low: 0.5
+    - Position size defaults to 100% of available equity per trade
     """
 
     lookback_high = 10
@@ -88,6 +115,7 @@ class MeanReversionIBS(Strategy):
     use_ma_direction_gate = False
     ma_direction_window = 200
     ma_direction_lookback = 1
+    entry_size_fraction = 1.0
 
     def init(self) -> None:
         self._lookback_high = max(1, int(self.lookback_high))
@@ -102,6 +130,7 @@ class MeanReversionIBS(Strategy):
         self._sma_trend_window = _coerce_positive_int("sma_trend_window", self.sma_trend_window)
         self._ma_direction_window = _coerce_positive_int("ma_direction_window", self.ma_direction_window)
         self._ma_direction_lookback = _coerce_positive_int("ma_direction_lookback", self.ma_direction_lookback)
+        self._entry_size_fraction = _coerce_position_fraction("entry_size_fraction", self.entry_size_fraction)
 
         high = np.asarray(self.data.High, dtype=float)
         low = np.asarray(self.data.Low, dtype=float)
@@ -112,6 +141,11 @@ class MeanReversionIBS(Strategy):
             lambda x: x,
             _rolling_max(high, window=self._lookback_high),
             name=f"rolling_high_{self._lookback_high}",
+        )
+        self.rolling_low = self.I(
+            lambda x: x,
+            _rolling_min(low, window=self._lookback_high),
+            name=f"rolling_low_{self._lookback_high}",
         )
         self.avg_range = self.I(
             lambda x: x,
@@ -162,12 +196,27 @@ class MeanReversionIBS(Strategy):
         sma_now = float(self.sma_trend[-1]) if np.isfinite(self.sma_trend[-1]) else np.nan
         return bool(np.isfinite(sma_now) and close_now > sma_now)
 
+    def _sma_trend_gate_ok_short(self, close_now: float) -> bool:
+        if not self._use_sma_trend_gate:
+            return True
+        if self.sma_trend is None:
+            return False
+        sma_now = float(self.sma_trend[-1]) if np.isfinite(self.sma_trend[-1]) else np.nan
+        return bool(np.isfinite(sma_now) and close_now < sma_now)
+
     def _weekly_trend_gate_ok(self) -> bool:
         if not self._use_weekly_trend_gate:
             return True
         if self.weekly_trend is None:
             return False
         return _coerce_gate_bool(self.weekly_trend[-1])
+
+    def _weekly_trend_gate_ok_short(self) -> bool:
+        if not self._use_weekly_trend_gate:
+            return True
+        if self.weekly_trend is None:
+            return False
+        return not _coerce_gate_bool(self.weekly_trend[-1])
 
     def _ma_direction_gate_ok(self) -> bool:
         if not self._use_ma_direction_gate:
@@ -179,8 +228,25 @@ class MeanReversionIBS(Strategy):
         ma_prev = float(self.ma_direction[ma_prev_idx]) if np.isfinite(self.ma_direction[ma_prev_idx]) else np.nan
         return bool(np.isfinite(ma_now) and np.isfinite(ma_prev) and ma_now > ma_prev)
 
+    def _ma_direction_gate_ok_short(self) -> bool:
+        if not self._use_ma_direction_gate:
+            return True
+        if self.ma_direction is None or len(self.data) <= self._ma_direction_lookback:
+            return False
+        ma_now = float(self.ma_direction[-1]) if np.isfinite(self.ma_direction[-1]) else np.nan
+        ma_prev_idx = -(self._ma_direction_lookback + 1)
+        ma_prev = float(self.ma_direction[ma_prev_idx]) if np.isfinite(self.ma_direction[ma_prev_idx]) else np.nan
+        return bool(np.isfinite(ma_now) and np.isfinite(ma_prev) and ma_now < ma_prev)
+
     def _entry_overlays_ok(self, close_now: float) -> bool:
         return self._sma_trend_gate_ok(close_now) and self._weekly_trend_gate_ok() and self._ma_direction_gate_ok()
+
+    def _entry_overlays_ok_short(self, close_now: float) -> bool:
+        return (
+            self._sma_trend_gate_ok_short(close_now)
+            and self._weekly_trend_gate_ok_short()
+            and self._ma_direction_gate_ok_short()
+        )
 
     def next(self) -> None:
         if len(self.data) <= self._exit_lookback:
@@ -188,17 +254,34 @@ class MeanReversionIBS(Strategy):
 
         close_now = float(self.data.Close[-1])
         rolling_high_now = float(self.rolling_high[-1]) if np.isfinite(self.rolling_high[-1]) else np.nan
+        rolling_low_now = float(self.rolling_low[-1]) if np.isfinite(self.rolling_low[-1]) else np.nan
         avg_range_now = float(self.avg_range[-1]) if np.isfinite(self.avg_range[-1]) else np.nan
         ibs_now = float(self.ibs[-1]) if np.isfinite(self.ibs[-1]) else np.nan
 
         if not self.position:
-            if np.isnan(rolling_high_now) or np.isnan(avg_range_now) or np.isnan(ibs_now):
+            if np.isnan(rolling_high_now) or np.isnan(rolling_low_now) or np.isnan(avg_range_now) or np.isnan(ibs_now):
                 return
-            threshold = rolling_high_now - self._range_mult * avg_range_now
-            if close_now < threshold and ibs_now < self._ibs_threshold and self._entry_overlays_ok(close_now):
-                self.buy()
+            long_threshold = rolling_high_now - self._range_mult * avg_range_now
+            short_threshold = rolling_low_now + self._range_mult * avg_range_now
+            long_entry = close_now < long_threshold and ibs_now < self._ibs_threshold and self._entry_overlays_ok(close_now)
+            short_entry = (
+                close_now > short_threshold
+                and ibs_now > (1.0 - self._ibs_threshold)
+                and self._entry_overlays_ok_short(close_now)
+            )
+            if long_entry and not short_entry:
+                self.buy(size=_order_size_fraction(self._entry_size_fraction))
+            elif short_entry and not long_entry:
+                self.sell(size=_order_size_fraction(self._entry_size_fraction))
             return
 
-        yesterday_high = float(self.data.High[-(self._exit_lookback + 1)])
-        if np.isfinite(yesterday_high) and close_now > yesterday_high:
-            self.position.close()
+        if self.position.is_long:
+            yesterday_high = float(self.data.High[-(self._exit_lookback + 1)])
+            if np.isfinite(yesterday_high) and close_now > yesterday_high:
+                self.position.close()
+            return
+
+        if self.position.is_short:
+            yesterday_low = float(self.data.Low[-(self._exit_lookback + 1)])
+            if np.isfinite(yesterday_low) and close_now < yesterday_low:
+                self.position.close()

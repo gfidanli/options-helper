@@ -50,6 +50,19 @@ def _entry_exit_frame() -> pd.DataFrame:
     )
 
 
+def _short_entry_exit_frame() -> pd.DataFrame:
+    index = pd.date_range("2024-01-01", periods=12, freq="D")
+    return pd.DataFrame(
+        {
+            "Open": np.array([8.5, 8.5, 8.5, 8.5, 8.5, 6.2, 8.4, 9.9, 9.8, 8.5, 8.0, 8.1]),
+            "High": np.array([9.0, 9.0, 9.0, 9.0, 9.0, 6.5, 9.0, 10.0, 10.0, 8.8, 8.4, 8.5]),
+            "Low": np.array([8.0, 8.0, 8.0, 8.0, 8.0, 6.0, 8.0, 9.0, 9.0, 8.2, 7.7, 7.8]),
+            "Close": np.array([8.5, 8.5, 8.5, 8.5, 8.5, 6.2, 8.4, 9.9, 9.7, 8.3, 8.0, 8.2]),
+        },
+        index=index,
+    )
+
+
 def _zero_range_frame() -> pd.DataFrame:
     index = pd.date_range("2024-02-01", periods=12, freq="D")
     return pd.DataFrame(
@@ -95,6 +108,7 @@ def _contract_terms(frame: pd.DataFrame, params: dict) -> dict[str, pd.Series]:
     close = frame["Close"]
     intrabar_range = high - low
     rolling_high = high.rolling(window=params["lookback_high"], min_periods=params["lookback_high"]).max()
+    rolling_low = low.rolling(window=params["lookback_high"], min_periods=params["lookback_high"]).min()
     avg_range = intrabar_range.rolling(window=params["range_window"], min_periods=params["range_window"]).mean()
     ibs = pd.Series(
         _compute_ibs(
@@ -105,16 +119,23 @@ def _contract_terms(frame: pd.DataFrame, params: dict) -> dict[str, pd.Series]:
         ),
         index=frame.index,
     )
-    threshold = rolling_high - params["range_mult"] * avg_range
-    entry_signal = (close < threshold) & (ibs < params["ibs_threshold"])
-    exit_signal = close > high.shift(params["exit_lookback"])
+    long_threshold = rolling_high - params["range_mult"] * avg_range
+    short_threshold = rolling_low + params["range_mult"] * avg_range
+    long_entry_signal = (close < long_threshold) & (ibs < params["ibs_threshold"])
+    short_entry_signal = (close > short_threshold) & (ibs > (1.0 - params["ibs_threshold"]))
+    long_exit_signal = close > high.shift(params["exit_lookback"])
+    short_exit_signal = close < low.shift(params["exit_lookback"])
     return {
         "rolling_high": rolling_high,
+        "rolling_low": rolling_low,
         "avg_range": avg_range,
         "ibs": ibs,
-        "threshold": threshold,
-        "entry_signal": entry_signal,
-        "exit_signal": exit_signal,
+        "long_threshold": long_threshold,
+        "short_threshold": short_threshold,
+        "long_entry_signal": long_entry_signal,
+        "short_entry_signal": short_entry_signal,
+        "long_exit_signal": long_exit_signal,
+        "short_exit_signal": short_exit_signal,
     }
 
 
@@ -127,12 +148,12 @@ def test_mean_reversion_ibs_entry_exit_contract() -> None:
     exit_signal_bar = 9
     assert terms["rolling_high"].iloc[signal_bar] == pytest.approx(13.0)
     assert terms["avg_range"].iloc[signal_bar] == pytest.approx(5.0 / 6.0)
-    assert terms["threshold"].iloc[signal_bar] == pytest.approx(13.0 - (params["range_mult"] * (5.0 / 6.0)))
+    assert terms["long_threshold"].iloc[signal_bar] == pytest.approx(13.0 - (params["range_mult"] * (5.0 / 6.0)))
     assert terms["ibs"].iloc[signal_bar] == pytest.approx(0.1)
-    assert bool(terms["entry_signal"].iloc[signal_bar])
-    assert not bool(terms["entry_signal"].iloc[signal_bar - 1])
-    assert bool(terms["exit_signal"].iloc[exit_signal_bar])
-    assert not bool(terms["exit_signal"].iloc[exit_signal_bar - 1])
+    assert bool(terms["long_entry_signal"].iloc[signal_bar])
+    assert not bool(terms["long_entry_signal"].iloc[signal_bar - 1])
+    assert bool(terms["long_exit_signal"].iloc[exit_signal_bar])
+    assert not bool(terms["long_exit_signal"].iloc[exit_signal_bar - 1])
 
     stats = _run(frame, trade_on_close=False)
     trades = stats["_trades"]
@@ -144,13 +165,53 @@ def test_mean_reversion_ibs_entry_exit_contract() -> None:
     assert int(trade["ExitBar"]) == exit_signal_bar + 1
     assert trade["ExitTime"] == frame.index[exit_signal_bar + 1]
     assert trade["ExitPrice"] == pytest.approx(frame["Open"].iloc[exit_signal_bar + 1])
+    assert float(trade["Size"]) > 0.0
+
+
+def test_mean_reversion_ibs_short_entry_exit_contract() -> None:
+    frame = _short_entry_exit_frame()
+    params = _strategy_params()
+    terms = _contract_terms(frame, params)
+
+    signal_bar = 7
+    exit_signal_bar = 9
+    assert terms["rolling_low"].iloc[signal_bar] == pytest.approx(6.0)
+    assert terms["avg_range"].iloc[signal_bar] == pytest.approx((0.5 + 1.0 + 1.0) / 3.0)
+    assert terms["short_threshold"].iloc[signal_bar] == pytest.approx(6.0 + (params["range_mult"] * ((0.5 + 1.0 + 1.0) / 3.0)))
+    assert terms["ibs"].iloc[signal_bar] == pytest.approx(0.9)
+    assert bool(terms["short_entry_signal"].iloc[signal_bar])
+    assert not bool(terms["short_entry_signal"].iloc[signal_bar - 1])
+    assert bool(terms["short_exit_signal"].iloc[exit_signal_bar])
+    assert not bool(terms["short_exit_signal"].iloc[exit_signal_bar - 1])
+
+    stats = _run(frame, trade_on_close=False)
+    trades = stats["_trades"]
+    assert len(trades) == 1
+    trade = trades.iloc[0]
+    assert int(trade["EntryBar"]) == signal_bar + 1
+    assert trade["EntryTime"] == frame.index[signal_bar + 1]
+    assert trade["EntryPrice"] == pytest.approx(frame["Open"].iloc[signal_bar + 1])
+    assert int(trade["ExitBar"]) == exit_signal_bar + 1
+    assert trade["ExitTime"] == frame.index[exit_signal_bar + 1]
+    assert trade["ExitPrice"] == pytest.approx(frame["Open"].iloc[exit_signal_bar + 1])
+    assert float(trade["Size"]) < 0.0
+
+
+def test_mean_reversion_ibs_entry_size_fraction_defaults_to_full_equity() -> None:
+    frame = _entry_exit_frame()
+    stats_default = _run(frame, trade_on_close=False)
+    stats_half = _run(frame, trade_on_close=False, entry_size_fraction=0.5)
+
+    trade_default = stats_default["_trades"].iloc[0]
+    trade_half = stats_half["_trades"].iloc[0]
+    assert abs(float(trade_default["Size"])) > abs(float(trade_half["Size"]))
 
 
 def test_mean_reversion_ibs_no_next_open_no_fill_when_signal_on_last_bar() -> None:
     frame = _entry_exit_frame().iloc[:8]
     terms = _contract_terms(frame, _strategy_params())
     last_bar = len(frame) - 1
-    assert bool(terms["entry_signal"].iloc[last_bar])
+    assert bool(terms["long_entry_signal"].iloc[last_bar])
 
     stats = _run(frame, trade_on_close=False)
     assert int(stats["# Trades"]) == 0
@@ -171,11 +232,11 @@ def test_mean_reversion_ibs_zero_range_uses_neutral_fallback() -> None:
     terms = _contract_terms(frame, _strategy_params())
     zero_range_bar = 7
     intrabar_range = frame["High"] - frame["Low"]
-    close_below_threshold = frame["Close"] < terms["threshold"]
+    close_below_threshold = frame["Close"] < terms["long_threshold"]
     assert intrabar_range.iloc[zero_range_bar] == pytest.approx(0.0)
     assert terms["ibs"].iloc[zero_range_bar] == pytest.approx(0.5)
     assert bool(close_below_threshold.iloc[zero_range_bar])
-    assert not bool(terms["entry_signal"].iloc[zero_range_bar])
+    assert not bool(terms["long_entry_signal"].iloc[zero_range_bar])
 
     stats = _run(frame)
     assert int(stats["# Trades"]) == 0
@@ -248,6 +309,7 @@ def test_mean_reversion_ibs_overlay_gates_use_and_logic() -> None:
             {"use_ma_direction_gate": True, "ma_direction_lookback": 0},
             "ma_direction_lookback must be an integer >= 1",
         ),
+        ({"entry_size_fraction": 1.1}, "entry_size_fraction must be > 0 and <= 1"),
         ({"use_weekly_trend_gate": "yes"}, "use_weekly_trend_gate must be a boolean"),
     ],
 )
