@@ -13,6 +13,7 @@ from options_helper.commands.derived import app as derived_app
 from options_helper.commands.events import app as events_app
 from options_helper.commands.ingest import app as ingest_app
 from options_helper.commands.intraday import app as intraday_app
+from options_helper.commands.intraday_backfill import app as intraday_backfill_app
 from options_helper.commands.journal import app as journal_app
 from options_helper.commands.market_analysis import app as market_analysis_app
 from options_helper.commands.portfolio import register as register_portfolio_commands
@@ -50,6 +51,7 @@ app.add_typer(journal_app, name="journal")
 app.add_typer(market_analysis_app, name="market-analysis")
 app.add_typer(backtest_app, name="backtest")
 app.add_typer(intraday_app, name="intraday")
+app.add_typer(intraday_backfill_app, name="intraday-backfill")
 app.add_typer(events_app, name="events")
 app.add_typer(stream_app, name="stream")
 app.add_typer(db_app, name="db")

@@ -32,6 +32,7 @@ nav:
       - Scanner: SCANNER.md
   - Data & Artifacts:
       - Ingestion: INGEST.md
+      - Intraday Backfill: INTRADAY_BACKFILL.md
       - Ingestion Optimization: INGEST_OPTIMIZATION.md
       - Candle Cache: CANDLE_CACHE.md
       - DuckDB: DUCKDB.md
